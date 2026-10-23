@@ -1,6 +1,6 @@
 # Browser extension (Manifest V3)
 
-Load this folder unpacked in Chrome or Edge, then register the native host using windows/install.ps1.
+Load this folder unpacked in Chrome or Edge, then register the native host using windows/install.ps1. The extension toolbar popup has a **Test local connection** button for a non-destructive Native Messaging health check. It reports the host's advertised protocol version and supported operations.
 
 The content script detects a redbridge code fence in an assistant message. The user explicitly reviews and executes it. Supported examples:
 
