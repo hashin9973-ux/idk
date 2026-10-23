@@ -201,11 +201,18 @@ function createToolBridge(deps) {
         : tool === 'github_status'
           ? { requiresApproval: false }
           : localTools.getToolPolicy(tool, args);
-      const execute = () => tool === 'github_status'
-        ? githubAuth.getState()
-        : tool === 'github_api'
-          ? githubAuth.requestApi(args)
-          : localTools.executeTool(root, tool, args);
+      const execute = async () => {
+        if (tool === 'github_status') return githubAuth.getState();
+        if (tool === 'github_api') return githubAuth.requestApi(args);
+        const output = await localTools.executeTool(root, tool, args);
+        if (tool === 'get_capabilities' && output && Array.isArray(output.tools)) {
+          output.tools.push(
+            { name: 'github_status', mode: 'read' },
+            { name: 'github_api', mode: 'read-or-approval-for-writes', methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] }
+          );
+        }
+        return output;
+      };
       if (policy.requiresApproval) {
         const approved = await askApproval(tool, args, root);
         if (!approved) {
