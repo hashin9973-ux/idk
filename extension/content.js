@@ -211,8 +211,8 @@
       case "read_file": return "Read file: " + task.path;
       case "write_file": return "Write/overwrite file: " + task.path + " (" + new TextEncoder().encode(task.content).length + " bytes)";
       case "write_files":
-        return "Write " + task.files.length + " files as one reviewed batch:\\n" +
-          task.files.map((file) => "- " + file.path + " (" + new TextEncoder().encode(file.content).length + " bytes)").join("\\n") +
+        return "Write " + task.files.length + " files as one reviewed batch:\n" +
+          task.files.map((file) => "- " + file.path + " (" + new TextEncoder().encode(file.content).length + " bytes)").join("\n") +
           "\\nThe companion stages all files first and attempts rollback if a replacement fails.";
       case "run_pytest": return "Run Python pytest in configured workspace: " + (task.test_path || ".");
       case "run_process":
