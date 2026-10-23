@@ -32,6 +32,6 @@ Starts the named executable with an argument array, never by concatenating a com
 
 ## Result fields
 
-All results include version, id, op, ok, and duration_ms. Successful operations provide data. Errors include a short error string. run_pytest includes exit_code, stdout, and stderr; outputs are truncated when necessary.
+All results include version, id, op, ok, and duration_ms. Successful operations provide data. Errors include a short error string. run_pytest and run_process return the actual process exit_code, stdout, stderr, and timeout status; outputs are truncated when necessary.
 
 An ok: true result means the operation completed as reported; it does not imply a build or application is correct. A failed test run may still be a successfully executed operation: inspect exit_code.
