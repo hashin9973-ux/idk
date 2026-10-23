@@ -24,4 +24,4 @@ write_files applies a reviewed batch of up to 20 files (512 KiB combined content
 
 run_process launches an explicitly approved executable with a list of arguments, without shell-string concatenation. A shell interpreter can still execute commands if you pass those arguments. It runs with the current Windows user's permissions and may access files outside the workspace, so review the command, every argument, and any path carefully.
 
-This first integration intentionally avoids auto-clicking Send. ChatGPT's page DOM is not a stable API and can change. If task detection stops working, inspect selectors in content.js.
+Automatic Send clicks are opt-in and default off. When enabled, the extension submits only a returned execution report and only if the composer is empty; the next task still requires a separate user approval. This behavior depends on ChatGPT's page DOM and send-button selectors, which can change. If task detection or submission stops working, inspect selectors in content.js and switch the setting off.
