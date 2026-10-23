@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Constrained Chrome/Edge Native Messaging host for the Windows Bridge prototype."""
 from __future__ import annotations
-import itertools, json, os, shutil, signal, struct, subprocess, sys, threading, time, uuid
+import itertools, json, os, re, shutil, signal, struct, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Any
 
@@ -41,8 +41,8 @@ def _relative_path(root: Path, raw: Any, *, allow_dot: bool = True) -> Path:
     if not isinstance(raw, str) or not raw or len(raw) > 1024:
         raise BridgeError("path must be a non-empty relative path of at most 1024 characters")
     p = Path(raw)
-    if p.is_absolute() or raw.startswith(("\\\\", "//")):
-        raise BridgeError("absolute paths are not allowed")
+    if p.is_absolute() or p.drive or p.root or re.match(r"^[A-Za-z]:", raw) or raw.startswith(("\\\\", "//")):
+        raise BridgeError("absolute or drive-qualified paths are not allowed")
     if any(part == ".." for part in p.parts):
         raise BridgeError("parent traversal is not allowed")
     if not allow_dot and raw == ".":
@@ -277,7 +277,19 @@ def execute(task: Any) -> dict[str, Any]:
             raise BridgeError("op must be a string")
         if operation == "health":
             _strict_keys(task, {"version", "id", "op"})
-            data = {"host": HOST_NAME, "status": "ready"}
+            data = {
+                "host": HOST_NAME,
+                "status": "ready",
+                "protocol_version": PROTOCOL_VERSION,
+                "operations": ["health", "list_files", "read_file", "write_file", "run_pytest", "run_process"],
+                "limits": {
+                    "max_request_bytes": MAX_MESSAGE_BYTES,
+                    "max_file_bytes": MAX_FILE_BYTES,
+                    "max_output_bytes_per_stream": MAX_OUTPUT_BYTES,
+                    "max_directory_entries": MAX_LIST_ENTRIES,
+                    "max_process_timeout_seconds": TEST_TIMEOUT_SECONDS,
+                },
+            }
         else:
             handlers = {"list_files": _list_files, "read_file": _read_file,
                         "write_file": _write_file, "run_pytest": _run_pytest, "run_process": _run_process}
@@ -311,14 +323,21 @@ def _read_exact(stream: Any, count: int) -> bytes:
 def main() -> int:
     source, sink = sys.stdin.buffer, sys.stdout.buffer
     while True:
-        header = _read_exact(source, 4)
+        try:
+            header = _read_exact(source, 4)
+        except EOFError:
+            return 1
         if not header:
             return 0
         try:
             size, = struct.unpack("<I", header)
-            if size <= 0 or size > MAX_MESSAGE_BYTES:
+            if size == 0:
                 response = {"version": 1, "id": "", "op": "unknown", "ok": False,
-                            "duration_ms": 0, "error": "invalid Native Messaging request size"}
+                            "duration_ms": 0, "error": "empty Native Messaging request"}
+            elif size > MAX_MESSAGE_BYTES:
+                # Do not continue reading after an oversized frame: its body has not been consumed,
+                # so continuing would interpret request bytes as the next frame header.
+                return 1
             else:
                 payload = _read_exact(source, size)
                 try:
