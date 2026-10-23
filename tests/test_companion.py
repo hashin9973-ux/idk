@@ -59,6 +59,22 @@ class CompanionTests(unittest.TestCase):
                 "version": 1, "op": "write_file", "path": "a.txt", "content": "hello"
             })
 
+    def test_read_file_preserves_windows_line_endings(self):
+        target = self.root / "crlf.txt"
+        target.write_bytes(b"line one\\r\\nline two\\r\\n")
+        result = companion._read_file(self.root, {
+            "version": 1, "op": "read_file", "approved": True, "path": "crlf.txt"
+        })
+        self.assertEqual(result["content"], "line one\\r\\nline two\\r\\n")
+
+    def test_write_files_rejects_invalid_unicode_before_staging(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._write_files(self.root, {
+                "version": 1, "op": "write_files", "approved": True,
+                "files": [{"path": "bad.txt", "content": "\\ud800"}]
+            })
+        self.assertFalse((self.root / "bad.txt").exists())
+
     def test_write_and_read(self):
         written = companion._write_file(self.root, {
             "version": 1, "op": "write_file", "approved": True, "path": "a.txt", "content": "hello"
@@ -84,6 +100,7 @@ class CompanionTests(unittest.TestCase):
         result = companion.execute({"version": 1, "op": "health"})
         self.assertTrue(result["ok"])
         self.assertIn("run_process", result["data"]["operations"])
+        self.assertIn("write_files", result["data"]["operations"])
         self.assertLessEqual(result["data"]["limits"]["max_request_bytes"], 1024 * 1024)
 
     def test_windows_drive_qualified_paths_rejected(self):
