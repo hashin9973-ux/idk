@@ -154,7 +154,7 @@ def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         raise BridgeError("test_path must identify an existing file or directory")
     args = [sys.executable, "-m", "pytest", "-q"]
     if relative != root:
-        args.append(str(relative))
+        args.append(str(relative.relative_to(root)))
     try:
         proc = subprocess.Popen(args, cwd=str(root), stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, text=False,
@@ -162,8 +162,8 @@ def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     except OSError as exc:
         raise BridgeError("could not start pytest; check Python and pytest installation") from exc
     out, err = [], []
-    t1 = threading.Thread(target=_capture, args=(proc.stdout, out, MAX_OUTPUT_BYTES), daemon=True)
-    t2 = threading.Thread(target=_capture, args=(proc.stderr, err, MAX_OUTPUT_BYTES), daemon=True)
+    t1 = threading.Thread(target=_capture, args=(proc.stdout, out, MAX_OUTPUT_BYTES + 1), daemon=True)
+    t2 = threading.Thread(target=_capture, args=(proc.stderr, err, MAX_OUTPUT_BYTES + 1), daemon=True)
     t1.start(); t2.start()
     timed_out = False
     try:
@@ -201,12 +201,12 @@ def execute(task: Any) -> dict[str, Any]:
             _strict_keys(task, {"version", "id", "op"})
             data = {"host": HOST_NAME, "status": "ready"}
         else:
-            root = load_workspace()
             handlers = {"list_files": _list_files, "read_file": _read_file,
                         "write_file": _write_file, "run_pytest": _run_pytest}
             handler = handlers.get(operation)
             if handler is None:
                 raise BridgeError("unsupported operation")
+            root = load_workspace()
             data = handler(root, task)
         return {"version": 1, "id": task_id, "op": operation, "ok": True,
                 "duration_ms": int((time.monotonic() - start) * 1000), "data": data}
