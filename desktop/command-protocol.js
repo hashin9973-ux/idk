@@ -18,6 +18,7 @@ const HELP = [
   '/test — run the detected test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
   '/workspace — select the project folder',
+  '/codex — tell ChatGPT to use this app as its local coding-tool backend',
   '/help — show this list',
   '',
   'ChatGPT tool call format: a fenced assistant_tool block containing {"tool":"read_file","args":{"path":"src/index.js"}}.',
@@ -46,6 +47,7 @@ function parseSlashCommand(text) {
   switch (name) {
     case 'help': return { special: 'help', text: HELP };
     case 'workspace': return { special: 'workspace' };
+    case 'codex': return { special: 'coding_mode' };
     case 'status': return { tool: 'project_status', args: {} };
     case 'init': return { tool: 'init', args: {} };
     case 'ls':
