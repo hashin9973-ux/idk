@@ -40,3 +40,4 @@ The installer output is written to `dist/`. To create an unpacked Windows app di
 - Links to non-OpenAI sites open in the system browser; known ChatGPT/OpenAI sign-in pages stay inside the isolated app session.
 - The overlay does not yet expose local file/process control. This iteration deliberately focuses on the compact assistant UI and reliable ChatGPT session first.
 - The ChatGPT website is not modified by the app; at narrow window sizes it relies on ChatGPT's responsive layout.
+- The embedded session permits sanitized clipboard writes for ChatGPT copy buttons, but denies clipboard reads and other permission requests.
