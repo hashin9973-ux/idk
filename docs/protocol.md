@@ -8,7 +8,7 @@ Common fields: version must be integer 1; id is optional and at most 80 characte
 
 ### health
 {"version":1,"op":"health"}
-Returns host status and protocol version.
+Returns host status, protocol version, supported operation names, and configured request/file/output/listing/timeout limits. It does not disclose the workspace path.
 
 ### list_files
 {"version":1,"op":"list_files","approved":true,"path":"."}
