@@ -411,5 +411,5 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  if (quitting) app.quit();
+  app.quit();
 });
