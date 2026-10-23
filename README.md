@@ -6,7 +6,7 @@ A prototype extension and Windows companion for an existing ChatGPT conversation
 
 - Chrome / Edge Manifest V3 extension that detects a redbridge code block in an assistant response.
 - Native Messaging host implemented in Python.
-- Operations: health, list_files, read_file, write_file, run_pytest, and run_process.
+- Operations: health, list_files, read_file, write_file, write_files, run_pytest, and run_process.
 - Workspace-root path validation, strict request fields, file and message size limits, bounded listing/output, test timeout.
 - Local task execution results can be inserted into the ChatGPT composer; the user submits them manually.
 - A GitHub Actions workflow is included for Linux and Windows validation.
@@ -48,11 +48,19 @@ Read a small UTF-8 file:
 {"version":1,"op":"read_file","path":"README.md"}
 ```
 
-Write a file after review:
+Write one file after review:
 
 ```redbridge
 {"version":1,"op":"write_file","path":"bridge-smoke.txt","content":"Created by an approved bridge test."}
 ```
+
+Write multiple files in one reviewed batch (up to 20 paths; total content up to 512 KiB):
+
+```redbridge
+{"version":1,"op":"write_files","files":[{"path":"src/one.txt","content":"first"},{"path":"src/two.txt","content":"second"}]}
+```
+
+The parent directories must already exist. The companion stages each file first and attempts rollback if replacing one fails; a multi-file update is not a filesystem-atomic transaction.
 
 Run pytest in a disposable workspace:
 
@@ -77,6 +85,6 @@ The qdqwg repository is public test material, not a live task queue. Do not put 
 
 ## Security notes
 
-This is an early prototype. Use a disposable workspace first. Reads and writes are constrained to the locally configured workspace; workspace reads/writes, tests, and process launches require a visible click/confirmation. Tests execute code from the selected workspace. Never place secrets in task blocks or share sensitive workspace contents in chat. Native host permissions are granted to the exact extension ID registered at install time.
+This is an early prototype. Use a disposable workspace first. Reads and writes are constrained to the locally configured workspace; workspace reads/writes, batch writes, tests, and process launches require a visible click/confirmation. Tests execute code from the selected workspace. Never place secrets in task blocks or share sensitive workspace contents in chat. Native host permissions are granted to the exact extension ID registered at install time.
 
 The result reports the local operation status and actual test exit code. A successful commit is not proof that the Windows-side action ran.
