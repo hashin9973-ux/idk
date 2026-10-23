@@ -47,8 +47,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: false, error: "Invalid extension message." });
     return false;
   }
-  if (message.taskJson.length > 1000000) {
-    sendResponse({ ok: false, error: "Task is too large." });
+  // Native Messaging has a byte-size limit, not a JavaScript-character limit.
+  // Leave headroom below the protocol's 1 MiB cap for the frame and host response.
+  if (new TextEncoder().encode(message.taskJson).byteLength > 900000) {
+    sendResponse({ ok: false, error: "Task is too large for Native Messaging (900 KiB UTF-8 limit)." });
     return false;
   }
   let task;
