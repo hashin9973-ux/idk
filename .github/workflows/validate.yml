@@ -1,45 +1,37 @@
-name: Bridge validation
+name: Desktop app validation
 
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  test:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ['3.12']
-    runs-on: ${{ matrix.os }}
+  windows-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Compile Python
-        run: python -m compileall -q windows tests
-      - name: Run unit tests
-        run: python -m unittest discover -s tests -v
-      - name: Validate extension scripts
-        shell: bash
-        run: |
-          node --check extension/content.js
-          node --check extension/service_worker.js
-          node --check extension/popup.js
-          python -c "import json; json.load(open('extension/manifest.json', encoding='utf-8'))"
-      - name: Parse installer PowerShell
-        if: runner.os == 'Windows'
+          node-version: '24'
+          cache: npm
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: npm run check
+      - name: Validate package metadata
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'windows/install.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($pkg.main -ne 'desktop/main.js') { throw 'package.json main must point to desktop/main.js' }
+          $manifest = Get-Content extension/manifest.json -Raw -ErrorAction SilentlyContinue
+          if ($manifest) { throw 'Obsolete browser extension manifest remains in the desktop-only repository.' }
+      - name: Build unpacked Windows application
+        run: npm run dist:win:dir
