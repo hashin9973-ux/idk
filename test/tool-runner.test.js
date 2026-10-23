@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const tools = require('../desktop/tool-runner');
 
 function fixture() {
@@ -116,5 +117,81 @@ test('init does not overwrite existing AGENTS.md', async () => {
     const result = await tools.executeTool(root, 'init', {});
     assert.equal(result.initialized, false);
     assert.equal(fs.readFileSync(file, 'utf8'), 'keep me\n');
+  } finally { cleanup(root); }
+});
+
+
+test('ranged file reads, file metadata, and directory trees return bounded workspace data', async () => {
+  const root = fixture();
+  try {
+    fs.writeFileSync(path.join(root, 'src', 'lines.txt'), 'one\ntwo\nthree\n', 'utf8');
+    const ranged = await tools.executeTool(root, 'read_file', { path: 'src/lines.txt', startLine: 2, endLine: 2 });
+    assert.equal(ranged.content, 'two');
+    assert.equal(ranged.startLine, 2);
+    assert.equal(ranged.totalLines, 4);
+    const info = await tools.executeTool(root, 'file_info', { path: 'src/lines.txt' });
+    assert.equal(info.type, 'file');
+    assert.equal(info.sha256.length, 64);
+    const tree = await tools.executeTool(root, 'directory_tree', { path: 'src', maxDepth: 2, maxEntries: 20 });
+    assert.ok(tree.entries.some(entry => entry.path === 'src/index.js'));
+    assert.ok(tree.entries.some(entry => entry.path === 'src/lines.txt'));
+  } finally { cleanup(root); }
+});
+
+test('create_directory, move_path and delete_path have real effects inside the workspace', async () => {
+  const root = fixture();
+  try {
+    await tools.executeTool(root, 'create_directory', { path: 'tmp/nested', recursive: true });
+    fs.writeFileSync(path.join(root, 'tmp', 'nested', 'move-me.txt'), 'hello', 'utf8');
+    const moved = await tools.executeTool(root, 'move_path', { source: 'tmp/nested/move-me.txt', destination: 'tmp/nested/moved.txt' });
+    assert.equal(moved.moved, true);
+    assert.equal(fs.readFileSync(path.join(root, 'tmp', 'nested', 'moved.txt'), 'utf8'), 'hello');
+    await tools.executeTool(root, 'delete_path', { path: 'tmp/nested/moved.txt' });
+    assert.equal(fs.existsSync(path.join(root, 'tmp', 'nested', 'moved.txt')), false);
+    await assert.rejects(tools.executeTool(root, 'move_path', { source: '../outside', destination: 'tmp/outside' }), /parent traversal/);
+  } finally { cleanup(root); }
+});
+
+test('mutating filesystem and Git tools require approval', () => {
+  for (const name of [
+    'create_directory','move_path','delete_path','git_create_branch',
+    'git_switch_branch','git_commit','write_file','apply_patch','shell','run_tests'
+  ]) {
+    assert.equal(tools.getToolPolicy(name).requiresApproval, true, name);
+  }
+  for (const name of ['environment_info','directory_tree','file_info','git_log','git_show','git_branches','git_changed_files','discover_instructions']) {
+    assert.equal(tools.getToolPolicy(name).requiresApproval, false, name);
+  }
+});
+
+test('Git history, branch listing and changed-file tools use the selected repository', async t => {
+  const root = fixture();
+  try {
+    try {
+      execFileSync('git', ['--version'], { stdio: 'ignore' });
+    } catch {
+      t.skip('Git is not installed in this test environment.');
+      return;
+    }
+    execFileSync('git', ['init'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Tool Test'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.email', 'tool-test@example.invalid'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['add', '--', 'src/index.js'], { cwd: root, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'initial test commit'], { cwd: root, stdio: 'ignore' });
+    const log = await tools.executeTool(root, 'git_log', { maxCount: 5 });
+    assert.equal(log.commits.length, 1);
+    assert.equal(log.commits[0].subject, 'initial test commit');
+    const branches = await tools.executeTool(root, 'git_branches', {});
+    assert.equal(branches.length, 1);
+    assert.equal(branches[0].current, true);
+    const show = await tools.executeTool(root, 'git_show', { ref: 'HEAD' });
+    assert.match(show.stdout, /initial test commit/);
+    fs.writeFileSync(path.join(root, 'src', 'untracked.txt'), 'new file', 'utf8');
+    const changed = await tools.executeTool(root, 'git_changed_files', {});
+    assert.equal(changed.count, 1);
+    assert.equal(changed.files[0].path, '?? src/untracked.txt');
+    await tools.executeTool(root, 'git_create_branch', { name: 'feature/tool-test' });
+    const next = await tools.executeTool(root, 'git_branches', {});
+    assert.ok(next.some(branch => branch.name === 'feature/tool-test'));
   } finally { cleanup(root); }
 });
