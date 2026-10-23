@@ -407,7 +407,7 @@ function configureRemoteSession() {
       return;
     }
     const rawName = item.getFilename() || 'ChatGPT-download';
-    const safeName = path.basename(rawName).replace(/[<>:"/\\\\|?*\\x00-\\x1f]/g, '_') || 'ChatGPT-download';
+    const safeName = path.basename(rawName).replace(/[<>:"|?*]/g, '_').replace(/[\x00-\x1f]/g, '_') || 'ChatGPT-download';
     item.setSaveDialogOptions({
       title: 'Save ChatGPT download',
       buttonLabel: 'Save',
