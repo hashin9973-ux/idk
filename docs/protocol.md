@@ -26,6 +26,10 @@ Writes UTF-8 text atomically, up to 256 KiB. Existing files are overwritten only
 {"version":1,"op":"run_pytest","approved":true,"test_path":"tests"}
 Runs the fixed command sys.executable -m pytest -q [test_path] with the workspace as current directory. The optional test path is workspace-relative. There is no arbitrary executable or shell input. Tests are untrusted code and must only be run in a workspace you trust.
 
+### run_process
+`{"version":1,"op":"run_process","approved":true,"executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}`
+Starts the named executable with an argument array, never by concatenating a command string. An absolute executable path is allowed; a relative executable path must remain inside the workspace; a bare program name is resolved through PATH. The working directory must be within the configured workspace. Arguments are limited to 128 strings, 8192 characters per string, and 64 KiB combined. Timeout is 1–120 seconds. Output is bounded and includes the real process exit code. An approved shell/interpreter executable may still run commands; review every field before authorizing it.
+
 ## Result fields
 
 All results include version, id, op, ok, and duration_ms. Successful operations provide data. Errors include a short error string. run_pytest includes exit_code, stdout, and stderr; outputs are truncated when necessary.
