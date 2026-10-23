@@ -265,7 +265,18 @@ function createToolBridge(deps) {
     const commandNames = ['help','status','init','ls','list','find','glob','read','search','git','diff','test','exec','workspace','codex'];
     const processedBlocks = new WeakSet();
     const oldMessages = new WeakSet();
+    let expectedUserMessage = false;
+    let toolCallArmed = false;
+    let userMessageCount = document.querySelectorAll('[data-message-author-role="user"]').length;
     document.querySelectorAll('[data-message-author-role="assistant"]').forEach(node => oldMessages.add(node));
+
+    function armAfterSend(event) {
+      const target = event.target && event.target.closest
+        ? event.target.closest('button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"], button[aria-label="Send"]')
+        : null;
+      if (target && !target.disabled) expectedUserMessage = true;
+    }
+    document.addEventListener('click', armAfterSend, true);
 
     function sendInternal(kind, key, value) {
       window.location.href = 'assistant-tool://' + kind + '/?' + key + '=' + encodeURIComponent(value);
@@ -297,8 +308,11 @@ function createToolBridge(deps) {
       const editor = composerFrom(event.target);
       if (!editor) return;
       const text = getText(editor).trim();
-      const match = text.match(/^\/([a-z][a-z0-9_-]*)(?:\s|$)/i);
-      if (!match || !commandNames.includes(match[1].toLowerCase())) return;
+      const match = text.match(/^\\/([a-z][a-z0-9_-]*)(?:\\s|$)/i);
+      if (!match || !commandNames.includes(match[1].toLowerCase())) {
+        if (text) expectedUserMessage = true;
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       if (event.stopImmediatePropagation) event.stopImmediatePropagation();
@@ -307,6 +321,13 @@ function createToolBridge(deps) {
     }, true);
 
     function scanToolBlocks() {
+      const newUserCount = document.querySelectorAll('[data-message-author-role="user"]').length;
+      if (expectedUserMessage && newUserCount > userMessageCount) {
+        toolCallArmed = true;
+        expectedUserMessage = false;
+      }
+      userMessageCount = newUserCount;
+      if (!toolCallArmed) return;
       for (const pre of document.querySelectorAll('[data-message-author-role="assistant"] pre')) {
         if (processedBlocks.has(pre)) continue;
         const message = pre.closest('[data-message-author-role="assistant"]');
@@ -318,6 +339,7 @@ function createToolBridge(deps) {
         try { request = JSON.parse(raw); } catch { continue; }
         if (!request || typeof request !== 'object' || typeof request.tool !== 'string') continue;
         processedBlocks.add(pre);
+        toolCallArmed = false;
         sendInternal('call', 'payload', JSON.stringify(request));
       }
     }
