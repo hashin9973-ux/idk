@@ -1,44 +1,65 @@
-# ChatGPT Assistant Overlay
+# ChatGPT Assistant desktop app
 
-A small Windows desktop shell around the actual ChatGPT website. It is not a separate chatbot and does not require an OpenAI API key. Your ChatGPT account signs in inside the app's own persistent Chromium session.
+This is a Windows desktop wrapper for the real ChatGPT web experience, with a local project-tool backend. It is not a separate chatbot and does not require an OpenAI API key.
 
-## Features in the first app slice
+## Run locally
 
-- Frameless, always-on-top floating window.
-- Embedded ChatGPT website using Electron's `WebContentsView`.
-- Collapse to a compact orb; click the orb to restore the chat.
-- Drag the title area to reposition the expanded window. Drag the rim around the orb to reposition the collapsed assistant.
-- Global toggle: `Ctrl+Shift+Space` (macOS equivalent is registered by Electron).
-- Reload ChatGPT, open ChatGPT in the system browser, and quit controls.
-- Persistent ChatGPT login session and remembered expanded-window position.
-- Isolated local UI and remote web content: no Node integration or app preload in the ChatGPT page.
+Requirements: Windows 10/11, Node.js 22+ (Node 24 recommended), npm, and internet access.
 
-## Run for development
+    npm install
+    npm start
 
-Requirements: Windows 10/11, Node.js 22+, npm, and an internet connection.
+Sign in to ChatGPT inside the app. Its login is stored in an app-specific persistent Chromium session and does not import browser cookies. Select the project workspace with the folder button in the title bar.
 
-From the repository root:
+## Windows installer
 
-```powershell
-npm install
-npm start
-```
+    npm run dist:win
 
-The first launch opens `https://chatgpt.com/`. Sign in normally. The login is stored in this app's separate persistent session; it does not automatically reuse cookies from Chrome or Edge.
+The NSIS installer is emitted in dist. GitHub Actions builds it on every push to main and uploads it as a build artifact and a downloadable prerelease:
+https://github.com/hashin9973-ux/idk/releases
 
-## Build a Windows installer
+The installer is unsigned; Windows SmartScreen may show a warning. Verify the source and build output before installing.
 
-```powershell
-npm run dist:win
-```
+## Tool-driven coding workflow
 
-The installer output is written to `dist/`. To create an unpacked Windows app directory for local testing, run `npm run dist:win:dir`.
+Type /codex in the ChatGPT composer and press Enter. That seeds the conversation with instructions to use the local tools. Continue describing the task normally. When a local operation is needed, ChatGPT emits one fenced block with the language assistant_tool, for example:
 
-## Notes
+    assistant_tool
+    {"version":1,"tool":"read_file","args":{"path":"src/index.js"},"call_id":"read-src"}
 
-- ChatGPT is a remote website. Its login and DOM behavior may change, and embedding it in a desktop window is not an officially supported ChatGPT desktop API.
-- Links to non-OpenAI sites open in the system browser; known ChatGPT/OpenAI sign-in pages stay inside the isolated app session.
-- The overlay does not yet expose local file/process control. This iteration deliberately focuses on the compact assistant UI and reliable ChatGPT session first.
-- The ChatGPT website is not modified by the app; at narrow window sizes it relies on ChatGPT's responsive layout.
-- The embedded session permits sanitized clipboard writes for ChatGPT copy buttons, but denies clipboard reads and other permission requests.
-- Downloads initiated from ChatGPT use a native Save dialog with a sanitized suggested filename. Downloads initiated by a non-ChatGPT top-level page are cancelled.
+The app validates and executes the request, then submits the actual result back into the same ChatGPT conversation. ChatGPT should wait for each returned result before making claims about local execution or issuing the next tool request.
+
+Supported tools:
+- Workspace inspection: get_capabilities, project_status, list_dir, glob_file_search, read_file, search.
+- Git: git_status, git_diff.
+- Project setup and edits: init, write_file, apply_patch.
+- Execution and planning: shell, run_tests, update_plan.
+
+Familiar direct commands (type in ChatGPT and press Enter):
+
+- /status or /pwd
+- /init
+- /ls src or /tree src
+- /find src/**/*.js
+- /read src/index.js or /cat src/index.js
+- /search useEffect or /grep "some phrase"
+- /git and /diff
+- /plan "add feature X" and /review
+- /test
+- /exec git status --short
+- /workspace and /help
+
+## Approval and scope
+
+Read-only workspace operations are available directly, except reading secret-like filenames. Write operations, patches, tests, PowerShell, and secret-like file reads require an approval dialog for each operation. Filesystem operations are restricted to the selected workspace and guard against traversal and symlink escapes.
+
+PowerShell is not sandboxed. If you approve a command, it executes with your Windows user's permissions and may access paths outside the selected workspace. Inspect commands before approving. Tool output is bounded and includes actual process exit codes, stdout/stderr, and timeout state where applicable.
+
+## Implementation notes
+
+- The ChatGPT web contents have no Node integration and no app preload access.
+- Local app actions are exposed through a narrow preload API, while tool dispatch and approvals live in the Electron main process.
+- The local tool request protocol is defined in desktop/command-protocol.js.
+- Tool behavior and path guards live in desktop/tool-runner.js.
+- The injected ChatGPT-side detector and result handoff live in desktop/tool-bridge.js.
+- ChatGPT’s website UI is not a formal embedding API; changes to its composer or code-block DOM may require updates.
