@@ -308,7 +308,7 @@ function createToolBridge(deps) {
       const editor = composerFrom(event.target);
       if (!editor) return;
       const text = getText(editor).trim();
-      const match = text.match(/^\\/([a-z][a-z0-9_-]*)(?:\\s|$)/i);
+      const match = text.match(/^\/([a-z][a-z0-9_-]*)(?:\s|$)/i);
       if (!match || !commandNames.includes(match[1].toLowerCase())) {
         if (text) expectedUserMessage = true;
         return;
