@@ -194,6 +194,8 @@ function collapseWindow() {
       console.error('Could not detach ChatGPT view:', error.message);
     }
   }
+  // Temporarily remove the expanded-window minimum so the window can really shrink.
+  mainWindow.setMinimumSize(1, 1);
   mainWindow.setResizable(false);
   mainWindow.setSkipTaskbar(true);
   mainWindow.setSize(COLLAPSED_SIZE, COLLAPSED_SIZE, true);
@@ -222,6 +224,7 @@ function expandWindow() {
 
   collapsed = false;
   mainWindow.setSkipTaskbar(false);
+  mainWindow.setMinimumSize(360, 480);
   mainWindow.setResizable(true);
   mainWindow.setBounds(target, true);
   if (chatView) {
