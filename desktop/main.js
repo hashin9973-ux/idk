@@ -77,14 +77,23 @@ function saveSettingsSoon() {
   }, 250);
 }
 
+function minimumSizeForBounds(bounds) {
+  const display = screen.getDisplayMatching(bounds);
+  return {
+    width: Math.min(360, Math.max(1, display.workArea.width)),
+    height: Math.min(480, Math.max(1, display.workArea.height))
+  };
+}
+
 function clampBounds(bounds) {
-  const display = screen.getDisplayMatching({
-    x: Number(bounds.x) || 0,
-    y: Number(bounds.y) || 0,
-    width: Number(bounds.width) || EXPANDED_SIZE.width,
-    height: Number(bounds.height) || EXPANDED_SIZE.height
-  });
-  return clampRectToWorkArea(bounds, display.workArea, 360, 480);
+  const safe = {
+    x: Number.isFinite(Number(bounds.x)) ? Number(bounds.x) : 0,
+    y: Number.isFinite(Number(bounds.y)) ? Number(bounds.y) : 0,
+    width: Number.isFinite(Number(bounds.width)) && Number(bounds.width) > 0 ? Number(bounds.width) : EXPANDED_SIZE.width,
+    height: Number.isFinite(Number(bounds.height)) && Number(bounds.height) > 0 ? Number(bounds.height) : EXPANDED_SIZE.height
+  };
+  const display = screen.getDisplayMatching(safe);
+  return clampRectToWorkArea(safe, display.workArea, 360, 480);
 }
 
 function defaultBounds() {
@@ -227,7 +236,8 @@ function expandWindow() {
 
   collapsed = false;
   mainWindow.setSkipTaskbar(false);
-  mainWindow.setMinimumSize(360, 480);
+  const minimum = minimumSizeForBounds(target);
+  mainWindow.setMinimumSize(minimum.width, minimum.height);
   mainWindow.setResizable(true);
   mainWindow.setBounds(target, true);
   if (chatView) {
@@ -295,6 +305,7 @@ function createMainWindow() {
   }
 
   const bounds = clampBounds(settings.bounds || defaultBounds());
+  const minimum = minimumSizeForBounds(bounds);
   mainWindow = new BrowserWindow({
     ...bounds,
     width: bounds.width,
@@ -304,8 +315,8 @@ function createMainWindow() {
     backgroundColor: '#00000000',
     hasShadow: true,
     resizable: true,
-    minWidth: 360,
-    minHeight: 480,
+    minWidth: minimum.width,
+    minHeight: minimum.height,
     minimizable: true,
     maximizable: false,
     movable: true,
@@ -325,7 +336,13 @@ function createMainWindow() {
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAlwaysOnTop(true);
   mainWindow.on('resize', updateChatBounds);
-  mainWindow.on('move', saveSettingsSoon);
+  mainWindow.on('move', () => {
+    if (!collapsed && mainWindow && !mainWindow.isDestroyed()) {
+      const minimum = minimumSizeForBounds(mainWindow.getBounds());
+      mainWindow.setMinimumSize(minimum.width, minimum.height);
+    }
+    saveSettingsSoon();
+  });
   mainWindow.on('closed', () => {
     const detachedChatView = chatView;
     chatView = null;
