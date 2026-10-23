@@ -1,0 +1,50 @@
+{
+  "name": "chatgpt-assistant-overlay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A compact always-on-top desktop overlay for the real ChatGPT web experience.",
+  "main": "desktop/main.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check desktop/main.js && node --check desktop/preload.js && node --check desktop/renderer.js",
+    "dist:win": "electron-builder --win nsis",
+    "dist:win:dir": "electron-builder --win dir"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.hashin997ux.chatgptassistant",
+    "productName": "ChatGPT Assistant",
+    "asar": true,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
