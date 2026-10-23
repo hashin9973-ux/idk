@@ -83,6 +83,19 @@ test('apply_patch adds, updates and deletes files with real filesystem effects',
   } finally { cleanup(root); }
 });
 
+test('search skips secret-like files but still searches hidden project metadata', async () => {
+  const root = fixture();
+  try {
+    fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'name: build\n', 'utf8');
+    fs.writeFileSync(path.join(root, '.env'), 'API_TOKEN=hidden-value\n', 'utf8');
+    const search = await tools.executeTool(root, 'search', { query: 'hidden-value' });
+    assert.equal(search.count, 0);
+    const glob = await tools.executeTool(root, 'glob_file_search', { pattern: '.github/**/*.yml' });
+    assert.ok(glob.files.includes('.github/workflows/ci.yml'));
+  } finally { cleanup(root); }
+});
+
 test('writes, patches, tests and PowerShell require approval policy', () => {
   assert.equal(tools.getToolPolicy('write_file').requiresApproval, true);
   assert.equal(tools.getToolPolicy('apply_patch').requiresApproval, true);
