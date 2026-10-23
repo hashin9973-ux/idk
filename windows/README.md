@@ -28,7 +28,7 @@ Reload the extension, refresh ChatGPT, and ask ChatGPT to emit the following for
 
 Place it in a fenced code block marked redbridge. Click Review task, then Execute on Windows. Health is non-destructive and does not require an approval flag.
 
-Next, try {"version":1,"op":"list_files","path":"."}. File operations and test execution require an explicit confirmation dialog. After a result arrives, use Insert result into ChatGPT, then manually submit it to the conversation.
+Next, try {"version":1,"op":"list_files","path":"."}. Workspace file operations, test execution, and process launches require an explicit confirmation dialog. After a result arrives, use Insert result into ChatGPT, then manually submit it to the conversation.
 
 ## Supported operations
 
@@ -37,8 +37,11 @@ Next, try {"version":1,"op":"list_files","path":"."}. File operations and test e
 - read_file
 - write_file
 - run_pytest
+- run_process (explicitly approved executable with an argument array)
 
-No arbitrary shell commands are supported in this milestone.
+Example: {"version":1,"op":"run_process","executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}
+
+The bridge never concatenates model-generated command text or sets shell=True. However, an approved process may be a shell/interpreter that executes its arguments as code. Inspect every argument and use a disposable workspace.
 
 ## Troubleshooting
 
