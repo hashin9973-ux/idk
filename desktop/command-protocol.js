@@ -7,18 +7,20 @@ const TOOL_NAMES = new Set([
 
 const HELP = [
   'Local workspace commands:',
-  '/status — inspect the selected project and Git state',
+  '/status or /pwd — inspect the selected project and Git state',
   '/init — create AGENTS.md without overwriting one',
-  '/ls [path] — list workspace files',
+  '/ls [path] or /tree [path] — list workspace files',
   '/find <glob> — find files, e.g. /find src/**/*.js',
   '/read <path> — read a UTF-8 text file',
-  '/search <text> — search project contents',
+  '/search or /grep <text> — search project contents',
   '/git — show Git status',
   '/diff [path ...] — show tracked changes',
-  '/test — run the detected test command (approval required)',
+  '/test or /tests — run the detected test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
   '/workspace — select the project folder',
   '/codex — tell ChatGPT to use this app as its local coding-tool backend',
+  '/plan [task] — ask ChatGPT to plan the task using local tools',
+  '/review — ask ChatGPT to inspect current changes with local tools',
   '/help — show this list',
   '',
   'ChatGPT tool call format: a fenced assistant_tool block containing {"tool":"read_file","args":{"path":"src/index.js"}}.',
@@ -48,17 +50,24 @@ function parseSlashCommand(text) {
     case 'help': return { special: 'help', text: HELP };
     case 'workspace': return { special: 'workspace' };
     case 'codex': return { special: 'coding_mode' };
-    case 'status': return { tool: 'project_status', args: {} };
+    case 'plan': return { special: 'plan_mode', task: rest };
+    case 'review': return { special: 'review_mode' };
+    case 'status':
+    case 'pwd': return { tool: 'project_status', args: {} };
     case 'init': return { tool: 'init', args: {} };
     case 'ls':
-    case 'list': return { tool: 'list_dir', args: { path: rest || '.' } };
+    case 'list':
+    case 'tree': return { tool: 'list_dir', args: { path: words.length ? words.join(' ') : '.' } };
     case 'find':
-    case 'glob': return rest ? { tool: 'glob_file_search', args: { pattern: rest } } : { error: 'Usage: /find <glob>, for example /find src/**/*.js' };
-    case 'read': return rest ? { tool: 'read_file', args: { path: rest } } : { error: 'Usage: /read <relative-path>' };
-    case 'search': return rest ? { tool: 'search', args: { query: rest } } : { error: 'Usage: /search <text>' };
+    case 'glob': return rest ? { tool: 'glob_file_search', args: { pattern: words.join(' ') } } : { error: 'Usage: /find <glob>, for example /find src/**/*.js' };
+    case 'read':
+    case 'cat': return rest ? { tool: 'read_file', args: { path: words.join(' ') } } : { error: 'Usage: /read <relative-path>' };
+    case 'search':
+    case 'grep': return rest ? { tool: 'search', args: { query: words.join(' ') } } : { error: 'Usage: /search <text>' };
     case 'git': return { tool: 'git_status', args: {} };
     case 'diff': return { tool: 'git_diff', args: words.length ? { paths: words } : {} };
-    case 'test': return { tool: 'run_tests', args: {} };
+    case 'test':
+    case 'tests': return { tool: 'run_tests', args: {} };
     case 'exec': return rest ? { tool: 'shell', args: { command: rest } } : { error: 'Usage: /exec <PowerShell command>' };
     case 'write':
       if (!rest) return { error: 'Usage: /write <relative-path> then a newline, then file contents. For larger edits, use an assistant_tool apply_patch call.' };
