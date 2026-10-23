@@ -2,10 +2,12 @@
   "manifest_version": 3,
   "name": "ChatGPT Windows Bridge",
   "version": "0.2.0",
-  "description": "Review explicitly marked ChatGPT tasks, run constrained workspace operations on Windows, and relay actual results.",
+  "description": "Attaches a collapsible chat overlay to a ChatGPT tab, mirrors the conversation, and sends messages through ChatGPT.",
   "permissions": [
     "nativeMessaging",
-    "storage"
+    "storage",
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
