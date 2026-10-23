@@ -1,0 +1,16 @@
+:root { color-scheme: light dark; font: 14px/1.45 system-ui, sans-serif; }
+body { margin: 0; min-width: 300px; max-width: 360px; background: Canvas; color: CanvasText; }
+main { padding: 16px; }
+header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.mark { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid currentColor; border-radius: 10px; font-weight: 750; }
+h1 { font-size: 16px; margin: 0; }
+h2 { font-size: 13px; margin: 16px 0 6px; }
+p { margin: 4px 0; }
+.muted, .footnote { opacity: .72; font-size: 12px; }
+button { width: 100%; padding: 10px 12px; color: inherit; background: transparent; border: 1px solid currentColor; border-radius: 8px; font-weight: 650; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+.status { margin-top: 12px; padding: 10px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); border-radius: 8px; overflow-wrap: anywhere; }
+#state { display: block; margin-bottom: 3px; }
+ul { padding-left: 20px; margin: 6px 0; }
+li { margin: 3px 0; }
+#raw-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: 11px/1.4 ui-monospace, monospace; }
