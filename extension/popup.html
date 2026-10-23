@@ -3,39 +3,42 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ChatGPT Windows Bridge</title>
+  <title>ChatGPT Overlay</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
   <main>
     <header>
-      <div class="mark">WB</div>
+      <div class="mark">C</div>
       <div>
-        <h1>Windows Bridge</h1>
-        <p class="muted">Local companion diagnostics</p>
+        <h1>ChatGPT Overlay</h1>
+        <p class="muted">Attach a floating chat to this tab</p>
       </div>
     </header>
-    <button id="test-connection" type="button">Test local connection</button>
-    <section class="setting">
-      <label><input id="auto-submit-results" type="checkbox"> Auto-submit execution reports to ChatGPT</label>
-      <p class="footnote">Optional. Sends only the result of a task you already approved. It does not approve or run the next task. Auto-submit is skipped when the composer contains a draft.</p>
-      <p id="setting-status" class="muted" aria-live="polite"></p>
+
+    <section class="attach-card">
+      <strong id="tab-title">Current tab</strong>
+      <p id="tab-url" class="muted">Checking active tab…</p>
+      <p id="tab-state" class="status-text" aria-live="polite">Not attached</p>
+      <button id="attach" class="primary" type="button">Attach overlay to this tab</button>
+      <div class="button-row">
+        <button id="collapse" type="button" disabled>Collapse to ball</button>
+        <button id="detach" type="button" disabled>Detach</button>
+      </div>
     </section>
-    <section class="status" aria-live="polite">
-      <strong id="state">Not tested</strong>
-      <p id="details">Run a harmless health check to see whether the Native Messaging host is installed.</p>
+
+    <section class="info">
+      <h2>How it works</h2>
+      <p>The overlay mirrors user and assistant messages in this ChatGPT tab. Type in the floating panel to send through ChatGPT itself.</p>
+      <p>Close the panel to collapse it into a floating ball. The toolbar button reopens or reattaches it.</p>
     </section>
-    <section>
-      <h2>Supported operations</h2>
-      <ul>
-        <li>List and read workspace files</li>
-        <li>Write a reviewed text file or multi-file batch</li>
-        <li>Run pytest in the workspace</li>
-        <li>Launch a reviewed process with argument-array semantics</li>
-      </ul>
-    </section>
-    <p class="footnote">Health checks do not access workspace files. File operations and process execution require an explicit confirmation in the ChatGPT page.</p>
-    <pre id="raw-result" hidden></pre>
+
+    <details>
+      <summary>Local companion diagnostics</summary>
+      <button id="test-connection" type="button">Test Windows companion</button>
+      <p id="companion-state" class="muted" aria-live="polite">Not tested</p>
+      <pre id="raw-result" hidden></pre>
+    </details>
   </main>
   <script src="popup.js"></script>
 </body>
