@@ -110,7 +110,7 @@ test('expanded tool catalogue is wired through the same ChatGPT page bridge', ()
   }
   assert.ok(bridge.includes('language-assistant_tool'));
   assert.ok(bridge.includes('githubAuth.requestApi(args)'));
-  assert.ok(bridge.includes('requiresApproval: String(args.method || \\'GET\\').toUpperCase() !== \\'GET\\''));
+    assert.ok(bridge.includes("requiresApproval: String(args.method || 'GET').toUpperCase() !== 'GET'"));
 });
 
 test('account login is isolated from the remote page and protects the GitHub token', () => {
