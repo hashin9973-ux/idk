@@ -18,7 +18,12 @@ Open PowerShell in the repository folder. For Chrome:
 
 For Edge, use -Browser Edge. Replace the placeholder with the actual extension ID shown by the browser.
 
-The installer copies companion.py under LocalAppData, creates the workspace directory if needed, writes a native host manifest, and registers it under the current user's registry hive. It does not require Administrator rights. Inspect the script before running it.
+The default workspace is an empty folder. For a real smoke test, clone qdqwg and point the workspace at its harmless fixture folder:
+
+    git clone https://github.com/hashin9973-ux/qdqwg.git "$HOME\qdqwg"
+    .\windows\install.ps1 -ExtensionId "YOUR_EXTENSION_ID" -Browser Chrome -WorkspaceRoot "$HOME\qdqwg\fixtures\workspace"
+
+The installer copies companion.py under LocalAppData, creates the workspace directory if needed, writes a native host manifest, and registers it under the current user's registry hive. It does not require Administrator rights. Inspect the script before running it. Re-run the installer after changing windows/companion.py so the installed host copy is refreshed; reload the unpacked extension after changing extension files.
 
 ## 3. Test the connection
 
@@ -30,7 +35,7 @@ Then reload the extension, refresh ChatGPT, and ask ChatGPT to emit the followin
 
 Place it in a fenced code block marked redbridge. Click Review task, then Execute on Windows. Health is non-destructive and does not require an approval flag.
 
-Next, try {"version":1,"op":"list_files","path":"."}. Workspace file operations, test execution, and process launches require an explicit confirmation dialog. After a result arrives, use Insert result into ChatGPT, then submit it manually. The toolbar popup has an optional Auto-submit execution reports to ChatGPT setting; it submits only if the composer is empty and does not approve follow-up Windows tasks.
+Next, try {"version":1,"op":"list_files","path":"."}. If you used the qdqwg fixture workspace, read sample.txt and run pytest with test_path set to tests. Workspace file operations, test execution, and process launches require an explicit confirmation dialog. After a result arrives, use Insert result into ChatGPT, then submit it manually. The toolbar popup has an optional Auto-submit execution reports to ChatGPT setting; it submits only if the composer is empty and does not approve follow-up Windows tasks.
 
 ## Supported operations
 
