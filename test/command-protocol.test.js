@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const commands = require('../desktop/command-protocol');
 
-test('Codex-style slash commands translate to local tool requests', () => {
+test('Local slash commands translate to local tool requests', () => {
   assert.deepEqual(commands.parseSlashCommand('/status'), { tool: 'project_status', args: {} });
   assert.deepEqual(commands.parseSlashCommand('/pwd'), { tool: 'project_status', args: {} });
   assert.deepEqual(commands.parseSlashCommand('/ls src'), { tool: 'list_dir', args: { path: 'src' } });
@@ -18,7 +18,7 @@ test('Codex-style slash commands translate to local tool requests', () => {
   assert.deepEqual(commands.parseSlashCommand('/exec git status --short'), { tool: 'shell', args: { command: 'git status --short' } });
 });
 
-test('additional Codex-style aliases map to supported local tools', () => {
+test('additional aliases map to supported local tools', () => {
   assert.deepEqual(commands.parseSlashCommand('/tree src'), { tool: 'directory_tree', args: { path: 'src', maxDepth: 4, maxEntries: 500 } });
   assert.deepEqual(commands.parseSlashCommand('/cat src/index.js'), { tool: 'read_file', args: { path: 'src/index.js' } });
   assert.deepEqual(commands.parseSlashCommand('/tests'), { tool: 'run_tests', args: {} });
@@ -28,7 +28,7 @@ test('additional Codex-style aliases map to supported local tools', () => {
 
 test('workspace and coding mode are app-owned special commands', () => {
   assert.equal(commands.parseSlashCommand('/workspace').special, 'workspace');
-  assert.equal(commands.parseSlashCommand('/codex').special, 'coding_mode');
+  assert.equal(commands.parseSlashCommand('/tools').special, 'coding_mode');
   assert.equal(commands.parseSlashCommand('/plan make a small feature').special, 'plan_mode');
   assert.equal(commands.parseSlashCommand('/review').special, 'review_mode');
   assert.ok(commands.HELP.includes('/exec'));
