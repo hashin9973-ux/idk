@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Constrained Chrome/Edge Native Messaging host for the Windows Bridge prototype."""
 from __future__ import annotations
-import itertools, json, os, re, shutil, signal, struct, subprocess, sys, threading, time, uuid
+import itertools, json, os, re, shutil, signal, stat, struct, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Any
 
@@ -136,6 +136,132 @@ def _write_file(root: Path, task: dict[str, Any]) -> dict[str, Any]:
             pass
         raise BridgeError("cannot write file") from exc
     return {"path": target.relative_to(root).as_posix(), "bytes_written": len(encoded)}
+
+def _write_files(root: Path, task: dict[str, Any]) -> dict[str, Any]:
+    """Validate and stage a bounded multi-file write before changing any target."""
+    _strict_keys(task, {"version", "id", "op", "approved", "files"})
+    _approved(task)
+    items = task.get("files")
+    if not isinstance(items, list) or not 1 <= len(items) <= 20:
+        raise BridgeError("files must be an array containing 1 to 20 file objects")
+
+    plans: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    # Complete validation before staging or changing any target.
+    for item in items:
+        if not isinstance(item, dict) or set(item) != {"path", "content"}:
+            raise BridgeError("each file entry must contain only path and content")
+        target = _relative_path(root, item.get("path"), allow_dot=False)
+        relative = target.relative_to(root).as_posix()
+        if relative in seen:
+            raise BridgeError("duplicate target path in batch: " + relative)
+        seen.add(relative)
+        content = item.get("content")
+        if not isinstance(content, str):
+            raise BridgeError("content for " + relative + " must be a string")
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_FILE_BYTES:
+            raise BridgeError("content for " + relative + " exceeds 256 KiB")
+        total_bytes += len(encoded)
+        if total_bytes > MAX_MESSAGE_BYTES // 2:
+            raise BridgeError("combined file contents exceed 512 KiB")
+        if not target.parent.exists() or not target.parent.is_dir():
+            raise BridgeError("parent directory for " + relative + " must already exist")
+        existed = target.exists()
+        original = None
+        mode = None
+        if existed:
+            if not target.is_file():
+                raise BridgeError("target " + relative + " exists and is not a regular file")
+            metadata = target.stat()
+            if metadata.st_size > MAX_FILE_BYTES:
+                raise BridgeError("existing target " + relative + " exceeds 256 KiB; batch overwrite is refused")
+            original = target.read_bytes()
+            mode = stat.S_IMODE(metadata.st_mode)
+        plans.append({
+            "path": relative, "target": target, "content": encoded,
+            "existed": existed, "original": original, "mode": mode,
+            "temp": None, "backup": None, "applied": False,
+        })
+
+    def write_temp(path: Path, content: bytes, mode: int | None) -> None:
+        with path.open("xb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if mode is not None:
+            os.chmod(path, mode)
+
+    # Prepare every replacement and every rollback copy before the first replace.
+    try:
+        for plan in plans:
+            target = plan["target"]
+            token = uuid.uuid4().hex
+            temp = target.with_name("." + target.name + ".redbridge-" + token + ".tmp")
+            plan["temp"] = temp
+            write_temp(temp, plan["content"], plan["mode"])
+            if plan["existed"]:
+                backup = target.with_name("." + target.name + ".redbridge-" + token + ".bak")
+                plan["backup"] = backup
+                write_temp(backup, plan["original"], plan["mode"])
+    except OSError as exc:
+        for plan in plans:
+            for key in ("temp", "backup"):
+                path = plan.get(key)
+                if path is not None:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        raise BridgeError("could not stage the file batch; no target files were intentionally changed") from exc
+
+    try:
+        for plan in plans:
+            os.replace(plan["temp"], plan["target"])
+            plan["applied"] = True
+    except OSError as exc:
+        rollback_errors = []
+        for plan in reversed(plans):
+            if not plan["applied"]:
+                continue
+            try:
+                if plan["existed"] and plan["backup"] is not None:
+                    os.replace(plan["backup"], plan["target"])
+                    plan["backup"] = None
+                else:
+                    plan["target"].unlink(missing_ok=True)
+            except OSError:
+                backup_path = plan.get("backup")
+                rollback_errors.append(plan["path"] + ((" (backup: " + str(backup_path) + ")") if backup_path else ""))
+        for plan in plans:
+            for key in ("temp", "backup"):
+                path = plan.get(key)
+                if path is not None:
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+        message = "batch write failed; rollback was attempted for applied files"
+        if rollback_errors:
+            message += "; manual recovery may be needed for: " + ", ".join(rollback_errors)
+        raise BridgeError(message) from exc
+    else:
+        for plan in plans:
+            backup = plan.get("backup")
+            if backup is not None:
+                try:
+                    backup.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    return {
+        "count": len(plans),
+        "bytes_written": total_bytes,
+        "files": [{"path": p["path"], "bytes_written": len(p["content"]), "created": not p["existed"]} for p in plans],
+        "rollback": "not needed",
+    }
+
 
 def _capture(pipe: Any, sink: list[bytes], cap: int) -> None:
     kept = 0
@@ -281,7 +407,7 @@ def execute(task: Any) -> dict[str, Any]:
                 "host": HOST_NAME,
                 "status": "ready",
                 "protocol_version": PROTOCOL_VERSION,
-                "operations": ["health", "list_files", "read_file", "write_file", "run_pytest", "run_process"],
+                "operations": ["health", "list_files", "read_file", "write_file", "write_files", "run_pytest", "run_process"],
                 "limits": {
                     "max_request_bytes": MAX_MESSAGE_BYTES,
                     "max_file_bytes": MAX_FILE_BYTES,
@@ -292,7 +418,7 @@ def execute(task: Any) -> dict[str, Any]:
             }
         else:
             handlers = {"list_files": _list_files, "read_file": _read_file,
-                        "write_file": _write_file, "run_pytest": _run_pytest, "run_process": _run_process}
+                        "write_file": _write_file, "write_files": _write_files, "run_pytest": _run_pytest, "run_process": _run_process}
             handler = handlers.get(operation)
             if handler is None:
                 raise BridgeError("unsupported operation")
