@@ -335,6 +335,16 @@ function createMainWindow() {
 
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAlwaysOnTop(true);
+  mainWindow.on('close', () => {
+    // Flush bounds immediately; the debounced move timer is cleared on quit.
+    if (!collapsed && mainWindow && !mainWindow.isDestroyed()) {
+      const [width, height] = mainWindow.getSize();
+      const [x, y] = mainWindow.getPosition();
+      settings.bounds = { x, y, width, height };
+      clearTimeout(saveTimer);
+      persistSettings();
+    }
+  });
   mainWindow.on('resize', updateChatBounds);
   mainWindow.on('move', () => {
     if (!collapsed && mainWindow && !mainWindow.isDestroyed()) {
