@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Constrained Chrome/Edge Native Messaging host for the Windows Bridge prototype."""
 from __future__ import annotations
-import itertools, json, os, struct, subprocess, sys, threading, time, uuid
+import itertools, json, os, shutil, signal, struct, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Any
 
@@ -148,29 +148,26 @@ def _capture(pipe: Any, sink: list[bytes], cap: int) -> None:
             sink.append(piece)
             kept += len(piece)
 
-def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
-    _strict_keys(task, {"version", "id", "op", "approved", "test_path"})
-    _approved(task)
-    test_path = task.get("test_path", ".")
-    relative = _relative_path(root, test_path)
-    if not relative.exists() or not (relative.is_file() or relative.is_dir()):
-        raise BridgeError("test_path must identify an existing file or directory")
-    args = [sys.executable, "-m", "pytest", "-q"]
-    if relative != root:
-        args.append(str(relative.relative_to(root)))
+def _run_command(command: list[str], cwd: Path, timeout_seconds: int) -> dict[str, Any]:
+    kwargs = {
+        "cwd": str(cwd), "stdin": subprocess.DEVNULL, "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE, "shell": False, "text": False,
+        "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    }
+    if os.name != "nt":
+        kwargs["start_new_session"] = True
     try:
-        proc = subprocess.Popen(args, cwd=str(root), stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=False, text=False,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        proc = subprocess.Popen(command, **kwargs)
     except OSError as exc:
-        raise BridgeError("could not start pytest; check Python and pytest installation") from exc
+        raise BridgeError("could not start the requested process; check executable and permissions") from exc
     out, err = [], []
     t1 = threading.Thread(target=_capture, args=(proc.stdout, out, MAX_OUTPUT_BYTES + 1), daemon=True)
     t2 = threading.Thread(target=_capture, args=(proc.stderr, err, MAX_OUTPUT_BYTES + 1), daemon=True)
-    t1.start(); t2.start()
+    t1.start()
+    t2.start()
     timed_out = False
     try:
-        exit_code = proc.wait(timeout=TEST_TIMEOUT_SECONDS)
+        exit_code = proc.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         timed_out = True
         if os.name == "nt":
@@ -182,17 +179,86 @@ def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
                 )
             except (OSError, subprocess.TimeoutExpired):
                 pass
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
         if proc.poll() is None:
             proc.kill()
-        exit_code = proc.wait()
-    t1.join(timeout=5); t2.join(timeout=5)
+        try:
+            exit_code = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            exit_code = proc.wait()
+    t1.join(timeout=5)
+    t2.join(timeout=5)
     out_text = b"".join(out).decode("utf-8", errors="replace")
     err_text = b"".join(err).decode("utf-8", errors="replace")
     return {
-        "exit_code": exit_code, "timed_out": timed_out, "timeout_seconds": TEST_TIMEOUT_SECONDS,
-        "stdout": _truncate(out_text), "stderr": _truncate(err_text),
-        "command": ["python", "-m", "pytest", "-q"] + ([test_path] if relative != root else [])
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "timeout_seconds": timeout_seconds,
+        "stdout": _truncate(out_text),
+        "stderr": _truncate(err_text),
+        "command": command,
     }
+
+def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
+    _strict_keys(task, {"version", "id", "op", "approved", "test_path"})
+    _approved(task)
+    test_path = task.get("test_path", ".")
+    relative = _relative_path(root, test_path)
+    if not relative.exists() or not (relative.is_file() or relative.is_dir()):
+        raise BridgeError("test_path must identify an existing file or directory")
+    command = [sys.executable, "-m", "pytest", "-q"]
+    if relative != root:
+        command.append(str(relative.relative_to(root)))
+    result = _run_command(command, root, TEST_TIMEOUT_SECONDS)
+    result["command"] = ["python", "-m", "pytest", "-q"] + ([test_path] if relative != root else [])
+    return result
+
+def _run_process(root: Path, task: dict[str, Any]) -> dict[str, Any]:
+    _strict_keys(task, {"version", "id", "op", "approved", "executable", "args", "cwd", "timeout_seconds"})
+    _approved(task)
+    executable = task.get("executable")
+    if not isinstance(executable, str) or not executable.strip() or len(executable) > 2048 or "\\x00" in executable:
+        raise BridgeError("executable must be a non-empty path or program name")
+    args = task.get("args", [])
+    if not isinstance(args, list) or len(args) > 128 or any(not isinstance(arg, str) or "\\x00" in arg or len(arg) > 8192 for arg in args):
+        raise BridgeError("args must be an array of at most 128 strings; each string is limited to 8192 characters")
+    total_arg_bytes = len(executable.encode("utf-8")) + sum(len(arg.encode("utf-8")) for arg in args)
+    if total_arg_bytes > 65536:
+        raise BridgeError("combined executable and arguments exceed 64 KiB")
+    timeout = task.get("timeout_seconds", TEST_TIMEOUT_SECONDS)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= TEST_TIMEOUT_SECONDS:
+        raise BridgeError("timeout_seconds must be an integer between 1 and 120")
+    cwd_raw = task.get("cwd", ".")
+    cwd = _relative_path(root, cwd_raw)
+    if not cwd.exists() or not cwd.is_dir():
+        raise BridgeError("cwd must be an existing directory inside the configured workspace")
+
+    candidate = Path(executable).expanduser()
+    if candidate.is_absolute():
+        resolved_executable = candidate.resolve()
+        if not resolved_executable.is_file():
+            raise BridgeError("executable path does not identify a file")
+        program = str(resolved_executable)
+    elif "/" in executable or "\\\\" in executable:
+        resolved_executable = _relative_path(root, executable, allow_dot=False)
+        if not resolved_executable.is_file():
+            raise BridgeError("relative executable path does not identify a file in the workspace")
+        program = str(resolved_executable)
+    else:
+        found = shutil.which(executable)
+        if not found:
+            raise BridgeError("executable was not found on PATH; use an absolute path if appropriate")
+        program = str(Path(found).resolve())
+
+    command = [program, *args]
+    result = _run_command(command, cwd, timeout)
+    result["cwd"] = cwd.relative_to(root).as_posix() or "."
+    return result
 
 def execute(task: Any) -> dict[str, Any]:
     start = time.monotonic()
@@ -215,7 +281,7 @@ def execute(task: Any) -> dict[str, Any]:
             data = {"host": HOST_NAME, "status": "ready"}
         else:
             handlers = {"list_files": _list_files, "read_file": _read_file,
-                        "write_file": _write_file, "run_pytest": _run_pytest}
+                        "write_file": _write_file, "run_pytest": _run_pytest, "run_process": _run_process}
             handler = handlers.get(operation)
             if handler is None:
                 raise BridgeError("unsupported operation")
