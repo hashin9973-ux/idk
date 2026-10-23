@@ -14,7 +14,7 @@
 
 The bridge never concatenates a model-produced command string or launches a process with shell=True. Alongside health, list_files, read_file, write_file, and run_pytest, the host supports run_process: a user-approved executable plus an array of argument strings. The selected working directory must remain inside the configured workspace. Process duration and retained stdout/stderr are bounded, and timed-out process trees are terminated where supported.
 
-This is still powerful: an approved executable can itself be a shell or script interpreter, and its arguments can execute code. The extension displays the executable and arguments for review, but the user must inspect them carefully. Use a disposable workspace and do not approve opaque or unexpected tasks. run_pytest is a convenience operation for Python test runs.
+This is still powerful: an approved executable can itself be a shell or script interpreter, and its arguments can execute code. The process runs with the current Windows user's permissions and is not sandboxed to the configured workspace; it may read or change files elsewhere. Only the process working directory is constrained. The extension displays the executable and arguments for review, but the user must inspect them carefully. Use a disposable workspace and do not approve opaque or unexpected tasks. run_pytest is a convenience operation for Python test runs.
 
 ## Local setup
 
