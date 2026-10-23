@@ -12,8 +12,10 @@ function clampRectToWorkArea(bounds, workArea, minWidth = 360, minHeight = 480) 
   const workY = numberOr(workArea.y, 0);
   const workWidth = Math.max(1, numberOr(workArea.width, 1));
   const workHeight = Math.max(1, numberOr(workArea.height, 1));
-  const wantedWidth = Math.max(minWidth, numberOr(bounds.width, 460));
-  const wantedHeight = Math.max(minHeight, numberOr(bounds.height, 720));
+  const requestedWidth = numberOr(bounds.width, 460);
+  const requestedHeight = numberOr(bounds.height, 720);
+  const wantedWidth = Math.max(minWidth, requestedWidth > 0 ? requestedWidth : 460);
+  const wantedHeight = Math.max(minHeight, requestedHeight > 0 ? requestedHeight : 720);
   const width = Math.min(wantedWidth, workWidth);
   const height = Math.min(wantedHeight, workHeight);
   const x = clamp(numberOr(bounds.x, workX), workX, workX + workWidth - width);
