@@ -47,7 +47,12 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (!OAUTH_CLIENT_ID_PATTERN.test(clientId)) {
       throw new Error('Enter a valid GitHub OAuth App client ID (10–100 letters, numbers, dots, underscores, or hyphens).');
     }
-    githubSettings().clientId = clientId;
+    const entry = githubSettings();
+    if (entry.clientId !== clientId) {
+      delete entry.encryptedToken;
+      pendingDevice = null;
+    }
+    entry.clientId = clientId;
     persistSettings();
     return { configured: true, clientId };
   }
@@ -195,6 +200,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (args.query !== undefined && (!args.query || typeof args.query !== 'object' || Array.isArray(args.query))) {
       throw new Error('query must be a JSON object.');
     }
+    if (method === 'GET' && args.body !== undefined) throw new Error('GET requests must not include a body.');
     const token = getToken();
     if (!token) throw new Error('Sign in to GitHub from the app Accounts dialog before using github_api.');
     const url = new URL('https://api.github.com' + apiPath);
