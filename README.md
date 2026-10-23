@@ -6,7 +6,7 @@ A prototype extension and Windows companion for an existing ChatGPT conversation
 
 - Chrome / Edge Manifest V3 extension that detects a redbridge code block in an assistant response.
 - Native Messaging host implemented in Python.
-- Operations: health, list_files, read_file, write_file, run_pytest.
+- Operations: health, list_files, read_file, write_file, run_pytest, and run_process.
 - Workspace-root path validation, strict request fields, file and message size limits, bounded listing/output, test timeout.
 - Local task execution results can be inserted into the ChatGPT composer; the user submits them manually.
 - A GitHub Actions workflow is included for Linux and Windows validation.
@@ -58,6 +58,12 @@ Run pytest in a disposable workspace:
 
 ```redbridge
 {"version":1,"op":"run_pytest","test_path":"tests"}
+```
+
+Run a reviewed process with argument-array semantics:
+
+```redbridge
+{"version":1,"op":"run_process","executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}
 ```
 
 See docs/protocol.md for exact limits and response semantics.
