@@ -388,8 +388,15 @@ function createMainWindow() {
 
 function configureRemoteSession() {
   chatSession = session.fromPartition(SESSION_PARTITION);
-  chatSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
-  chatSession.setPermissionCheckHandler(() => false);
+  // Let normal ChatGPT copy buttons write sanitized text to the clipboard, but
+  // deny clipboard reads and all unrelated permissions (camera, mic, location, etc.).
+  const allowedPermissions = new Set(['clipboard-sanitized-write']);
+  chatSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(allowedPermissions.has(permission));
+  });
+  chatSession.setPermissionCheckHandler((_webContents, permission) => {
+    return allowedPermissions.has(permission);
+  });
 }
 
 function registerHotkey() {
