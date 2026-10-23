@@ -52,6 +52,15 @@ function loadSettings() {
   }
 }
 
+function persistSettings() {
+  try {
+    fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true });
+    fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+  } catch (error) {
+    console.error('Could not save overlay settings:', error.message);
+  }
+}
+
 function saveSettingsSoon() {
   if (!mainWindow || collapsed || mainWindow.isDestroyed()) return;
   clearTimeout(saveTimer);
@@ -61,8 +70,7 @@ function saveSettingsSoon() {
       const [width, height] = mainWindow.getSize();
       const [x, y] = mainWindow.getPosition();
       settings.bounds = { x, y, width, height };
-      fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true });
-      fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+      persistSettings();
     } catch (error) {
       console.error('Could not save overlay position:', error.message);
     }
@@ -178,6 +186,8 @@ function collapseWindow() {
   const [width, height] = mainWindow.getSize();
   const [x, y] = mainWindow.getPosition();
   settings.bounds = { x, y, width, height };
+  clearTimeout(saveTimer);
+  persistSettings();
 
   const bubbleX = x + width - COLLAPSED_SIZE;
   const bubbleY = y + height - COLLAPSED_SIZE;
@@ -298,6 +308,8 @@ function createMainWindow() {
     backgroundColor: '#00000000',
     hasShadow: true,
     resizable: true,
+    minWidth: 360,
+    minHeight: 480,
     minimizable: true,
     maximizable: false,
     movable: true,
