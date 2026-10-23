@@ -1,31 +1,37 @@
 'use strict';
 
 const TOOL_NAMES = new Set([
-  'get_capabilities','project_status','list_dir','glob_file_search','read_file','search',
-  'git_status','git_diff','init','write_file','apply_patch','shell','run_tests','update_plan'
+  'get_capabilities','project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search',
+  'git_status','git_diff','git_log','git_show','git_branches','git_changed_files','discover_instructions',
+  'init','write_file','apply_patch','create_directory','move_path','delete_path',
+  'git_create_branch','git_switch_branch','git_commit','shell','run_tests','update_plan',
+  'github_status','github_api'
 ]);
 
 const HELP = [
   'Local workspace commands:',
   '/status or /pwd — inspect the selected project and Git state',
+  '/env — show non-secret machine and runtime information',
   '/init — create AGENTS.md without overwriting one',
-  '/ls [path] or /tree [path] — list workspace files',
-  '/find <glob> — find files, e.g. /find src/**/*.js',
-  '/read <path> — read a UTF-8 text file',
-  '/search or /grep <text> — search project contents',
-  '/git — show Git status',
-  '/diff [path ...] — show tracked changes',
-  '/test or /tests — run the detected test command (approval required)',
+  '/ls [path] or /tree [path] — list files; /find <glob> — find files',
+  '/read <path> — read a UTF-8 text file; /info <path> — file metadata',
+  '/search <text> — search project contents; /instructions [paths] — find AGENTS.md guidance',
+  '/git — show Git status; /diff [path ...] — show changes; /log [path] — recent history',
+  '/branches — list branches; /changed — list changed files including untracked files',
+  '/mkdir <path> — create a directory; /mv <source> <destination> — move a file or directory',
+  '/rm <path> — delete a file or an empty directory; /branch <name> — create a branch',
+  '/switch <name> — switch branch; /commit <message> — commit staged changes or selected paths',
+  '/test [command] — run the detected tests or an explicit test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
+  '/github — check GitHub login status',
   '/workspace — select the project folder',
-  '/codex — tell ChatGPT to use this app as its local coding-tool backend',
-  '/plan [task] — ask ChatGPT to plan the task using local tools',
-  '/review — ask ChatGPT to inspect current changes with local tools',
+  '/codex — enable this local coding-tool protocol for the current ChatGPT conversation',
+  '/plan [task] — ask ChatGPT to plan using local tools; /review — inspect current changes',
   '/help — show this list',
   '',
-  'ChatGPT tool call format: a fenced assistant_tool block containing {"tool":"read_file","args":{"path":"src/index.js"}}.',
-  'File edits, patches, tests and shell commands require your approval.'
-].join('\n');
+  'ChatGPT tool calls use a fenced assistant_tool block with a JSON object.',
+  'Supported tools are discoverable with get_capabilities. Writes, deletes, commands, tests, commits and GitHub writes require approval.'
+].join('\\n');
 
 function splitArgs(text) {
   const result = [];
@@ -46,32 +52,37 @@ function parseSlashCommand(text) {
   const name = match[1].toLowerCase();
   const rest = (match[2] || '').trim();
   const words = splitArgs(rest);
+  const need = (usage) => ({ error: 'Usage: ' + usage });
   switch (name) {
     case 'help': return { special: 'help', text: HELP };
     case 'workspace': return { special: 'workspace' };
     case 'codex': return { special: 'coding_mode' };
     case 'plan': return { special: 'plan_mode', task: rest };
     case 'review': return { special: 'review_mode' };
-    case 'status':
-    case 'pwd': return { tool: 'project_status', args: {} };
+    case 'status': case 'pwd': return { tool: 'project_status', args: {} };
+    case 'env': return { tool: 'environment_info', args: {} };
     case 'init': return { tool: 'init', args: {} };
-    case 'ls':
-    case 'list':
-    case 'tree': return { tool: 'list_dir', args: { path: words.length ? words.join(' ') : '.' } };
-    case 'find':
-    case 'glob': return rest ? { tool: 'glob_file_search', args: { pattern: words.join(' ') } } : { error: 'Usage: /find <glob>, for example /find src/**/*.js' };
-    case 'read':
-    case 'cat': return rest ? { tool: 'read_file', args: { path: words.join(' ') } } : { error: 'Usage: /read <relative-path>' };
-    case 'search':
-    case 'grep': return rest ? { tool: 'search', args: { query: words.join(' ') } } : { error: 'Usage: /search <text>' };
+    case 'ls': case 'list': return { tool: 'list_dir', args: { path: words.length ? words.join(' ') : '.' } };
+    case 'tree': return { tool: 'directory_tree', args: { path: words[0] || '.', maxDepth: 4, maxEntries: 500 } };
+    case 'find': case 'glob': return rest ? { tool: 'glob_file_search', args: { pattern: words.join(' ') } } : need('/find <glob>');
+    case 'read': case 'cat': return rest ? { tool: 'read_file', args: { path: words.join(' ') } } : need('/read <relative-path>');
+    case 'info': return rest ? { tool: 'file_info', args: { path: words.join(' ') } } : need('/info <path>');
+    case 'search': case 'grep': return rest ? { tool: 'search', args: { query: words.join(' ') } } : need('/search <text>');
+    case 'instructions': return { tool: 'discover_instructions', args: words.length ? { paths: words } : {} };
     case 'git': return { tool: 'git_status', args: {} };
     case 'diff': return { tool: 'git_diff', args: words.length ? { paths: words } : {} };
-    case 'test':
-    case 'tests': return { tool: 'run_tests', args: {} };
-    case 'exec': return rest ? { tool: 'shell', args: { command: rest } } : { error: 'Usage: /exec <PowerShell command>' };
-    case 'write':
-      if (!rest) return { error: 'Usage: /write <relative-path> then a newline, then file contents. For larger edits, use an assistant_tool apply_patch call.' };
-      return { error: 'For file creation use a ChatGPT assistant_tool call with tool=write_file and args.path/content; direct /write is intentionally disabled to prevent accidental overwrites.' };
+    case 'log': return { tool: 'git_log', args: words.length ? { path: words.join(' ') } : { maxCount: 20 } };
+    case 'branches': return { tool: 'git_branches', args: {} };
+    case 'changed': return { tool: 'git_changed_files', args: {} };
+    case 'mkdir': return rest ? { tool: 'create_directory', args: { path: words.join(' '), recursive: true } } : need('/mkdir <path>');
+    case 'mv': return words.length === 2 ? { tool: 'move_path', args: { source: words[0], destination: words[1] } } : need('/mv <source> <destination>');
+    case 'rm': return rest ? { tool: 'delete_path', args: { path: words.join(' ') } } : need('/rm <path>');
+    case 'branch': return words.length === 1 ? { tool: 'git_create_branch', args: { name: words[0] } } : need('/branch <name>');
+    case 'switch': return words.length === 1 ? { tool: 'git_switch_branch', args: { name: words[0] } } : need('/switch <name>');
+    case 'commit': return rest ? { tool: 'git_commit', args: { message: rest } } : need('/commit <message>');
+    case 'test': case 'tests': return { tool: 'run_tests', args: rest ? { command: rest } : {} };
+    case 'exec': return rest ? { tool: 'shell', args: { command: rest } } : need('/exec <PowerShell command>');
+    case 'github': return { tool: 'github_status', args: {} };
     default: return null;
   }
 }
