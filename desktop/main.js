@@ -1,5 +1,6 @@
 const path = require('node:path');
 const fs = require('node:fs');
+const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
 const {
   app,
   BrowserWindow,
