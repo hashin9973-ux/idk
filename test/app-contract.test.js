@@ -71,6 +71,18 @@ test('remote session allows sanitized clipboard write only', () => {
   assert.ok(main.includes('return allowedPermissions.has(permission)'));
 });
 
+test('desktop app wires the local tool bridge into the ChatGPT view', () => {
+  const main = read('desktop', 'main.js');
+  const bridge = read('desktop', 'tool-bridge.js');
+  assert.ok(main.includes("require('./tool-runner')"));
+  assert.ok(main.includes("require('./tool-bridge')"));
+  assert.ok(main.includes("String(targetUrl).startsWith('assistant-tool:')"));
+  assert.ok(main.includes("toolBridge.installChatToolBridge()"));
+  assert.ok(bridge.includes("language-assistant_tool"));
+  assert.ok(bridge.includes("toolCallArmed = false"));
+  assert.ok(bridge.includes("break; // One app tool call per assistant response"));
+});
+
 test('collapsing releases focus so the previous app can remain active', () => {
   const main = read('desktop', 'main.js');
   const toggle = main.slice(main.indexOf('function toggleOverlay()'), main.indexOf('function assertLocalUi'));
