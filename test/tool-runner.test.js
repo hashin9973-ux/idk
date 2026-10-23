@@ -62,6 +62,8 @@ test('secret-like files require explicit approval before reading', async () => {
     await assert.rejects(tools.executeTool(root, 'read_file', { path: '.env' }), /explicit approval/);
     const approved = await tools.executeTool(root, 'read_file', { path: '.env', approved: true });
     assert.match(approved.content, /TOKEN=/);
+    assert.equal(tools.getToolPolicy('read_file', { path: '.npmrc' }).requiresApproval, true);
+    await assert.rejects(tools.executeTool(root, 'read_file', { path: '.npmrc' }), /explicit approval/);
   } finally { cleanup(root); }
 });
 
@@ -89,6 +91,7 @@ test('search skips secret-like files but still searches hidden project metadata'
     fs.mkdirSync(path.join(root, '.github', 'workflows'), { recursive: true });
     fs.writeFileSync(path.join(root, '.github', 'workflows', 'ci.yml'), 'name: build\n', 'utf8');
     fs.writeFileSync(path.join(root, '.env'), 'API_TOKEN=hidden-value\n', 'utf8');
+    fs.writeFileSync(path.join(root, '.npmrc'), '//registry.npmjs.org/:_authToken=fake-token\n', 'utf8');
     const search = await tools.executeTool(root, 'search', { query: 'hidden-value' });
     assert.equal(search.count, 0);
     const glob = await tools.executeTool(root, 'glob_file_search', { pattern: '.github/**/*.yml' });
