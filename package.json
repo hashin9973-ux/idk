@@ -28,7 +28,8 @@
     },
     "files": [
       "desktop/**/*",
-      "package.json"
+      "package.json",
+      "LICENSE"
     ],
     "win": {
       "target": [
