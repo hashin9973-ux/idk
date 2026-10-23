@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
+const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const {
   app,
@@ -12,7 +13,8 @@ const {
   ipcMain,
   globalShortcut,
   shell,
-  dialog
+  dialog,
+  safeStorage
 } = require('electron');
 
 const CHATGPT_URL = 'https://chatgpt.com/';
@@ -42,6 +44,7 @@ let collapsed = false;
 let settings = {};
 let saveTimer = null;
 let toolBridge = null;
+let githubAuth = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -323,6 +326,8 @@ function assertLocalUi(event) {
   }
 }
 
+function getChatViewForIpc() { return chatView; }
+
 function registerIpc() {
   ipcMain.handle('overlay:collapse', (event) => {
     assertLocalUi(event);
@@ -356,6 +361,41 @@ function registerIpc() {
   ipcMain.handle('overlay:get-workspace', (event) => {
     assertLocalUi(event);
     return { workspaceRoot: getWorkspaceRoot(), initialized: Boolean(toolBridge) };
+  });
+
+  ipcMain.handle('overlay:open-chatgpt-login', (event) => {
+    assertLocalUi(event);
+    const view = getChatViewForIpc();
+    if (!view || view.webContents.isDestroyed()) throw new Error('ChatGPT view is unavailable.');
+    view.webContents.loadURL('https://chatgpt.com/auth/login').catch(error => console.error('Could not open ChatGPT sign-in:', error.message));
+    return { opened: true };
+  });
+  ipcMain.handle('overlay:github-state', async (event) => {
+    assertLocalUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.getState();
+  });
+  ipcMain.handle('overlay:github-set-client-id', (event, clientId) => {
+    assertLocalUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.setClientId(clientId);
+  });
+  ipcMain.handle('overlay:github-start-login', async (event) => {
+    assertLocalUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    const result = await githubAuth.startLogin();
+    openExternalHttps(result.verificationUrl);
+    return result;
+  });
+  ipcMain.handle('overlay:github-poll-login', async (event) => {
+    assertLocalUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.pollLogin();
+  });
+  ipcMain.handle('overlay:github-logout', (event) => {
+    assertLocalUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.logout();
   });
 }
 
@@ -516,13 +556,19 @@ if (!hasInstanceLock) {
     settings = loadSettings();
     ensureWorkspaceRoot();
     configureRemoteSession();
+    githubAuth = createGitHubAuth({
+      safeStorage,
+      getSettings: () => settings,
+      persistSettings
+    });
     toolBridge = createToolBridge({
       dialog,
       getMainWindow: () => mainWindow,
       getChatView: () => chatView,
       getWorkspaceRoot,
       selectWorkspace,
-      localTools
+      localTools,
+      githubAuth
     });
     registerIpc();
     createMainWindow();
