@@ -18,7 +18,7 @@ The content script detects a redbridge code fence in an assistant message. The u
 
     {"version":1,"op":"run_process","executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}
 
-Put one request in a fenced code block marked redbridge. After an operation, Insert result into ChatGPT inserts the structured report into the composer. The user must review and submit it manually.
+Put one request in a fenced code block marked redbridge. After an operation, Insert result into ChatGPT inserts the structured report into the composer. By default, the user reviews and submits it manually. In the toolbar popup, the optional Auto-submit execution reports to ChatGPT setting submits a returned report automatically only when the composer is empty. It never approves the next Windows task.
 
 write_files applies a reviewed batch of up to 20 files (512 KiB combined content maximum); the companion stages files first and attempts rollback if a replacement fails. A batch is not a filesystem-atomic transaction.
 
