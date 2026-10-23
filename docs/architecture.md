@@ -7,7 +7,7 @@
 3. The user reviews the JSON and clicks Execute on Windows. No task executes merely because text appeared in a conversation.
 4. The extension service worker calls the registered Chrome/Edge Native Messaging host.
 5. The Python companion validates the schema and performs one supported operation inside the configured workspace.
-6. The companion returns a structured result. The extension displays it and offers Insert result into ChatGPT. The user reviews and submits the report; the extension does not auto-send messages.
+6. The companion returns a structured result. The extension displays it and offers Insert result into ChatGPT. By default, the user reviews and submits the report. An opt-in popup setting can auto-submit a returned report when the composer is empty; it never approves the next Windows task.
 7. ChatGPT can then reason from the actual result and request another iteration.
 
 ## Process execution model
@@ -28,7 +28,7 @@ See windows/README.md and run windows/install.ps1 from a PowerShell terminal aft
 - Unknown operations and extra keys are rejected.
 - Task and file sizes are bounded; test runtime and retained output are bounded.
 - Workspace reads/writes, test execution, and process launches require a visible user gesture in the extension.
-- The extension inserts results into the composer but does not automatically submit them.
+- The extension inserts results into the composer by default; optional auto-submit is off by default, skips non-empty drafts, and never approves the next task.
 - The companion uses no GitHub token and never treats a public GitHub repo as an executable command queue.
 - Initial support is text-file oriented; do not use it for secrets or sensitive workspaces.
 
