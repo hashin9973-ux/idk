@@ -215,17 +215,16 @@ def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     if relative != root:
         command.append(str(relative.relative_to(root)))
     result = _run_command(command, root, TEST_TIMEOUT_SECONDS)
-    result["command"] = ["python", "-m", "pytest", "-q"] + ([test_path] if relative != root else [])
     return result
 
 def _run_process(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     _strict_keys(task, {"version", "id", "op", "approved", "executable", "args", "cwd", "timeout_seconds"})
     _approved(task)
     executable = task.get("executable")
-    if not isinstance(executable, str) or not executable.strip() or len(executable) > 2048 or "\\x00" in executable:
+    if not isinstance(executable, str) or not executable.strip() or len(executable) > 2048 or "\x00" in executable:
         raise BridgeError("executable must be a non-empty path or program name")
     args = task.get("args", [])
-    if not isinstance(args, list) or len(args) > 128 or any(not isinstance(arg, str) or "\\x00" in arg or len(arg) > 8192 for arg in args):
+    if not isinstance(args, list) or len(args) > 128 or any(not isinstance(arg, str) or "\x00" in arg or len(arg) > 8192 for arg in args):
         raise BridgeError("args must be an array of at most 128 strings; each string is limited to 8192 characters")
     total_arg_bytes = len(executable.encode("utf-8")) + sum(len(arg.encode("utf-8")) for arg in args)
     if total_arg_bytes > 65536:
@@ -244,7 +243,7 @@ def _run_process(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         if not resolved_executable.is_file():
             raise BridgeError("executable path does not identify a file")
         program = str(resolved_executable)
-    elif "/" in executable or "\\\\" in executable:
+    elif "/" in executable or "\\" in executable:
         resolved_executable = _relative_path(root, executable, allow_dot=False)
         if not resolved_executable.is_file():
             raise BridgeError("relative executable path does not identify a file in the workspace")
