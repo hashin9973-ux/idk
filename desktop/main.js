@@ -397,6 +397,23 @@ function configureRemoteSession() {
   chatSession.setPermissionCheckHandler((_webContents, permission) => {
     return allowedPermissions.has(permission);
   });
+  // Keep the normal file-download workflow available in this wrapper. Downloads
+  // from the embedded ChatGPT session use the native Save As dialog; no file is
+  // written to an automatically chosen path without user confirmation.
+  chatSession.on('will-download', (event, item, webContents) => {
+    const source = webContents ? getSafeUrl(webContents.getURL()) : null;
+    if (!source || !isEmbeddedHost(source.hostname)) {
+      item.cancel();
+      return;
+    }
+    const rawName = item.getFilename() || 'ChatGPT-download';
+    const safeName = path.basename(rawName).replace(/[<>:"/\\\\|?*\\x00-\\x1f]/g, '_') || 'ChatGPT-download';
+    item.setSaveDialogOptions({
+      title: 'Save ChatGPT download',
+      buttonLabel: 'Save',
+      defaultPath: path.join(app.getPath('downloads'), safeName)
+    });
+  });
 }
 
 function registerHotkey() {
