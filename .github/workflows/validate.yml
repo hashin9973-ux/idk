@@ -36,7 +36,7 @@ jobs:
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
           if ($pkg.main -ne 'desktop/main.js') { throw 'package.json main must point to desktop/main.js' }
-          if ($pkg.version -ne '0.2.0') { throw 'Unexpected application version.' }
+          if ($pkg.version -ne '0.3.0') { throw 'Unexpected application version.' }
           if (Test-Path 'extension/manifest.json') { throw 'Obsolete browser extension manifest remains in the desktop-only repository.' }
       - name: Build Windows NSIS installer
         run: npm run dist:win
