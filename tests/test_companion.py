@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -78,6 +79,33 @@ class CompanionTests(unittest.TestCase):
     def test_unknown_version_rejected(self):
         result = companion.execute({"version": 2, "op": "health"})
         self.assertFalse(result["ok"])
+
+    def test_run_process_requires_approval(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._run_process(self.root, {
+                "version": 1, "op": "run_process", "executable": sys.executable,
+                "args": ["-c", "print('should not run')"], "cwd": "."
+            })
+
+    def test_run_process_requires_argument_array(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._run_process(self.root, {
+                "version": 1, "op": "run_process", "approved": True,
+                "executable": sys.executable, "args": "print('no shell string')", "cwd": "."
+            })
+
+    def test_run_process_reports_actual_exit_code_and_streams(self):
+        result = companion._run_process(self.root, {
+            "version": 1, "op": "run_process", "approved": True,
+            "executable": sys.executable,
+            "args": ["-c", "import sys; print('bridge stdout'); print('bridge stderr', file=sys.stderr); sys.exit(7)"],
+            "cwd": ".", "timeout_seconds": 10
+        })
+        self.assertEqual(result["exit_code"], 7)
+        self.assertFalse(result["timed_out"])
+        self.assertIn("bridge stdout", result["stdout"])
+        self.assertIn("bridge stderr", result["stderr"])
+        self.assertFalse(result["command"][0] == "python")
 
     def test_missing_config_is_neat_error(self):
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}):
