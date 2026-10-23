@@ -10,9 +10,11 @@
 6. The companion returns a structured result. The extension displays it and offers Insert result into ChatGPT. The user reviews and submits the report; the extension does not auto-send messages.
 7. ChatGPT can then reason from the actual result and request another iteration.
 
-## Why not shell commands?
+## Process execution model
 
-Arbitrary command execution from model-produced text is too broad for an initial bridge. The first host supports only health, list_files, read_file, write_file, and run_pytest. Tests themselves are code execution and therefore still require explicit user approval. run_pytest uses the current Python interpreter and -m pytest, without a shell, and limits duration/output.
+The bridge never concatenates a model-produced command string or launches a process with shell=True. Alongside health, list_files, read_file, write_file, and run_pytest, the host supports run_process: a user-approved executable plus an array of argument strings. The selected working directory must remain inside the configured workspace. Process duration and retained stdout/stderr are bounded, and timed-out process trees are terminated where supported.
+
+This is still powerful: an approved executable can itself be a shell or script interpreter, and its arguments can execute code. The extension displays the executable and arguments for review, but the user must inspect them carefully. Use a disposable workspace and do not approve opaque or unexpected tasks. run_pytest is a convenience operation for Python test runs.
 
 ## Local setup
 
