@@ -101,7 +101,10 @@ def _read_file(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     try:
         if target.stat().st_size > MAX_FILE_BYTES:
             raise BridgeError("file exceeds 256 KiB")
-        content = target.read_text(encoding="utf-8")
+        # newline="" preserves CRLF/LF exactly; normal text-mode universal newline
+        # translation would rewrite a Windows source file on a read/edit/write cycle.
+        with target.open("r", encoding="utf-8", newline="") as stream:
+            content = stream.read()
     except UnicodeDecodeError as exc:
         raise BridgeError("only UTF-8 text files can be read") from exc
     except OSError as exc:
@@ -115,7 +118,10 @@ def _write_file(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     content = task.get("content")
     if not isinstance(content, str):
         raise BridgeError("content must be a string")
-    encoded = content.encode("utf-8")
+    try:
+        encoded = content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise BridgeError("content is not valid UTF-8 text") from exc
     if len(encoded) > MAX_FILE_BYTES:
         raise BridgeError("content exceeds 256 KiB")
     if not target.parent.exists() or not target.parent.is_dir():
