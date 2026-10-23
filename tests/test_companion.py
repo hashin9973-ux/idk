@@ -71,7 +71,7 @@ class CompanionTests(unittest.TestCase):
         with self.assertRaises(companion.BridgeError):
             companion._write_files(self.root, {
                 "version": 1, "op": "write_files", "approved": True,
-                "files": [{"path": "bad.txt", "content": "\\ud800"}]
+                "files": [{"path": "bad.txt", "content": "\ud800"}]
             })
         self.assertFalse((self.root / "bad.txt").exists())
 
