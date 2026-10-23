@@ -25,7 +25,7 @@ const HELP = [
   '/exec <PowerShell command> — run a local command (approval required)',
   '/github — check GitHub login status',
   '/workspace — select the project folder',
-  '/codex — enable this local coding-tool protocol for the current ChatGPT conversation',
+  '/tools — enable this local coding-tool protocol for the current ChatGPT conversation',
   '/plan [task] — ask ChatGPT to plan using local tools; /review — inspect current changes',
   '/help — show this list',
   '',
@@ -56,7 +56,7 @@ function parseSlashCommand(text) {
   switch (name) {
     case 'help': return { special: 'help', text: HELP };
     case 'workspace': return { special: 'workspace' };
-    case 'codex': return { special: 'coding_mode' };
+    case 'tools': return { special: 'coding_mode' };
     case 'plan': return { special: 'plan_mode', task: rest };
     case 'review': return { special: 'review_mode' };
     case 'status': case 'pwd': return { tool: 'project_status', args: {} };
