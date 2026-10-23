@@ -1,4 +1,4 @@
-name: Desktop app validation
+name: Build and publish ChatGPT Assistant for Windows
 
 on:
   push:
@@ -8,12 +8,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: chatgpt-assistant-windows-\${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-package:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,13 +29,35 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Check JavaScript syntax
         run: npm run check
-      - name: Test overlay geometry
+      - name: Run local tool and app tests
         run: npm test
       - name: Validate package metadata
         shell: pwsh
         run: |
           $pkg = Get-Content package.json -Raw | ConvertFrom-Json
           if ($pkg.main -ne 'desktop/main.js') { throw 'package.json main must point to desktop/main.js' }
+          if ($pkg.version -ne '0.2.0') { throw 'Unexpected application version.' }
           if (Test-Path 'extension/manifest.json') { throw 'Obsolete browser extension manifest remains in the desktop-only repository.' }
-      - name: Build unpacked Windows application
-        run: npm run dist:win:dir
+      - name: Build Windows NSIS installer
+        run: npm run dist:win
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatGPT-Assistant-Windows-\${{ github.run_number }}
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish downloadable Windows build
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: win-build-\${{ github.run_number }}-\${{ github.run_attempt }}
+          name: ChatGPT Assistant Windows build \${{ github.run_number }}
+          body: |
+            Automatically built from commit \${{ github.sha }}.
+
+            Download the Windows EXE installer below. This build is unsigned and may trigger a Windows SmartScreen warning. Review the source and build workflow before installing.
+          prerelease: true
+          make_latest: "false"
+          fail_on_unmatched_files: true
+          files: dist/*.exe
