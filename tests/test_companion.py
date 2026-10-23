@@ -80,6 +80,33 @@ class CompanionTests(unittest.TestCase):
         result = companion.execute({"version": 2, "op": "health"})
         self.assertFalse(result["ok"])
 
+    def test_health_advertises_supported_operations(self):
+        result = companion.execute({"version": 1, "op": "health"})
+        self.assertTrue(result["ok"])
+        self.assertIn("run_process", result["data"]["operations"])
+        self.assertLessEqual(result["data"]["limits"]["max_request_bytes"], 1024 * 1024)
+
+    def test_windows_drive_qualified_paths_rejected(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._relative_path(self.root, "C:outside.txt")
+
+    def test_listing_is_bounded(self):
+        for i in range(companion.MAX_LIST_ENTRIES + 3):
+            (self.root / ("entry-" + str(i) + ".txt")).write_text("x", encoding="utf-8")
+        result = companion._list_files(self.root, {
+            "version": 1, "op": "list_files", "approved": True, "path": "."
+        })
+        self.assertEqual(len(result["entries"]), companion.MAX_LIST_ENTRIES)
+        self.assertTrue(result["truncated"])
+
+    def test_process_cannot_change_working_directory_outside_workspace(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._run_process(self.root, {
+                "version": 1, "op": "run_process", "approved": True,
+                "executable": sys.executable, "args": ["--version"],
+                "cwd": "../"
+            })
+
     def test_run_process_requires_approval(self):
         with self.assertRaises(companion.BridgeError):
             companion._run_process(self.root, {
