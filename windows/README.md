@@ -30,7 +30,7 @@ Then reload the extension, refresh ChatGPT, and ask ChatGPT to emit the followin
 
 Place it in a fenced code block marked redbridge. Click Review task, then Execute on Windows. Health is non-destructive and does not require an approval flag.
 
-Next, try {"version":1,"op":"list_files","path":"."}. Workspace file operations, test execution, and process launches require an explicit confirmation dialog. After a result arrives, use Insert result into ChatGPT, then manually submit it to the conversation.
+Next, try {"version":1,"op":"list_files","path":"."}. Workspace file operations, test execution, and process launches require an explicit confirmation dialog. After a result arrives, use Insert result into ChatGPT, then submit it manually. The toolbar popup has an optional Auto-submit execution reports to ChatGPT setting; it submits only if the composer is empty and does not approve follow-up Windows tasks.
 
 ## Supported operations
 
