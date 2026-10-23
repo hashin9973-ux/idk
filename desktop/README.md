@@ -41,3 +41,4 @@ The installer output is written to `dist/`. To create an unpacked Windows app di
 - The overlay does not yet expose local file/process control. This iteration deliberately focuses on the compact assistant UI and reliable ChatGPT session first.
 - The ChatGPT website is not modified by the app; at narrow window sizes it relies on ChatGPT's responsive layout.
 - The embedded session permits sanitized clipboard writes for ChatGPT copy buttons, but denies clipboard reads and other permission requests.
+- Downloads initiated from ChatGPT use a native Save dialog with a sanitized suggested filename. Downloads initiated by a non-ChatGPT top-level page are cancelled.
