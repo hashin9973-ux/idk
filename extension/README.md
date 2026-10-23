@@ -22,6 +22,6 @@ Put one request in a fenced code block marked redbridge. After an operation, Ins
 
 write_files applies a reviewed batch of up to 20 files (512 KiB combined content maximum); the companion stages files first and attempts rollback if a replacement fails. A batch is not a filesystem-atomic transaction.
 
-run_process launches an explicitly approved executable with a list of arguments, without shell-string concatenation. A shell interpreter can still execute commands if you pass those arguments, so review them carefully.
+run_process launches an explicitly approved executable with a list of arguments, without shell-string concatenation. A shell interpreter can still execute commands if you pass those arguments. It runs with the current Windows user's permissions and may access files outside the workspace, so review the command, every argument, and any path carefully.
 
 This first integration intentionally avoids auto-clicking Send. ChatGPT's page DOM is not a stable API and can change. If task detection stops working, inspect selectors in content.js.
