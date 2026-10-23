@@ -1,8 +1,8 @@
 {
   "name": "chatgpt-assistant-overlay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "A compact always-on-top desktop overlay for the real ChatGPT web experience.",
+  "description": "An always-on-top ChatGPT desktop overlay with local Codex-style coding tools.",
   "main": "desktop/main.js",
   "license": "MIT",
   "engines": {
@@ -10,7 +10,7 @@
   },
   "scripts": {
     "start": "electron .",
-    "check": "node --check desktop/main.js && node --check desktop/preload.js && node --check desktop/renderer.js && node --check desktop/geometry.js && node --check test/geometry.test.js && node --check test/app-contract.test.js",
+    "check": "node --check desktop/main.js && node --check desktop/preload.js && node --check desktop/renderer.js && node --check desktop/geometry.js && node --check desktop/tool-runner.js && node --check desktop/command-protocol.js && node --check desktop/tool-bridge.js && node --check test/geometry.test.js && node --check test/app-contract.test.js && node --check test/tool-runner.test.js && node --check test/command-protocol.test.js",
     "dist:win": "electron-builder --win nsis",
     "dist:win:dir": "electron-builder --win --dir",
     "test": "node --test"
