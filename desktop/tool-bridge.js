@@ -232,8 +232,8 @@ function createToolBridge(deps) {
       return;
     }
     if (parsed.special === 'plan_mode') {
-      const goal = parsed.task ? '\\nTask to plan: ' + parsed.task : '';
-      await returnMessageToChat('Create a clear, ordered implementation plan for the user task.' + goal + '\\nUse the local tools when repository context is needed. Keep the plan concise, identify validation steps, and use the update_plan tool to record it. Do not edit files until the plan is presented and the user approves moving into implementation.');
+      const goal = parsed.task ? '\nTask to plan: ' + parsed.task : '';
+      await returnMessageToChat('Create a clear, ordered implementation plan for the user task.' + goal + '\nUse the local tools when repository context is needed. Keep the plan concise, identify validation steps, and use the update_plan tool to record it. Do not edit files until the plan is presented and the user approves moving into implementation.');
       return;
     }
     if (parsed.special === 'review_mode') {
