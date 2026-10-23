@@ -214,6 +214,8 @@ function collapseWindow() {
   const bounds = clampBubble({ x: bubbleX, y: bubbleY });
   mainWindow.setPosition(bounds.x, bounds.y, true);
   sendCollapsedState();
+  // Releasing focus is important when the hotkey is used over a game or another app.
+  if (mainWindow.isFocused()) mainWindow.blur();
 }
 
 function clampBubble(bounds) {
@@ -253,10 +255,15 @@ function toggleOverlay() {
     createMainWindow();
     return;
   }
-  if (collapsed) expandWindow();
-  else collapseWindow();
+  if (collapsed) {
+    expandWindow();
+    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.focus();
+    return;
+  }
+  collapseWindow();
   if (!mainWindow.isVisible()) mainWindow.show();
-  mainWindow.focus();
+  // Do not reclaim focus after collapsing; the previous app should remain usable.
 }
 
 function assertLocalUi(event) {
