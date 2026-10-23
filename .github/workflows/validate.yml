@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chatgpt-assistant-windows-\${{ github.ref }}
+  group: chatgpt-assistant-windows-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ChatGPT-Assistant-Windows-\${{ github.run_number }}
+          name: ChatGPT-Assistant-Windows-${{ github.run_number }}
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 14
@@ -51,10 +51,10 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: win-build-\${{ github.run_number }}-\${{ github.run_attempt }}
-          name: ChatGPT Assistant Windows build \${{ github.run_number }}
+          tag_name: win-build-${{ github.run_number }}-${{ github.run_attempt }}
+          name: ChatGPT Assistant Windows build ${{ github.run_number }}
           body: |
-            Automatically built from commit \${{ github.sha }}.
+            Automatically built from commit ${{ github.sha }}.
 
             Download the Windows EXE installer below. This build is unsigned and may trigger a Windows SmartScreen warning. Review the source and build workflow before installing.
           prerelease: true
