@@ -173,7 +173,17 @@ def _run_pytest(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         exit_code = proc.wait(timeout=TEST_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         timed_out = True
-        proc.kill()
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    shell=False, timeout=5, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if proc.poll() is None:
+            proc.kill()
         exit_code = proc.wait()
     t1.join(timeout=5); t2.join(timeout=5)
     out_text = b"".join(out).decode("utf-8", errors="replace")
