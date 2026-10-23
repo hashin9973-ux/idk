@@ -48,7 +48,25 @@ test('preload exposes only named overlay actions, not general Node access', () =
 test('collapsed resizing relaxes and then restores the minimum window size', () => {
   const main = read('desktop', 'main.js');
   assert.ok(main.includes('mainWindow.setMinimumSize(1, 1)'));
-  assert.ok(main.includes('mainWindow.setMinimumSize(360, 480)'));
+  assert.ok(main.includes('function minimumSizeForBounds(bounds)'));
+  assert.ok(main.includes('mainWindow.setMinimumSize(minimum.width, minimum.height)'));
   assert.ok(main.includes("mainWindow.contentView.removeChildView(chatView)"));
   assert.ok(main.includes("mainWindow.contentView.addChildView(chatView)"));
+});
+
+test('ChatGPT downloads use a user-confirmed Save dialog and sanitized filename', () => {
+  const main = read('desktop', 'main.js');
+  assert.ok(main.includes("chatSession.on('will-download'"));
+  assert.ok(main.includes('item.setSaveDialogOptions('));
+  assert.ok(main.includes("buttonLabel: 'Save'"));
+  assert.ok(main.includes("replace(/[<>:\"|?*]/g, '_')"));
+  assert.ok(main.includes("if (!source || !isEmbeddedHost(source.hostname))"));
+  assert.ok(main.includes('item.cancel()'));
+});
+
+test('remote session allows sanitized clipboard write only', () => {
+  const main = read('desktop', 'main.js');
+  assert.ok(main.includes("new Set(['clipboard-sanitized-write'])"));
+  assert.ok(main.includes('callback(allowedPermissions.has(permission))'));
+  assert.ok(main.includes('return allowedPermissions.has(permission)'));
 });
