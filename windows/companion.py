@@ -154,13 +154,17 @@ def _write_files(root: Path, task: dict[str, Any]) -> dict[str, Any]:
             raise BridgeError("each file entry must contain only path and content")
         target = _relative_path(root, item.get("path"), allow_dot=False)
         relative = target.relative_to(root).as_posix()
-        if relative in seen:
+        identity = relative.casefold() if os.name == "nt" else relative
+        if identity in seen:
             raise BridgeError("duplicate target path in batch: " + relative)
-        seen.add(relative)
+        seen.add(identity)
         content = item.get("content")
         if not isinstance(content, str):
             raise BridgeError("content for " + relative + " must be a string")
-        encoded = content.encode("utf-8")
+        try:
+            encoded = content.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise BridgeError("content for " + relative + " is not valid UTF-8 text") from exc
         if len(encoded) > MAX_FILE_BYTES:
             raise BridgeError("content for " + relative + " exceeds 256 KiB")
         total_bytes += len(encoded)
@@ -222,6 +226,7 @@ def _write_files(root: Path, task: dict[str, Any]) -> dict[str, Any]:
             plan["applied"] = True
     except OSError as exc:
         rollback_errors = []
+        preserve_backups: set[Path] = set()
         for plan in reversed(plans):
             if not plan["applied"]:
                 continue
@@ -233,15 +238,22 @@ def _write_files(root: Path, task: dict[str, Any]) -> dict[str, Any]:
                     plan["target"].unlink(missing_ok=True)
             except OSError:
                 backup_path = plan.get("backup")
-                rollback_errors.append(plan["path"] + ((" (backup: " + str(backup_path) + ")") if backup_path else ""))
+                if backup_path is not None and backup_path.exists():
+                    preserve_backups.add(backup_path)
+                rollback_errors.append(plan["path"] + ((" (recovery copy: " + str(backup_path) + ")") if backup_path else ""))
         for plan in plans:
-            for key in ("temp", "backup"):
-                path = plan.get(key)
-                if path is not None:
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+            temp_path = plan.get("temp")
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            backup_path = plan.get("backup")
+            if backup_path is not None and backup_path not in preserve_backups:
+                try:
+                    backup_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         message = "batch write failed; rollback was attempted for applied files"
         if rollback_errors:
             message += "; manual recovery may be needed for: " + ", ".join(rollback_errors)
