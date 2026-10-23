@@ -121,6 +121,8 @@ function openExternalHttps(raw) {
 }
 
 function attachNavigationPolicy(contents) {
+  const defaultAgent = contents.getUserAgent();
+  contents.setUserAgent(defaultAgent.replace(/\sElectron\/[\d.]+/g, ''));
   contents.on('will-navigate', (event, targetUrl) => {
     const url = getSafeUrl(targetUrl);
     if (url && isEmbeddedHost(url.hostname)) return;
@@ -135,6 +137,7 @@ function attachNavigationPolicy(contents) {
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
+          parent: mainWindow,
           width: 460,
           height: 680,
           autoHideMenuBar: true,
@@ -347,8 +350,6 @@ function createMainWindow() {
   updateChatBounds();
   attachNavigationPolicy(chatView.webContents);
 
-  const defaultAgent = chatView.webContents.getUserAgent();
-  chatView.webContents.setUserAgent(defaultAgent.replace(/\sElectron\/[\d.]+/g, ''));
   chatView.webContents.on('did-create-window', (childWindow) => {
     childWindow.setAlwaysOnTop(false);
   });
