@@ -145,6 +145,7 @@
       list_files: ["version", "id", "op", "path"],
       read_file: ["version", "id", "op", "path"],
       write_file: ["version", "id", "op", "path", "content"],
+      write_files: ["version", "id", "op", "files"],
       run_pytest: ["version", "id", "op", "test_path"],
       run_process: ["version", "id", "op", "executable", "args", "cwd", "timeout_seconds"]
     };
@@ -161,6 +162,31 @@
     if (task.op === "write_file" &&
         (typeof task.content !== "string" || new TextEncoder().encode(task.content).length > 262144)) {
       throw new Error("content must be UTF-8 text up to 256 KiB.");
+    }
+    if (task.op === "write_files") {
+      if (!Array.isArray(task.files) || task.files.length < 1 || task.files.length > 20) {
+        throw new Error("files must be an array of 1 to 20 file entries.");
+      }
+      const seen = new Set();
+      let totalBytes = 0;
+      for (const file of task.files) {
+        if (!file || typeof file !== "object" || Array.isArray(file) ||
+            Object.keys(file).some((key) => !["path", "content"].includes(key)) ||
+            typeof file.path !== "string" || !file.path.trim() || file.path.length > 1024 ||
+            typeof file.content !== "string") {
+          throw new Error("Each file entry must contain only a relative path and string content.");
+        }
+        if (file.path.startsWith("/") || file.path.startsWith("\\\\") ||
+            file.path.split(/[\\\\/]+/).includes("..") || /^[A-Za-z]:/.test(file.path)) {
+          throw new Error("Batch file paths must be relative and stay inside the workspace.");
+        }
+        if (seen.has(file.path.toLowerCase())) throw new Error("Duplicate path in batch: " + file.path);
+        seen.add(file.path.toLowerCase());
+        const size = new TextEncoder().encode(file.content).length;
+        if (size > 262144) throw new Error("Each file is limited to 256 KiB: " + file.path);
+        totalBytes += size;
+        if (totalBytes > 524288) throw new Error("Combined batch contents exceed 512 KiB.");
+      }
     }
     if (task.op === "run_process") {
       if (typeof task.executable !== "string" || !task.executable.trim() || task.executable.length > 2048) {
@@ -184,6 +210,10 @@
       case "list_files": return "List directory: " + (task.path || ".");
       case "read_file": return "Read file: " + task.path;
       case "write_file": return "Write/overwrite file: " + task.path + " (" + new TextEncoder().encode(task.content).length + " bytes)";
+      case "write_files":
+        return "Write " + task.files.length + " files as one reviewed batch:\\n" +
+          task.files.map((file) => "- " + file.path + " (" + new TextEncoder().encode(file.content).length + " bytes)").join("\\n") +
+          "\\nThe companion stages all files first and attempts rollback if a replacement fails.";
       case "run_pytest": return "Run Python pytest in configured workspace: " + (task.test_path || ".");
       case "run_process":
         return "Launch program: " + task.executable + "\nArguments: " + JSON.stringify(task.args || []) +
