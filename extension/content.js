@@ -134,36 +134,36 @@
           if (chrome.runtime.lastError || settings.autoSubmitResults !== true) return;
           const editor = getComposerElement();
           if (!editor) {
-            status.textContent += "\\n\\nAuto-submit is enabled, but the composer was not found. Use Insert result into ChatGPT manually.";
+            status.textContent += "\n\nAuto-submit is enabled, but the composer was not found. Use Insert result into ChatGPT manually.";
             return;
           }
           const currentText = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
             ? editor.value
             : (editor.innerText || editor.textContent || "");
           if (currentText.trim()) {
-            status.textContent += "\\n\\nAuto-submit skipped because the composer already contains a draft. Use Insert result into ChatGPT manually.";
+            status.textContent += "\n\nAuto-submit skipped because the composer already contains a draft. Use Insert result into ChatGPT manually.";
             return;
           }
           if (!insertIntoComposer(resultText)) {
-            status.textContent += "\\n\\nAuto-submit is enabled, but the result could not be inserted. Copy it manually.";
+            status.textContent += "\n\nAuto-submit is enabled, but the result could not be inserted. Copy it manually.";
             return;
           }
           insert.disabled = true;
           insert.textContent = "Result inserted into composer";
-          status.textContent = report + "\\n\\nAuto-submit is enabled. Looking for the ChatGPT Send button; no next Windows task is approved automatically.";
+          status.textContent = report + "\n\nAuto-submit is enabled. Looking for the ChatGPT Send button; no next Windows task is approved automatically.";
           let attempts = 0;
           const trySend = () => {
             attempts += 1;
             const send = findSendButton();
             if (send && !send.disabled) {
               send.click();
-              status.textContent += "\\nSend click requested. Verify ChatGPT accepted the report. Any next Windows task still needs your approval.";
+              status.textContent += "\nSend click requested. Verify ChatGPT accepted the report. Any next Windows task still needs your approval.";
               return;
             }
             if (attempts < 5) {
               window.setTimeout(trySend, 200);
             } else {
-              status.textContent += "\\nCould not locate an active Send button. The result remains in the composer for manual submission.";
+              status.textContent += "\nCould not locate an active Send button. The result remains in the composer for manual submission.";
             }
           };
           window.setTimeout(trySend, 200);
