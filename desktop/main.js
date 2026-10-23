@@ -1,6 +1,8 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
+const localTools = require('./tool-runner');
+const { createToolBridge } = require('./tool-bridge');
 const {
   app,
   BrowserWindow,
@@ -9,7 +11,8 @@ const {
   session,
   ipcMain,
   globalShortcut,
-  shell
+  shell,
+  dialog
 } = require('electron');
 
 const CHATGPT_URL = 'https://chatgpt.com/';
@@ -38,6 +41,7 @@ let chatSession = null;
 let collapsed = false;
 let settings = {};
 let saveTimer = null;
+let toolBridge = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -83,6 +87,44 @@ function minimumSizeForBounds(bounds) {
     width: Math.min(360, Math.max(1, display.workArea.width)),
     height: Math.min(480, Math.max(1, display.workArea.height))
   };
+}
+
+
+function getWorkspaceRoot() {
+  if (!settings.workspaceRoot || typeof settings.workspaceRoot !== 'string') {
+    settings.workspaceRoot = path.join(app.getPath('documents'), 'ChatGPTWorkspace');
+  }
+  return path.resolve(settings.workspaceRoot);
+}
+
+function ensureWorkspaceRoot() {
+  const root = getWorkspaceRoot();
+  fs.mkdirSync(root, { recursive: true });
+  settings.workspaceRoot = root;
+  persistSettings();
+  return root;
+}
+
+async function selectWorkspace() {
+  const root = getWorkspaceRoot();
+  const options = {
+    title: 'Choose a project workspace for ChatGPT Assistant',
+    defaultPath: fs.existsSync(root) ? root : app.getPath('documents'),
+    properties: ['openDirectory', 'createDirectory']
+  };
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths || !result.filePaths.length) {
+    return { canceled: true, workspaceRoot: getWorkspaceRoot() };
+  }
+  const selected = path.resolve(result.filePaths[0]);
+  if (!fs.existsSync(selected) || !fs.statSync(selected).isDirectory()) throw new Error('Selected workspace is not a directory.');
+  settings.workspaceRoot = selected;
+  persistSettings();
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('overlay:workspace-changed', selected);
+  }
+  return { canceled: false, workspaceRoot: selected };
 }
 
 function clampBounds(bounds) {
@@ -134,6 +176,11 @@ function attachNavigationPolicy(contents) {
   const defaultAgent = contents.getUserAgent();
   contents.setUserAgent(defaultAgent.replace(/\sElectron\/[\d.]+/g, ''));
   contents.on('will-navigate', (event, targetUrl) => {
+    if (contents === (chatView && chatView.webContents) && String(targetUrl).startsWith('assistant-tool:')) {
+      event.preventDefault();
+      if (toolBridge) toolBridge.handleInternalUrl(contents, targetUrl).catch(error => console.error('Local tool request failed:', error.message));
+      return;
+    }
     const url = getSafeUrl(targetUrl);
     if (url && isEmbeddedHost(url.hostname)) return;
 
@@ -302,6 +349,14 @@ function registerIpc() {
     app.quit();
     return true;
   });
+  ipcMain.handle('overlay:select-workspace', async (event) => {
+    assertLocalUi(event);
+    return selectWorkspace();
+  });
+  ipcMain.handle('overlay:get-workspace', (event) => {
+    assertLocalUi(event);
+    return { workspaceRoot: getWorkspaceRoot(), initialized: Boolean(toolBridge) };
+  });
 }
 
 function createMainWindow() {
@@ -391,6 +446,9 @@ function createMainWindow() {
   chatView.webContents.on('render-process-gone', (_event, details) => {
     console.error('ChatGPT view render process exited:', details.reason);
   });
+  chatView.webContents.on('did-finish-load', () => {
+    if (toolBridge) toolBridge.installChatToolBridge();
+  });
   chatView.webContents.loadURL(CHATGPT_URL).catch((error) => {
     console.error('Could not load ChatGPT:', error.message);
   });
@@ -456,7 +514,16 @@ if (!hasInstanceLock) {
   app.whenReady().then(() => {
     app.setAppUserModelId('com.hashin997ux.chatgptassistant');
     settings = loadSettings();
+    ensureWorkspaceRoot();
     configureRemoteSession();
+    toolBridge = createToolBridge({
+      dialog,
+      getMainWindow: () => mainWindow,
+      getChatView: () => chatView,
+      getWorkspaceRoot,
+      selectWorkspace,
+      localTools
+    });
     registerIpc();
     createMainWindow();
     registerHotkey();
