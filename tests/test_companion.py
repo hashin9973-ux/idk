@@ -143,6 +143,25 @@ class CompanionTests(unittest.TestCase):
                 "files": [{"path": "one.txt", "content": "one"}]
             })
 
+    def test_write_files_preflight_rejects_missing_parent_without_writes(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._write_files(self.root, {
+                "version": 1, "op": "write_files", "approved": True,
+                "files": [
+                    {"path": "new.txt", "content": "would otherwise write"},
+                    {"path": "missing/subdir/file.txt", "content": "invalid parent"}
+                ]
+            })
+        self.assertFalse((self.root / "new.txt").exists())
+
+    def test_write_file_rejects_invalid_unicode(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._write_file(self.root, {
+                "version": 1, "op": "write_file", "approved": True,
+                "path": "bad.txt", "content": "\ud800"
+            })
+        self.assertFalse((self.root / "bad.txt").exists())
+
     def test_write_files_preflight_rejects_duplicate_without_writes(self):
         with self.assertRaises(companion.BridgeError):
             companion._write_files(self.root, {
