@@ -4,6 +4,7 @@
   const reloadButton = document.getElementById('reload-chat');
   const workspaceButton = document.getElementById('select-workspace');
   const workspaceLabel = document.getElementById('workspace-label');
+  const accountsButton = document.getElementById('accounts');
   const browserButton = document.getElementById('open-browser');
   const quitButton = document.getElementById('quit');
   const bubbleButton = document.getElementById('assistant-ball');
@@ -34,6 +35,7 @@
       if (workspaceLabel) workspaceLabel.textContent = 'Workspace error · ' + String(error.message || error);
     } finally { workspaceButton.disabled = false; }
   });
+  accountsButton.addEventListener('click', () => window.assistantOverlay.openAccounts());
   browserButton.addEventListener('click', () => window.assistantOverlay.openInBrowser());
   quitButton.addEventListener('click', () => window.assistantOverlay.quit());
   bubbleButton.addEventListener('click', () => window.assistantOverlay.expand());
