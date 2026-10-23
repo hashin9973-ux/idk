@@ -491,7 +491,23 @@ def main() -> int:
                                 "duration_ms": 0, "error": "malformed Native Messaging request"}
         except (EOFError, struct.error):
             return 1
-        encoded = json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        try:
+            encoded = json.dumps(response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        except UnicodeEncodeError:
+            safe_id = response.get("id", "")
+            safe_id = safe_id.encode("utf-8", errors="replace").decode("utf-8") if isinstance(safe_id, str) else ""
+            response = {"version": 1, "id": safe_id, "op": "unknown", "ok": False,
+                        "duration_ms": 0, "error": "response contained invalid Unicode"}
+            encoded = json.dumps(response, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_MESSAGE_BYTES:
+            safe_id = response.get("id", "")
+            safe_id = safe_id.encode("utf-8", errors="replace").decode("utf-8") if isinstance(safe_id, str) else ""
+            safe_op = response.get("op", "unknown")
+            safe_op = safe_op.encode("utf-8", errors="replace").decode("utf-8")[:80] if isinstance(safe_op, str) else "unknown"
+            response = {"version": 1, "id": safe_id, "op": safe_op, "ok": False,
+                        "duration_ms": int(response.get("duration_ms", 0)) if isinstance(response.get("duration_ms", 0), int) else 0,
+                        "error": "response exceeded the Native Messaging size limit; result data omitted"}
+            encoded = json.dumps(response, separators=(",", ":")).encode("utf-8")
         try:
             sink.write(struct.pack("<I", len(encoded))); sink.write(encoded); sink.flush()
         except (OSError, BrokenPipeError):
