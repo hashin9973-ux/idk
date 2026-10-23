@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChatGPT Windows Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="mark">WB</div>
+      <div>
+        <h1>Windows Bridge</h1>
+        <p class="muted">Local companion diagnostics</p>
+      </div>
+    </header>
+    <button id="test-connection" type="button">Test local connection</button>
+    <section class="status" aria-live="polite">
+      <strong id="state">Not tested</strong>
+      <p id="details">Run a harmless health check to see whether the Native Messaging host is installed.</p>
+    </section>
+    <section>
+      <h2>Supported operations</h2>
+      <ul>
+        <li>List and read workspace files</li>
+        <li>Write a reviewed text file</li>
+        <li>Run pytest in the workspace</li>
+        <li>Launch a reviewed process with argument-array semantics</li>
+      </ul>
+    </section>
+    <p class="footnote">Health checks do not access workspace files. File operations and process execution require an explicit confirmation in the ChatGPT page.</p>
+    <pre id="raw-result" hidden></pre>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
