@@ -14,3 +14,8 @@ button:disabled { opacity: .55; cursor: wait; }
 ul { padding-left: 20px; margin: 6px 0; }
 li { margin: 3px 0; }
 #raw-result { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; font: 11px/1.4 ui-monospace, monospace; }
+
+.setting { margin-top: 14px; padding: 10px; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: 8px; }
+.setting label { display: flex; gap: 8px; align-items: flex-start; font-weight: 600; }
+.setting input { margin-top: 4px; }
+#setting-status { margin-top: 6px; }
