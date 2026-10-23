@@ -35,7 +35,6 @@ let mainWindow = null;
 let chatView = null;
 let chatSession = null;
 let collapsed = false;
-let quitting = false;
 let settings = {};
 let saveTimer = null;
 
@@ -279,7 +278,6 @@ function registerIpc() {
   });
   ipcMain.handle('overlay:quit', (event) => {
     assertLocalUi(event);
-    quitting = true;
     app.quit();
     return true;
   });
@@ -325,9 +323,15 @@ function createMainWindow() {
   mainWindow.on('resize', updateChatBounds);
   mainWindow.on('move', saveSettingsSoon);
   mainWindow.on('closed', () => {
-    mainWindow = null;
+    const detachedChatView = chatView;
     chatView = null;
+    mainWindow = null;
+    // Electron does not automatically destroy WebContentsView contents with the host window.
+    if (detachedChatView && !detachedChatView.webContents.isDestroyed()) {
+      detachedChatView.webContents.close();
+    }
   });
+  mainWindow.webContents.on('did-finish-load', sendCollapsedState);
 
   chatView = new WebContentsView({
     webPreferences: {
@@ -366,6 +370,7 @@ function createMainWindow() {
 function configureRemoteSession() {
   chatSession = session.fromPartition(SESSION_PARTITION);
   chatSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
+  chatSession.setPermissionCheckHandler(() => false);
 }
 
 function registerHotkey() {
@@ -408,7 +413,6 @@ if (!hasInstanceLock) {
 }
 
 app.on('before-quit', () => {
-  quitting = true;
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
 });
