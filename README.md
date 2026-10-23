@@ -8,7 +8,7 @@ A prototype extension and Windows companion for an existing ChatGPT conversation
 - Native Messaging host implemented in Python.
 - Operations: health, list_files, read_file, write_file, write_files, run_pytest, and run_process.
 - Workspace-root path validation, strict request fields, file and message size limits, bounded listing/output, test timeout.
-- Local task execution results can be inserted into the ChatGPT composer; the user submits them manually.
+- Local task execution results can be inserted into the ChatGPT composer and submitted manually. An opt-in popup setting can auto-submit a result when the composer is empty; it never approves the next Windows task.
 - A GitHub Actions workflow is included for Linux and Windows validation.
 
 This is deliberately a first vertical slice, not yet an unrestricted machine controller. It does not concatenate command strings or run processes with shell=True. The approved run_process operation can launch shell/interpreter programs when explicitly requested; carefully review every argument. It does not automatically submit follow-up messages.
@@ -32,7 +32,7 @@ This is deliberately a first vertical slice, not yet an unrestricted machine con
    ```
 
 7. Click Review task for Windows, inspect the payload, then execute. For workspace operations, explicitly approve the confirmation dialog.
-8. To let ChatGPT reason from the actual result, click Insert result into ChatGPT, review the inserted report, and submit it yourself.
+8. To let ChatGPT reason from the actual result, click Insert result into ChatGPT and submit it manually. Alternatively, enable Auto-submit execution reports in the extension popup; it sends only the returned report when the composer is empty, and every follow-up Windows operation still requires your approval.
 
 ## Supported requests
 
