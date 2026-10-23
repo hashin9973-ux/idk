@@ -161,6 +161,60 @@ class CompanionTests(unittest.TestCase):
         self.assertEqual(first.read_text(encoding="utf-8"), "before one")
         self.assertEqual(second.read_text(encoding="utf-8"), "before two")
 
+    def test_write_files_batch(self):
+        result = companion._write_files(self.root, {
+            "version": 1, "op": "write_files", "approved": True,
+            "files": [
+                {"path": "one.txt", "content": "one"},
+                {"path": "two.txt", "content": "two\\n"}
+            ]
+        })
+        self.assertEqual(result["count"], 2)
+        self.assertTrue((self.root / "one.txt").exists())
+        self.assertEqual((self.root / "two.txt").read_text(encoding="utf-8"), "two\\n")
+
+    def test_write_files_requires_approval(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._write_files(self.root, {
+                "version": 1, "op": "write_files",
+                "files": [{"path": "one.txt", "content": "one"}]
+            })
+
+    def test_write_files_preflight_rejects_duplicate_without_writes(self):
+        with self.assertRaises(companion.BridgeError):
+            companion._write_files(self.root, {
+                "version": 1, "op": "write_files", "approved": True,
+                "files": [
+                    {"path": "same.txt", "content": "one"},
+                    {"path": "same.txt", "content": "two"}
+                ]
+            })
+        self.assertFalse((self.root / "same.txt").exists())
+
+    def test_write_files_rollback_restores_first_file_if_second_replace_fails(self):
+        first = self.root / "first.txt"
+        second = self.root / "second.txt"
+        first.write_text("before one", encoding="utf-8")
+        second.write_text("before two", encoding="utf-8")
+        real_replace = companion.os.replace
+        calls = {"count": 0}
+        def fail_second_replace(source, target):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise OSError("simulated replacement failure")
+            return real_replace(source, target)
+        with patch.object(companion.os, "replace", side_effect=fail_second_replace):
+            with self.assertRaises(companion.BridgeError):
+                companion._write_files(self.root, {
+                    "version": 1, "op": "write_files", "approved": True,
+                    "files": [
+                        {"path": "first.txt", "content": "after one"},
+                        {"path": "second.txt", "content": "after two"}
+                    ]
+                })
+        self.assertEqual(first.read_text(encoding="utf-8"), "before one")
+        self.assertEqual(second.read_text(encoding="utf-8"), "before two")
+
     def test_run_process_requires_approval(self):
         with self.assertRaises(companion.BridgeError):
             companion._run_process(self.root, {
