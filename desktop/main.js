@@ -2,6 +2,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
+const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const {
   app,
@@ -12,7 +13,8 @@ const {
   ipcMain,
   globalShortcut,
   shell,
-  dialog
+  dialog,
+  safeStorage
 } = require('electron');
 
 const CHATGPT_URL = 'https://chatgpt.com/';
@@ -36,12 +38,14 @@ const EMBEDDED_HOSTS = new Set([
 ]);
 
 let mainWindow = null;
+let accountsWindow = null;
 let chatView = null;
 let chatSession = null;
 let collapsed = false;
 let settings = {};
 let saveTimer = null;
 let toolBridge = null;
+let githubAuth = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -323,6 +327,55 @@ function assertLocalUi(event) {
   }
 }
 
+function assertAccountUi(event) {
+  if (!accountsWindow || accountsWindow.isDestroyed() || event.sender !== accountsWindow.webContents) {
+    throw new Error('Only the local Accounts window may invoke this action.');
+  }
+  const url = event.senderFrame?.url || '';
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/accounts.html')) {
+    throw new Error('Unexpected IPC sender for Accounts.');
+  }
+}
+
+function createAccountsWindow() {
+  if (accountsWindow && !accountsWindow.isDestroyed()) {
+    accountsWindow.show();
+    accountsWindow.focus();
+    return;
+  }
+  accountsWindow = new BrowserWindow({
+    width: 560,
+    height: 650,
+    minWidth: 480,
+    minHeight: 520,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    modal: false,
+    show: false,
+    title: 'ChatGPT Assistant · Accounts',
+    autoHideMenuBar: true,
+    backgroundColor: '#10151d',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true
+    }
+  });
+  accountsWindow.once('ready-to-show', () => {
+    if (accountsWindow && !accountsWindow.isDestroyed()) accountsWindow.show();
+  });
+  accountsWindow.on('closed', () => { accountsWindow = null; });
+  accountsWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const parsed = getSafeUrl(url);
+    if (parsed && parsed.hostname === 'github.com') openExternalHttps(parsed.href);
+    return { action: 'deny' };
+  });
+  accountsWindow.loadFile(path.join(__dirname, 'accounts.html'));
+}
+
+function getChatViewForIpc() { return chatView; }
+
 function registerIpc() {
   ipcMain.handle('overlay:collapse', (event) => {
     assertLocalUi(event);
@@ -356,6 +409,46 @@ function registerIpc() {
   ipcMain.handle('overlay:get-workspace', (event) => {
     assertLocalUi(event);
     return { workspaceRoot: getWorkspaceRoot(), initialized: Boolean(toolBridge) };
+  });
+  ipcMain.handle('overlay:open-accounts', (event) => {
+    assertLocalUi(event);
+    createAccountsWindow();
+    return { opened: true };
+  });
+
+  ipcMain.handle('overlay:open-chatgpt-login', (event) => {
+    assertAccountUi(event);
+    const view = getChatViewForIpc();
+    if (!view || view.webContents.isDestroyed()) throw new Error('ChatGPT view is unavailable.');
+    view.webContents.loadURL('https://chatgpt.com/auth/login').catch(error => console.error('Could not open ChatGPT sign-in:', error.message));
+    return { opened: true };
+  });
+  ipcMain.handle('overlay:github-state', async (event) => {
+    assertAccountUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.getState();
+  });
+  ipcMain.handle('overlay:github-set-client-id', (event, clientId) => {
+    assertAccountUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.setClientId(clientId);
+  });
+  ipcMain.handle('overlay:github-start-login', async (event) => {
+    assertAccountUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    const result = await githubAuth.startLogin();
+    openExternalHttps(result.verificationUrl);
+    return result;
+  });
+  ipcMain.handle('overlay:github-poll-login', async (event) => {
+    assertAccountUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.pollLogin();
+  });
+  ipcMain.handle('overlay:github-logout', (event) => {
+    assertAccountUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    return githubAuth.logout();
   });
 }
 
@@ -516,13 +609,19 @@ if (!hasInstanceLock) {
     settings = loadSettings();
     ensureWorkspaceRoot();
     configureRemoteSession();
+    githubAuth = createGitHubAuth({
+      safeStorage,
+      getSettings: () => settings,
+      persistSettings
+    });
     toolBridge = createToolBridge({
       dialog,
       getMainWindow: () => mainWindow,
       getChatView: () => chatView,
       getWorkspaceRoot,
       selectWorkspace,
-      localTools
+      localTools,
+      githubAuth
     });
     registerIpc();
     createMainWindow();

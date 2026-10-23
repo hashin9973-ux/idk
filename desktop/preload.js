@@ -8,6 +8,13 @@ contextBridge.exposeInMainWorld('assistantOverlay', Object.freeze({
   quit: () => ipcRenderer.invoke('overlay:quit'),
   selectWorkspace: () => ipcRenderer.invoke('overlay:select-workspace'),
   getWorkspace: () => ipcRenderer.invoke('overlay:get-workspace'),
+  openAccounts: () => ipcRenderer.invoke('overlay:open-accounts'),
+  openChatGPTLogin: () => ipcRenderer.invoke('overlay:open-chatgpt-login'),
+  getGitHubState: () => ipcRenderer.invoke('overlay:github-state'),
+  setGitHubClientId: (clientId) => ipcRenderer.invoke('overlay:github-set-client-id', clientId),
+  startGitHubLogin: () => ipcRenderer.invoke('overlay:github-start-login'),
+  pollGitHubLogin: () => ipcRenderer.invoke('overlay:github-poll-login'),
+  logoutGitHub: () => ipcRenderer.invoke('overlay:github-logout'),
   onWorkspaceChanged(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, workspaceRoot) => callback(String(workspaceRoot || ''));

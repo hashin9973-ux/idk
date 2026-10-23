@@ -101,3 +101,53 @@ body.is-collapsed { background: transparent; }
 .is-spinning svg { animation: spin .55s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+
+/* The account management window is a separate, local renderer so it cannot be covered by the embedded ChatGPT WebContentsView. */
+.accounts-body {
+  min-height: 100vh;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 26px;
+  color: #e8edf4;
+  background:
+    radial-gradient(ellipse at top right, rgba(60, 136, 148, .16), transparent 45%),
+    #10151d;
+  font: 14px/1.5 "Segoe UI", system-ui, sans-serif;
+}
+.accounts-shell { max-width: 520px; margin: 0 auto; }
+.accounts-heading { margin: 0 0 6px; font-size: 23px; font-weight: 650; letter-spacing: -.4px; }
+.accounts-subtitle { margin: 0 0 22px; color: #9aa8b8; }
+.account-card {
+  margin: 14px 0; padding: 18px; border: 1px solid rgba(175,195,216,.18);
+  border-radius: 14px; background: rgba(255,255,255,.035);
+}
+.account-card h2 { margin: 0 0 7px; font-size: 16px; }
+.account-card p { margin: 7px 0 12px; color: #aab6c5; }
+.account-label { display: block; margin: 14px 0 6px; color: #dce5ee; font-weight: 600; }
+.account-input {
+  width: 100%; box-sizing: border-box; border: 1px solid #374759;
+  border-radius: 8px; padding: 10px 11px; color: #fff; background: #0a0f15; outline: none;
+}
+.account-input:focus { border-color: #69cabe; box-shadow: 0 0 0 3px rgba(105,202,190,.12); }
+.account-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 36px; padding: 8px 13px; border: 1px solid #3b4b5d;
+  border-radius: 8px; color: #eaf1f7; background: #202a36;
+  font: inherit; font-weight: 600; cursor: pointer;
+}
+.account-button:hover { background: #2b3948; }
+.account-button.primary { color: #081b1b; border-color: #6bd6c8; background: #8be5d7; }
+.account-button.primary:hover { background: #a0f0e3; }
+.account-button.danger { border-color: #75414a; color: #ffc3ca; background: #301d24; }
+.account-button:disabled { opacity: .5; cursor: wait; }
+.account-status { min-height: 22px; margin: 10px 0 0; color: #aab6c5; overflow-wrap: anywhere; }
+.account-status.error { color: #ffb6bd; }
+.account-status.success { color: #8ee0bb; }
+.account-code {
+  margin: 12px 0; padding: 12px; border: 1px solid rgba(139,229,215,.28);
+  border-radius: 10px; background: rgba(139,229,215,.06);
+}
+.account-code strong { display: block; margin-top: 2px; font-size: 28px; letter-spacing: 3px; color: #a0f0e3; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+.account-note { font-size: 12px; color: #8f9dac !important; }
