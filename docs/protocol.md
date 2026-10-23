@@ -22,6 +22,10 @@ Reads UTF-8 text files up to 256 KiB.
 {"version":1,"op":"write_file","approved":true,"path":"notes.txt","content":"hello"}
 Writes UTF-8 text atomically, up to 256 KiB. Existing files are overwritten only after the user confirms the reviewed task.
 
+### write_files
+`{"version":1,"op":"write_files","approved":true,"files":[{"path":"src/one.py","content":"first file text"},{"path":"src/two.py","content":"second file text"}]}`
+Writes 1–20 files as one explicitly approved batch. Each entry must contain only `path` and `content`. Paths must stay inside the configured workspace; parent directories must exist. Each file and each prior existing target must be at most 256 KiB; combined new content is at most 512 KiB. Every replacement is staged before the first target is replaced, and original file contents are staged for rollback. If a replacement fails, rollback is attempted and any recovery-copy location is reported if restoration fails. This is not a filesystem-atomic transaction; do not use it where partial visibility is unacceptable.
+
 ### run_pytest
 {"version":1,"op":"run_pytest","approved":true,"test_path":"tests"}
 Runs the fixed command sys.executable -m pytest -q [test_path] with the workspace as current directory. The optional test path is workspace-relative. There is no arbitrary executable or shell input. Tests are untrusted code and must only be run in a workspace you trust.
