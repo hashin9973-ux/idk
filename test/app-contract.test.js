@@ -70,3 +70,12 @@ test('remote session allows sanitized clipboard write only', () => {
   assert.ok(main.includes('callback(allowedPermissions.has(permission))'));
   assert.ok(main.includes('return allowedPermissions.has(permission)'));
 });
+
+test('collapsing releases focus so the previous app can remain active', () => {
+  const main = read('desktop', 'main.js');
+  const toggle = main.slice(main.indexOf('function toggleOverlay()'), main.indexOf('function assertLocalUi'));
+  const collapsedBranch = toggle.slice(toggle.indexOf('collapseWindow();'));
+  assert.ok(main.includes('if (mainWindow.isFocused()) mainWindow.blur()'));
+  assert.ok(!collapsedBranch.includes('mainWindow.focus()'));
+  assert.ok(toggle.includes('mainWindow.focus()'));
+});
