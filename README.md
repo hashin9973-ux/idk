@@ -25,7 +25,7 @@ This is deliberately a first vertical slice, not yet an unrestricted machine con
    ```
 
 5. Reload the extension and refresh ChatGPT. Use the extension toolbar popup's **Test local connection** button to verify the Native Messaging host before attempting workspace tasks.
-6. For a reliable workflow in a conversation, paste the prompt from [docs/chatgpt-prompt.md](docs/chatgpt-prompt.md). Then ask ChatGPT to emit a code block with the language redbridge and a JSON task inside. Start with:
+6. For a harmless end-to-end smoke test, clone [qdqwg](https://github.com/hashin9973-ux/qdqwg) and set WorkspaceRoot to its fixtures/workspace folder (details in windows/README.md). For a reliable workflow in a conversation, paste the prompt from [docs/chatgpt-prompt.md](docs/chatgpt-prompt.md). Then ask ChatGPT to emit a code block with the language redbridge and a JSON task inside. Start with:
 
    ```redbridge
    {"version":1,"op":"health"}
