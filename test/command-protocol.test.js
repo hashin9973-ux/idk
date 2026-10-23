@@ -18,6 +18,14 @@ test('Codex-style slash commands translate to local tool requests', () => {
   assert.deepEqual(commands.parseSlashCommand('/exec git status --short'), { tool: 'shell', args: { command: 'git status --short' } });
 });
 
+test('additional Codex-style aliases map to supported local tools', () => {
+  assert.deepEqual(commands.parseSlashCommand('/tree src'), { tool: 'list_dir', args: { path: 'src' } });
+  assert.deepEqual(commands.parseSlashCommand('/cat src/index.js'), { tool: 'read_file', args: { path: 'src/index.js' } });
+  assert.deepEqual(commands.parseSlashCommand('/tests'), { tool: 'run_tests', args: {} });
+  assert.equal(commands.parseSlashCommand('/plan implement feature').special, 'plan_mode');
+  assert.equal(commands.parseSlashCommand('/review').special, 'review_mode');
+});
+
 test('workspace and coding mode are app-owned special commands', () => {
   assert.equal(commands.parseSlashCommand('/workspace').special, 'workspace');
   assert.equal(commands.parseSlashCommand('/codex').special, 'coding_mode');
