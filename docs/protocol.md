@@ -32,7 +32,7 @@ Runs the fixed command sys.executable -m pytest -q [test_path] with the workspac
 
 ### run_process
 `{"version":1,"op":"run_process","approved":true,"executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}`
-Starts the named executable with an argument array, never by concatenating a command string. An absolute executable path is allowed; a relative executable path must remain inside the workspace; a bare program name is resolved through PATH. The working directory must be within the configured workspace. Arguments are limited to 128 strings, 8192 characters per string, and 64 KiB combined. Timeout is 1–120 seconds. Output is bounded and includes the real process exit code. An approved shell/interpreter executable may still run commands; review every field before authorizing it.
+Starts the named executable with an argument array, never by concatenating a command string. An absolute executable path is allowed; a relative executable path must remain inside the workspace; a bare program name is resolved through PATH. The working directory must be within the configured workspace. Arguments are limited to 128 strings, 8192 characters per string, and 64 KiB combined. Timeout is 1–120 seconds. Output is bounded and includes the real process exit code. An approved shell/interpreter executable may still run commands; it runs with the current Windows user's permissions and is not sandboxed to the configured workspace. Only cwd is constrained. Review every field before authorizing it.
 
 ## Result fields
 
