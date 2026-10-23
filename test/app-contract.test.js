@@ -80,6 +80,8 @@ test('desktop app wires the local tool bridge into the ChatGPT view', () => {
   assert.ok(main.includes("toolBridge.installChatToolBridge()"));
   assert.ok(bridge.includes("language-assistant_tool"));
   assert.ok(bridge.includes("toolCallArmed = false"));
+  assert.ok(bridge.includes("button[data-testid=\"stop-button\"]"));
+  assert.ok(bridge.includes("const latestUser = users.length ? users[users.length - 1] : null"));
   assert.ok(bridge.includes("break; // One app tool call per assistant response"));
 });
 
