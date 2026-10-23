@@ -11,7 +11,7 @@ A prototype extension and Windows companion for an existing ChatGPT conversation
 - Local task execution results can be inserted into the ChatGPT composer and submitted manually. An opt-in popup setting can auto-submit a result when the composer is empty; it never approves the next Windows task.
 - A GitHub Actions workflow is included for Linux and Windows validation.
 
-This is deliberately a first vertical slice, not yet an unrestricted machine controller. It does not concatenate command strings or run processes with shell=True. The approved run_process operation can launch shell/interpreter programs when explicitly requested; carefully review every argument. It does not automatically submit follow-up messages.
+This is deliberately a first vertical slice, not yet an unrestricted machine controller. It does not concatenate command strings or run processes with shell=True, but the approved run_process operation can launch shell/interpreter programs when explicitly requested. Such a process runs with the current Windows user's permissions and is not sandboxed to the workspace; only its working directory is constrained. Carefully review every executable and argument. It does not automatically approve follow-up tasks.
 
 ## Quick start
 
@@ -85,6 +85,6 @@ The qdqwg repository is public test material, not a live task queue. Do not put 
 
 ## Security notes
 
-This is an early prototype. Use a disposable workspace first. Reads and writes are constrained to the locally configured workspace; workspace reads/writes, batch writes, tests, and process launches require a visible click/confirmation. Tests execute code from the selected workspace. Never place secrets in task blocks or share sensitive workspace contents in chat. Native host permissions are granted to the exact extension ID registered at install time.
+This is an early prototype. Use a disposable workspace first. File reads and writes are constrained to the locally configured workspace; workspace reads/writes, batch writes, tests, and process launches require a visible click/confirmation. A process launched through run_process can access other paths with the current Windows user's permissions, depending on the executable and arguments. Tests execute code from the selected workspace. Never place secrets in task blocks or share sensitive workspace contents in chat. Native host permissions are granted to the exact extension ID registered at install time.
 
 The result reports the local operation status and actual test exit code. A successful commit is not proof that the Windows-side action ran.
