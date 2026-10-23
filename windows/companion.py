@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Constrained Chrome/Edge Native Messaging host for the Windows Bridge prototype."""
 from __future__ import annotations
-import json, os, struct, subprocess, sys, threading, time, uuid
+import itertools, json, os, struct, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +78,9 @@ def _list_files(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         raise BridgeError("directory does not exist")
     rows = []
     try:
-        for entry in sorted(folder.iterdir(), key=lambda p: p.name.casefold())[:MAX_LIST_ENTRIES]:
+        scanned = list(itertools.islice(folder.iterdir(), MAX_LIST_ENTRIES + 1))
+        truncated = len(scanned) > MAX_LIST_ENTRIES
+        for entry in sorted(scanned[:MAX_LIST_ENTRIES], key=lambda p: p.name.casefold()):
             try:
                 resolved = entry.resolve()
                 resolved.relative_to(root)
@@ -87,7 +89,8 @@ def _list_files(root: Path, task: dict[str, Any]) -> dict[str, Any]:
             rows.append({"name": entry.name, "kind": "directory" if resolved.is_dir() else "file"})
     except OSError as exc:
         raise BridgeError("cannot list directory") from exc
-    return {"path": folder.relative_to(root).as_posix() or ".", "entries": rows, "limit": MAX_LIST_ENTRIES}
+    return {"path": folder.relative_to(root).as_posix() or ".", "entries": rows,
+            "limit": MAX_LIST_ENTRIES, "truncated": truncated}
 
 def _read_file(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     _strict_keys(task, {"version", "id", "op", "approved", "path"})
