@@ -1,10 +1,15 @@
 const HOST_NAME = "com.chatgpt.windowsbridge";
 const ALLOWED_CHAT_HOSTS = new Set(["chatgpt.com", "chat.openai.com"]);
 
-function senderIsChatGPT(sender) {
+function senderIsAllowed(sender) {
   try {
     const url = new URL(sender?.url || sender?.tab?.url || "");
-    return url.protocol === "https:" && ALLOWED_CHAT_HOSTS.has(url.hostname);
+    if (url.protocol === "https:" && ALLOWED_CHAT_HOSTS.has(url.hostname)) return true;
+    // The extension's own popup can run non-destructive diagnostics. Content-script
+    // senders have the ChatGPT page URL and must pass the origin allowlist above.
+    return url.protocol === "chrome-extension:" &&
+      url.hostname === chrome.runtime.id &&
+      url.pathname === "/popup.html";
   } catch { return false; }
 }
 
@@ -34,7 +39,7 @@ function nativeRequest(payload) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!senderIsChatGPT(sender)) {
+  if (!senderIsAllowed(sender)) {
     sendResponse({ ok: false, error: "Requests are accepted only from the ChatGPT site." });
     return false;
   }
