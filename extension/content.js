@@ -98,7 +98,7 @@
         return;
       }
       if (task.op !== "health") {
-        const approved = window.confirm("Approve local operation?\n\n" + describeTask(task) + "\n\nProceed only if you trust this workspace and have reviewed the task.");
+        const approved = window.confirm("Approve local operation?\n\n" + describeTask(task) + "\n\nProceed only if you trust the requested operation and have reviewed every field.");
         if (!approved) return;
       }
       run.disabled = true;
@@ -145,7 +145,8 @@
       list_files: ["version", "id", "op", "path"],
       read_file: ["version", "id", "op", "path"],
       write_file: ["version", "id", "op", "path", "content"],
-      run_pytest: ["version", "id", "op", "test_path"]
+      run_pytest: ["version", "id", "op", "test_path"],
+      run_process: ["version", "id", "op", "executable", "args", "cwd", "timeout_seconds"]
     };
     const allowed = schemas[task.op];
     if (!allowed) throw new Error("Unsupported operation.");
@@ -161,6 +162,21 @@
         (typeof task.content !== "string" || new TextEncoder().encode(task.content).length > 262144)) {
       throw new Error("content must be UTF-8 text up to 256 KiB.");
     }
+    if (task.op === "run_process") {
+      if (typeof task.executable !== "string" || !task.executable.trim() || task.executable.length > 2048) {
+        throw new Error("executable must be a program name or path.");
+      }
+      const args = task.args ?? [];
+      if (!Array.isArray(args) || args.length > 128 || args.some((arg) => typeof arg !== "string" || arg.length > 8192)) {
+        throw new Error("args must be an array of at most 128 strings, each at most 8192 characters.");
+      }
+      const total = task.executable.length + args.reduce((sum, arg) => sum + arg.length, 0);
+      if (total > 65536) throw new Error("combined executable and arguments are too large.");
+      if (task.timeout_seconds !== undefined &&
+          (!Number.isInteger(task.timeout_seconds) || task.timeout_seconds < 1 || task.timeout_seconds > 120)) {
+        throw new Error("timeout_seconds must be an integer between 1 and 120.");
+      }
+    }
   }
 
   function describeTask(task) {
@@ -169,6 +185,10 @@
       case "read_file": return "Read file: " + task.path;
       case "write_file": return "Write/overwrite file: " + task.path + " (" + new TextEncoder().encode(task.content).length + " bytes)";
       case "run_pytest": return "Run Python pytest in configured workspace: " + (task.test_path || ".");
+      case "run_process":
+        return "Launch program: " + task.executable + "\nArguments: " + JSON.stringify(task.args || []) +
+          "\nWorking directory: " + (task.cwd || ".") + "\nTimeout: " + (task.timeout_seconds || 120) + " seconds" +
+          "\nNote: inspect every argument; a shell executable can interpret its arguments as commands.";
       default: return "Operation: " + task.op;
     }
   }
