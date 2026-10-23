@@ -3,6 +3,31 @@ const state = document.getElementById("state");
 const details = document.getElementById("details");
 const raw = document.getElementById("raw-result");
 
+const autoSubmit = document.getElementById("auto-submit-results");
+const settingStatus = document.getElementById("setting-status");
+
+chrome.storage.local.get({ autoSubmitResults: false }, (settings) => {
+  if (chrome.runtime.lastError) {
+    settingStatus.textContent = "Could not load saved setting.";
+    return;
+  }
+  autoSubmit.checked = settings.autoSubmitResults === true;
+});
+
+autoSubmit.addEventListener("change", () => {
+  const value = autoSubmit.checked;
+  chrome.storage.local.set({ autoSubmitResults: value }, () => {
+    if (chrome.runtime.lastError) {
+      settingStatus.textContent = "Could not save setting. Check extension permissions.";
+      autoSubmit.checked = !value;
+      return;
+    }
+    settingStatus.textContent = value
+      ? "Enabled. Only returned reports auto-submit; next Windows tasks still require approval."
+      : "Disabled. Results remain manual.";
+  });
+});
+
 button.addEventListener("click", async () => {
   button.disabled = true;
   state.textContent = "Testing…";
