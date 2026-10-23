@@ -16,6 +16,11 @@
       </div>
     </header>
     <button id="test-connection" type="button">Test local connection</button>
+    <section class="setting">
+      <label><input id="auto-submit-results" type="checkbox"> Auto-submit execution reports to ChatGPT</label>
+      <p class="footnote">Optional. Sends only the result of a task you already approved. It does not approve or run the next task. Auto-submit is skipped when the composer contains a draft.</p>
+      <p id="setting-status" class="muted" aria-live="polite"></p>
+    </section>
     <section class="status" aria-live="polite">
       <strong id="state">Not tested</strong>
       <p id="details">Run a harmless health check to see whether the Native Messaging host is installed.</p>
