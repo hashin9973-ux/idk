@@ -190,13 +190,15 @@
       return true;
     }
     if (editor.isContentEditable) {
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
       const selection = window.getSelection();
-      if (selection?.rangeCount) {
-        const range = selection.getRangeAt(0);
-        range.deleteContents();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      const inserted = document.execCommand("insertText", false, text);
+      if (!inserted) {
         range.insertNode(document.createTextNode(text));
-      } else {
-        editor.append(document.createTextNode(text));
       }
       editor.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
       return true;
