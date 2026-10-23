@@ -24,7 +24,7 @@ This is deliberately a first vertical slice, not yet an unrestricted machine con
    .\windows\install.ps1 -ExtensionId "YOUR_EXTENSION_ID" -Browser Chrome -WorkspaceRoot "$HOME\ChatGPTWorkspace"
    ```
 
-5. Reload the extension and refresh ChatGPT.
+5. Reload the extension and refresh ChatGPT. Use the extension toolbar popup's **Test local connection** button to verify the Native Messaging host before attempting workspace tasks.
 6. Ask ChatGPT to emit a code block with the language redbridge and a JSON task inside. Start with:
 
    ```redbridge
