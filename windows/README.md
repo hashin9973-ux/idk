@@ -22,7 +22,9 @@ The installer copies companion.py under LocalAppData, creates the workspace dire
 
 ## 3. Test the connection
 
-Reload the extension, refresh ChatGPT, and ask ChatGPT to emit the following format:
+Click the extension's toolbar icon and choose **Test local connection**. A successful check confirms that the browser can start the registered host and receive a valid health response. If it fails, inspect the diagnostic message before continuing.
+
+Then reload the extension, refresh ChatGPT, and ask ChatGPT to emit the following format:
 
     {"version":1,"op":"health"}
 
@@ -50,6 +52,6 @@ The bridge never concatenates model-generated command text or sets shell=True. H
 - The manifest path must point to the actual Python executable, and its first argument must be the copied companion.py.
 - Inspect chrome://extensions for service worker errors and the browser console for content-script errors.
 - Native host stdout is reserved for the binary Native Messaging protocol. Diagnostic messages must go to stderr.
-- If tests are run, the selected workspace may execute project code. Use a disposable test workspace first.
+- If tests are run, the selected workspace may execute project code. Use a disposable test workspace first. The pytest operation requires pytest installed in the Python interpreter selected by the installer; the companion does not install packages automatically.
 
 This is an early prototype; do not expose the native host to untrusted extensions or use it for sensitive workspaces.
