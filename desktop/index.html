@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>ChatGPT Assistant</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="overlay-frame">
+    <header class="titlebar">
+      <div class="drag-zone" aria-label="Drag to move overlay">
+        <div class="brand-orb" aria-hidden="true"><span></span></div>
+        <div class="brand-copy">
+          <strong>ChatGPT Assistant</strong>
+          <span>Always here when you need it</span>
+        </div>
+      </div>
+      <nav class="window-controls" aria-label="Window controls">
+        <button id="reload-chat" class="icon-button" type="button" title="Reload ChatGPT" aria-label="Reload ChatGPT">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4.8 16.5A8 8 0 0 0 19 12M4 17v-5h5M19.2 7.5A8 8 0 0 0 5 12"/></svg>
+        </button>
+        <button id="open-browser" class="icon-button" type="button" title="Open ChatGPT in browser" aria-label="Open ChatGPT in browser">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>
+        </button>
+        <button id="collapse" class="icon-button" type="button" title="Collapse to assistant ball" aria-label="Collapse to assistant ball">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>
+        </button>
+        <button id="quit" class="icon-button close-button" type="button" title="Quit ChatGPT Assistant" aria-label="Quit ChatGPT Assistant">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+        </button>
+      </nav>
+    </header>
+    <section class="chat-surface" aria-label="ChatGPT web chat"></section>
+  </main>
+
+  <div class="bubble-stage" aria-label="Collapsed assistant">
+    <div class="bubble-drag-ring" title="Drag from the edge to move the assistant">
+      <button id="assistant-ball" class="assistant-ball" type="button" aria-label="Expand ChatGPT Assistant" aria-expanded="true">
+        <span class="ball-glow"></span>
+        <span class="ball-core"><span></span><span></span><span></span></span>
+      </button>
+    </div>
+    <span id="bubble-label" class="sr-only">Open ChatGPT</span>
+  </div>
+  <script src="renderer.js"></script>
+</body>
+</html>
