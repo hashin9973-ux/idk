@@ -189,7 +189,8 @@ test('Git history, branch listing and changed-file tools use the selected reposi
     fs.writeFileSync(path.join(root, 'src', 'untracked.txt'), 'new file', 'utf8');
     const changed = await tools.executeTool(root, 'git_changed_files', {});
     assert.equal(changed.count, 1);
-    assert.equal(changed.files[0].path, '?? src/untracked.txt');
+    assert.equal(changed.files[0].path, 'src/untracked.txt');
+    assert.equal(changed.files[0].raw, '?? src/untracked.txt');
     await tools.executeTool(root, 'git_create_branch', { name: 'feature/tool-test' });
     const next = await tools.executeTool(root, 'git_branches', {});
     assert.ok(next.some(branch => branch.name === 'feature/tool-test'));
