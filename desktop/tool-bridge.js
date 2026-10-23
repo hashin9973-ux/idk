@@ -283,7 +283,19 @@ function createToolBridge(deps) {
       const target = event.target && event.target.closest
         ? event.target.closest('button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"], button[aria-label="Send"]')
         : null;
-      if (target && !target.disabled) expectedUserMessage = true;
+      if (!target || target.disabled) return;
+      const editor = composerFrom(target) || document.querySelector('#prompt-textarea, [data-testid="prompt-textarea"], textarea, form [contenteditable="true"]');
+      const text = editor ? getText(editor).trim() : '';
+      const match = text.match(/^\/([a-z][a-z0-9_-]*)(?:\s|$)/i);
+      if (match && commandNames.includes(match[1].toLowerCase())) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+        clearComposer(editor);
+        sendInternal('slash', 'text', text);
+        return;
+      }
+      expectedUserMessage = true;
     }
     document.addEventListener('click', armAfterSend, true);
 
@@ -337,10 +349,14 @@ function createToolBridge(deps) {
       }
       userMessageCount = newUserCount;
       if (!toolCallArmed) return;
+      const users = document.querySelectorAll('[data-message-author-role="user"]');
+      const latestUser = users.length ? users[users.length - 1] : null;
       for (const pre of document.querySelectorAll('[data-message-author-role="assistant"] pre')) {
         if (processedBlocks.has(pre)) continue;
         const message = pre.closest('[data-message-author-role="assistant"]');
-        if (message && oldMessages.has(message)) continue;
+        if (!message || oldMessages.has(message)) continue;
+        // Ignore tool blocks from turns that precede the latest user message.
+        if (latestUser && !(latestUser.compareDocumentPosition(message) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
         const code = pre.querySelector('code');
         if (!code || !String(code.className || '').split(/\s+/).includes('language-assistant_tool')) continue;
         const raw = (code.innerText || code.textContent || '').trim();
