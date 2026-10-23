@@ -27,7 +27,7 @@ See windows/README.md and run windows/install.ps1 from a PowerShell terminal aft
 - Paths are resolved and checked to remain inside that root, including symlink resolution.
 - Unknown operations and extra keys are rejected.
 - Task and file sizes are bounded; test runtime and retained output are bounded.
-- File reads/writes and test execution require a visible user gesture in the extension.
+- Workspace reads/writes, test execution, and process launches require a visible user gesture in the extension.
 - The extension inserts results into the composer but does not automatically submit them.
 - The companion uses no GitHub token and never treats a public GitHub repo as an executable command queue.
 - Initial support is text-file oriented; do not use it for secrets or sensitive workspaces.
@@ -38,7 +38,7 @@ This is a security-conscious prototype, not a hardened remote administration pro
 
 ### M1 — local vertical slice
 - Extension detects reviewed task blocks.
-- Native host supports narrow operations and returns real results.
+- Native host supports bounded file operations and approved process execution, returning real results.
 - Path, request, output, and timeout limits.
 - Unit tests for validation and path handling.
 
