@@ -342,6 +342,8 @@ function createToolBridge(deps) {
     }, true);
 
     function scanToolBlocks() {
+      // Don't execute an assistant_tool block while the model is still streaming it.
+      if (document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop generating response"]')) return;
       const newUserCount = document.querySelectorAll('[data-message-author-role="user"]').length;
       if (expectedUserMessage && newUserCount > userMessageCount) {
         toolCallArmed = true;
