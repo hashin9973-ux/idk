@@ -10,9 +10,10 @@
   },
   "scripts": {
     "start": "electron .",
-    "check": "node --check desktop/main.js && node --check desktop/preload.js && node --check desktop/renderer.js",
+    "check": "node --check desktop/main.js && node --check desktop/preload.js && node --check desktop/renderer.js && node --check desktop/geometry.js && node --check test/geometry.test.js",
     "dist:win": "electron-builder --win nsis",
-    "dist:win:dir": "electron-builder --win dir"
+    "dist:win:dir": "electron-builder --win --dir",
+    "test": "node --test"
   },
   "devDependencies": {
     "electron": "45.0.0",
