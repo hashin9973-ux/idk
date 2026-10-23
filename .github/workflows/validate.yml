@@ -51,6 +51,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: win-build-${{ github.run_number }}-${{ github.run_attempt }}
           name: ChatGPT Assistant Windows build ${{ github.run_number }}
           body: |
