@@ -58,6 +58,7 @@ test('secret-like files require explicit approval before reading', async () => {
   const root = fixture();
   try {
     fs.writeFileSync(path.join(root, '.env'), 'TOKEN=not-a-real-secret\n');
+    fs.writeFileSync(path.join(root, '.npmrc'), '//registry.npmjs.org/:_authToken=fake-token\n', 'utf8');
     assert.equal(tools.getToolPolicy('read_file', { path: '.env' }).requiresApproval, true);
     await assert.rejects(tools.executeTool(root, 'read_file', { path: '.env' }), /explicit approval/);
     const approved = await tools.executeTool(root, 'read_file', { path: '.env', approved: true });
