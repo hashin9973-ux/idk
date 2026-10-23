@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "Review explicitly marked ChatGPT tasks, run constrained workspace operations on Windows, and relay actual results.",
   "permissions": [
-    "nativeMessaging"
+    "nativeMessaging",
+    "storage"
   ],
   "host_permissions": [
     "https://chatgpt.com/*",
