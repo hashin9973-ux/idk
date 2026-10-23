@@ -1,7 +1,7 @@
 'use strict';
 
 const TOOL_NAMES = new Set([
-  'project_status','list_dir','glob_file_search','read_file','search',
+  'get_capabilities','project_status','list_dir','glob_file_search','read_file','search',
   'git_status','git_diff','init','write_file','apply_patch','shell','run_tests','update_plan'
 ]);
 
