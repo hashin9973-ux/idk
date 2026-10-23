@@ -38,8 +38,13 @@ Next, try {"version":1,"op":"list_files","path":"."}. Workspace file operations,
 - list_files
 - read_file
 - write_file
+- write_files (reviewed batch of up to 20 files)
 - run_pytest
 - run_process (explicitly approved executable with an argument array)
+
+Example: {"version":1,"op":"write_files","files":[{"path":"src/one.py","content":"# first"},{"path":"src/two.py","content":"# second"}]}
+
+Batch writes stage content and backup copies before replacing targets. Rollback is attempted on a replacement error but multi-file changes are not a filesystem-atomic transaction.
 
 Example: {"version":1,"op":"run_process","executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}
 
