@@ -38,6 +38,7 @@ const EMBEDDED_HOSTS = new Set([
 ]);
 
 let mainWindow = null;
+let accountsWindow = null;
 let chatView = null;
 let chatSession = null;
 let collapsed = false;
@@ -326,6 +327,53 @@ function assertLocalUi(event) {
   }
 }
 
+function assertAccountUi(event) {
+  if (!accountsWindow || accountsWindow.isDestroyed() || event.sender !== accountsWindow.webContents) {
+    throw new Error('Only the local Accounts window may invoke this action.');
+  }
+  const url = event.senderFrame?.url || '';
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/accounts.html')) {
+    throw new Error('Unexpected IPC sender for Accounts.');
+  }
+}
+
+function createAccountsWindow() {
+  if (accountsWindow && !accountsWindow.isDestroyed()) {
+    accountsWindow.show();
+    accountsWindow.focus();
+    return;
+  }
+  accountsWindow = new BrowserWindow({
+    width: 560,
+    height: 650,
+    minWidth: 480,
+    minHeight: 520,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    modal: false,
+    show: false,
+    title: 'ChatGPT Assistant · Accounts',
+    autoHideMenuBar: true,
+    backgroundColor: '#10151d',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true
+    }
+  });
+  accountsWindow.once('ready-to-show', () => {
+    if (accountsWindow && !accountsWindow.isDestroyed()) accountsWindow.show();
+  });
+  accountsWindow.on('closed', () => { accountsWindow = null; });
+  accountsWindow.webContents.setWindowOpenHandler(({ url }) => {
+    const parsed = getSafeUrl(url);
+    if (parsed && parsed.hostname === 'github.com') openExternalHttps(parsed.href);
+    return { action: 'deny' };
+  });
+  accountsWindow.loadFile(path.join(__dirname, 'accounts.html'));
+}
+
 function getChatViewForIpc() { return chatView; }
 
 function registerIpc() {
@@ -362,38 +410,43 @@ function registerIpc() {
     assertLocalUi(event);
     return { workspaceRoot: getWorkspaceRoot(), initialized: Boolean(toolBridge) };
   });
+  ipcMain.handle('overlay:open-accounts', (event) => {
+    assertLocalUi(event);
+    createAccountsWindow();
+    return { opened: true };
+  });
 
   ipcMain.handle('overlay:open-chatgpt-login', (event) => {
-    assertLocalUi(event);
+    assertAccountUi(event);
     const view = getChatViewForIpc();
     if (!view || view.webContents.isDestroyed()) throw new Error('ChatGPT view is unavailable.');
     view.webContents.loadURL('https://chatgpt.com/auth/login').catch(error => console.error('Could not open ChatGPT sign-in:', error.message));
     return { opened: true };
   });
   ipcMain.handle('overlay:github-state', async (event) => {
-    assertLocalUi(event);
+    assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.getState();
   });
   ipcMain.handle('overlay:github-set-client-id', (event, clientId) => {
-    assertLocalUi(event);
+    assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.setClientId(clientId);
   });
   ipcMain.handle('overlay:github-start-login', async (event) => {
-    assertLocalUi(event);
+    assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     const result = await githubAuth.startLogin();
     openExternalHttps(result.verificationUrl);
     return result;
   });
   ipcMain.handle('overlay:github-poll-login', async (event) => {
-    assertLocalUi(event);
+    assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.pollLogin();
   });
   ipcMain.handle('overlay:github-logout', (event) => {
-    assertLocalUi(event);
+    assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.logout();
   });
