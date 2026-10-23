@@ -79,6 +79,15 @@ class CompanionTests(unittest.TestCase):
         result = companion.execute({"version": 2, "op": "health"})
         self.assertFalse(result["ok"])
 
+    def test_listing_is_bounded(self):
+        for i in range(companion.MAX_LIST_ENTRIES + 3):
+            (self.root / ("entry-" + str(i) + ".txt")).write_text("x", encoding="utf-8")
+        result = companion._list_files(self.root, {
+            "version": 1, "op": "list_files", "approved": True, "path": "."
+        })
+        self.assertEqual(len(result["entries"]), companion.MAX_LIST_ENTRIES)
+        self.assertTrue(result["truncated"])
+
     def test_missing_config_is_neat_error(self):
         with patch.dict(os.environ, {"LOCALAPPDATA": str(self.root)}):
             result = companion.execute({
