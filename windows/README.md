@@ -48,7 +48,7 @@ Batch writes stage content and backup copies before replacing targets. Rollback 
 
 Example: {"version":1,"op":"run_process","executable":"git","args":["status","--short"],"cwd":".","timeout_seconds":30}
 
-The bridge never concatenates model-generated command text or sets shell=True. However, an approved process may be a shell/interpreter that executes its arguments as code. Inspect every argument and use a disposable workspace.
+The bridge never concatenates model-generated command text or sets shell=True. However, an approved process may be a shell/interpreter that executes its arguments as code. It runs with the current Windows user's permissions and can access files outside the configured workspace; only its working directory is constrained. Inspect every argument and use a disposable workspace.
 
 ## Troubleshooting
 
