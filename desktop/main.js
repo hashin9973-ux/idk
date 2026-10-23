@@ -84,12 +84,7 @@ function clampBounds(bounds) {
     width: Number(bounds.width) || EXPANDED_SIZE.width,
     height: Number(bounds.height) || EXPANDED_SIZE.height
   });
-  const work = display.workArea;
-  const width = Math.min(Math.max(Number(bounds.width) || EXPANDED_SIZE.width, 360), work.width);
-  const height = Math.min(Math.max(Number(bounds.height) || EXPANDED_SIZE.height, 480), work.height);
-  const x = Math.min(Math.max(Number(bounds.x) || 0, work.x), work.x + work.width - width);
-  const y = Math.min(Math.max(Number(bounds.y) || 0, work.y), work.y + work.height - height);
-  return { x, y, width, height };
+  return clampRectToWorkArea(bounds, display.workArea, 360, 480);
 }
 
 function defaultBounds() {
@@ -211,11 +206,7 @@ function clampBubble(bounds) {
   const display = screen.getDisplayMatching({
     x: bounds.x, y: bounds.y, width: COLLAPSED_SIZE, height: COLLAPSED_SIZE
   });
-  const work = display.workArea;
-  return {
-    x: Math.min(Math.max(bounds.x, work.x), work.x + work.width - COLLAPSED_SIZE),
-    y: Math.min(Math.max(bounds.y, work.y), work.y + work.height - COLLAPSED_SIZE)
-  };
+  return clampBubbleToWorkArea(bounds, display.workArea, COLLAPSED_SIZE);
 }
 
 function expandWindow() {
@@ -350,7 +341,7 @@ function createMainWindow() {
   attachNavigationPolicy(chatView.webContents);
 
   const defaultAgent = chatView.webContents.getUserAgent();
-  chatView.webContents.setUserAgent(defaultAgent.replace(/\\sElectron\\/[\\d.]+/g, ''));
+  chatView.webContents.setUserAgent(defaultAgent.replace(/\sElectron\/[\d.]+/g, ''));
   chatView.webContents.on('did-create-window', (childWindow) => {
     childWindow.setAlwaysOnTop(false);
   });
