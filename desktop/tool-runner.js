@@ -31,9 +31,8 @@ function safePath(rootInput,raw,allowRoot=false){
 function readText(file,allowSensitive=false){
  const s=fs.statSync(file);if(!s.isFile())throw new Error('path is not a regular file.');
  if(s.size>MAX_FILE)throw new Error('file exceeds the 1 MiB read limit.');
+ if(looksSensitiveFile(file)&&!allowSensitive)throw new Error('Refusing to read a file that looks like a secret or private key without explicit approval.');
  const b=fs.readFileSync(file);if(b.includes(0))throw new Error('binary files are not supported.');
- const secret=looksSensitiveFile(file);
- if(secret&&!allowSensitive)throw new Error('Refusing to read a file that looks like a secret or private key without explicit approval.');
  return new TextDecoder('utf-8',{fatal:true}).decode(b);
 }
 function atomicWrite(target,bytes){
