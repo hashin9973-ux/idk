@@ -67,15 +67,17 @@ function createToolBridge(deps) {
   }
 
   function displayApprovalValue(value, maxChars = 4000) {
-    return String(value == null ? '' : value)
+    const escaped = String(value == null ? '' : value)
       .replace(/\r/g, '\\r')
       .replace(/\n/g, '\\n')
       .replace(/\t/g, '\\t')
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u0085\u2028\u2029]/g,
         character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'))
       .replace(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g,
-        character => '[BIDI U+' + character.charCodeAt(0).toString(16).toUpperCase() + ']')
-      .slice(0, maxChars);
+        character => '[BIDI U+' + character.charCodeAt(0).toString(16).toUpperCase() + ']');
+    if (escaped.length <= maxChars) return escaped;
+    const marker = ' … [DISPLAY TRUNCATED]';
+    return escaped.slice(0, Math.max(0, maxChars - marker.length)) + marker;
   }
 
   function approvalDetail(tool, args, root) {
