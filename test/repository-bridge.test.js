@@ -495,3 +495,41 @@ test('environment refresh publishes a compact context index and keeps instructio
     await bridge.stop();
   }
 });
+
+
+test('oversized structured results remain retrievable through a full-result JSON artifact', async () => {
+  const entries = Array.from({ length: 220 }, (_, index) => ({
+    id: index,
+    detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
+  }));
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-structured-result',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/req-structured-result.json', request]] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true, result: { entries } }),
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
+    assert.equal(result.status, 'completed');
+    assert.equal(result.artifacts.length, 1);
+    assert.equal(result.artifacts[0].kind, 'structured_result');
+    const stored = fake.files.get(result.artifacts[0].path);
+    assert.ok(stored);
+    const full = JSON.parse(Buffer.from(stored.content, 'base64').toString('utf8'));
+    assert.equal(full.result.result.entries.length, entries.length);
+    assert.equal(full.result.result.entries[219].detail, entries[219].detail);
+  } finally {
+    await bridge.stop();
+  }
+});
