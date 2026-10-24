@@ -57,18 +57,19 @@ Expected outcome: the request is executed locally and its result is returned as 
 
 Expected outcome: the inline result is a preview, while the complete tool output is retrievable through GitHub.
 
-## 4. Test local approval and file upload
+## 4. Test automatic sandbox writes, approval-gated execution, and file upload
 
 Use only harmless disposable files.
 
-1. Submit a `write_file` request targeting a new file in the disposable workspace. For example, use `tool: "write_file"` and `args: {"path":"approval-test.txt","content":"should-not-exist"}`.
-2. When the native Windows approval dialog appears, choose **Cancel**.
-3. Read the result and verify it is marked `cancelled`; confirm the file was not created.
-4. Submit an `upload_workspace_file` request for the harmless test file, for example `tool: "upload_workspace_file"` with `args: {"path":"harmless.txt","artifactName":"uploaded-harmless.txt"}`.
-5. Verify the native approval dialog appears before the file is read/uploaded. Approve once.
-6. Read the result. Verify `bridge/artifacts/<request_id>/<filename>`, byte size, SHA-256, and GitHub URL are present. Retrieve the artifact and compare bytes.
+1. Submit a `write_file` request targeting a new file in the disposable workspace, using `tool: "write_file"` and `args: {"path":"sandbox-write-test.txt","content":"written inside workspace"}`.
+2. Verify the request completes without a native approval dialog and the file appears inside the selected workspace.
+3. Submit a `shell` request with a harmless PowerShell command that would create `approval-cancelled.txt`, such as `Set-Content -LiteralPath 'approval-cancelled.txt' -Value 'should-not-exist'`.
+4. When the native Windows approval dialog appears, choose **Cancel**. Read the result and verify it is marked `cancelled`; confirm the file was not created.
+5. Submit an `upload_workspace_file` request for a harmless test file, for example `tool: "upload_workspace_file"` with `args: {"path":"harmless.txt","artifactName":"uploaded-harmless.txt"}`.
+6. Verify the native approval dialog appears before the file is read/uploaded. Approve once.
+7. Read the result. Verify `bridge/artifacts/<request_id>/<filename>`, byte size, SHA-256, and GitHub URL are present. Retrieve the artifact and compare bytes.
 
-Expected outcome: queuing a request never grants permission; declining approval prevents execution; an explicitly approved upload returns an artifact that can be fetched from GitHub.
+Expected outcome: ordinary path-checked file operations are confined to the selected workspace; a declined shell command remains unexecuted; file upload still requires explicit approval.
 
 ## 5. Stop and confirm recovery state
 
@@ -84,7 +85,7 @@ Expected outcome: queuing a request never grants permission; declining approval 
 - [ ] A read-only request produces a result file for the same ID.
 - [ ] Context refresh updates the snapshot index.
 - [ ] Large text is externalized and retrievable with size/hash metadata.
-- [ ] A declined write remains unexecuted and returns `cancelled`.
+- [ ] Workspace file edits run automatically without escaping the selected folder.\n- [ ] A declined shell command remains unexecuted and returns `cancelled`.
 - [ ] File upload requires a local approval and returns the exact bytes.
 - [ ] Stop state is published; no output is inserted into the ChatGPT conversation.
 
