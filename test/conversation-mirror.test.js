@@ -113,7 +113,8 @@ test('snapshot preserves rendered code blocks as fenced text for the native rend
   const codeMessage = result.messages.find(message => message.id === 'assistant-29');
   assert.ok(codeMessage);
   assert.equal(codeMessage.hasCode, true);
-  assert.ok(codeMessage.text.includes('```javascript\\nconst count = 3;\\n```'));
+  const fence = String.fromCharCode(96).repeat(3);
+  assert.ok(codeMessage.text.includes(fence + 'javascript\nconst count = 3;\n' + fence));
 });
 
 test('snapshot applies per-message and total payload bounds', () => {
