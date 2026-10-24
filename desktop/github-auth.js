@@ -197,7 +197,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     const forbidden = ['~', '^', ':', '?', '*', '[', ']', '\\'];
     if (!branch || branch.length > 200 || branch.startsWith('-') || branch.startsWith('/') || branch.endsWith('/') ||
         branch.includes('//') || branch.includes('..') || branch.includes('@{') ||
-        /[\s\r\n]/.test(branch) || forbidden.some(character => branch.includes(character)) ||
+        /[\x00-\x20\x7f]/.test(branch) || forbidden.some(character => branch.includes(character)) ||
         parts.some(part => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))) {
       throw new Error('branch must be a valid Git branch name.');
     }
@@ -220,9 +220,12 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } else {
       let url;
       try { url = new URL(value); } catch { throw new Error('The selected Git remote is not a valid GitHub URL.'); }
-      if (url.hostname.toLowerCase() !== 'github.com' || url.username || url.password ||
-          !['https:', 'ssh:', 'git:'].includes(url.protocol) ||
-          (url.protocol === 'ssh:' && url.username.toLowerCase() !== 'git')) {
+      const credentialsAreValid = url.protocol === 'ssh:'
+        ? url.username.toLowerCase() === 'git' && !url.password
+        : !url.username && !url.password;
+      if (url.hostname.toLowerCase() !== 'github.com' || !credentialsAreValid ||
+          !['https:', 'ssh:', 'git:'].includes(url.protocol) || url.port || url.search || url.hash ||
+          url.pathname.includes('//')) {
         throw new Error('Authenticated local Git operations are restricted to credential-free GitHub remotes.');
       }
       repositoryPath = url.pathname.replace(/^\/+/, '');
