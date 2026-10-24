@@ -68,7 +68,12 @@ function resolveGitHubCliPath() {
 }
 
 function githubCliEnvironment() {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  const env = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    // Keep this app's sign-in separate from any user-installed GitHub CLI session.
+    GH_CONFIG_DIR: path.join(app.getPath('userData'), 'github-cli')
+  };
   for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_HOST']) {
     delete env[name];
   }
@@ -83,6 +88,19 @@ function readGitHubCliToken() {
     if (!token) throw new Error('GitHub CLI returned an empty token.');
     return token;
   });
+}
+
+async function clearGitHubCliCredentials() {
+  try {
+    await execFileAsync(resolveGitHubCliPath(), ['auth', 'logout', '--hostname', 'github.com'], {
+      encoding: 'utf8',
+      timeout: 12000,
+      windowsHide: true,
+      env: githubCliEnvironment()
+    });
+  } catch {
+    // No saved GitHub CLI login is normal during first-run setup.
+  }
 }
 
 function cleanLoginOutput(value) {
@@ -113,6 +131,8 @@ async function completeGitHubCliLogin(login) {
   login.status = 'finishing';
   const token = await readGitHubCliToken();
   const state = await githubAuth.importToken(token);
+  // The app retains its own token encrypted in Electron safeStorage.
+  await clearGitHubCliCredentials();
   login.login = state.login;
   login.status = 'authenticated';
 }
@@ -398,13 +418,9 @@ function registerIpc() {
     pendingGitHubCliLogin = null;
     const current = await githubAuth.getState();
     if (current.authenticated) return { status: 'authenticated', login: current.login, mode: 'github-cli' };
-    try {
-      const token = await readGitHubCliToken();
-      const connected = await githubAuth.importToken(token);
-      return { status: 'authenticated', login: connected.login, mode: 'github-cli' };
-    } catch {
-      // No reusable CLI login; begin a new browser authorization.
-    }
+    // Do not silently adopt a global GitHub CLI session. A click should start
+    // this app's own browser authorization when its encrypted token is absent.
+    await clearGitHubCliCredentials();
     const flow = startGitHubCliLogin();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.setAlwaysOnTop(false);
