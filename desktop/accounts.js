@@ -6,10 +6,6 @@
   const logout = byId('github-logout');
   const device = byId('github-device');
   const userCode = byId('github-user-code');
-  const bridgeRepository = byId('github-repository');
-  const bridgeBranch = byId('github-branch');
-  const allowPublic = byId('github-allow-public');
-  const bridgeStatus = byId('github-bridge-status');
   let timer = null;
   let busy = false;
   function message(text, kind = '') {
@@ -21,9 +17,6 @@
     try {
       const state = await window.assistantOverlay.getGitHubState();
       if (state.clientId && !clientId.value) clientId.value = state.clientId;
-      if (bridgeRepository && !bridgeRepository.value && state.repository) bridgeRepository.value = state.repository;
-      if (bridgeBranch && (!bridgeBranch.value || bridgeBranch.value === 'main') && state.branch) bridgeBranch.value = state.branch;
-      if (allowPublic) allowPublic.checked = state.allowPublicRepository === true;
       if (state.authenticated) {
         message('Connected to GitHub as @' + (state.login || 'user') + '.', 'success');
         logout.hidden = false;
@@ -51,48 +44,6 @@
     finally { button.disabled = false; }
   });
 
-  byId('github-save-bridge').addEventListener('click', async () => {
-    const button = byId('github-save-bridge');
-    button.disabled = true;
-    bridgeStatus.classList.remove('error', 'success');
-    bridgeStatus.textContent = 'Saving repository bridge configuration…';
-    try {
-      const config = await window.assistantOverlay.setGitHubBridgeConfig({
-        repository: bridgeRepository.value,
-        branch: bridgeBranch.value || 'main',
-        allowPublicRepository: allowPublic.checked
-      });
-      bridgeRepository.value = config.repository;
-      bridgeBranch.value = config.branch;
-      allowPublic.checked = config.allowPublicRepository;
-      bridgeStatus.textContent = config.repository
-        ? 'Saved. The app will poll ' + config.repository + '@' + config.branch + ' for requests and commit results there.'
-        : 'Repository bridge is not configured.';
-      bridgeStatus.classList.add('success');
-      refreshBridgeStatus();
-    } catch (error) {
-      bridgeStatus.textContent = error.message || String(error);
-      bridgeStatus.classList.add('error');
-    } finally { button.disabled = false; }
-  });
-
-  async function refreshBridgeStatus(statusValue) {
-    if (!bridgeStatus) return;
-    let current = statusValue;
-    if (!current) {
-      try { current = await window.assistantOverlay.getRepositoryBridgeStatus(); }
-      catch (error) { current = { state: 'error', message: error.message || String(error) }; }
-    }
-    if (!current || !current.message) return;
-    bridgeStatus.textContent = current.message + (current.repository ? ' (' + current.repository + '@' + (current.branch || 'main') + ')' : '');
-    bridgeStatus.classList.remove('error', 'success');
-    if (current.state === 'error' || current.state === 'not_authenticated' || current.state === 'not_configured') {
-      bridgeStatus.classList.add('error');
-    } else if (current.state === 'idle' || current.state === 'active') {
-      bridgeStatus.classList.add('success');
-    }
-  }
-  window.assistantOverlay.onRepositoryBridgeStatus(refreshBridgeStatus);
   function stopPolling() {
     if (timer !== null) window.clearTimeout(timer);
     timer = null;
