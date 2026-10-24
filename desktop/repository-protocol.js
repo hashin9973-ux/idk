@@ -20,15 +20,16 @@ function validateRepositoryName(value) {
 
 function validateBranchName(value) {
   const branch = String(value || 'main').trim();
+  const forbidden = ['~', '^', ':', '?', '*', '[', ']', '\\'];
   if (!BRANCH_PATTERN.test(branch) || branch.startsWith('/') || branch.endsWith('/') ||
       branch.includes('//') || branch.includes('..') || branch.includes('@{') ||
-      /[~^:?*\\[\]\\\\\s]/.test(branch) || branch.split('/').some(segment =>
+      forbidden.some(character => branch.includes(character)) || /\s/.test(branch) ||
+      branch.split('/').some(segment =>
         !segment || segment.startsWith('.') || segment.endsWith('.lock'))) {
     throw new Error('Enter a valid Git branch name.');
   }
   return branch;
 }
-
 function parseRepositoryToolRequest(raw, expectedId) {
   if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > 1024 * 1024) {
     throw new Error('Repository bridge request must be UTF-8 text under 1 MiB.');
