@@ -30,7 +30,7 @@ test('workspace and coding mode are app-owned special commands', () => {
   assert.equal(commands.parseSlashCommand('/workspace').special, 'workspace');
   assert.equal(commands.parseSlashCommand('/tools').special, 'coding_mode');
   assert.ok(commands.HELP.includes('assistant_tool'));
-  assert.ok(commands.HELP.includes('app-side credential'));
+  assert.ok(commands.HELP.includes('app GitHub credential'));
   assert.equal(commands.parseSlashCommand('/plan make a small feature').special, 'plan_mode');
   assert.equal(commands.parseSlashCommand('/review').special, 'review_mode');
   assert.ok(commands.HELP.includes('/exec'));
