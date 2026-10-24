@@ -16,15 +16,39 @@ test('package starts the local desktop shell and packages desktop assets', () =>
 test('expanded and collapsed UI control IDs match the renderer', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
-  for (const id of ['collapse', 'reload-chat', 'accounts', 'open-browser', 'quit', 'assistant-ball']) {
+  for (const id of ['collapse', 'reload-chat', 'accounts', 'open-browser', 'quit', 'assistant-ball', 'threads', 'new-conversation', 'message-list', 'message-input', 'send-message', 'load-earlier', 'load-newer']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing UI control: ' + id);
     assert.ok(renderer.includes("'" + id + "'"), 'renderer does not bind UI control: ' + id);
   }
 });
 
+test('the visible surface is a bounded native mirror, not the embedded ChatGPT page', () => {
+  const main = read('desktop', 'main.js');
+  const html = read('desktop', 'index.html');
+  const renderer = read('desktop', 'renderer.js');
+  const mirror = read('desktop', 'conversation-mirror.js');
+  assert.ok(html.includes('ChatGPT Mirror'));
+  assert.ok(html.includes('Active ChatGPT conversation mirror'));
+  assert.ok(html.includes('Message ChatGPT in this conversation'));
+  assert.ok(main.includes('require(\'./conversation-mirror\')'));
+  assert.ok(main.includes('x: -viewportWidth - 100'));
+  assert.ok(main.includes('overlay:mirror-snapshot'));
+  assert.ok(main.includes('overlay:mirror-send-message'));
+  assert.ok(main.includes('settings.lastConversationUrl'));
+  assert.ok(mirror.includes('const maxMessages = 16'));
+  assert.ok(mirror.includes('rect.bottom > 0 && rect.top < window.innerHeight'));
+  assert.ok(mirror.includes('scrollConversationViewport'));
+  assert.ok(renderer.includes('onMirrorSnapshot'));
+  assert.ok(renderer.includes('listMirrorConversations'));
+  assert.ok(renderer.includes('sendMirrorMessage'));
+  assert.ok(!html.includes('iframe'));
+});
+
 test('remote ChatGPT content uses a separate isolated WebContentsView', () => {
   const main = read('desktop', 'main.js');
   assert.ok(main.includes("new WebContentsView("));
+  assert.ok(main.includes("windowRef.loadURL(getActiveConversationUrl() || 'https://chatgpt.com/auth/login')"));
+  assert.ok(main.includes('function createChatGPTSessionWindow()'));
   assert.ok(main.includes("partition: SESSION_PARTITION"));
   assert.ok(main.includes("contents.setWindowOpenHandler("));
   assert.ok(main.includes("contents.on('will-navigate'"));
