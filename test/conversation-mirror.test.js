@@ -123,6 +123,7 @@ test('page scroll helper moves only one viewport at a time', () => {
   const body = {};
   container.parentElement = body;
   const result = runInPage(scrollConversationViewport, {
+    window: { innerHeight: 720 },
     document: {
       querySelectorAll: () => [node],
       scrollingElement: container,
