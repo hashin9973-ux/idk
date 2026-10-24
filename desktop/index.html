@@ -29,7 +29,7 @@
         <div class="hero-copy">
           <p class="eyebrow">SHARED REPOSITORY MAILBOX</p>
           <h1>Give this conversation a path to your Windows workspace.</h1>
-          <p class="lede">This app does not host or mirror ChatGPT. Your existing ChatGPT conversation uses its GitHub integration to write a request; this app picks it up, runs approved local tools, and commits the result back for ChatGPT to read.</p>
+          <p class="lede">Your existing ChatGPT conversation is the only place you type instructions. The app never injects tool output into that conversation; environment context, command results, errors, and files return through the shared private repository.</p>
         </div>
         <div class="connection-pill" id="status-pill" role="status"><span id="status-dot" class="status-dot"></span><span id="status-label">Worker stopped</span></div>
       </section>
@@ -40,7 +40,7 @@
             <div><p class="eyebrow">01 / CONNECTION</p><h2>Shared repository</h2></div>
             <span class="panel-icon">↔</span>
           </div>
-          <p class="muted">Use the same repository and branch from ChatGPT’s GitHub integration and this app. A dedicated mailbox branch keeps queue commits off <code>main</code> and avoids triggering normal main-branch builds.</p>
+          <p class="muted">Use the same private environment repository and mailbox branch in ChatGPT’s GitHub integration and this app. The app defaults to <code>hashin9973-ux/qdqwg</code>; keep queue traffic on <code>bridge-mailbox</code>, not <code>main</code>.</p>
 
           <form id="bridge-config-form">
             <div class="form-row">
@@ -49,7 +49,7 @@
             </div>
             <div class="form-row">
               <label for="repo-name">Repository</label>
-              <input id="repo-name" name="repo" value="idk" maxlength="100" required spellcheck="false" autocomplete="off">
+              <input id="repo-name" name="repo" value="qdqwg" maxlength="100" required spellcheck="false" autocomplete="off">
             </div>
             <div class="form-row">
               <label for="repo-branch">Mailbox branch</label>
@@ -99,7 +99,7 @@
           <div class="metric"><span class="meta-label">Last poll</span><strong id="last-poll">Never</strong></div>
         </div>
         <div id="last-error-row" class="error-row" hidden><strong>Last error</strong><p id="last-error"></p></div>
-        <p class="small muted">Shared files: <code>bridge/requests/&lt;id&gt;.json</code> → <code>bridge/results/&lt;id&gt;.json</code>; heartbeat at <code>bridge/state/windows-app.json</code>. Requests remain in history; results mark completion.</p>
+        <p class="small muted">Shared files: <code>bridge/requests/&lt;id&gt;.json</code> → <code>bridge/results/&lt;id&gt;.json</code>; context index at <code>bridge/context/latest.json</code>; artifacts at <code>bridge/artifacts/&lt;request_id&gt;/</code>. Requests remain in history; results mark completion.</p>
       </section>
 
       <section class="panel safety-panel">
