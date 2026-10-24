@@ -153,7 +153,8 @@ test('manual smoke-test documentation covers local execution and artifact retrie
   const guide = read('docs', 'manual-smoke-test.md');
   assert.match(guide, /private repo and dedicated branch/i);
   assert.match(guide, /read-only request produces a result/i);
-  assert.match(guide, /large text is externalized and retrievable/i);\n  assert.match(guide, /workspace file edits run automatically without escaping the selected folder/i);
+  assert.match(guide, /large text is externalized and retrievable/i);
+  assert.match(guide, /workspace file edits run automatically without escaping the selected folder/i);
   assert.match(guide, /declined shell command remains unexecuted/i);
   assert.match(guide, /file upload requires a local approval/i);
   assert.match(guide, /no output is inserted into the ChatGPT conversation/i);
