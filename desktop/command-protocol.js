@@ -23,7 +23,7 @@ const HELP = [
   '/fetch [remote] — fetch from a GitHub remote using the app-side credential (approval required)',
   '/pull [remote] [branch] — fast-forward the current branch from GitHub (approval required)',
   '/push [remote] [branch] — push the current commit to GitHub (approval required)',
-  '/clone <owner/repository> <path> [branch] — clone into the selected workspace (approval required),
+  '/clone <owner/repository> <path> [branch] — clone into the selected workspace (approval required)',
   '/test [command] — run the detected tests or an explicit test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
   '/github — show the app-side GitHub sign-in status (not a ChatGPT tool)',
