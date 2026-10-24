@@ -109,13 +109,22 @@ function captureDeviceCode(login, chunk) {
   login.userCode = match[1].toUpperCase();
   if (!login.openPromptReleased) {
     login.openPromptReleased = true;
-    // The CLI may wait for Enter before opening its browser. This process has no
-    // visible terminal, so release that prompt on the user's behalf.
+    // With piped stdin/stdout, GitHub CLI takes its non-interactive path and
+    // prints the device URL instead of opening it. Open the device page here.
+    openInBrowserAndYield('https://github.com/login/device').then(() => {
+      login.browserOpened = true;
+    }).catch(error => {
+      login.browserOpenError = cleanLoginOutput(error.message);
+      login.message = 'Could not open GitHub authorization automatically. Open https://github.com/login/device in your browser and enter the displayed code.' +
+        (login.browserOpenError ? ' Browser error: ' + login.browserOpenError : '');
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('app:github-login-browser-error', login.message);
+      }
+    });
     try {
-      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\n');
+      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\\n');
     } catch {}
-  }
-}
+  }}
 
 async function completeGitHubCliLogin(login) {
   login.status = 'finishing';
@@ -421,7 +430,7 @@ function registerIpc() {
     const login = pendingGitHubCliLogin;
     if (login) {
       if (login.status === 'pending' || login.status === 'finishing') {
-        return { status: 'pending', intervalSeconds: 3, ...(login.userCode ? { userCode: login.userCode } : {}) };
+        return { status: 'pending', intervalSeconds: 3, ...(login.userCode ? { userCode: login.userCode } : {}), ...(login.browserOpenError ? { message: login.message, browserOpenError: login.browserOpenError } : {}) };
       }
       pendingGitHubCliLogin = null;
       if (login.status === 'authenticated') {
