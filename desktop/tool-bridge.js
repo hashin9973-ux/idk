@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const TOOL_ARGUMENT_KEYS = Object.freeze({
   get_capabilities: [],
+  get_agent_context: [],
   project_status: [],
   environment_info: [],
   list_dir: ['path'],
@@ -50,6 +51,7 @@ const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
 const TOOL_DESCRIPTIONS = Object.freeze({
   get_capabilities: 'Return the local tool catalog, parameter schemas, permission modes and workspace capabilities.',
+  get_agent_context: 'Return one compact snapshot of the selected Windows workspace, project, instructions, directory overview and callable tool catalog.',
   project_status: 'Summarize project type, repository status and top-level files.',
   environment_info: 'Describe the Windows runtime, shell and relevant development environment.',
   list_dir: 'List entries in a workspace-relative directory.',
@@ -312,6 +314,7 @@ function createToolBridge(deps) {
       if (output && Array.isArray(output.tools)) {
         output.tools.push(
           { name: 'batch', mode: 'local-batch' },
+          { name: 'get_agent_context', mode: 'read' },
           { name: 'upload_workspace_file', mode: 'approval-required' },
           { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
         );
@@ -383,6 +386,60 @@ function createToolBridge(deps) {
     };
   }
 
+
+  async function executeAgentContext(root, requestId) {
+    const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
+      localTools.executeTool(root, 'environment_info', {}),
+      localTools.executeTool(root, 'project_status', {}),
+      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: 2, maxEntries: 120 }),
+      localTools.executeTool(root, 'discover_instructions', {}),
+      executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog')
+    ]);
+    const found = instructionReport && Array.isArray(instructionReport.instructions) ? instructionReport.instructions : [];
+    const instructionFiles = found.map(item => ({
+      path: item.path,
+      bytes: Buffer.byteLength(String(item.content || ''), 'utf8'),
+      contents_included: false
+    }));
+    let projectCommands = null;
+    const manifestPath = path.join(root, 'package.json');
+    if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isFile() && fs.statSync(manifestPath).size <= 256 * 1024) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        projectCommands = {
+          manifest: 'package.json',
+          name: typeof manifest.name === 'string' ? manifest.name : null,
+          packageManager: typeof manifest.packageManager === 'string' ? manifest.packageManager : null,
+          engines: manifest.engines && typeof manifest.engines === 'object' ? manifest.engines : null,
+          scripts: manifest.scripts && typeof manifest.scripts === 'object' ? manifest.scripts : {}
+        };
+      } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
+    }
+    return {
+      protocol: 'chatgpt-local-agent-context/v1',
+      generated_at: new Date().toISOString(),
+      workspace_selected: true,
+      environment,
+      project,
+      project_commands: projectCommands,
+      directory_overview: tree,
+      instruction_files: instructionFiles,
+      tool_catalog: {
+        protocol: capabilities.protocol,
+        tools: capabilities.tools,
+        tool_calling: capabilities.tool_calling
+      },
+      retrieval_rules: [
+        'This snapshot is generated for the current selected workspace; request it again when freshness matters.',
+        'Fetch full instruction contents and source files only when relevant to the current task.',
+        'Use batch for multiple known operations; references may only point to earlier completed steps.',
+        'Use workspace-relative paths. Each protected step requires local approval.',
+        'The shell runs as the signed-in Windows user and is not sandboxed.'
+      ],
+      detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
+    };
+  }
+
   async function runTool(tool, inputArgs, callId = null) {
     const root = getWorkspaceRoot();
     const args = { ...(inputArgs || {}) };
@@ -392,6 +449,8 @@ function createToolBridge(deps) {
       validateArgs(tool, args);
       if (tool === 'batch') {
         result = await executeBatch(args, id);
+      } else if (tool === 'get_agent_context') {
+        result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
         const policy = tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
