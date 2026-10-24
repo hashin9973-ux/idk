@@ -349,7 +349,7 @@ function createRepositoryBridge(deps) {
     let value = String(raw || fallback || 'artifact.bin')
       .replace(/[\\/\\\\]/g, '_')
       .replace(/[^A-Za-z0-9_.-]/g, '_')
-      .replace(/^\\.+/, '')
+      .replace(/^[^A-Za-z0-9]+/, '')
       .slice(0, 120);
     if (!value || value === '.' || value === '..') value = 'artifact.bin';
     return value;
