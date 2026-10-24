@@ -4,9 +4,12 @@ const MAX_MIRROR_MESSAGES = 16;
 const MAX_MESSAGE_CHARS = 18000;
 const MAX_SNAPSHOT_CHARS = 120000;
 
-// This function is serialized and evaluated inside the authenticated ChatGPT page.
-// It exports only the current page viewport plus a small buffer, not full thread history.
+// Serialized into the authenticated ChatGPT page. Returns only the current page
+// viewport and a small overscan buffer; the remote conversation keeps its full context.
 function extractConversationSnapshot() {
+  const maxMessages = 16;
+  const maxMessageChars = 18000;
+  const maxSnapshotChars = 120000;
   const pathParts = String(location.pathname || '').split('/');
   const conversationIndex = pathParts.indexOf('c');
   const conversationId = conversationIndex >= 0 ? (pathParts[conversationIndex + 1] || '') : '';
@@ -19,11 +22,9 @@ function extractConversationSnapshot() {
 
   let start = visibleIndexes.length ? Math.max(0, visibleIndexes[0] - 3) : Math.max(0, roleNodes.length - 10);
   let end = visibleIndexes.length ? Math.min(roleNodes.length, visibleIndexes[visibleIndexes.length - 1] + 4) : roleNodes.length;
-  if (end - start > MAX_MIRROR_MESSAGES) {
-    start = Math.max(0, end - MAX_MIRROR_MESSAGES);
-  }
+  if (end - start > maxMessages) start = Math.max(0, end - maxMessages);
 
-  let remaining = MAX_SNAPSHOT_CHARS;
+  let remaining = maxSnapshotChars;
   const messages = roleNodes.slice(start, end).map((node, offset) => {
     const role = node.getAttribute('data-message-author-role') || 'assistant';
     const rect = node.getBoundingClientRect();
@@ -31,12 +32,11 @@ function extractConversationSnapshot() {
     copy.querySelectorAll('button, svg, [role="toolbar"], [data-testid*="feedback"], [aria-label*="Copy"]').forEach(item => item.remove());
     let text = String(copy.innerText || copy.textContent || '').trim();
     const imageAlts = Array.from(node.querySelectorAll('img[alt]'))
-      .map(img => String(img.getAttribute('alt') || '').trim())
-      .filter(Boolean).slice(0, 6);
+      .map(img => String(img.getAttribute('alt') || '').trim()).filter(Boolean).slice(0, 6);
     if (!text && imageAlts.length) text = imageAlts.map(alt => '[Image: ' + alt + ']').join('\n');
-    text = text.slice(0, MAX_MESSAGE_CHARS);
+    text = text.slice(0, maxMessageChars);
     const allowed = Math.max(0, Math.min(text.length, remaining));
-    const clipped = text.length > allowed;
+    const truncated = text.length > allowed;
     text = text.slice(0, allowed);
     remaining -= text.length;
     return {
@@ -46,11 +46,11 @@ function extractConversationSnapshot() {
       visible: rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight,
       hasCode: Boolean(node.querySelector('pre code')),
       hasImages: imageAlts.length > 0,
-      truncated: clipped
+      truncated
     };
   }).filter(message => message.text || message.hasImages);
 
-  const stop = Boolean(document.querySelector(
+  const generating = Boolean(document.querySelector(
     'button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop generating response"]'
   ));
   const editor = document.querySelector(
@@ -60,16 +60,16 @@ function extractConversationSnapshot() {
     ? (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
       ? editor.value : (editor.innerText || editor.textContent || ''))
     : '';
-  const titleText = String(document.title || '').replace(/^ChatGPT\s*[-·:]?\s*/i, '').trim();
   const loginPage = /\/auth\/login/.test(String(location.pathname || ''));
+  const title = String(document.title || '').replace(/^ChatGPT\s*[-·:]?\s*/i, '').trim();
 
   return {
     url: location.href,
     conversationId,
-    title: titleText || (conversationId ? 'ChatGPT conversation' : 'New conversation'),
+    title: title || (conversationId ? 'ChatGPT conversation' : 'New conversation'),
     signedIn: !loginPage && Boolean(editor),
     loginPage,
-    generating: stop,
+    generating,
     composerHasDraft: Boolean(String(draft).trim()),
     totalRenderedMessages: roleNodes.length,
     startIndex: start,
@@ -79,30 +79,29 @@ function extractConversationSnapshot() {
   };
 }
 
-// Called only when the user opens the conversation picker. It reads a small list of
-// visible/recent conversation links, never mirrors the site's full navigation sidebar.
+// Called only when a user opens the conversation picker. This does not render the
+// ChatGPT sidebar; it returns a short list of recent thread links for an explicit choice.
 function extractConversationList() {
   const currentPath = String(location.pathname || '');
   const links = Array.from(document.querySelectorAll('a[href^="/c/"]'));
   const items = [];
   const seen = new Set();
   for (const link of links) {
-    const href = String(link.getAttribute('href') || '');
-    const parts = href.split('/');
+    const parts = String(link.getAttribute('href') || '').split('/');
     const index = parts.indexOf('c');
     const id = index >= 0 ? (parts[index + 1] || '') : '';
     if (!id || id.length > 120 || seen.has(id)) continue;
-    const label = String(link.innerText || link.textContent || '').trim().replace(/\s+/g, ' ');
-    if (!label || label.toLowerCase() === 'chatgpt') continue;
+    const title = String(link.innerText || link.textContent || '').trim().replace(/\s+/g, ' ');
+    if (!title || title.toLowerCase() === 'chatgpt') continue;
     seen.add(id);
-    items.push({ id, title: label.slice(0, 180), href: '/c/' + id, current: currentPath === '/c/' + id });
+    items.push({ id, title: title.slice(0, 180), href: '/c/' + id, current: currentPath === '/c/' + id });
     if (items.length >= 40) break;
   }
   return { currentUrl: location.href, conversations: items };
 }
 
-// Scroll the site's active conversation by one viewport. The rendered mirror asks for
-// a bounded older/newer chunk when its own scroll reaches an edge.
+// Move the authenticated page's conversation viewport by one page. The native mirror
+// requests older content in bounded increments instead of loading the entire thread.
 function scrollConversationViewport(direction) {
   const delta = direction < 0 ? -1 : 1;
   const nodes = Array.from(document.querySelectorAll('[data-message-author-role="user"], [data-message-author-role="assistant"]'));
@@ -114,8 +113,7 @@ function scrollConversationViewport(direction) {
   let target = null;
   while (current && current !== document.body && current !== document.documentElement) {
     const style = getComputedStyle(current);
-    if (current.scrollHeight > current.clientHeight + 80 &&
-        current.clientHeight > 100 &&
+    if (current.scrollHeight > current.clientHeight + 80 && current.clientHeight > 100 &&
         (style.overflowY === 'auto' || style.overflowY === 'scroll' || current === document.scrollingElement)) {
       target = current;
       break;
