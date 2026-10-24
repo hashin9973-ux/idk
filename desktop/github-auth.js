@@ -340,7 +340,6 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     const remoteResult = await executeGit(['remote', 'get-url', remote]);
     if (remoteResult.exitCode !== 0) throw new Error('The local Git checkout has no readable remote named "' + remote + '".');
     const normalized = normalizeGitHubRemote(remoteResult.stdout.trim());
-    const configOverride = 'remote.' + remote + '.url=' + normalized.url;
     let branch = '';
 
     if (operation === 'pull' || operation === 'push') {
@@ -359,11 +358,11 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
 
     let args;
     if (operation === 'fetch') {
-      args = ['-c', configOverride, 'fetch', '--prune', remote];
+      args = ['fetch', '--prune', normalized.url, '+refs/heads/*:refs/remotes/' + remote + '/*'];
     } else if (operation === 'pull') {
-      args = ['-c', configOverride, 'pull', '--ff-only', remote, branch];
+      args = ['pull', '--ff-only', normalized.url, branch];
     } else {
-      args = ['-c', configOverride, 'push', remote, 'HEAD:refs/heads/' + branch];
+      args = ['push', normalized.url, 'HEAD:refs/heads/' + branch];
     }
     const result = await executeGit(args);
     return {
