@@ -101,7 +101,12 @@ test('authenticated fetch normalizes SSH remotes to HTTPS without changing the s
   const mockExec = async (file, args, options) => {
     calls.push({ file, args: [...args], options });
     if (args[0] === 'remote' && args[1] === 'get-url') return { stdout: 'git@github.com:example/private-repo.git\n', stderr: '' };
-    if (args[0] === 'fetch') return { stdout: 'Fetched from GitHub\n', stderr: '' };
+    if (args[0] === 'fetch') {
+      const hooksPath = options.env.GIT_CONFIG_VALUE_2;
+      assert.ok(fs.existsSync(hooksPath));
+      assert.deepEqual(fs.readdirSync(hooksPath), []);
+      return { stdout: 'Fetched from GitHub\n', stderr: '' };
+    }
     throw new Error('Unexpected Git command: ' + args.join(' '));
   };
   try {
@@ -116,7 +121,11 @@ test('authenticated fetch normalizes SSH remotes to HTTPS without changing the s
     assert.ok(netCall);
     assert.deepEqual(netCall.args, ['fetch', '--prune', 'https://github.com/example/private-repo.git', '+refs/heads/*:refs/remotes/origin/*']);
     assert.equal(netCall.options.env.GIT_TERMINAL_PROMPT, '0');
+    assert.equal(netCall.options.env.GIT_CONFIG_COUNT, '3');
     assert.equal(netCall.options.env.GIT_CONFIG_KEY_0, 'http.https://github.com/.extraheader');
+    assert.equal(netCall.options.env.GIT_CONFIG_KEY_2, 'core.hooksPath');
+    assert.match(netCall.options.env.GIT_CONFIG_VALUE_2, /chatgpt-assistant-git-hooks-/);
+    assert.equal(fs.existsSync(netCall.options.env.GIT_CONFIG_VALUE_2), false, 'temporary hook directory is removed after Git exits');
     assert.equal(netCall.options.env.GIT_CONFIG_VALUE_0,
       'AUTHORIZATION: basic ' + Buffer.from('x-access-token:gho-secret-token').toString('base64'));
     assert.equal(JSON.stringify(result).includes('gho-secret-token'), false);
