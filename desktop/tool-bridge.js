@@ -563,4 +563,4 @@ function createToolBridge(deps) {
   return { handleInternalUrl, installChatToolBridge, runTool, returnMessageToChat, submitMessageToChat, initializeCurrentConversation };
 }
 
-module.exports = { createToolBridge, TOOL_ARGUMENT_KEYS, CODING_MODE_MESSAGE };
+module.exports = { createToolBridge, TOOL_ARGUMENT_KEYS, CODING_MODE_MESSAGE, buildBridgeContextMessage };
