@@ -68,10 +68,13 @@ function resolveGitHubCliPath() {
 }
 
 function githubCliEnvironment() {
+  const windowsRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
   const env = {
     ...process.env,
     GIT_TERMINAL_PROMPT: '0',
-    // Keep this app's sign-in separate from any user-installed GitHub CLI session.
+    // Use the Windows shell's registered URL handler; don't rely on terminal/browser detection.
+    GH_BROWSER: path.join(windowsRoot, 'explorer.exe'),
+    // Keep this app's sign-in profile separate from the CLI config files.
     GH_CONFIG_DIR: path.join(app.getPath('userData'), 'github-cli')
   };
   for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_HOST']) {
