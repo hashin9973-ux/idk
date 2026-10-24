@@ -135,6 +135,6 @@ test('environment snapshots and result artifacts stay in the repository channel'
   assert.match(toolBridge, /requiresApproval: true/);
   assert.match(html, /never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer/i);
   assert.match(readme, /only user-authored input/i);
-  assert.match(readme, /result file through GitHub/i);
+  assert.match(readme, /Read the result through the GitHub integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
 });
