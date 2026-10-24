@@ -195,7 +195,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
   async function requestApi(input = {}) {
     const route = validateMailboxRequest(input);
     const token = getToken();
-    if (!token) throw new Error('Sign in with GitHub in the app's GitHub access section before using the repository mailbox.');
+    if (!token) throw new Error("Sign in with GitHub in the app's GitHub access section before using the repository mailbox.");
     const response = await fetchImpl(route.url, {
       method: route.method,
       headers: {
