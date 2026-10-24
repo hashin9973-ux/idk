@@ -82,7 +82,7 @@ function parseSlashCommand(text) {
     case 'commit': return rest ? { tool: 'git_commit', args: { message: rest } } : need('/commit <message>');
     case 'test': case 'tests': return { tool: 'run_tests', args: rest ? { command: rest } : {} };
     case 'exec': return rest ? { tool: 'shell', args: { command: rest } } : need('/exec <PowerShell command>');
-    case 'github': return { special: 'bridge_status' };
+    case 'github': return { special: 'github_status' };
     default: return null;
   }
 }
