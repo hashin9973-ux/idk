@@ -155,7 +155,9 @@
       error: currentSnapshot.error
     });
     if (renderKey === lastRenderedKey) return;
+    const previousScrollTop = messageList.scrollTop;
     const nearBottom = messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 100;
+    const shouldStickToBottom = nearBottom || !lastRenderedKey;
     lastRenderedKey = renderKey;
     messageList.replaceChildren();
     if (!messages.length) {
@@ -177,7 +179,8 @@
       const fragment = document.createDocumentFragment();
       messages.forEach(message => fragment.appendChild(createMessage(message)));
       messageList.appendChild(fragment);
-      if (nearBottom || renderKey !== lastRenderedKey) messageList.scrollTop = messageList.scrollHeight;
+      if (shouldStickToBottom) messageList.scrollTop = messageList.scrollHeight;
+      else messageList.scrollTop = Math.min(previousScrollTop, Math.max(0, messageList.scrollHeight - messageList.clientHeight));
     }
     if (!messages.length) messageList.scrollTop = 0;
     if (currentSnapshot.error) showError(currentSnapshot.error);
