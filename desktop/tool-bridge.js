@@ -75,6 +75,8 @@ function buildBridgeContextMessage(config) {
 
 function createToolBridge(deps) {
   const { dialog, getMainWindow, getChatView, getWorkspaceRoot, selectWorkspace, localTools, githubAuth } = deps;
+  const hasBridgeBootstrap = typeof deps.hasBridgeBootstrap === 'function' ? deps.hasBridgeBootstrap : () => false;
+  const recordBridgeBootstrap = typeof deps.recordBridgeBootstrap === 'function' ? deps.recordBridgeBootstrap : () => {};
   const conversationBootstrapInFlight = new Set();
 
   function validateArgs(tool, args) {
@@ -295,7 +297,9 @@ function createToolBridge(deps) {
     catch (error) { return { ok: false, reason: 'conversation_inspection_failed', error: String(error && error.message || error) }; }
     if (!state || !state.conversationId) return { ok: false, reason: 'no_active_conversation' };
     if (expectedConversationId && state.conversationId !== expectedConversationId) return { ok: false, reason: 'conversation_changed' };
-    if (state.hasInstructions) return { ok: true, alreadyConfigured: true, conversationId: state.conversationId };
+    if (state.hasInstructions || hasBridgeBootstrap(state.conversationId, repository, branch)) {
+      return { ok: true, alreadyConfigured: true, conversationId: state.conversationId };
+    }
     if (state.generating || state.composerHasDraft) {
       if (retryAttempt < 20) {
         setTimeout(() => initializeCurrentConversation(state.conversationId, retryAttempt + 1).catch(() => {}), 3000);
@@ -307,6 +311,7 @@ function createToolBridge(deps) {
     conversationBootstrapInFlight.add(bootstrapKey);
     try {
       const outcome = await returnMessageToChat(buildBridgeContextMessage(config));
+      if (outcome && outcome.ok) recordBridgeBootstrap(state.conversationId, repository, branch);
       return { ...outcome, conversationId: state.conversationId, repository, branch };
     } finally {
       conversationBootstrapInFlight.delete(bootstrapKey);
