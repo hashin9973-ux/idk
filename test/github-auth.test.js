@@ -331,7 +331,7 @@ test('repository API allows only the configured mailbox contents routes', async 
       branch: 'bridge-mailbox'
     }
   });
-\n  const beforeRejectedCalls = calls.length;
+  const beforeRejectedCalls = calls.length;
   await assert.rejects(auth.requestApi({ method: 'GET', path: '/user' }), /outside the configured repository mailbox/i);
   await assert.rejects(auth.requestApi({
     method: 'GET',
