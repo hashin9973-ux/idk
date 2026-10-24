@@ -118,6 +118,11 @@ function isConflict(error) {
   return /already exists|sha wasn.t supplied|does not match|409|422|conflict/i.test(String(error && error.message || error));
 }
 
+function isCorruptMailboxFile(error) {
+  return error instanceof SyntaxError ||
+    /unexpected file format|exceeds the 1 MiB limit/i.test(String(error && error.message || error));
+}
+
 function createRepositoryBridge(deps) {
   const {
     githubAuth,
@@ -272,7 +277,20 @@ function createRepositoryBridge(deps) {
   async function acquireClaim(requestId) {
     const claimPath = 'bridge/claims/' + requestId + '.json';
     const now = Date.now();
-    const prior = await readRemoteFile(claimPath);
+    let prior;
+    try {
+      prior = await readRemoteFile(claimPath);
+    } catch (error) {
+      if (!isCorruptMailboxFile(error)) throw error;
+      await publishResult(requestId, {
+        protocol: RESULT_PROTOCOL,
+        request_id: requestId,
+        status: 'needs_manual_recovery',
+        completed_at: new Date().toISOString(),
+        error: 'The request claim file is corrupt. The app refused to execute this request again; inspect the workspace and claim file manually.'
+      });
+      return { acquired: false, recovered: true };
+    }
     if (prior && ['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
       return { acquired: false, terminal: true };
     }
@@ -336,7 +354,20 @@ function createRepositoryBridge(deps) {
     const requestId = filename.slice(0, -'.json'.length);
     if (!SAFE_ID.test(requestId) || inMemoryClaims.has(requestId)) return;
     const requestPath = 'bridge/requests/' + filename;
-    const remote = await readRemoteFile(requestPath);
+    let remote;
+    try {
+      remote = await readRemoteFile(requestPath);
+    } catch (error) {
+      if (!isCorruptMailboxFile(error)) throw error;
+      await publishResult(requestId, {
+        protocol: RESULT_PROTOCOL,
+        request_id: requestId,
+        status: 'rejected',
+        completed_at: new Date().toISOString(),
+        error: 'Request file is malformed or exceeds the supported file format/size limit: ' + cleanError(error.message)
+      });
+      return;
+    }
     if (!remote) return;
     let request;
     try {
@@ -442,7 +473,12 @@ function createRepositoryBridge(deps) {
       const pending = [];
       for (const filename of sorted) {
         const requestId = filename.slice(0, -5);
-        if (!(await readRemoteFile('bridge/results/' + requestId + '.json'))) pending.push(filename);
+        try {
+          if (!(await readRemoteFile('bridge/results/' + requestId + '.json'))) pending.push(filename);
+        } catch (error) {
+          if (!isCorruptMailboxFile(error)) throw error;
+          lastError = 'Result file for ' + requestId + ' is corrupt; the request was not replayed automatically.';
+        }
       }
       pendingCount = pending.length;
       lastPollAt = new Date().toISOString();
