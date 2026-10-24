@@ -77,7 +77,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(bridge, /needs_manual_recovery/);
   assert.match(bridge, /publishState/);
   assert.match(bridge, /allowPublicMailbox/);
-  assert.match(bridge, /publicly readable/);
+  assert.match(bridge, /public-mailbox warning checkbox/i);
 });
 
 test('mailbox tool execution is separated from the old ChatGPT page transport', () => {
