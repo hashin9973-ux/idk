@@ -13,7 +13,9 @@ test('packaging includes the native Windows worker and mailbox implementation', 
   assert.equal(pkg.main, 'desktop/main.js');
   assert.ok(pkg.build.files.includes('desktop/**/*'));
   assert.ok(pkg.build.extraResources.some(resource => resource.from === 'vendor/gh' && resource.to === 'gh'));
-  assert.match(pkg.scripts['pre-dist:win'], /prepare-gh-cli/);
+  assert.ok(pkg.scripts['dist:win'].startsWith('node desktop/prepare-gh-cli.js && electron-builder'));
+  assert.ok(pkg.scripts['dist:win:dir'].startsWith('node desktop/prepare-gh-cli.js && electron-builder'));
+  assert.ok(pkg.scripts.prestart.includes('desktop/prepare-gh-cli.js'));
   assert.match(pkg.description, /shared GitHub repository mailbox/i);
   assert.match(pkg.scripts.check, /desktop\/repository-bridge\.js/);
   assert.match(pkg.scripts.check, /test\/repository-bridge\.test\.js/);
