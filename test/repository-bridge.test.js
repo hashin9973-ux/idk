@@ -542,6 +542,8 @@ test('oversized structured results are split into retrievable artifact parts', a
     assert.equal(full.result.result.entries.length, entries.length);
     assert.equal(full.result.result.entries[599].detail, entries[599].detail);
     assert.equal(Buffer.byteLength(fullText, 'utf8'), result.result.bytes);
+    assert.equal(require('node:crypto').createHash('sha256').update(fullText, 'utf8').digest('hex'), result.result.sha256);
+    assert.ok(result.artifacts.every(item => item.bytes <= 256 * 1024));
   } finally {
     await bridge.stop();
   }
