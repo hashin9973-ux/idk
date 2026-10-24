@@ -231,6 +231,41 @@ test('invalid request JSON is reported and does not block later work', async () 
   }
 });
 
+test('a terminal claim with a missing result is quarantined instead of re-executed', async () => {
+  const request = {
+    protocol: PROTOCOL, request_id: 'req-terminal-no-result',
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const priorClaim = {
+    protocol: 'chatgpt-local-repo-claim/v1',
+    request_id: request.request_id,
+    worker_id: 'previous-worker',
+    status: 'completed',
+    completed_at: new Date().toISOString()
+  };
+  const fake = fakeGitHub({ initial: [
+    ['bridge/requests/' + request.request_id + '.json', request],
+    ['bridge/claims/' + request.request_id + '.json', priorClaim]
+  ] });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => { executions++; return { ok: true }; },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    assert.equal(executions, 0, 'terminal claims are never replayed');
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(result.status, 'needs_manual_recovery');
+    assert.match(result.error, /result file is missing/i);
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test('duplicate polls do not execute a request again after its result exists', async () => {
   const request = {
     protocol: PROTOCOL, request_id: 'req-once', created_at: new Date().toISOString(),
