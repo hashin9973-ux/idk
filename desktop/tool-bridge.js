@@ -71,11 +71,11 @@ function createToolBridge(deps) {
     if (tool === 'upload_workspace_file') {
       const target = String(args.path || '(missing path)');
       const sensitive = localTools.looksSensitiveFile && localTools.looksSensitiveFile(target);
-      return header + resultWarning + 'Upload a local workspace file to the shared repository as a retrievable artifact.\\nPath: ' + target +
-        '\\nArtifact name: ' + String(args.artifactName || path.basename(target)) +
-        '\\nThe full file bytes will be committed to GitHub and can be read by repository collaborators. ' +
-        (sensitive ? '\\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
-        '\\nMaximum upload size: 8 MiB.';
+      return header + resultWarning + 'Upload a local workspace file to the shared repository as a retrievable artifact.\nPath: ' + target +
+        '\nArtifact name: ' + String(args.artifactName || path.basename(target)) +
+        '\nThe full file bytes will be committed to GitHub and can be read by repository collaborators. ' +
+        (sensitive ? '\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
+        '\nMaximum upload size: 8 MiB.';
     }
     if (GITHUB_GIT_TOOLS.has(tool)) {
       const repository = tool === 'git_clone' ? String(args.repository || '(missing repository)') : String(args.remote || 'origin');
@@ -157,7 +157,7 @@ function createToolBridge(deps) {
       if (stat.size > maxBytes) throw new Error('File exceeds the 8 MiB upload limit.');
       const bytes = fs.readFileSync(target);
       return uploadWorkspaceFile(requestId, {
-        path: path.relative(root, target).replace(/\\\\/g, '/'),
+        path: path.relative(root, target).replace(/\\/g, '/'),
         artifactName: args.artifactName || path.basename(target),
         bytes
       });
