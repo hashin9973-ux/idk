@@ -273,6 +273,9 @@ function createRepositoryBridge(deps) {
     const claimPath = 'bridge/claims/' + requestId + '.json';
     const now = Date.now();
     const prior = await readRemoteFile(claimPath);
+    if (prior && ['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
+      return { acquired: false, terminal: true };
+    }
     if (prior && prior.value.status === 'result_pending' && prior.value.result) {
       const publish = await writeRemoteJson('bridge/results/' + requestId + '.json', prior.value.result, null, true);
       if (publish.ok) {
