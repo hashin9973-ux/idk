@@ -75,6 +75,7 @@ function buildBridgeContextMessage(config) {
 
 function createToolBridge(deps) {
   const { dialog, getMainWindow, getChatView, getWorkspaceRoot, selectWorkspace, localTools, githubAuth } = deps;
+  const conversationBootstrapInFlight = new Set();
 
   function validateArgs(tool, args) {
     const allowed = TOOL_ARGUMENT_KEYS[tool];
@@ -264,7 +265,7 @@ function createToolBridge(deps) {
       JSON.stringify(report, null, 2);
     return returnMessageToChat(message);
   }
-  async function initializeCurrentConversation(expectedConversationId = '') {
+  async function initializeCurrentConversation(expectedConversationId = '', retryAttempt = 0) {
     const view = getChatView();
     if (!view || view.webContents.isDestroyed()) return { ok: false, reason: 'chat_view_unavailable' };
     const config = githubAuth && githubAuth.getBridgeConfig ? githubAuth.getBridgeConfig() : {};
@@ -295,9 +296,21 @@ function createToolBridge(deps) {
     if (!state || !state.conversationId) return { ok: false, reason: 'no_active_conversation' };
     if (expectedConversationId && state.conversationId !== expectedConversationId) return { ok: false, reason: 'conversation_changed' };
     if (state.hasInstructions) return { ok: true, alreadyConfigured: true, conversationId: state.conversationId };
-    if (state.generating || state.composerHasDraft) return { ok: false, reason: state.generating ? 'assistant_generating' : 'composer_has_draft' };
-    const outcome = await returnMessageToChat(buildBridgeContextMessage(config));
-    return { ...outcome, conversationId: state.conversationId, repository, branch };
+    if (state.generating || state.composerHasDraft) {
+      if (retryAttempt < 20) {
+        setTimeout(() => initializeCurrentConversation(state.conversationId, retryAttempt + 1).catch(() => {}), 3000);
+      }
+      return { ok: false, reason: state.generating ? 'assistant_generating' : 'composer_has_draft' };
+    }
+    const bootstrapKey = [state.conversationId, repository.toLowerCase(), branch].join('|');
+    if (conversationBootstrapInFlight.has(bootstrapKey)) return { ok: false, reason: 'initialization_in_progress' };
+    conversationBootstrapInFlight.add(bootstrapKey);
+    try {
+      const outcome = await returnMessageToChat(buildBridgeContextMessage(config));
+      return { ...outcome, conversationId: state.conversationId, repository, branch };
+    } finally {
+      conversationBootstrapInFlight.delete(bootstrapKey);
+    }
   }
 
   async function handleSlash(raw) {
