@@ -42,6 +42,7 @@ test('the visible surface is a bounded native mirror, not the embedded ChatGPT p
   assert.ok(renderer.includes('onMirrorSnapshot'));
   assert.ok(renderer.includes('listMirrorConversations'));
   assert.ok(renderer.includes('sendMirrorMessage'));
+  assert.ok(renderer.includes('snapshot.signedIn === false'));
   assert.ok(!html.includes('iframe'));
 });
 
