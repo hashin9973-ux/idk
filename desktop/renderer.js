@@ -72,7 +72,7 @@
     loadNewerButton.hidden = !(snapshot && snapshot.hasLater);
     if (snapshot && snapshot.hasEarlier) loadEarlierButton.textContent = '↑ Load earlier messages';
     if (snapshot && snapshot.hasLater) loadNewerButton.textContent = 'Load newer messages ↓';
-    messageInput.disabled = Boolean(sending || busy || (snapshot && (snapshot.loginPage || snapshot.composerHasDraft)));
+    messageInput.disabled = Boolean(sending || busy || (snapshot && (snapshot.signedIn === false || snapshot.loginPage || snapshot.composerHasDraft)));
     sendButton.disabled = messageInput.disabled || !messageInput.value.trim();
     if (snapshot && snapshot.composerHasDraft) {
       snapshotNote.textContent = 'The hidden ChatGPT composer has an unsent draft. Clear it in the full ChatGPT window before sending from the mirror.';
