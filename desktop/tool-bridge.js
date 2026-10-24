@@ -70,7 +70,7 @@ function buildBridgeContextMessage(config) {
     'The selected workspace must have a GitHub remote matching the configured repository. PowerShell runs with the user\'s Windows permissions and requires approval.',
     '',
     'If the most recent user task is an unfinished local coding/development task, continue working on that task using this bridge without asking the user to repeat it. If no such task is pending, apply these instructions to future development requests and do not produce a setup acknowledgement.'
-  ].join('\\n');
+  ].join('\n');
 }
 
 function createToolBridge(deps) {
@@ -288,7 +288,7 @@ function createToolBridge(deps) {
       const editor = document.querySelector('#prompt-textarea, [data-testid="prompt-textarea"], form [contenteditable="true"], textarea');
       const text = editor ? (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement ? editor.value : (editor.innerText || editor.textContent || '')) : '';
       return { conversationId, hasInstructions, generating, composerHasDraft: Boolean(String(text).trim()), url: location.href };
-    })()`.replace('BRIDGE_REPOSITORY_VALUE', ${JSON.stringify(repository)}).replace('BRIDGE_BRANCH_VALUE', ${JSON.stringify(branch)});
+    })()`.replace("'BRIDGE_REPOSITORY_VALUE'", JSON.stringify(repository)).replace("'BRIDGE_BRANCH_VALUE'", JSON.stringify(branch))
     let state;
     try { state = await view.webContents.executeJavaScript(inspectionScript, true); }
     catch (error) { return { ok: false, reason: 'conversation_inspection_failed', error: String(error && error.message || error) }; }
