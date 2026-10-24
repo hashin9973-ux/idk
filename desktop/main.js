@@ -6,6 +6,7 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
+const { extractConversationSnapshot, extractConversationList, scrollConversationViewport } = require('./conversation-mirror');
 const {
   app,
   BrowserWindow,
@@ -49,6 +50,10 @@ let saveTimer = null;
 let toolBridge = null;
 let githubAuth = null;
 let repositoryBridge = null;
+let mirrorSyncTimer = null;
+let mirrorSyncInProgress = false;
+let lastMirrorSnapshot = null;
+let lastMirrorSnapshotSignature = '';
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -135,6 +140,64 @@ function getWorkspaceGitHubRemotes() {
   }
   return [...new Set(remotes)];
 }
+
+function getActiveConversationUrl() {
+  const raw = lastMirrorSnapshot && lastMirrorSnapshot.url || settings.lastConversationUrl || '';
+  try {
+    const url = new URL(raw);
+    if (url.hostname !== 'chatgpt.com' || !/^\/c\/[A-Za-z0-9-]+\/?$/.test(url.pathname)) return '';
+    return 'https://chatgpt.com' + url.pathname.replace(/\/$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function persistActiveConversationUrl(raw) {
+  try {
+    const url = new URL(String(raw || ''));
+    if (url.hostname !== 'chatgpt.com' || !/^\/c\/[A-Za-z0-9-]+\/?$/.test(url.pathname)) return;
+    const safeUrl = 'https://chatgpt.com' + url.pathname.replace(/\/$/, '');
+    if (settings.lastConversationUrl === safeUrl) return;
+    settings.lastConversationUrl = safeUrl;
+    persistSettings();
+  } catch {}
+}
+
+async function syncConversationMirror(force = false) {
+  if (mirrorSyncInProgress) return lastMirrorSnapshot;
+  if (!chatView || chatView.webContents.isDestroyed()) return null;
+  mirrorSyncInProgress = true;
+  try {
+    const result = await chatView.webContents.executeJavaScript('(' + extractConversationSnapshot.toString() + ')()', true);
+    if (!result || typeof result !== 'object') return null;
+    persistActiveConversationUrl(result.url);
+    const signature = JSON.stringify(result);
+    lastMirrorSnapshot = result;
+    if (force || signature !== lastMirrorSnapshotSignature) {
+      lastMirrorSnapshotSignature = signature;
+      if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+        mainWindow.webContents.send('overlay:mirror-snapshot', result);
+      }
+    }
+    return result;
+  } catch (error) {
+    const failure = { error: String(error && error.message || error), title: 'Connecting to ChatGPT…', messages: [], generating: false };
+    if (force && mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('overlay:mirror-snapshot', failure);
+    }
+    return failure;
+  } finally {
+    mirrorSyncInProgress = false;
+  }
+}
+
+function startMirrorSync() {
+  if (mirrorSyncTimer) clearInterval(mirrorSyncTimer);
+  syncConversationMirror(true).catch(() => {});
+  mirrorSyncTimer = setInterval(() => syncConversationMirror(false).catch(() => {}), 700);
+  if (typeof mirrorSyncTimer.unref === 'function') mirrorSyncTimer.unref();
+}
+
 
 function ensureWorkspaceRoot() {
   const root = getWorkspaceRoot();
@@ -260,11 +323,15 @@ function attachNavigationPolicy(contents) {
 function updateChatBounds() {
   if (!mainWindow || mainWindow.isDestroyed() || !chatView || collapsed) return;
   const [width, height] = mainWindow.getContentSize();
+  // ChatGPT stays alive as an authenticated transport, but its website is not drawn
+  // over the native mirror. Keep an equivalent viewport off-screen for DOM updates.
+  const viewportWidth = Math.max(420, width - VIEW_INSET * 2);
+  const viewportHeight = Math.max(480, height - HEADER_HEIGHT - BOTTOM_INSET);
   chatView.setBounds({
-    x: VIEW_INSET,
-    y: HEADER_HEIGHT,
-    width: Math.max(1, width - VIEW_INSET * 2),
-    height: Math.max(1, height - HEADER_HEIGHT - BOTTOM_INSET)
+    x: -viewportWidth - 100,
+    y: -Math.max(1000, viewportHeight),
+    width: viewportWidth,
+    height: viewportHeight
   });
 }
 
@@ -422,15 +489,66 @@ function registerIpc() {
     expandWindow();
     return { collapsed };
   });
-  ipcMain.handle('overlay:reload-chat', (event) => {
+  ipcMain.handle('overlay:reload-chat', async (event) => {
     assertLocalUi(event);
-    if (chatView && !chatView.webContents.isDestroyed()) chatView.webContents.reload();
-    return true;
+    return syncConversationMirror(true);
   });
   ipcMain.handle('overlay:open-in-browser', (event) => {
     assertLocalUi(event);
-    openExternalHttps(CHATGPT_URL);
+    openExternalHttps(getActiveConversationUrl() || CHATGPT_URL);
     return true;
+  });
+  ipcMain.handle('overlay:mirror-snapshot', async (event) => {
+    assertLocalUi(event);
+    return syncConversationMirror(true);
+  });
+  ipcMain.handle('overlay:mirror-send-message', async (event, message) => {
+    assertLocalUi(event);
+    if (typeof message !== 'string' || !message.trim() || message.length > 24000) {
+      return { ok: false, reason: 'invalid_message', message: 'Enter a message under 24,000 characters.' };
+    }
+    if (!toolBridge) return { ok: false, reason: 'bridge_not_ready' };
+    const result = await toolBridge.submitMessageToChat(message);
+    if (result && result.ok) {
+      setTimeout(() => syncConversationMirror(true).catch(() => {}), 400);
+    }
+    return result;
+  });
+  ipcMain.handle('overlay:mirror-list-conversations', async (event) => {
+    assertLocalUi(event);
+    if (!chatView || chatView.webContents.isDestroyed()) return { conversations: [] };
+    try {
+      return await chatView.webContents.executeJavaScript('(' + extractConversationList.toString() + ')()', true);
+    } catch {
+      return { conversations: [] };
+    }
+  });
+  ipcMain.handle('overlay:mirror-open-conversation', async (event, conversationId) => {
+    assertLocalUi(event);
+    if (typeof conversationId !== 'string' || !/^[A-Za-z0-9-]{8,120}$/.test(conversationId)) {
+      return { ok: false, reason: 'invalid_conversation_id' };
+    }
+    const url = 'https://chatgpt.com/c/' + conversationId;
+    await chatView.webContents.loadURL(url);
+    return { ok: true, conversationId };
+  });
+  ipcMain.handle('overlay:mirror-new-conversation', async (event) => {
+    assertLocalUi(event);
+    if (!chatView || chatView.webContents.isDestroyed()) return { ok: false, reason: 'chat_view_unavailable' };
+    await chatView.webContents.loadURL(CHATGPT_URL);
+    return { ok: true };
+  });
+  ipcMain.handle('overlay:mirror-scroll', async (event, direction) => {
+    assertLocalUi(event);
+    if (direction !== -1 && direction !== 1) return { ok: false, reason: 'invalid_direction' };
+    if (!chatView || chatView.webContents.isDestroyed()) return { ok: false, reason: 'chat_view_unavailable' };
+    try {
+      const result = await chatView.webContents.executeJavaScript('(' + scrollConversationViewport.toString() + ')(' + direction + ')', true);
+      setTimeout(() => syncConversationMirror(true).catch(() => {}), 250);
+      return result;
+    } catch (error) {
+      return { ok: false, reason: 'scroll_failed', message: String(error && error.message || error) };
+    }
   });
   ipcMain.handle('overlay:quit', (event) => {
     assertLocalUi(event);
@@ -597,8 +715,20 @@ function createMainWindow() {
   });
   chatView.webContents.on('did-finish-load', () => {
     if (toolBridge) toolBridge.installChatToolBridge();
+    syncConversationMirror(true).catch(() => {});
   });
-  chatView.webContents.loadURL(CHATGPT_URL).catch((error) => {
+  chatView.webContents.on('did-navigate-in-page', (_event, url) => {
+    persistActiveConversationUrl(url);
+    lastMirrorSnapshotSignature = '';
+    syncConversationMirror(true).catch(() => {});
+  });
+  chatView.webContents.on('did-navigate', (_event, url) => {
+    persistActiveConversationUrl(url);
+    lastMirrorSnapshotSignature = '';
+    syncConversationMirror(true).catch(() => {});
+  });
+  const initialChatUrl = getActiveConversationUrl() || CHATGPT_URL;
+  chatView.webContents.loadURL(initialChatUrl).catch((error) => {
     console.error('Could not load ChatGPT:', error.message);
   });
 
@@ -701,6 +831,7 @@ if (!hasInstanceLock) {
     registerIpc();
     createMainWindow();
     repositoryBridge.start();
+    startMirrorSync();
     registerHotkey();
 
     app.on('activate', () => {
@@ -715,6 +846,8 @@ if (!hasInstanceLock) {
 }
 
 app.on('before-quit', () => {
+  if (mirrorSyncTimer) clearInterval(mirrorSyncTimer);
+  mirrorSyncTimer = null;
   if (repositoryBridge) repositoryBridge.stop();
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
