@@ -57,6 +57,56 @@ test('workspace artifact upload waits for local approval before reading and publ
   }
 });
 
+test('workspace-relative file writes execute without a dialog and reject paths outside the selected workspace', async () => {
+  const root = fixture();
+  try {
+    let approvalCalls = 0;
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvalCalls++; throw new Error('unexpected approval dialog'); } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+
+    const written = await bridge.runTool('write_file', { path: 'new.txt', content: 'safe sandbox write\\n' }, 'req-auto-write');
+    assert.equal(written.ok, true);
+    assert.equal(fs.readFileSync(path.join(root, 'new.txt'), 'utf8'), 'safe sandbox write\\n');
+    assert.equal(approvalCalls, 0);
+
+    const escaped = await bridge.runTool('write_file', { path: '../outside.txt', content: 'must not write' }, 'req-escape-write');
+    assert.equal(escaped.ok, false);
+    assert.match(escaped.error, /parent traversal/);
+    assert.equal(fs.existsSync(path.join(path.dirname(root), 'outside.txt')), false);
+    assert.equal(approvalCalls, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('shell commands remain approval-gated and are not executed when declined', async () => {
+  const root = fixture();
+  try {
+    let approvalCalls = 0;
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvalCalls++; return { response: 1 }; } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('shell', {
+      command: "Set-Content -LiteralPath 'should-not-exist.txt' -Value 'not run'"
+    }, 'req-shell-declined');
+    assert.equal(approvalCalls, 1);
+    assert.equal(result.ok, false);
+    assert.equal(result.cancelled, true);
+    assert.equal(fs.existsSync(path.join(root, 'should-not-exist.txt')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('declining the local artifact-upload approval performs no file publication', async () => {
   const root = fixture();
   try {
