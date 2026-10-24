@@ -73,7 +73,7 @@ Always read `bridge/context/latest.json` first. Retrieve only relevant context o
 
 Results use `chatgpt-local-repo-result/v1`. Common statuses are `completed`, `partial`, `failed`, `cancelled`, `rejected`, and `needs_manual_recovery`.
 
-Short textual outputs are inline. Large text fields are replaced by a small preview and a path to UTF-8 text artifact part(s), listed in the top-level `artifacts` array. Retrieve the artifact through GitHub to inspect the full output. Each artifact records a repository path, byte size, SHA-256 digest, media type, and part metadata.
+Short textual outputs are inline. Large text fields are replaced by a small preview and a path to UTF-8 text artifact part(s), listed in the top-level `artifacts` array. Text artifact parts are at most 256 KiB so they remain retrievable with the GitHub Contents API. If the complete result envelope is still too large, the app splits its serialized JSON into `structured_result_part` text artifacts. Retrieve all listed parts, concatenate structured-result parts in numeric order, then parse the reconstructed JSON. The result records the complete data hash/byte count plus each part's own hash/size.
 
 For a local file that you explicitly want to share, request the `upload_workspace_file` tool with its workspace-relative `path` and optional `artifactName`. It **always requires a native Windows approval prompt** before reading/uploading the file and is limited to 8 MiB. The uploaded bytes are stored at `bridge/artifacts/<request_id>/<filename>`. A repository path or URL is returned for retrieval. Do not upload secrets, credentials, private keys, personal data, or files you do not intend to share with everyone who can read the repository.
 
