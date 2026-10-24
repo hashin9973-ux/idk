@@ -242,6 +242,90 @@ test('authenticated Git operations reject non-GitHub remotes and missing credent
   }
 });
 
+test('repository API allows only the configured mailbox contents routes', async () => {
+  const calls = [];
+  const mockFetch = async (url, options = {}) => {
+    const target = String(url);
+    calls.push({ url: target, options });
+    if (target.endsWith('/login/device/code')) {
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+    }
+    if (target.endsWith('/login/oauth/access_token')) return response({ access_token: 'gho-mailbox-test-token' });
+    if (target.endsWith('/user')) return response({ login: 'example-user' });
+    if (target === 'https://api.github.com/repos/example/private-repo') {
+      return response({ private: true });
+    }
+    if (target.startsWith('https://api.github.com/repos/example/private-repo/contents/')) {
+      if ((options.method || 'GET') === 'PUT') return response({ content: { sha: '0123456789abcdef0123456789abcdef01234567' } }, 201);
+      return response([{ name: 'req-test.json', type: 'file' }]);
+    }
+    throw new Error('Unexpected test URL: ' + target);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  settings.repositoryBridge = { owner: 'example', repo: 'private-repo', branch: 'bridge-mailbox' };
+  await connect(auth);
+
+  const listing = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/requests',
+    query: { ref: 'bridge-mailbox' }
+  });
+  assert.deepEqual(listing.result, [{ name: 'req-test.json', type: 'file' }]);
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox')));
+  const readCall = calls.find(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox'));
+  assert.equal(readCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
+
+  const resultPayload = {
+    protocol: 'chatgpt-local-repo-result/v1',
+    request_id: 'req-test',
+    status: 'completed'
+  };
+  const written = await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/results/req-test.json',
+    body: {
+      message: '[local bridge] bridge/results/req-test.json',
+      content: Buffer.from(JSON.stringify(resultPayload, null, 2) + '\n').toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  assert.equal(written.result.content.sha, '0123456789abcdef0123456789abcdef01234567');
+  const writeCall = calls.find(call => call.options.method === 'PUT');
+  assert.equal(writeCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
+  assert.equal(JSON.parse(writeCall.options.body).branch, 'bridge-mailbox');
+
+  const beforeRejectedCalls = calls.length;
+  await assert.rejects(auth.requestApi({ method: 'GET', path: '/user' }), /outside the configured repository mailbox/i);
+  await assert.rejects(auth.requestApi({
+    method: 'GET',
+    path: '/repos/other/repo/contents/bridge/requests',
+    query: { ref: 'bridge-mailbox' }
+  }), /outside the configured repository mailbox/i);
+  await assert.rejects(auth.requestApi({
+    method: 'DELETE',
+    path: '/repos/example/private-repo/contents/bridge/results/req-test.json'
+  }), /only permits GitHub GET and PUT/i);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/requests/req-test.json',
+    body: {
+      message: 'unsafe request edit',
+      content: Buffer.from(JSON.stringify({ protocol: 'chatgpt-local-repo-bridge/v1' })).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  }), /cannot create or overwrite ChatGPT request files/i);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/results/req-test.json',
+    body: {
+      message: 'wrong protocol',
+      content: Buffer.from(JSON.stringify({ protocol: 'wrong' })).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  }), /supported result protocol/i);
+  assert.equal(calls.length, beforeRejectedCalls, 'invalid routes and payloads are rejected before network requests');
+});
+
 test('GitHub logout removes the encrypted credential', async () => {
   const mockFetch = loginServer('gho-test');
   const { auth, settings } = fixture(mockFetch);
