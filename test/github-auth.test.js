@@ -294,7 +294,7 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.equal(writeCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
   assert.equal(JSON.parse(writeCall.options.body).branch, 'bridge-mailbox');
 
-  for (const folder of ['requests', 'results', 'claims', 'state']) {
+  for (const folder of ['requests', 'results', 'claims', 'state', 'context', 'artifacts']) {
     await auth.requestApi({
       method: 'PUT',
       path: '/repos/example/private-repo/contents/bridge/' + folder + '/.gitkeep',
@@ -306,7 +306,32 @@ test('repository API allows only the configured mailbox contents routes', async 
     });
   }
 
-  const beforeRejectedCalls = calls.length;
+  const contextPayload = {
+    protocol: 'chatgpt-local-environment-context/v1',
+    name: 'environment',
+    generated_at: '2026-10-24T00:00:00.000Z',
+    data: { platform: 'win32' }
+  };
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/context/environment.json',
+    body: {
+      message: '[local bridge] environment context',
+      content: Buffer.from(JSON.stringify(contextPayload, null, 2) + '\\n').toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  const rawArtifact = Buffer.from([0, 1, 2, 127, 128, 255]).toString('base64');
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/artifacts/req-test/sample.bin',
+    body: {
+      message: '[local bridge] upload sample.bin',
+      content: rawArtifact,
+      branch: 'bridge-mailbox'
+    }
+  });
+\n  const beforeRejectedCalls = calls.length;
   await assert.rejects(auth.requestApi({ method: 'GET', path: '/user' }), /outside the configured repository mailbox/i);
   await assert.rejects(auth.requestApi({
     method: 'GET',
