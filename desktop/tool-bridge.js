@@ -1,6 +1,8 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const TOOL_ARGUMENT_KEYS = Object.freeze({
   get_capabilities: [],
@@ -32,6 +34,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   git_pull: ['remote', 'branch', 'timeoutMs'],
   git_push: ['remote', 'branch', 'timeoutMs'],
   git_clone: ['repository', 'path', 'branch', 'timeoutMs'],
+  upload_workspace_file: ['path', 'artifactName'],
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
@@ -49,7 +52,7 @@ function isPlainObject(value) {
 }
 
 function createToolBridge(deps) {
-  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth } = deps;
+  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile } = deps;
 
   function validateArgs(tool, args) {
     if (BLOCKED_TOOLS_FOR_MAILBOX.has(tool)) {
@@ -65,6 +68,15 @@ function createToolBridge(deps) {
   function approvalDetail(tool, args, root) {
     const header = 'Workspace: ' + root + '\nTool: ' + tool + '\n\n';
     const resultWarning = 'The result will be committed to the configured shared GitHub mailbox branch. Anyone with repository read access may see it; for a public repository, it is publicly readable.\n\n';
+    if (tool === 'upload_workspace_file') {
+      const target = String(args.path || '(missing path)');
+      const sensitive = localTools.looksSensitiveFile && localTools.looksSensitiveFile(target);
+      return header + resultWarning + 'Upload a local workspace file to the shared repository as a retrievable artifact.\\nPath: ' + target +
+        '\\nArtifact name: ' + String(args.artifactName || path.basename(target)) +
+        '\\nThe full file bytes will be committed to GitHub and can be read by repository collaborators. ' +
+        (sensitive ? '\\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
+        '\\nMaximum upload size: 8 MiB.';
+    }
     if (GITHUB_GIT_TOOLS.has(tool)) {
       const repository = tool === 'git_clone' ? String(args.repository || '(missing repository)') : String(args.remote || 'origin');
       return header + resultWarning + 'Authenticated Git operation: ' + tool.replace('git_', '') +
@@ -134,7 +146,22 @@ function createToolBridge(deps) {
     };
   }
 
-  async function executeLocalTool(root, tool, args) {
+  async function executeLocalTool(root, tool, args, requestId) {
+    if (tool === 'upload_workspace_file') {
+      if (typeof uploadWorkspaceFile !== 'function') throw new Error('Repository artifact upload is unavailable.');
+      const target = localTools.safePath(root, args.path, false);
+      if (!fs.existsSync(target)) throw new Error('File not found: ' + args.path);
+      const stat = fs.statSync(target);
+      if (!stat.isFile()) throw new Error('Only regular files can be uploaded.');
+      const maxBytes = 8 * 1024 * 1024;
+      if (stat.size > maxBytes) throw new Error('File exceeds the 8 MiB upload limit.');
+      const bytes = fs.readFileSync(target);
+      return uploadWorkspaceFile(requestId, {
+        path: path.relative(root, target).replace(/\\\\/g, '/'),
+        artifactName: args.artifactName || path.basename(target),
+        bytes
+      });
+    }
     if (!GITHUB_GIT_TOOLS.has(tool)) return localTools.executeTool(root, tool, args);
     if (!githubAuth || typeof githubAuth.runGitOperation !== 'function') {
       throw new Error('Authenticated local Git operations are unavailable in this app build.');
@@ -164,14 +191,16 @@ function createToolBridge(deps) {
     let result;
     try {
       validateArgs(tool, args);
-      const policy = localTools.getToolPolicy(tool, args);
+      const policy = tool === 'upload_workspace_file'
+        ? { tool, requiresApproval: true, automatic: false }
+        : localTools.getToolPolicy(tool, args);
       if (policy.requiresApproval) {
         const approved = await askApproval(tool, args, root);
         if (!approved) {
           result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
         } else {
           if (tool === 'read_file') args.approved = true;
-          const output = await executeLocalTool(root, tool, args);
+          const output = await executeLocalTool(root, tool, args, id);
           if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
             result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
           } else {
@@ -179,7 +208,7 @@ function createToolBridge(deps) {
           }
         }
       } else {
-        const output = await executeLocalTool(root, tool, args);
+        const output = await executeLocalTool(root, tool, args, id);
         if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
           result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
         } else {
