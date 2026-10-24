@@ -1,42 +1,39 @@
+'use strict';
+
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('assistantOverlay', Object.freeze({
-  collapse: () => ipcRenderer.invoke('overlay:collapse'),
-  expand: () => ipcRenderer.invoke('overlay:expand'),
-  reloadChat: () => ipcRenderer.invoke('overlay:reload-chat'),
-  getMirrorSnapshot: () => ipcRenderer.invoke('overlay:mirror-snapshot'),
-  sendMirrorMessage: (message) => ipcRenderer.invoke('overlay:mirror-send-message', message),
-  listMirrorConversations: () => ipcRenderer.invoke('overlay:mirror-list-conversations'),
-  openMirrorConversation: (conversationId) => ipcRenderer.invoke('overlay:mirror-open-conversation', conversationId),
-  newMirrorConversation: () => ipcRenderer.invoke('overlay:mirror-new-conversation'),
-  scrollMirrorConversation: (direction) => ipcRenderer.invoke('overlay:mirror-scroll', direction),
-  onMirrorSnapshot(callback) {
+contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
+  getState: () => ipcRenderer.invoke('app:get-state'),
+  saveBridgeConfig: config => ipcRenderer.invoke('app:save-bridge-config', config),
+  startBridge: () => ipcRenderer.invoke('app:start-bridge'),
+  stopBridge: () => ipcRenderer.invoke('app:stop-bridge'),
+  pollNow: () => ipcRenderer.invoke('app:poll-now'),
+  selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
+  openAccounts: () => ipcRenderer.invoke('app:open-accounts'),
+  collapse: () => ipcRenderer.invoke('app:collapse'),
+  expand: () => ipcRenderer.invoke('app:expand'),
+  quit: () => ipcRenderer.invoke('app:quit'),
+  getGitHubState: () => ipcRenderer.invoke('app:github-state'),
+  setGitHubClientId: clientId => ipcRenderer.invoke('app:github-set-client-id', clientId),
+  startGitHubLogin: () => ipcRenderer.invoke('app:github-start-login'),
+  pollGitHubLogin: () => ipcRenderer.invoke('app:github-poll-login'),
+  logoutGitHub: () => ipcRenderer.invoke('app:github-logout'),
+  onBridgeState(callback) {
     if (typeof callback !== 'function') return () => {};
-    const listener = (_event, snapshot) => callback(snapshot && typeof snapshot === 'object' ? snapshot : {});
-    ipcRenderer.on('overlay:mirror-snapshot', listener);
-    return () => ipcRenderer.removeListener('overlay:mirror-snapshot', listener);
+    const listener = (_event, state) => callback(state && typeof state === 'object' ? state : {});
+    ipcRenderer.on('app:bridge-state', listener);
+    return () => ipcRenderer.removeListener('app:bridge-state', listener);
   },
-  openInBrowser: () => ipcRenderer.invoke('overlay:open-in-browser'),
-  quit: () => ipcRenderer.invoke('overlay:quit'),
-  selectWorkspace: () => ipcRenderer.invoke('overlay:select-workspace'),
-  getWorkspace: () => ipcRenderer.invoke('overlay:get-workspace'),
-  openAccounts: () => ipcRenderer.invoke('overlay:open-accounts'),
-  openChatGPTLogin: () => ipcRenderer.invoke('overlay:open-chatgpt-login'),
-  getGitHubState: () => ipcRenderer.invoke('overlay:github-state'),
-  setGitHubClientId: (clientId) => ipcRenderer.invoke('overlay:github-set-client-id', clientId),
-  startGitHubLogin: () => ipcRenderer.invoke('overlay:github-start-login'),
-  pollGitHubLogin: () => ipcRenderer.invoke('overlay:github-poll-login'),
-  logoutGitHub: () => ipcRenderer.invoke('overlay:github-logout'),
   onWorkspaceChanged(callback) {
     if (typeof callback !== 'function') return () => {};
-    const listener = (_event, workspaceRoot) => callback(String(workspaceRoot || ''));
-    ipcRenderer.on('overlay:workspace-changed', listener);
-    return () => ipcRenderer.removeListener('overlay:workspace-changed', listener);
+    const listener = (_event, root) => callback(String(root || ''));
+    ipcRenderer.on('app:workspace-changed', listener);
+    return () => ipcRenderer.removeListener('app:workspace-changed', listener);
   },
   onCollapsedChanged(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, collapsed) => callback(Boolean(collapsed));
-    ipcRenderer.on('overlay:collapsed-changed', listener);
-    return () => ipcRenderer.removeListener('overlay:collapsed-changed', listener);
+    ipcRenderer.on('app:collapsed-changed', listener);
+    return () => ipcRenderer.removeListener('app:collapsed-changed', listener);
   }
 }));
