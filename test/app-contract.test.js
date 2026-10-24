@@ -185,6 +185,8 @@ test('account login is isolated from the remote page and protects the GitHub tok
   assert.ok(auth.includes('safeStorage.decryptString'));
   assert.ok(auth.includes('runGitOperation'));
   assert.ok(auth.includes('GIT_CONFIG_VALUE_0'));
+  assert.ok(auth.includes("GIT_CONFIG_KEY_2: 'core.hooksPath'"));
+  assert.ok(auth.includes('chatgpt-assistant-git-hooks-'));
   assert.ok(!auth.includes('requestApi(args)'));
   assert.ok(accountsHtml.includes('github-client-id'));
   assert.ok(accountsHtml.includes('local repository operations'));
