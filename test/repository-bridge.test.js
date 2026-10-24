@@ -414,7 +414,7 @@ test('large textual tool output is stored as a retrievable artifact and previewe
     assert.equal(record.status, 'completed');
     assert.equal(record.artifacts.length, 1);
     const artifact = record.artifacts[0];
-    assert.match(artifact.path, /^bridge\\/artifacts\\/req-large-output\\//);
+    assert.ok(artifact.path.startsWith('bridge/artifacts/req-large-output/'));
     const stored = fake.files.get(artifact.path);
     assert.ok(stored, 'full output must be retrievable by the artifact path');
     assert.equal(Buffer.from(stored.content, 'base64').toString('utf8'), longText);
@@ -441,7 +441,7 @@ test('workspace file upload stores raw bytes and returns a repository locator', 
   });
   assert.equal(artifact.path, 'bridge/artifacts/req-upload-binary/sample.bin');
   assert.equal(artifact.bytes, bytes.length);
-  assert.match(artifact.url, /blob\\/bridge-mailbox\\/bridge\\/artifacts/);
+  assert.ok(artifact.url.includes('/blob/bridge-mailbox/bridge/artifacts/'));
   const stored = fake.files.get(artifact.path);
   assert.ok(stored);
   assert.deepEqual(Buffer.from(stored.content, 'base64'), bytes);
