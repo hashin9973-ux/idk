@@ -5,7 +5,7 @@ const { TOOL_ARGUMENT_KEYS } = require('./tool-bridge');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
-const DEFAULT_BRANCH = 'main';
+const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 15000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -62,25 +62,26 @@ function validateRequest(requestId, request) {
 
 function redactText(text, workspaceRoot) {
   let value = String(text);
-  if (workspaceRoot) {
-    const needle = String(workspaceRoot);
-    const lowerNeedle = needle.toLowerCase();
+  const os = require('node:os');
+  const roots = [...new Set([workspaceRoot, os.homedir(), os.tmpdir()].filter(item => typeof item === 'string' && item.length > 3))];
+  for (const root of roots) {
+    const needle = root.toLowerCase();
     const lowerValue = value.toLowerCase();
-    if (lowerNeedle) {
-      let cursor = 0;
-      let result = '';
-      let found;
-      while ((found = lowerValue.indexOf(lowerNeedle, cursor)) !== -1) {
-        result += value.slice(cursor, found) + '<workspace>';
-        cursor = found + needle.length;
-      }
-      if (cursor) value = result + value.slice(cursor);
+    let cursor = 0;
+    let result = '';
+    let found;
+    while ((found = lowerValue.indexOf(needle, cursor)) !== -1) {
+      result += value.slice(cursor, found) + (root === workspaceRoot ? '<workspace>' : '<local-path>');
+      cursor = found + needle.length;
     }
+    if (cursor) value = result + value.slice(cursor);
   }
   return value
-    .replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]')
-    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\bgh[a-z]{1,2}_[A-Za-z0-9_]{20,}\b/gi, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/gi, '[REDACTED_GITHUB_TOKEN]')
+    .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, '[REDACTED_API_KEY]')
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
+    .replace(/\bAuthorization:\s*Bearer\s+[^\s,;]{16,}/gi, 'Authorization: Bearer [REDACTED]')
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]');
 }
 
@@ -256,7 +257,7 @@ function createRepositoryBridge(deps) {
       workspace_name: getWorkspaceRoot ? require('node:path').basename(getWorkspaceRoot()) : null
     };
     const signature = JSON.stringify({ ...snapshot, updated_at: undefined });
-    if (!force && signature === lastPublishedSignature && now - lastStatePublishAt < 5 * 60 * 1000) return;
+    if (!force && now - lastStatePublishAt < 60 * 1000) return;
     try {
       const file = await readRemoteFile('bridge/state/windows-app.json');
       await writeRemoteJson('bridge/state/windows-app.json', snapshot, file && file.sha, false);
@@ -286,10 +287,32 @@ function createRepositoryBridge(deps) {
       return { acquired: false, recovered: true };
     }
     if (prior && Number(prior.value.lease_expires_at_ms) > now) return { acquired: false };
+    if (prior && prior.value.status === 'processing') {
+      const recovery = {
+        protocol: RESULT_PROTOCOL,
+        request_id: requestId,
+        status: 'needs_manual_recovery',
+        completed_at: new Date().toISOString(),
+        error: 'A previous worker claim expired. This request was not replayed automatically because the local operation may already have had side effects. Check the workspace before creating a new request ID.'
+      };
+      const result = await publishResult(requestId, recovery);
+      const latestClaim = await readRemoteFile(claimPath);
+      if (latestClaim) {
+        await writeRemoteJson(claimPath, {
+          protocol: 'chatgpt-local-repo-claim/v1',
+          request_id: requestId,
+          worker_id: workerId,
+          status: 'needs_manual_recovery',
+          completed_at: new Date().toISOString()
+        }, latestClaim.sha, false);
+      }
+      return { acquired: false, recovered: result.published };
+    }
     const claim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
       worker_id: workerId,
+      tool: null,
       status: 'processing',
       claimed_at: new Date(now).toISOString(),
       lease_expires_at_ms: now + CLAIM_LEASE_MS
@@ -367,13 +390,14 @@ function createRepositoryBridge(deps) {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
       worker_id: workerId,
+      tool: request.tool,
       status: 'result_pending',
       claimed_at: claim.value.claimed_at,
       lease_expires_at_ms: Date.now() + 24 * 60 * 60 * 1000,
       result: resultRecord
     };
-    await writeRemoteJson('bridge/claims/' + requestId + '.json', pendingClaim, claim.sha, false);
     try {
+      await writeRemoteJson('bridge/claims/' + requestId + '.json', pendingClaim, claim.sha, false);
       const published = await publishResult(requestId, resultRecord);
       if (published.published) {
         const file = await readRemoteFile('bridge/claims/' + requestId + '.json');
@@ -388,7 +412,13 @@ function createRepositoryBridge(deps) {
         lastError = 'Result for ' + requestId + ' is waiting to be published; the claim preserves it for retry.';
       }
     } catch (error) {
-      lastError = 'Tool ran, but result upload failed: ' + cleanError(error.message);
+      lastError = 'Tool ran; result publication failed: ' + cleanError(error.message);
+      try {
+        const published = await publishResult(requestId, resultRecord);
+        if (published.published) lastError = '';
+      } catch (retryError) {
+        lastError += '; retry failed: ' + cleanError(retryError.message);
+      }
     } finally {
       activeRequestId = null;
       inMemoryClaims.delete(requestId);
@@ -402,19 +432,22 @@ function createRepositoryBridge(deps) {
     pollInFlight = true;
     try {
       const files = await listFolder('bridge/requests');
-      pendingCount = files.filter(file => file.name.endsWith('.json') && SAFE_ID.test(file.name.slice(0, -5))).length;
-      lastPollAt = new Date().toISOString();
-      lastError = '';
-      announce();
-      await publishState(false);
       const sorted = files
         .map(file => file.name)
         .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
         .sort();
+      const pending = [];
       for (const filename of sorted) {
-        if (!running) break;
         const requestId = filename.slice(0, -5);
-        if (await readRemoteFile('bridge/results/' + requestId + '.json')) continue;
+        if (!(await readRemoteFile('bridge/results/' + requestId + '.json'))) pending.push(filename);
+      }
+      pendingCount = pending.length;
+      lastPollAt = new Date().toISOString();
+      lastError = '';
+      announce();
+      await publishState(false);
+      for (const filename of pending) {
+        if (!running) break;
         await processRequest(filename);
       }
     } catch (error) {
