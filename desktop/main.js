@@ -96,7 +96,17 @@ function cleanLoginOutput(value) {
 function captureDeviceCode(login, chunk) {
   login.output = (login.output + String(chunk || '')).slice(-12000);
   const match = login.output.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/i);
-  if (match) login.userCode = match[1].toUpperCase();
+  if (!match) return;
+
+  login.userCode = match[1].toUpperCase();
+  if (!login.openPromptReleased) {
+    login.openPromptReleased = true;
+    // The CLI may wait for Enter before opening its browser. This process has no
+    // visible terminal, so release that prompt on the user's behalf.
+    try {
+      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\n');
+    } catch {}
+  }
 }
 
 async function completeGitHubCliLogin(login) {
@@ -114,7 +124,7 @@ function startGitHubCliLogin() {
       'auth', 'login', '--web', '--hostname', 'github.com',
       '--git-protocol', 'https', '--clipboard'
     ], {
-      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: githubCliEnvironment()
+      windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: githubCliEnvironment()
     });
   } catch (error) {
     throw new Error('Could not start GitHub sign-in: ' + cleanLoginOutput(error.message));
