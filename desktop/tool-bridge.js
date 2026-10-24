@@ -468,8 +468,9 @@ function createToolBridge(deps) {
       // Seed the repository protocol when an existing conversation is open and idle,
       // so the user does not need to send /tools manually in each conversation.
       if (!document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop generating response"]')) {
-        const match = String(location.pathname || '').match(/\\/c\\/([A-Za-z0-9-]+)/);
-        const conversationId = match ? match[1] : '';
+        const pathParts = String(location.pathname || '').split('/');
+        const conversationIndex = pathParts.indexOf('c');
+        const conversationId = conversationIndex >= 0 ? (pathParts[conversationIndex + 1] || '') : '';
         const editor = document.querySelector('#prompt-textarea, [data-testid="prompt-textarea"], form [contenteditable="true"], textarea');
         const draft = editor ? (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement ? editor.value : (editor.innerText || editor.textContent || '')) : '';
         if (conversationId && !bootstrapSignaled.has(conversationId) && !String(draft).trim()) {
