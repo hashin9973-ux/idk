@@ -62,7 +62,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /login\.child\.stdin\.end/);
   assert.match(main, /openPromptReleased = true/);
   assert.match(main, /GH_CONFIG_DIR: path\.join\(app\.getPath\('userData'\), 'github-cli'\)/);
-  assert.match(main, /GH_BROWSER: path\.join\(windowsRoot, 'explorer\\.exe'\)/);
+  assert.ok(main.includes("GH_BROWSER: path.join(windowsRoot, 'explorer.exe')"));
   assert.doesNotMatch(main, /clearGitHubCliCredentials|auth', 'logout/);
   assert.doesNotMatch(main, /const connected = await githubAuth\.importToken\(token\)/);
   assert.match(main, /repositoryBridge\.stop\(\)/);
