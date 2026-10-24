@@ -198,7 +198,7 @@ async function syncConversationMirror(force = false) {
 function startMirrorSync() {
   if (mirrorSyncTimer) clearInterval(mirrorSyncTimer);
   syncConversationMirror(true).catch(() => {});
-  mirrorSyncTimer = setInterval(() => syncConversationMirror(false).catch(() => {}), 700);
+  mirrorSyncTimer = setInterval(() => syncConversationMirror(false).catch(() => {}), 5000);
   if (typeof mirrorSyncTimer.unref === 'function') mirrorSyncTimer.unref();
 }
 
@@ -284,7 +284,13 @@ function attachNavigationPolicy(contents) {
   contents.on('will-navigate', (event, targetUrl) => {
     if (contents === (chatView && chatView.webContents) && String(targetUrl).startsWith('assistant-tool:')) {
       event.preventDefault();
-      if (toolBridge) toolBridge.handleInternalUrl(contents, targetUrl).catch(error => console.error('Local tool request failed:', error.message));
+      let internal;
+      try { internal = new URL(targetUrl); } catch { return; }
+      if (internal.hostname === 'mirror-refresh') {
+        syncConversationMirror(true).catch(() => {});
+      } else if (toolBridge) {
+        toolBridge.handleInternalUrl(contents, targetUrl).catch(error => console.error('Local tool request failed:', error.message));
+      }
       return;
     }
     const url = getSafeUrl(targetUrl);
