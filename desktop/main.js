@@ -23,6 +23,19 @@ const SESSION_PARTITION = 'persist:chatgpt-assistant';
 const HEADER_HEIGHT = 58;
 const VIEW_INSET = 8;
 const BOTTOM_INSET = 8;
+// The authenticated page is transport only. Suppress site chrome that the native
+// mirror already replaces, while leaving the active conversation and composer intact.
+const TRANSPORT_CSS = `
+  html, body { overflow-x: hidden !important; min-width: 0 !important; }
+  #stage-slideover-sidebar,
+  [data-testid="sidebar"],
+  [data-testid="history-sidebar"],
+  aside,
+  nav[aria-label*="sidebar" i] { display: none !important; }
+  header,
+  [data-testid="conversation-header"] { display: none !important; }
+  main { max-width: 100% !important; width: 100% !important; }
+`;
 const COLLAPSED_SIZE = 76;
 const EXPANDED_SIZE = { width: 460, height: 720 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
@@ -308,6 +321,14 @@ function attachNavigationPolicy(contents) {
 
   contents.on('did-create-window', (childWindow) => {
     attachNavigationPolicy(childWindow.webContents);
+  });
+}
+
+function optimizeChatTransport(contents) {
+  if (!contents || contents.isDestroyed()) return Promise.resolve(false);
+  return contents.insertCSS(TRANSPORT_CSS).then(() => true).catch(error => {
+    console.warn('Could not optimize the hidden ChatGPT transport layout:', error.message);
+    return false;
   });
 }
 
@@ -745,8 +766,10 @@ function createMainWindow() {
     console.error('ChatGPT view render process exited:', details.reason);
   });
   chatView.webContents.on('did-finish-load', () => {
-    if (toolBridge) toolBridge.installChatToolBridge();
-    syncConversationMirror(true).catch(() => {});
+    optimizeChatTransport(chatView.webContents).finally(() => {
+      if (toolBridge) toolBridge.installChatToolBridge();
+      syncConversationMirror(true).catch(() => {});
+    });
   });
   chatView.webContents.on('did-navigate-in-page', (_event, url) => {
     persistActiveConversationUrl(url);
