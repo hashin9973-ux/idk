@@ -117,6 +117,8 @@ test('workspace file mutations are automatic while commands and tests remain app
 test('secret-like write and patch targets require approval', () => {
   assert.equal(tools.getToolPolicy('write_file', { path: '.env' }).requiresApproval, true);
   assert.equal(tools.getToolPolicy('delete_path', { path: 'keys/id_rsa' }).requiresApproval, true);
+  assert.equal(tools.getToolPolicy('write_file', { path: 'secrets/config.json' }).requiresApproval, true);
+  assert.equal(tools.getToolPolicy('move_path', { source: 'src/auth/config.json', destination: 'archive/config.json' }).requiresApproval, true);
   assert.equal(tools.getToolPolicy('move_path', { source: 'config.json', destination: '.npmrc' }).requiresApproval, true);
   assert.equal(tools.getToolPolicy('apply_patch', {
     patch: '*** Begin Patch Patch\n*** Update File: .env\n@@ TOKEN\n-TOKEN=old\n+TOKEN=new\n*** End Patch'
