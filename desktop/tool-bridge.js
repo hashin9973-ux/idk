@@ -339,15 +339,17 @@ function createToolBridge(deps) {
       return;
     }
     if (parsed.special === 'coding_mode') {
-      const config = githubAuth && githubAuth.getBridgeConfig ? githubAuth.getBridgeConfig() : {};
-      const repositoryNote = config.repository ? '\nConfigured repository: ' + config.repository + '\nBranch: ' + (config.branch || 'main') : '\nNo repository is configured yet; configure it in Accounts first.';
-      await returnMessageToChat('Repository-backed local development bridge instructions for this conversation:\n\n' + CODING_MODE_MESSAGE + repositoryNote);
+      const workspaceRoot = getWorkspaceRoot();
+      await returnMessageToChat('Local development tools for this conversation:\n\n' + buildBridgeContextMessage({ workspaceRoot }));
       return;
     }
-    if (parsed.special === 'bridge_status') {
-      const config = githubAuth && githubAuth.getBridgeConfig ? githubAuth.getBridgeConfig() : {};
-      const connected = githubAuth && githubAuth.hasSavedToken && githubAuth.hasSavedToken();
-      await returnMessageToChat('Windows repository bridge status: ' + (connected ? 'GitHub app credential is saved.' : 'GitHub app sign-in is not complete.') + '\nRepository: ' + (config.repository || '(not configured)') + '\nBranch: ' + (config.branch || 'main') + '\nPublic repository explicitly allowed: ' + String(config.allowPublicRepository === true) + '\nConfigure this in the app Accounts window.');
+    if (parsed.special === 'github_status') {
+      const state = githubAuth && githubAuth.getState ? await githubAuth.getState() : { authenticated: false };
+      await returnMessageToChat(
+        'App-side GitHub sign-in status: ' + (state.authenticated ? 'connected as @' + state.login : 'not connected') +
+        '\nSelected local workspace: ' + getWorkspaceRoot() +
+        '\nThis credential is private to the desktop app. It is not exposed as a ChatGPT GitHub tool. ChatGPT’s GitHub integration remains separate and is used normally for remote GitHub tasks.'
+      );
       return;
     }
     if (parsed.special === 'plan_mode') {
