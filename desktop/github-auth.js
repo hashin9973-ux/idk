@@ -4,7 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
-const execFileAsync = promisify(execFile);
 
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -13,7 +12,7 @@ function cleanError(value) {
   return String(value || 'GitHub request failed').replace(/[\r\n]+/g, ' ').slice(0, 500);
 }
 
-function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl = globalThis.fetch }) {
+function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl = globalThis.fetch, execFileAsyncImpl = promisify(execFile) }) {
   let pendingDevice = null;
 
   function githubSettings() {
@@ -272,7 +271,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
 
     async function executeGit(args, commandCwd = cwd) {
       try {
-        const result = await execFileAsync('git', args, {
+        const result = await execFileAsyncImpl('git', args, {
           cwd: commandCwd,
           env: authEnvironment,
           encoding: 'utf8',
