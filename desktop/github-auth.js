@@ -158,13 +158,14 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Mailbox write content must be Base64-encoded JSON.');
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Mailbox file content must be a JSON object.');
-    if (relative.startsWith('bridge/requests/') && parts[2] !== '.gitkeep') {
+    const isFolderMarker = parts.length === 3 && parts[2] === '.gitkeep';
+    if (relative.startsWith('bridge/requests/') && !isFolderMarker) {
       throw new Error('The Windows worker cannot create or overwrite ChatGPT request files.');
     }
-    if (relative.startsWith('bridge/results/') && payload.protocol !== 'chatgpt-local-repo-result/v1') {
+    if (!isFolderMarker && relative.startsWith('bridge/results/') && payload.protocol !== 'chatgpt-local-repo-result/v1') {
       throw new Error('Result files must use the supported result protocol.');
     }
-    if (relative.startsWith('bridge/claims/') && payload.protocol !== 'chatgpt-local-repo-claim/v1') {
+    if (!isFolderMarker && relative.startsWith('bridge/claims/') && payload.protocol !== 'chatgpt-local-repo-claim/v1') {
       throw new Error('Claim files must use the supported claim protocol.');
     }
     if (relative === 'bridge/state/windows-app.json' && payload.protocol !== 'chatgpt-local-repo-state/v1') {
