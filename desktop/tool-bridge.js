@@ -405,7 +405,8 @@ function createToolBridge(deps) {
     const manifestPath = path.join(root, 'package.json');
     if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isFile() && fs.statSync(manifestPath).size <= 256 * 1024) {
       try {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        const manifestFile = await localTools.executeTool(root, 'read_file', { path: 'package.json' });
+        const manifest = JSON.parse(manifestFile.content);
         projectCommands = {
           manifest: 'package.json',
           name: typeof manifest.name === 'string' ? manifest.name : null,
