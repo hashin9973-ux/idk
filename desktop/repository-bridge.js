@@ -691,25 +691,35 @@ function createRepositoryBridge(deps) {
       artifact_errors: artifactErrors
     };
     if (Buffer.byteLength(JSON.stringify(resultRecord), 'utf8') > MAX_RESULT_BYTES) {
-      // Keep oversized structured results retrievable rather than dropping their contents or manifest.
+      // Split the full record into small text files so the GitHub Contents API and ChatGPT's
+      // repository reader can retrieve every part even when the serialized JSON is large.
       const fullResultText = JSON.stringify(resultRecord, null, 2) + '\n';
       const fullResultHash = createHash('sha256').update(fullResultText, 'utf8').digest('hex');
-      const artifactPath = 'bridge/artifacts/' + requestId + '/full-result-' + fullResultHash.slice(0, 12) + '.json';
+      const chunks = splitUtf8Text(fullResultText, MAX_ARTIFACT_PART_BYTES);
+      const structuredArtifacts = [];
+      const originalStatus = safeReport && safeReport.ok
+        ? (artifactErrors.length ? 'partial' : 'completed')
+        : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
       try {
-        const stored = await writeRemoteContent(artifactPath, fullResultText, '[local bridge] publish full structured result');
-        const artifact = {
-          kind: 'structured_result',
-          path: artifactPath,
-          media_type: 'application/json; charset=utf-8',
-          bytes: stored.bytes,
-          sha256: stored.sha256,
-          part: 1,
-          parts: 1,
-          field: 'result_record'
-        };
-        const originalStatus = safeReport && safeReport.ok
-          ? (artifactErrors.length ? 'partial' : 'completed')
-          : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
+        for (let index = 0; index < chunks.length; index++) {
+          const artifactPath = 'bridge/artifacts/' + requestId + '/full-result-' +
+            fullResultHash.slice(0, 12) + '-part-' + String(index + 1).padStart(3, '0') + '.txt';
+          const stored = await writeRemoteContent(
+            artifactPath,
+            chunks[index],
+            '[local bridge] publish structured result part ' + (index + 1)
+          );
+          structuredArtifacts.push({
+            kind: 'structured_result_part',
+            path: artifactPath,
+            media_type: 'text/plain; charset=utf-8',
+            bytes: stored.bytes,
+            sha256: stored.sha256,
+            part: index + 1,
+            parts: chunks.length,
+            field: 'result_record'
+          });
+        }
         resultRecord = {
           protocol: RESULT_PROTOCOL,
           request_id: requestId,
@@ -719,17 +729,21 @@ function createRepositoryBridge(deps) {
           completed_at: resultRecord.completed_at,
           result: {
             ok: Boolean(safeReport && safeReport.ok),
-            note: 'The structured result exceeded the inline mailbox limit. Retrieve the full JSON record from this artifact.',
-            artifact_path: artifactPath,
-            bytes: stored.bytes,
-            sha256: stored.sha256
+            note: 'The structured result exceeded the inline mailbox limit. Retrieve all structured_result_part artifacts, order them by part, concatenate them, and parse the reconstructed JSON.',
+            artifact_paths: structuredArtifacts.map(item => item.path),
+            bytes: Buffer.byteLength(fullResultText, 'utf8'),
+            sha256: fullResultHash,
+            parts: structuredArtifacts.length
           },
-          artifacts: [artifact],
+          artifacts: structuredArtifacts,
           artifact_errors: artifactErrors.slice(0, 10),
           artifact_errors_total: artifactErrors.length
         };
       } catch (error) {
-        artifactErrors.push({ path: artifactPath, message: cleanError(error.message) });
+        artifactErrors.push({
+          path: 'bridge/artifacts/' + requestId + '/full-result-' + fullResultHash.slice(0, 12),
+          message: cleanError(error.message)
+        });
         const failedStatus = safeReport && safeReport.ok
           ? 'partial'
           : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
@@ -740,10 +754,9 @@ function createRepositoryBridge(deps) {
           status: failedStatus,
           created_at: remote.value.created_at,
           completed_at: resultRecord.completed_at,
-          error: 'The structured result exceeded the inline mailbox limit and its full-result artifact could not be published.',
-          artifacts: artifactManifest.slice(0, 100),
-          artifacts_total: artifactManifest.length,
-          artifacts_truncated: artifactManifest.length > 100,
+          error: 'The structured result exceeded the inline mailbox limit and not all structured-result artifact parts could be published.',
+          artifacts: structuredArtifacts,
+          artifacts_total: structuredArtifacts.length,
           artifact_errors: artifactErrors.slice(0, 10),
           artifact_errors_total: artifactErrors.length
         };
