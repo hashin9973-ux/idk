@@ -106,10 +106,14 @@ function createToolBridge(deps) {
         displayApprovalValue(args.command || '', 4000);
     }
     if (tool === 'apply_patch') {
+      if (localTools.getToolPolicy('apply_patch', args).sensitivePath) {
+        return header + resultWarning + 'This patch touches a file whose name looks sensitive. The patch will not be read or applied until you approve it.\n\nPatch preview (first 2500 characters):\n' +
+          displayApprovalValue(String(args.patch || '').slice(0, 2500), 9000);
+      }
       const plans = localTools.parsePatch(args.patch, root);
       return header + resultWarning + 'Review the files this patch will modify:\n' +
         plans.map(item => item.kind.toUpperCase() + '  ' + displayApprovalValue(item.relative, 500)).join('\n') +
-        '\n\nPatch preview (line breaks are shown as \\n; first 2500 characters):\n' +
+        '\\n\\nPatch preview (line breaks are shown as \\\\n; first 2500 characters):\\n' +
         displayApprovalValue(String(args.patch || '').slice(0, 2500), 9000);
     }
     if (tool === 'write_file') {
@@ -227,7 +231,7 @@ function createToolBridge(deps) {
         if (!approved) {
           result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
         } else {
-          if (tool === 'read_file') args.approved = true;
+          if (policy.sensitivePath || tool === 'read_file') args.approved = true;
           const output = await executeLocalTool(root, tool, args, id);
           if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
             result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
