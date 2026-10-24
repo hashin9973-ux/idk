@@ -433,7 +433,7 @@ function createToolBridge(deps) {
   function remoteChatBridge() {
     if (window.__assistantLocalToolBridgeV1) return;
     window.__assistantLocalToolBridgeV1 = true;
-    const commandNames = ['help','status','pwd','env','init','ls','list','tree','find','glob','read','cat','info','search','grep','instructions','git','diff','log','branches','changed','mkdir','mv','rm','branch','switch','commit','test','tests','exec','github','workspace','tools','plan','review'];
+    const commandNames = ['help','status','pwd','env','init','ls','list','tree','find','glob','read','cat','info','search','grep','instructions','git','diff','log','branches','changed','mkdir','mv','rm','branch','switch','commit','fetch','pull','push','clone','test','tests','exec','github','workspace','tools','plan','review'];
     const processedBlocks = new WeakSet();
     const oldMessages = new WeakSet();
     const bootstrapSignaled = new Set();
