@@ -99,7 +99,7 @@ test('poller executes a queued request, commits the result, and notifies the act
     assert.equal(outcome.call_id, 'call-001');
     assert.equal(outcome.status, 'completed');
     assert.equal(f.executions.length, 1);
-    assert.equal(f.executions[0].context.requireApproval, undefined);
+    assert.equal(f.executions[0].context.requireApproval, true);
     const resultPath = RESULT_DIR + '/call-001.json';
     assert.ok(f.files.has(resultPath));
     const result = JSON.parse(f.files.get(resultPath));
