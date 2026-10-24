@@ -12,115 +12,106 @@
     <header class="titlebar">
       <div class="drag-zone">
         <div class="brand-orb" aria-hidden="true"><span></span></div>
-        <div class="brand-copy">
-          <strong>Windows Repository Bridge</strong>
-          <span>ChatGPT conversation ↔ GitHub ↔ Windows</span>
-        </div>
+        <div class="brand-copy"><strong>Windows Repository Bridge</strong><span>Your ChatGPT conversation, connected to Windows</span></div>
       </div>
       <nav class="window-controls" aria-label="Window controls">
-        <button id="accounts" class="icon-button" type="button" title="GitHub account" aria-label="GitHub account">◎</button>
         <button id="collapse" class="icon-button" type="button" title="Collapse to assistant orb" aria-label="Collapse">–</button>
         <button id="quit" class="icon-button close-button" type="button" title="Quit app" aria-label="Quit">×</button>
       </nav>
     </header>
-
     <section class="page">
       <section class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">SHARED REPOSITORY MAILBOX</p>
-          <h1>Give this conversation a path to your Windows workspace.</h1>
-          <p class="lede">This app does not host or mirror ChatGPT. Your existing ChatGPT conversation uses its GitHub integration to write a request; this app picks it up, runs approved local tools, and commits the result back for ChatGPT to read.</p>
+          <p class="eyebrow">LOCAL WORKSPACE BRIDGE</p>
+          <h1>Connect once. Work from your existing ChatGPT conversation.</h1>
+          <p class="lede">ChatGPT stays in your browser. This app runs approved tools on Windows and shares context and results through your private GitHub mailbox.</p>
         </div>
-        <div class="connection-pill" id="status-pill" role="status"><span id="status-dot" class="status-dot"></span><span id="status-label">Worker stopped</span></div>
+        <div id="status-pill" class="status-pill" role="status"><span id="status-dot" class="status-dot"></span><span id="status-label">Worker stopped</span></div>
       </section>
 
-      <section class="layout-grid">
-        <article class="panel setup-panel">
-          <div class="panel-heading">
-            <div><p class="eyebrow">01 / CONNECTION</p><h2>Shared repository</h2></div>
-            <span class="panel-icon">↔</span>
+      <section class="panel main-panel">
+        <section class="account-row" aria-labelledby="account-heading">
+          <div class="section-copy">
+            <p class="eyebrow">ACCOUNT</p><h2 id="account-heading">GitHub access</h2>
+            <p id="github-status" class="muted">Checking connection…</p><p class="muted small account-helper">Sign in once in your browser. The app securely stores the authorization for the configured mailbox.</p>
           </div>
-          <p class="muted">Use the same repository and branch from ChatGPT’s GitHub integration and this app. A dedicated mailbox branch keeps queue commits off <code>main</code> and avoids triggering normal main-branch builds.</p>
+          <div class="account-actions">
+            <button id="github-login" class="button primary" type="button">Sign in with GitHub</button>
+            <button id="github-logout" class="button secondary" type="button" hidden>Sign out</button>
+          </div>
+        </section>
+        <div id="github-code-panel" class="code-panel" hidden>
+          <div><span class="meta-label">One-time verification code</span><strong id="github-user-code" class="verification-code"></strong></div>
+          <p class="muted small">Approve the request in your browser. The app detects completion and returns to the foreground.</p>
+        </div>
 
+        <div class="subtle-divider"></div>
+
+        <section class="account-row chatgpt-row" aria-labelledby="chatgpt-heading">
+          <div class="section-copy">
+            <p class="eyebrow">CHATGPT</p>
+            <h2 id="chatgpt-heading">ChatGPT browser session</h2>
+            <p class="muted small">Opens the official sign-in page in your default browser. After signing in, switch back to this app with Alt+Tab.</p>
+          </div>
+          <div class="account-actions">
+            <button id="open-chatgpt" class="button secondary" type="button">Sign in to ChatGPT ↗</button>
+          </div>
+        </section>
+
+        <div class="subtle-divider"></div>
+
+        <section class="workspace-row" aria-labelledby="workspace-heading">
+          <div class="workspace-symbol" aria-hidden="true">⌘</div>
+          <div class="workspace-copy">
+            <span class="meta-label">WINDOWS WORKSPACE</span>
+            <h2 id="workspace-heading"><span id="workspace-name">Loading…</span></h2>
+            <p id="workspace-path" class="muted path-text"></p>
+          </div>
+          <button id="select-workspace" class="button secondary" type="button">Choose folder</button>
+        </section>
+
+        <div class="worker-row">
+          <div class="worker-copy"><strong id="worker-title">Worker is stopped</strong><span class="muted small">Checks the mailbox every 15 seconds while running.</span></div>
+          <button id="worker-toggle" class="button primary" type="button">Start worker</button>
+        </div>
+        <p id="app-message" class="inline-message" role="status"></p>
+
+        <details id="settings-panel" class="details-panel" open>
+          <summary>Connection settings</summary>
+          <p class="muted small settings-intro">Use the same private repository and <code>bridge-mailbox</code> branch that you connect to from ChatGPT's GitHub integration.</p>
           <form id="bridge-config-form">
-            <div class="form-row">
-              <label for="repo-owner">Owner / organization</label>
-              <input id="repo-owner" name="owner" value="hashin9973-ux" maxlength="100" required spellcheck="false" autocomplete="off">
+            <div class="field-grid">
+              <div class="form-row"><label for="repo-owner">Repository owner</label><input id="repo-owner" name="owner" value="hashin9973-ux" maxlength="100" required spellcheck="false" autocomplete="off"></div>
+              <div class="form-row"><label for="repo-name">Repository</label><input id="repo-name" name="repo" value="qdqwg" maxlength="100" required spellcheck="false" autocomplete="off"></div>
+              <div class="form-row"><label for="repo-branch">Mailbox branch</label><input id="repo-branch" name="branch" value="bridge-mailbox" maxlength="120" required spellcheck="false" autocomplete="off"></div>
             </div>
-            <div class="form-row">
-              <label for="repo-name">Repository</label>
-              <input id="repo-name" name="repo" value="idk" maxlength="100" required spellcheck="false" autocomplete="off">
-            </div>
-            <div class="form-row">
-              <label for="repo-branch">Mailbox branch</label>
-              <input id="repo-branch" name="branch" value="bridge-mailbox" maxlength="120" required spellcheck="false" autocomplete="off">
-            </div>
-            <label class="checkbox-label warning-note">
-              <input id="public-warning" name="allowPublicMailbox" type="checkbox">
-              <span>I understand this repository is public. Requests, local tool results, and shared status committed to this branch are publicly readable. Do not use a public mailbox for sensitive source or secrets.</span>
-            </label>
-            <div class="button-row">
-              <button id="save-config" class="button secondary" type="submit">Save connection</button>
-              <button id="open-accounts" class="button secondary" type="button">Connect GitHub account</button>
-            </div>
-            <p id="config-message" class="inline-message" role="status"></p>
+            <p class="muted small">Sign-in uses the official GitHub CLI browser authorization flow bundled with this app. Approve the permissions on GitHub itself; never paste a password, client secret, or access token into this app.</p>
+            <label class="checkbox-label warning-note"><input id="public-warning" name="allowPublicMailbox" type="checkbox"><span>This repository is public, and I understand that requests, results, context, and uploaded files on this branch will be publicly readable.</span></label>
+            <div class="settings-actions"><button id="save-config" class="button secondary" type="submit">Save settings</button></div>
           </form>
-        </article>
+        </details>
 
-        <article class="panel worker-panel">
-          <div class="panel-heading">
-            <div><p class="eyebrow">02 / LOCAL WORKER</p><h2>Windows execution</h2></div>
-            <span class="panel-icon">⌘</span>
+        <details class="details-panel diagnostics-panel">
+          <summary>Worker details</summary>
+          <div class="metrics-grid">
+            <div class="metric"><span class="meta-label">Pending requests</span><strong id="request-count">0</strong></div>
+            <div class="metric"><span class="meta-label">Active request</span><strong id="active-request">None</strong></div>
+            <div class="metric"><span class="meta-label">Last poll</span><strong id="last-poll">Never</strong></div>
           </div>
-          <div class="workspace-block">
-            <div class="workspace-icon">▣</div>
-            <div class="workspace-text"><span class="meta-label">Selected workspace</span><strong id="workspace-name">Loading…</strong><span id="workspace-path" class="muted"></span></div>
-          </div>
-          <button id="select-workspace" class="button secondary full-width" type="button">Choose workspace folder</button>
-          <div class="divider"></div>
-          <div class="worker-controls">
-            <button id="start-worker" class="button primary" type="button">Start worker</button>
-            <button id="stop-worker" class="button danger" type="button" disabled>Stop worker</button>
-            <button id="poll-now" class="button secondary" type="button">Poll now</button>
-          </div>
-          <p class="muted small">Read-only inspection requests can run automatically. File changes, branch/commit operations, shell commands, tests, and other sensitive actions show a native Windows approval prompt before execution.</p>
-          <p id="worker-message" class="inline-message" role="status"></p>
-        </article>
-      </section>
+          <div id="last-error-row" class="error-row" hidden><strong>Last error</strong><p id="last-error"></p></div>
+        </details>
 
-      <section class="panel state-panel">
-        <div class="panel-heading">
-          <div><p class="eyebrow">03 / SHARED STATE</p><h2>Worker heartbeat</h2></div>
-          <span id="worker-badge" class="state-badge">STOPPED</span>
-        </div>
-        <div class="metrics-grid">
-          <div class="metric"><span class="meta-label">Request files seen</span><strong id="request-count">0</strong></div>
-          <div class="metric"><span class="meta-label">Active request</span><strong id="active-request">None</strong></div>
-          <div class="metric"><span class="meta-label">Last poll</span><strong id="last-poll">Never</strong></div>
-        </div>
-        <div id="last-error-row" class="error-row" hidden><strong>Last error</strong><p id="last-error"></p></div>
-        <p class="small muted">Shared files: <code>bridge/requests/&lt;id&gt;.json</code> → <code>bridge/results/&lt;id&gt;.json</code>; heartbeat at <code>bridge/state/windows-app.json</code>. Requests remain in history; results mark completion.</p>
+        <details class="details-panel safety-panel">
+          <summary>Safety and ChatGPT connection</summary>
+          <p class="muted small">ChatGPT does not need a separate login inside this app. Use your normal ChatGPT conversation and its GitHub integration to create requests and read results. The app never injects tool output into that conversation and cannot access ChatGPT credentials or conversations.</p>
+          <p class="muted small">ChatGPT’s standard website sign-in does not provide this app with a return callback, so after signing in in the browser, use Alt+Tab to return here.</p>
+          <p class="muted small">File changes, shell commands, tests, Git writes, and file uploads require a native Windows approval prompt. Approved PowerShell commands run with your Windows account permissions and are not sandboxed.</p>
+          <p class="muted small">Use a private mailbox. Never send secrets or private data through the repository.</p>
+        </details>
       </section>
-
-      <section class="panel safety-panel">
-        <div class="panel-heading">
-          <div><p class="eyebrow">IMPORTANT</p><h2>Permission boundaries</h2></div>
-          <span class="panel-icon">!</span>
-        </div>
-        <div class="safety-grid">
-          <div><strong>Approvals stay local</strong><p>Remote request files cannot silently authorize writes or shell execution. Approve each risky operation in the Windows dialog.</p></div>
-          <div><strong>PowerShell is not sandboxed</strong><p>An approved command runs with your Windows user’s permissions and may access files outside the selected workspace.</p></div>
-          <div><strong>Repository visibility matters</strong><p>The app warns before enabling a public repository as a mailbox. Sanitization reduces accidental disclosure but is not a substitute for a private repository.</p></div>
-        </div>
-      </section>
-      <footer>Hotkey: <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> · This app uses GitHub as a mailbox; your current ChatGPT conversation remains in ChatGPT.</footer>
+      <footer><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd> toggles the compact orb · ChatGPT remains the place you type instructions.</footer>
     </section>
-
-    <div class="bubble-stage" aria-label="Collapsed Windows bridge">
-      <div class="bubble-drag-ring">
-        <button id="assistant-ball" class="assistant-ball" type="button" aria-label="Expand Windows Repository Bridge" aria-expanded="true"><span class="ball-glow"></span><span class="ball-core">↔</span></button>
-      </div>
-    </div>
+    <div class="bubble-stage" aria-label="Collapsed Windows bridge"><div class="bubble-drag-ring"><button id="assistant-ball" class="assistant-ball" type="button" aria-label="Expand Windows Repository Bridge" aria-expanded="true"><span class="ball-glow"></span><span class="ball-core">↔</span></button></div></div>
   </main>
   <script src="renderer.js"></script>
 </body>

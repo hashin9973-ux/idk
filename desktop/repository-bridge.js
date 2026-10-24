@@ -1,15 +1,21 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
+const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS } = require('./tool-bridge');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
+const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
+const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 15000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESULT_BYTES = 90 * 1024;
+const MAX_INLINE_TEXT_BYTES = 12 * 1024;
+const MAX_ARTIFACT_PART_BYTES = 256 * 1024;
+const MAX_WORKSPACE_UPLOAD_BYTES = 8 * 1024 * 1024;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 const BLOCKED_TOOLS = new Set(['github_api', 'github_status']);
@@ -49,12 +55,14 @@ function validateRequest(requestId, request) {
   if (typeof request.created_at !== 'string' || request.created_at.length > 80) {
     throw new Error('Request must include a created_at timestamp.');
   }
-  if (typeof request.tool !== 'string' || !Object.hasOwn(TOOL_ARGUMENT_KEYS, request.tool) ||
+  const isContextRequest = request.tool === CONTEXT_REQUEST_TOOL;
+  if (typeof request.tool !== 'string' ||
+      (!isContextRequest && !Object.hasOwn(TOOL_ARGUMENT_KEYS, request.tool)) ||
       BLOCKED_TOOLS.has(request.tool)) {
     throw new Error('Unknown or unsupported local tool.');
   }
   if (!isPlainObject(request.args)) throw new Error('Request args must be a JSON object.');
-  const allowed = TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
+  const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
   return { request_id: requestId, tool: request.tool, args: { ...request.args } };
@@ -131,7 +139,8 @@ function createRepositoryBridge(deps) {
     getWorkspaceRoot,
     executeTool,
     onState = () => {},
-    intervalMs = DEFAULT_INTERVAL_MS
+    intervalMs = DEFAULT_INTERVAL_MS,
+    publishContextOnStart = false
   } = deps;
 
   const workerId = randomUUID();
@@ -235,7 +244,7 @@ function createRepositoryBridge(deps) {
   }
 
   async function ensureFolders() {
-    for (const folder of ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state']) {
+    for (const folder of ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts']) {
       const entries = await listFolder(folder);
       if (entries.length) continue;
       const placeholder = folder + '/.gitkeep';
@@ -258,7 +267,9 @@ function createRepositoryBridge(deps) {
       pending_count: pendingCount,
       last_poll_at: lastPollAt,
       last_error: lastError || null,
-      workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot())
+      workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
+      context_path: 'bridge/context/latest.json',
+      artifact_root: 'bridge/artifacts/'
     };
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
     try {
@@ -269,6 +280,234 @@ function createRepositoryBridge(deps) {
       lastError = 'Could not publish shared state: ' + cleanError(error.message);
       announce();
     }
+  }
+
+  async function readRemoteContent(relativePath) {
+    const config = currentConfig();
+    try {
+      const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
+      const entry = response && response.result;
+      if (!entry || entry.type !== 'file') throw new Error('GitHub returned an unexpected artifact file format.');
+      const content = entry.encoding === 'base64' && typeof entry.content === 'string'
+        ? Buffer.from(entry.content.replace(/\\s/g, ''), 'base64')
+        : null;
+      return { content, sha: entry.sha || null, entry };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  async function writeRemoteContent(relativePath, content, message) {
+    const config = currentConfig();
+    const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
+    const existing = await readRemoteContent(relativePath);
+    const contentHash = createHash('sha256').update(bytes).digest('hex');
+    if (existing) {
+      const existingHash = existing.content
+        ? createHash('sha256').update(existing.content).digest('hex')
+        : null;
+      const gitBlobSha = createHash('sha1')
+        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+        .update(bytes)
+        .digest('hex');
+      if (existingHash === contentHash || (!existing.content && existing.sha === gitBlobSha)) {
+        return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: contentHash };
+      }
+      throw new Error('Artifact path already exists with different content: ' + relativePath);
+    }
+    try {
+      const response = await api('PUT', apiPath(relativePath), {
+        message: message || '[local bridge] publish artifact ' + path.posix.basename(relativePath),
+        content: bytes.toString('base64'),
+        branch: config.branch
+      });
+      return {
+        ok: true,
+        sha: response.result && response.result.content && response.result.content.sha || null,
+        bytes: bytes.length,
+        sha256: contentHash
+      };
+    } catch (error) {
+      // A previous attempt may have published the same immutable artifact but lost its response.
+      const reread = await readRemoteContent(relativePath).catch(() => null);
+      const gitBlobSha = createHash('sha1')
+        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+        .update(bytes)
+        .digest('hex');
+      if (reread && (
+        (reread.content && createHash('sha256').update(reread.content).digest('hex') === contentHash) ||
+        (!reread.content && reread.sha === gitBlobSha)
+      )) {
+        return { ok: true, unchanged: true, sha: reread.sha, bytes: bytes.length, sha256: contentHash };
+      }
+      throw error;
+    }
+  }
+
+  function safeArtifactName(raw, fallback) {
+    let value = String(raw || fallback || 'artifact.bin')
+      .replace(/[\\/\\\\]/g, '_')
+      .replace(/[^A-Za-z0-9_.-]/g, '_')
+      .replace(/^[^A-Za-z0-9]+/, '')
+      .slice(0, 120);
+    if (!value || value === '.' || value === '..') value = 'artifact.bin';
+    return value;
+  }
+
+  async function publishWorkspaceFile(requestId, file) {
+    if (typeof requestId !== 'string' || !SAFE_ID.test(requestId)) throw new Error('Invalid request ID for file upload.');
+    if (!file || typeof file !== 'object' || !Buffer.isBuffer(file.bytes)) {
+      throw new TypeError('Workspace upload must include file bytes.');
+    }
+    if (file.bytes.length > MAX_WORKSPACE_UPLOAD_BYTES) {
+      throw new Error('Workspace file exceeds the 8 MiB upload limit.');
+    }
+    const fileName = safeArtifactName(file.artifactName, path.basename(String(file.path || 'artifact.bin')));
+    const relativePath = 'bridge/artifacts/' + requestId + '/' + fileName;
+    const stored = await writeRemoteContent(relativePath, file.bytes, '[local bridge] upload ' + fileName);
+    const config = currentConfig();
+    const extension = path.extname(fileName).toLowerCase();
+    const mediaTypes = {
+      '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+      '.js': 'text/javascript', '.ts': 'text/typescript', '.css': 'text/css',
+      '.html': 'text/html', '.xml': 'application/xml', '.csv': 'text/csv',
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+      '.pdf': 'application/pdf', '.zip': 'application/zip', '.7z': 'application/x-7z-compressed',
+      '.log': 'text/plain', '.patch': 'text/x-diff', '.diff': 'text/x-diff'
+    };
+    return {
+      path: relativePath,
+      url: 'https://github.com/' + config.owner + '/' + config.repo + '/blob/' +
+        encodeURIComponent(config.branch) + '/' + relativePath.split('/').map(encodeURIComponent).join('/'),
+      media_type: mediaTypes[extension] || 'application/octet-stream',
+      bytes: stored.bytes,
+      sha256: stored.sha256,
+      github_blob_sha: stored.sha,
+      repository_visibility: publicRepository === true ? 'public' : publicRepository === false ? 'private' : 'unknown',
+      note: 'The full file is stored in the shared repository; ChatGPT should retrieve this path through its GitHub integration.'
+    };
+  }
+
+  function splitUtf8Text(value, limitBytes) {
+    const chunks = [];
+    let chunk = '';
+    let chunkBytes = 0;
+    for (const character of value) {
+      const bytes = Buffer.byteLength(character, 'utf8');
+      if (chunk && chunkBytes + bytes > limitBytes) {
+        chunks.push(chunk);
+        chunk = '';
+        chunkBytes = 0;
+      }
+      chunk += character;
+      chunkBytes += bytes;
+    }
+    if (chunk || chunks.length === 0) chunks.push(chunk);
+    return chunks;
+  }
+
+  async function externalizeLargeText(requestId, value, artifactManifest, artifactErrors, keyPath = 'output') {
+    if (typeof value === 'string') {
+      const byteCount = Buffer.byteLength(value, 'utf8');
+      if (byteCount <= MAX_INLINE_TEXT_BYTES) return value;
+      const chunks = splitUtf8Text(value, MAX_ARTIFACT_PART_BYTES);
+      const slug = String(keyPath).replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 36) || 'output';
+      const paths = [];
+      for (let index = 0; index < chunks.length; index++) {
+        const partName = slug + (chunks.length > 1 ? '-part-' + String(index + 1).padStart(3, '0') : '') + '.txt';
+        const relativePath = 'bridge/artifacts/' + requestId + '/' + String(artifactManifest.length + artifactErrors.length + 1).padStart(3, '0') + '-' + partName;
+        try {
+          const stored = await writeRemoteContent(relativePath, chunks[index], '[local bridge] publish text output ' + partName);
+          const entry = {
+            kind: 'text_output_part',
+            path: relativePath,
+            media_type: 'text/plain; charset=utf-8',
+            bytes: stored.bytes,
+            sha256: stored.sha256,
+            part: index + 1,
+            parts: chunks.length,
+            field: keyPath
+          };
+          artifactManifest.push(entry);
+          paths.push(relativePath);
+        } catch (error) {
+          artifactErrors.push({ path: relativePath, message: cleanError(error.message) });
+        }
+      }
+      const preview = value.slice(0, 900);
+      const storedPaths = paths.length ? paths.join(', ') : '(artifact publication failed)';
+      return preview + (value.length > preview.length ? '\n\n[Output truncated in this result. Full output location: ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]' : '\n\n[Output externalized to ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]');
+    }
+    if (Array.isArray(value)) {
+      const output = [];
+      for (let index = 0; index < value.length; index++) {
+        output.push(await externalizeLargeText(requestId, value[index], artifactManifest, artifactErrors, keyPath + '.' + index));
+      }
+      return output;
+    }
+    if (!isPlainObject(value)) return value;
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      output[key] = await externalizeLargeText(requestId, item, artifactManifest, artifactErrors, keyPath + '.' + key);
+    }
+    return output;
+  }
+
+  async function upsertContextJson(relativePath, value) {
+    const existing = await readRemoteFile(relativePath);
+    return writeRemoteJson(relativePath, value, existing && existing.sha, false);
+  }
+
+  async function publishEnvironmentContext() {
+    const generatedAt = new Date().toISOString();
+    const root = getWorkspaceRoot ? getWorkspaceRoot() : '';
+    const files = {};
+    const collectors = [
+      ['environment', 'environment_info', {}],
+      ['project', 'project_status', {}],
+      ['capabilities', 'get_capabilities', {}],
+      ['directory_tree', 'directory_tree', { path: '.', maxDepth: 3, maxEntries: 250 }],
+      ['instructions', 'discover_instructions', {}]
+    ];
+    for (const [name, tool, args] of collectors) {
+      const relativePath = 'bridge/context/' + name + '.json';
+      let report;
+      try {
+        report = await executeTool(tool, args, 'context-' + randomUUID());
+        report = sanitizeForRepository(report, root);
+        if (name === 'instructions' && report && report.result && Array.isArray(report.result.instructions)) {
+          report.result.instructions = report.result.instructions.map(item => ({
+            path: item.path,
+            bytes: Buffer.byteLength(String(item.content || ''), 'utf8'),
+            sha256: createHash('sha256').update(String(item.content || ''), 'utf8').digest('hex')
+          }));
+          report.result.note = 'Instruction contents are intentionally not included in the environment snapshot. Request discover_instructions or read the relevant AGENTS.md file to retrieve content on demand.';
+        }
+      } catch (error) {
+        report = { ok: false, error: cleanError(error.message) };
+      }
+      const record = {
+        protocol: CONTEXT_PROTOCOL,
+        name,
+        tool,
+        generated_at: generatedAt,
+        data: report
+      };
+      await upsertContextJson(relativePath, record);
+      files[name] = relativePath;
+    }
+    const index = {
+      protocol: CONTEXT_PROTOCOL,
+      generated_at: generatedAt,
+      worker_id: workerId,
+      workspace_selected: Boolean(root),
+      retrieval_policy: 'Read this index first; retrieve only the context file(s) and source files relevant to the task. The snapshot may become stale; use refresh_environment_context or request live inspection.',
+      files
+    };
+    await upsertContextJson('bridge/context/latest.json', index);
+    return index;
   }
 
   async function acquireClaim(requestId) {
@@ -414,30 +653,117 @@ function createRepositoryBridge(deps) {
 
     let report;
     try {
-      report = await executeTool(request.tool, request.args, requestId);
+      if (request.tool === CONTEXT_REQUEST_TOOL) {
+        report = { ok: true, result: await publishEnvironmentContext() };
+      } else {
+        report = await executeTool(request.tool, request.args, requestId);
+      }
     } catch (error) {
       report = { ok: false, error: cleanError(error.message), tool: request.tool, call_id: requestId };
     }
 
-    const safeReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    const artifactManifest = [];
+    const artifactErrors = [];
+    const safeReport = await externalizeLargeText(requestId, sanitizedReport, artifactManifest, artifactErrors);
+    const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
+      safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
+    if (uploadedArtifact) {
+      artifactManifest.unshift({
+        kind: 'uploaded_workspace_file',
+        path: uploadedArtifact.path,
+        url: uploadedArtifact.url,
+        media_type: uploadedArtifact.media_type,
+        bytes: uploadedArtifact.bytes,
+        sha256: uploadedArtifact.sha256,
+        field: 'result.artifact'
+      });
+    }
     let resultRecord = {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
-      status: safeReport && safeReport.ok ? 'completed' : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      status: safeReport && safeReport.ok ? (artifactErrors.length ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
       created_at: remote.value.created_at,
       completed_at: new Date().toISOString(),
-      result: safeReport
+      result: safeReport,
+      artifacts: artifactManifest,
+      artifact_errors: artifactErrors
     };
     if (Buffer.byteLength(JSON.stringify(resultRecord), 'utf8') > MAX_RESULT_BYTES) {
-      resultRecord = {
-        protocol: RESULT_PROTOCOL,
-        request_id: requestId,
-        tool: request.tool,
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        error: 'Local result exceeded the size limit and was not uploaded. Retry with a narrower read or search.'
-      };
+      // Split the full record into small text files so the GitHub Contents API and ChatGPT's
+      // repository reader can retrieve every part even when the serialized JSON is large.
+      const fullResultText = JSON.stringify(resultRecord, null, 2) + '\n';
+      const fullResultHash = createHash('sha256').update(fullResultText, 'utf8').digest('hex');
+      const chunks = splitUtf8Text(fullResultText, MAX_ARTIFACT_PART_BYTES);
+      const structuredArtifacts = [];
+      const originalStatus = safeReport && safeReport.ok
+        ? (artifactErrors.length ? 'partial' : 'completed')
+        : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
+      let failedArtifactPath = 'bridge/artifacts/' + requestId + '/full-result-' + fullResultHash.slice(0, 12);
+      try {
+        for (let index = 0; index < chunks.length; index++) {
+          const artifactPath = 'bridge/artifacts/' + requestId + '/full-result-' +
+            fullResultHash.slice(0, 12) + '-part-' + String(index + 1).padStart(3, '0') + '.txt';
+          failedArtifactPath = artifactPath;
+          const stored = await writeRemoteContent(
+            artifactPath,
+            chunks[index],
+            '[local bridge] publish structured result part ' + (index + 1)
+          );
+          structuredArtifacts.push({
+            kind: 'structured_result_part',
+            path: artifactPath,
+            media_type: 'text/plain; charset=utf-8',
+            bytes: stored.bytes,
+            sha256: stored.sha256,
+            part: index + 1,
+            parts: chunks.length,
+            field: 'result_record'
+          });
+        }
+        resultRecord = {
+          protocol: RESULT_PROTOCOL,
+          request_id: requestId,
+          tool: request.tool,
+          status: originalStatus,
+          created_at: remote.value.created_at,
+          completed_at: resultRecord.completed_at,
+          result: {
+            ok: Boolean(safeReport && safeReport.ok),
+            note: 'The structured result exceeded the inline mailbox limit. Retrieve all structured_result_part artifacts, order them by part, concatenate them, and parse the reconstructed JSON.',
+            artifact_paths: structuredArtifacts.map(item => item.path),
+            bytes: Buffer.byteLength(fullResultText, 'utf8'),
+            sha256: fullResultHash,
+            parts: structuredArtifacts.length
+          },
+          artifacts: structuredArtifacts,
+          artifact_errors: artifactErrors.slice(0, 10),
+          artifact_errors_total: artifactErrors.length
+        };
+      } catch (error) {
+        artifactErrors.push({
+          path: failedArtifactPath,
+          message: cleanError(error.message)
+        });
+        const failedStatus = safeReport && safeReport.ok
+          ? 'partial'
+          : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
+        resultRecord = {
+          protocol: RESULT_PROTOCOL,
+          request_id: requestId,
+          tool: request.tool,
+          status: failedStatus,
+          created_at: remote.value.created_at,
+          completed_at: resultRecord.completed_at,
+          error: 'The structured result exceeded the inline mailbox limit and not all structured-result artifact parts could be published.',
+          artifacts: [...artifactManifest, ...structuredArtifacts].slice(0, 100),
+          artifacts_total: artifactManifest.length + structuredArtifacts.length,
+          artifacts_truncated: artifactManifest.length + structuredArtifacts.length > 100,
+          artifact_errors: artifactErrors.slice(0, 10),
+          artifact_errors_total: artifactErrors.length
+        };
+      }
     }
 
     const pendingClaim = {
@@ -556,6 +882,13 @@ function createRepositoryBridge(deps) {
     await ensureFolders();
     running = true;
     lastError = '';
+    if (publishContextOnStart) {
+      try {
+        await publishEnvironmentContext();
+      } catch (error) {
+        lastError = 'Environment context publication failed: ' + cleanError(error.message);
+      }
+    }
     announce();
     await publishState(true);
     await pollOnce();
@@ -585,12 +918,14 @@ function createRepositoryBridge(deps) {
     return stateSnapshot();
   }
 
-  return { start, stop, pollOnce, setConfig, getState: stateSnapshot };
+  return { start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext, publishWorkspaceFile };
 }
 
 module.exports = {
   PROTOCOL,
   RESULT_PROTOCOL,
+  CONTEXT_PROTOCOL,
+  CONTEXT_REQUEST_TOOL,
   DEFAULT_BRANCH,
   validateConfig,
   validateRequest,

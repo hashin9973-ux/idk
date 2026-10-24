@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MAILBOX_CONTENT_BYTES = 12 * 1024 * 1024;
 
 function cleanError(value) {
   return String(value || 'GitHub request failed').replace(/[\r\n]+/g, ' ').slice(0, 500);
@@ -97,7 +98,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
     }
     const base = '/repos/' + owner + '/' + repository;
-    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state']);
+    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts']);
     let relative = '';
     let kind = '';
 
@@ -122,6 +123,10 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } else if (parts.length === 3 && allowedFolders.has(parts.slice(0, 2).join('/')) &&
         (parts[2] === '.gitkeep' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(parts[2]))) {
       kind = 'file';
+    } else if (parts.length === 4 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
+        /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(parts[2]) &&
+        /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(parts[3])) {
+      kind = 'artifact';
     } else if (relative === 'bridge/state/windows-app.json') {
       kind = 'state';
     } else {
@@ -140,15 +145,19 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       };
     }
 
-    if (kind !== 'file' && kind !== 'state') throw new Error('PUT is only permitted for mailbox file records.');
+    if (!['file', 'state', 'artifact'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records and approved artifact paths.');
     if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
     const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
     if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
         typeof input.body.message !== 'string' || input.body.message.length > 200 ||
-        typeof input.body.content !== 'string' || input.body.content.length > MAX_RESPONSE_BYTES ||
+        typeof input.body.content !== 'string' || input.body.content.length > MAX_MAILBOX_CONTENT_BYTES ||
         input.body.branch !== branch ||
         (input.body.sha !== undefined && (typeof input.body.sha !== 'string' || !/^[0-9a-f]{40}$/i.test(input.body.sha)))) {
       throw new Error('Invalid or unsupported mailbox write payload.');
+    }
+    if (kind === 'artifact') {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.body.content)) throw new Error('Artifact content must be Base64-encoded bytes.');
+      return { method, path: pathValue, body: input.body, url: 'https://api.github.com' + pathValue };
     }
     let payload;
     try {
@@ -168,6 +177,9 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (!isFolderMarker && relative.startsWith('bridge/claims/') && payload.protocol !== 'chatgpt-local-repo-claim/v1') {
       throw new Error('Claim files must use the supported claim protocol.');
     }
+    if (!isFolderMarker && relative.startsWith('bridge/context/') && payload.protocol !== 'chatgpt-local-environment-context/v1') {
+      throw new Error('Environment context files must use the supported context protocol.');
+    }
     if (relative === 'bridge/state/windows-app.json' && payload.protocol !== 'chatgpt-local-repo-state/v1') {
       throw new Error('Shared state files must use the supported state protocol.');
     }
@@ -183,7 +195,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
   async function requestApi(input = {}) {
     const route = validateMailboxRequest(input);
     const token = getToken();
-    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using the repository mailbox.');
+    if (!token) throw new Error("Sign in with GitHub in the app's GitHub access section before using the repository mailbox.");
     const response = await fetchImpl(route.url, {
       method: route.method,
       headers: {
@@ -249,6 +261,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     return {
       userCode: String(data.user_code),
       verificationUrl: 'https://github.com/login/device',
+      verificationUrlComplete: typeof data.verification_uri_complete === 'string' ? data.verification_uri_complete : '',
       intervalSeconds: interval,
       expiresInSeconds: Math.max(60, Number(data.expires_in) || 900)
     };
@@ -297,6 +310,27 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     const state = await getState();
     if (!state.authenticated) throw new Error('Token was received but could not be validated with GitHub: ' + (state.error || 'unknown error'));
     return { status: 'authenticated', login: state.login };
+  }
+
+  async function importToken(rawToken) {
+    const token = String(rawToken || '').trim();
+    if (token.length < 20 || token.length > 8192 || /\s/.test(token)) {
+      throw new Error('GitHub did not return a valid access token.');
+    }
+    const response = await fetchImpl('https://api.github.com/user', {
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28'
+      },
+      signal: AbortSignal.timeout(12000)
+    });
+    const profile = await readJson(response);
+    if (typeof profile.login !== 'string' || !profile.login) {
+      throw new Error('GitHub token validation did not return an account name.');
+    }
+    saveToken(token);
+    return { authenticated: true, login: profile.login };
   }
 
   function logout() {
@@ -382,7 +416,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Git operation must be fetch, pull, push, or clone.');
     }
     const token = getToken();
-    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using authenticated Git operations.');
+    if (!token) throw new Error("Sign in with GitHub in the app's GitHub access section before using authenticated Git operations.");
 
     const cwd = path.resolve(String(input.cwd || ''));
     if (!input.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
@@ -514,7 +548,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, runGitOperation, requestApi };
+  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, importToken, runGitOperation, requestApi };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };

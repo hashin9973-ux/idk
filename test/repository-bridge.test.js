@@ -388,3 +388,163 @@ test('a started worker can be stopped cleanly', async () => {
   assert.equal(stopped.running, false);
   assert.equal(decode(fake.files.get('bridge/state/windows-app.json')).status, 'stopped');
 });
+
+
+test('large textual tool output is stored as a retrievable artifact and previewed in the result', async () => {
+  const longText = 'Header line\\n' + 'A'.repeat(18000) + '\\n' + 'λ🙂'.repeat(8000);
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-large-output',
+    created_at: new Date().toISOString(),
+    tool: 'read_file',
+    args: { path: 'large.txt' }
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/req-large-output.json', request]] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true, result: { path: 'large.txt', content: longText } }),
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    const record = decode(fake.files.get('bridge/results/req-large-output.json'));
+    assert.equal(record.status, 'completed');
+    assert.equal(record.artifacts.length, 1);
+    const artifact = record.artifacts[0];
+    assert.ok(artifact.path.startsWith('bridge/artifacts/req-large-output/'));
+    const stored = fake.files.get(artifact.path);
+    assert.ok(stored, 'full output must be retrievable by the artifact path');
+    assert.equal(Buffer.from(stored.content, 'base64').toString('utf8'), longText);
+    assert.match(record.result.result.content, /Retrieve the artifact file/);
+    assert.equal(artifact.bytes, Buffer.byteLength(longText, 'utf8'));
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('workspace file upload stores raw bytes and returns a repository locator', async () => {
+  const fake = fakeGitHub();
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true })
+  });
+  const bytes = Buffer.from([0, 1, 2, 127, 128, 255]);
+  const artifact = await bridge.publishWorkspaceFile('req-upload-binary', {
+    path: 'output/sample.bin',
+    artifactName: '../sample.bin',
+    bytes
+  });
+  assert.equal(artifact.path, 'bridge/artifacts/req-upload-binary/sample.bin');
+  assert.equal(artifact.bytes, bytes.length);
+  assert.ok(artifact.url.includes('/blob/bridge-mailbox/bridge/artifacts/'));
+  const stored = fake.files.get(artifact.path);
+  assert.ok(stored);
+  assert.deepEqual(Buffer.from(stored.content, 'base64'), bytes);
+});
+
+test('environment refresh publishes a compact context index and keeps instruction contents on-demand', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-refresh-context',
+    created_at: new Date().toISOString(),
+    tool: 'refresh_environment_context',
+    args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/req-refresh-context.json', request]] });
+  const fixture = settingsFixture();
+  const calls = [];
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async tool => {
+      calls.push(tool);
+      if (tool === 'discover_instructions') {
+        return { ok: true, result: { count: 1, instructions: [{ path: 'AGENTS.md', content: 'do not publish this instruction body' }] } };
+      }
+      return { ok: true, result: { tool, summary: 'captured' } };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    const index = decode(fake.files.get('bridge/context/latest.json'));
+    assert.equal(index.protocol, 'chatgpt-local-environment-context/v1');
+    assert.ok(index.files.environment);
+    assert.ok(index.files.project);
+    assert.ok(index.files.capabilities);
+    assert.ok(index.files.directory_tree);
+    assert.ok(index.files.instructions);
+    const instructions = decode(fake.files.get('bridge/context/instructions.json'));
+    assert.deepEqual(instructions.data.result.instructions, [{
+      path: 'AGENTS.md',
+      bytes: Buffer.byteLength('do not publish this instruction body', 'utf8'),
+      sha256: require('node:crypto').createHash('sha256').update('do not publish this instruction body').digest('hex')
+    }]);
+    assert.equal(JSON.stringify(instructions).includes('do not publish this instruction body'), false);
+    assert.ok(calls.includes('environment_info'));
+    assert.ok(calls.includes('directory_tree'));
+    const result = decode(fake.files.get('bridge/results/req-refresh-context.json'));
+    assert.equal(result.status, 'completed');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('oversized structured results are split into retrievable artifact parts', async () => {
+  const entries = Array.from({ length: 600 }, (_, index) => ({
+    id: index,
+    detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
+  }));
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-structured-result',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/req-structured-result.json', request]] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true, result: { entries } }),
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
+    assert.equal(result.status, 'completed');
+    assert.ok(result.artifacts.length > 1);
+    assert.ok(result.artifacts.every(item => item.kind === 'structured_result_part'));
+    assert.deepEqual(
+      result.artifacts.map(item => item.part).sort((a, b) => a - b),
+      Array.from({ length: result.artifacts.length }, (_, index) => index + 1)
+    );
+    const fullText = result.artifacts
+      .slice()
+      .sort((a, b) => a.part - b.part)
+      .map(item => {
+        const stored = fake.files.get(item.path);
+        assert.ok(stored, 'every result part must be retrievable');
+        assert.equal(Buffer.byteLength(Buffer.from(stored.content, 'base64')), item.bytes);
+        return Buffer.from(stored.content, 'base64').toString('utf8');
+      })
+      .join('');
+    const full = JSON.parse(fullText);
+    assert.equal(full.result.result.entries.length, entries.length);
+    assert.equal(full.result.result.entries[599].detail, entries[599].detail);
+    assert.equal(Buffer.byteLength(fullText, 'utf8'), result.result.bytes);
+    assert.equal(require('node:crypto').createHash('sha256').update(fullText, 'utf8').digest('hex'), result.result.sha256);
+    assert.ok(result.artifacts.every(item => item.bytes <= 256 * 1024));
+  } finally {
+    await bridge.stop();
+  }
+});

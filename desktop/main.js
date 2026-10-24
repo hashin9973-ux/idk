@@ -1,6 +1,9 @@
 'use strict';
 
 const path = require('node:path');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
 const fs = require('node:fs');
 const {
   app,
@@ -24,7 +27,6 @@ const EXPANDED_SIZE = { width: 720, height: 780 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 
 let mainWindow = null;
-let accountsWindow = null;
 let collapsed = false;
 let settings = {};
 let saveTimer = null;
@@ -32,6 +34,7 @@ let githubAuth = null;
 let toolBridge = null;
 let repositoryBridge = null;
 let finishingQuit = false;
+let pendingGitHubCliLogin = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -55,6 +58,90 @@ function persistSettings() {
   } catch (error) {
     console.error('Could not save settings:', error.message);
   }
+}
+
+function resolveGitHubCliPath() {
+  const bundledPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'gh', 'gh.exe')
+    : path.join(__dirname, '..', 'vendor', 'gh', 'gh.exe');
+  return fs.existsSync(bundledPath) ? bundledPath : 'gh';
+}
+
+function githubCliEnvironment() {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_HOST']) {
+    delete env[name];
+  }
+  return env;
+}
+
+function readGitHubCliToken() {
+  return execFileAsync(resolveGitHubCliPath(), ['auth', 'token', '--hostname', 'github.com'], {
+    encoding: 'utf8', timeout: 20000, windowsHide: true, env: githubCliEnvironment()
+  }).then(result => {
+    const token = String(result.stdout || '').trim();
+    if (!token) throw new Error('GitHub CLI returned an empty token.');
+    return token;
+  });
+}
+
+function cleanLoginOutput(value) {
+  return String(value || '')
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim().slice(0, 500);
+}
+
+function captureDeviceCode(login, chunk) {
+  login.output = (login.output + String(chunk || '')).slice(-12000);
+  const match = login.output.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/i);
+  if (match) login.userCode = match[1].toUpperCase();
+}
+
+async function completeGitHubCliLogin(login) {
+  login.status = 'finishing';
+  const token = await readGitHubCliToken();
+  const state = await githubAuth.importToken(token);
+  login.login = state.login;
+  login.status = 'authenticated';
+}
+
+function startGitHubCliLogin() {
+  let child;
+  try {
+    child = spawn(resolveGitHubCliPath(), [
+      'auth', 'login', '--web', '--hostname', 'github.com',
+      '--git-protocol', 'https', '--clipboard'
+    ], {
+      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: githubCliEnvironment()
+    });
+  } catch (error) {
+    throw new Error('Could not start GitHub sign-in: ' + cleanLoginOutput(error.message));
+  }
+
+  const login = { child, status: 'pending', output: '', userCode: '', login: '', message: '' };
+  pendingGitHubCliLogin = login;
+  child.stdout.on('data', chunk => captureDeviceCode(login, chunk));
+  child.stderr.on('data', chunk => captureDeviceCode(login, chunk));
+  child.once('error', error => {
+    login.status = 'error';
+    login.message = 'Could not start GitHub sign-in. Reinstall the app and try again. ' + cleanLoginOutput(error.message);
+  });
+  child.once('close', (code, signal) => {
+    if (login.status === 'error') return;
+    if (code !== 0) {
+      login.status = 'error';
+      login.message = cleanLoginOutput(login.output) ||
+        ('GitHub sign-in did not complete' + (signal ? ' (' + signal + ')' : '') + '. Try again.');
+      return;
+    }
+    completeGitHubCliLogin(login).catch(error => {
+      login.status = 'error';
+      login.message = cleanLoginOutput(error.message) || 'Could not finish GitHub sign-in. Try again.';
+    });
+  });
+  return { mode: 'github-cli', userCode: '', verificationUrl: 'https://github.com/login/device', intervalSeconds: 3 };
 }
 
 function getWorkspaceRoot() {
@@ -160,6 +247,7 @@ function expandWindow() {
     height: preferred.height || EXPANDED_SIZE.height
   });
   collapsed = false;
+  mainWindow.setAlwaysOnTop(true);
   mainWindow.setSkipTaskbar(false);
   mainWindow.setMinimumSize(560, 600);
   mainWindow.setResizable(true);
@@ -186,11 +274,35 @@ function getSafeExternalUrl(raw) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:') return null;
-    if (!['github.com', 'docs.github.com'].includes(url.hostname)) return null;
+    if (!['github.com', 'docs.github.com', 'chatgpt.com'].includes(url.hostname)) return null;
     return url;
   } catch {
     return null;
   }
+}
+
+async function openInBrowserAndYield(raw) {
+  const safe = getSafeExternalUrl(raw);
+  if (!safe) throw new Error('Blocked external authentication URL.');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.blur();
+  }
+  try {
+    await shell.openExternal(safe.href);
+    return { opened: true };
+  } catch (error) {
+    bringMainWindowForward();
+    throw error;
+  }
+}
+
+function bringMainWindowForward() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (collapsed) expandWindow();
+  mainWindow.setAlwaysOnTop(true);
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function assertLocalUi(event, filename) {
@@ -201,56 +313,6 @@ function assertLocalUi(event, filename) {
   if (!url.startsWith('file://') || !url.endsWith('/desktop/' + filename)) {
     throw new Error('Unexpected IPC sender.');
   }
-}
-
-function assertAccountUi(event) {
-  if (!accountsWindow || accountsWindow.isDestroyed() || event.sender !== accountsWindow.webContents) {
-    throw new Error('Only the local Accounts window may invoke this action.');
-  }
-  const url = event.senderFrame && event.senderFrame.url || '';
-  if (!url.startsWith('file://') || !url.endsWith('/desktop/accounts.html')) {
-    throw new Error('Unexpected IPC sender for Accounts.');
-  }
-}
-
-function createAccountsWindow() {
-  if (accountsWindow && !accountsWindow.isDestroyed()) {
-    accountsWindow.show();
-    accountsWindow.focus();
-    return;
-  }
-  accountsWindow = new BrowserWindow({
-    width: 560,
-    height: 630,
-    minWidth: 480,
-    minHeight: 520,
-    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
-    modal: false,
-    show: false,
-    title: 'Windows Bridge · GitHub account',
-    autoHideMenuBar: true,
-    backgroundColor: '#10151d',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true
-    }
-  });
-  const reference = accountsWindow;
-  reference.once('ready-to-show', () => {
-    if (!reference.isDestroyed()) reference.show();
-  });
-  reference.on('closed', () => {
-    if (accountsWindow === reference) accountsWindow = null;
-  });
-  reference.webContents.setWindowOpenHandler(({ url }) => {
-    const safe = getSafeExternalUrl(url);
-    if (safe) shell.openExternal(safe.href).catch(() => {});
-    return { action: 'deny' };
-  });
-  reference.loadFile(path.join(__dirname, 'accounts.html'));
 }
 
 function getUiState() {
@@ -288,19 +350,9 @@ function registerIpc() {
     broadcastBridgeState(state);
     return state;
   });
-  ipcMain.handle('app:poll-now', async event => {
-    assertLocalUi(event, 'index.html');
-    await repositoryBridge.pollOnce();
-    return repositoryBridge.getState();
-  });
   ipcMain.handle('app:select-workspace', async event => {
     assertLocalUi(event, 'index.html');
     return selectWorkspace();
-  });
-  ipcMain.handle('app:open-accounts', event => {
-    assertLocalUi(event, 'index.html');
-    createAccountsWindow();
-    return { opened: true };
   });
   ipcMain.handle('app:collapse', event => {
     assertLocalUi(event, 'index.html');
@@ -318,30 +370,69 @@ function registerIpc() {
     return true;
   });
 
-  ipcMain.handle('app:github-state', async event => {
-    assertAccountUi(event);
+  ipcMain.handle('app:github-state', event => {
+    assertLocalUi(event, 'index.html');
     return githubAuth.getState();
   });
-  ipcMain.handle('app:github-set-client-id', (event, clientId) => {
-    assertAccountUi(event);
-    return githubAuth.setClientId(clientId);
-  });
   ipcMain.handle('app:github-start-login', async event => {
-    assertAccountUi(event);
-    const result = await githubAuth.startLogin();
-    const safe = getSafeExternalUrl(result.verificationUrl);
-    if (safe) shell.openExternal(safe.href).catch(() => {});
-    return result;
+    assertLocalUi(event, 'index.html');
+    if (pendingGitHubCliLogin && ['pending', 'finishing'].includes(pendingGitHubCliLogin.status)) {
+      return { mode: 'github-cli', userCode: pendingGitHubCliLogin.userCode, intervalSeconds: 3 };
+    }
+    if (pendingGitHubCliLogin && pendingGitHubCliLogin.status === 'authenticated') {
+      const result = { status: 'authenticated', login: pendingGitHubCliLogin.login, mode: 'github-cli' };
+      pendingGitHubCliLogin = null;
+      bringMainWindowForward();
+      return result;
+    }
+    pendingGitHubCliLogin = null;
+    const current = await githubAuth.getState();
+    if (current.authenticated) return { status: 'authenticated', login: current.login, mode: 'github-cli' };
+    try {
+      const token = await readGitHubCliToken();
+      const connected = await githubAuth.importToken(token);
+      return { status: 'authenticated', login: connected.login, mode: 'github-cli' };
+    } catch {
+      // No reusable CLI login; begin a new browser authorization.
+    }
+    const flow = startGitHubCliLogin();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.blur();
+    }
+    return flow;
   });
   ipcMain.handle('app:github-poll-login', async event => {
-    assertAccountUi(event);
-    return githubAuth.pollLogin();
+    assertLocalUi(event, 'index.html');
+    const login = pendingGitHubCliLogin;
+    if (login) {
+      if (login.status === 'pending' || login.status === 'finishing') {
+        return { status: 'pending', intervalSeconds: 3, ...(login.userCode ? { userCode: login.userCode } : {}) };
+      }
+      pendingGitHubCliLogin = null;
+      if (login.status === 'authenticated') {
+        bringMainWindowForward();
+        return { status: 'authenticated', login: login.login };
+      }
+      bringMainWindowForward();
+      return { status: 'error', message: login.message || 'GitHub sign-in failed. Try again.' };
+    }
+    const state = await githubAuth.getState();
+    return state.authenticated
+      ? { status: 'authenticated', login: state.login }
+      : { status: 'error', message: state.error || 'No GitHub sign-in is in progress. Click Sign in with GitHub to try again.' };
   });
   ipcMain.handle('app:github-logout', event => {
-    assertAccountUi(event);
+    assertLocalUi(event, 'index.html');
     const result = githubAuth.logout();
+    if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
+    pendingGitHubCliLogin = null;
     if (repositoryBridge) repositoryBridge.stop().catch(() => {});
     return result;
+  });
+  ipcMain.handle('app:open-chatgpt', async event => {
+    assertLocalUi(event, 'index.html');
+    return openInBrowserAndYield('https://chatgpt.com/auth/login/');
   });
 }
 
@@ -427,7 +518,8 @@ if (!hasInstanceLock) {
       getMainWindow: () => mainWindow,
       getWorkspaceRoot,
       localTools,
-      githubAuth
+      githubAuth,
+      uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
     });
 
     repositoryBridge = createRepositoryBridge({
@@ -436,7 +528,8 @@ if (!hasInstanceLock) {
       persistSettings,
       getWorkspaceRoot,
       executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
-      onState: broadcastBridgeState
+      onState: broadcastBridgeState,
+      publishContextOnStart: true
     });
 
     registerIpc();
@@ -457,6 +550,7 @@ if (!hasInstanceLock) {
 app.on('before-quit', event => {
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
+  if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;

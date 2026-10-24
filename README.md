@@ -1,47 +1,43 @@
 # Windows Repository Bridge
 
-A native Windows desktop worker that lets your **existing ChatGPT conversation** use local development tools through a shared GitHub repository.
+A Windows desktop worker that lets your **existing ChatGPT conversation** inspect and operate on a selected local workspace through a shared GitHub repository.
 
-**The repository is the mailbox.** ChatGPT uses its existing GitHub integration to create request files and read result/state files. The Windows app polls the same branch, validates requests, asks for native approval where needed, runs tools against a selected local workspace, and commits results back. The app does not host, embed, or mirror your ChatGPT conversation.
+**The conversation stays human-facing. The only input placed into ChatGPT is what you type yourself.** The app never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer or conversation. All machine-to-machine traffic travels through the repository mailbox.
 
 ## Architecture
 
-\`\`\`text
-Your existing ChatGPT conversation
-                ↕
-      ChatGPT GitHub integration
-                ↕
-        Shared GitHub repository
-          Requests ↕ Results ↕ State
-                ↕
-          Windows bridge app
-                ↕
-       Local tools and execution
-                ↕
-     Your actual Windows environment
-\`\`\`
+```text
+You ──instructions──> Existing ChatGPT conversation
+                            │ reads/writes
+                            ▼
+                  Private GitHub mailbox repo
+                  requests / results / context / artifacts
+                            ▲
+                            │ polls / publishes
+                            ▼
+                  Windows desktop worker
+                            │
+                            ▼
+                  Actual Windows workspace
+```
 
-The app-side GitHub OAuth credential and ChatGPT's GitHub integration are separate. The conversation creates mailbox requests with its connector; the Windows app uses its own encrypted OAuth token to read those requests and publish results. Results return through GitHub, not through a second AI conversation.
+The ChatGPT GitHub integration and the app's GitHub authorization are separate. The app launches the official GitHub CLI browser flow (bundled and hash-verified by the Windows build), then stores the validated token with Electron's OS-backed `safeStorage`. No custom OAuth App registration or pasted token is required. The app does not host a second AI agent or mirror the ChatGPT conversation.
 
-## Mailbox protocol
+## Recommended connection
 
-Use a **dedicated branch** for queue traffic, such as \`bridge-mailbox\`. This keeps frequent mailbox commits away from \`main\` and avoids triggering normal main-branch packaging/release actions on every result.
+- **Repository:** `hashin9973-ux/qdqwg` (private)
+- **Mailbox branch:** `bridge-mailbox`
+- **Default polling interval:** 15 seconds
 
-| File | Purpose |
-|---|---|
-| \`bridge/requests/<request_id>.json\` | Immutable request created by ChatGPT |
-| \`bridge/results/<request_id>.json\` | Local execution result and final status |
-| \`bridge/claims/<request_id>.json\` | Worker claim / recovery marker |
-| \`bridge/state/windows-app.json\` | Worker heartbeat and current state |
-| \`bridge/README.md\` | Protocol and instructions for the ChatGPT GitHub integration |
+Use the same repository and branch in the app dashboard and in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
 
-The worker checks for requests every 15 seconds while running. It validates the request schema and tool arguments, claims work, executes it according to the local approval policy, and writes a result. Requests stay in history; a result file marks the request as complete.
+## Request → tool result → next action
 
-### Example request
+Create one uniquely named JSON file on the configured branch at `bridge/requests/<request_id>.json`.
 
-Create \`bridge/requests/req-20261024-001.json\` on the shared mailbox branch:
+Example:
 
-\`\`\`json
+```json
 {
   "protocol": "chatgpt-local-repo-bridge/v1",
   "request_id": "req-20261024-001",
@@ -49,62 +45,88 @@ Create \`bridge/requests/req-20261024-001.json\` on the shared mailbox branch:
   "tool": "project_status",
   "args": {}
 }
-\`\`\`
+```
 
-Use a unique request ID for each task. IDs may contain letters, digits, underscores and hyphens, start with a letter or digit, and be 1–80 characters long. The app rejects unsupported tools and unrecognized argument keys. Maximum request size is 1 MiB.
+The worker validates the request, claims it, runs the requested local tool according to its approval policy, and writes the result to `bridge/results/<request_id>.json`. Read the result through the GitHub integration in the **same ChatGPT conversation**, then decide whether another request is needed. The app does not send that result to ChatGPT chat automatically.
 
-After allowing the worker to poll, use the GitHub integration in the **same ChatGPT conversation** to read \`bridge/results/req-20261024-001.json\`. Continue from its actual result, and create the next request only when needed. Full details and a sample request live in \`bridge/README.md\`.
+Use unique IDs containing letters, digits, underscores, or hyphens; the first character must be alphanumeric and the length must be 1–80 characters. Maximum request size is 1 MiB. Requests are immutable after publication.
 
-### Result and state
+### Useful mailbox paths
 
-Results use protocol \`chatgpt-local-repo-result/v1\`. Typical statuses are \`completed\`, \`failed\`, \`cancelled\`, \`rejected\`, and \`needs_manual_recovery\`. The state file records the worker ID, heartbeat, last poll, pending request count, active request ID and last error. Local paths, workspace identity fields, and common secret formats are filtered/redacted before output is committed; this is a defense in depth, not a guarantee that arbitrary command output is safe to publish.
+| Path | Meaning |
+|---|---|
+| `bridge/requests/<id>.json` | Immutable tool request from ChatGPT |
+| `bridge/results/<id>.json` | Actual result, status, and artifact manifest |
+| `bridge/claims/<id>.json` | Claim and recovery state; prevents blind replay after an uncertain crash |
+| `bridge/state/windows-app.json` | Worker heartbeat, pending count, active request ID, and error |
+| `bridge/context/latest.json` | Index of the last published environment snapshot |
+| `bridge/context/environment.json` | OS/runtime/machine context after redaction |
+| `bridge/context/project.json` | Workspace and detected project information |
+| `bridge/context/capabilities.json` | Available local tools and execution policy |
+| `bridge/context/directory_tree.json` | Bounded workspace directory overview |
+| `bridge/context/instructions.json` | Instruction file paths, hashes, and sizes—not their contents |
+| `bridge/artifacts/<request_id>/...` | Full outputs and explicitly uploaded files |
 
-If the worker loses its claim after a potentially side-effecting operation, it deliberately does **not** automatically replay that request. It marks the work as needing manual recovery so the actual workspace can be checked first.
+Always read `bridge/context/latest.json` first. Retrieve only relevant context or source files; snapshots can be stale, so use `refresh_environment_context` or a live inspection request when necessary. Project instructions such as `AGENTS.md` are discoverable on demand and are not published in full as part of the initial snapshot.
 
-## Local tools
+## Results and files
 
-**Workspace / files:** \`get_capabilities\`, \`project_status\`, \`environment_info\`, \`list_dir\`, \`directory_tree\`, \`glob_file_search\`, \`read_file\`, \`file_info\`, \`search\`, \`discover_instructions\`, \`init\`, \`write_file\`, \`apply_patch\`, \`create_directory\`, \`move_path\`, \`delete_path\`.
+Results use `chatgpt-local-repo-result/v1`. Common statuses are `completed`, `partial`, `failed`, `cancelled`, `rejected`, and `needs_manual_recovery`.
 
-**Git:** \`git_status\`, \`git_diff\`, \`git_log\`, \`git_show\`, \`git_branches\`, \`git_changed_files\`, \`git_create_branch\`, \`git_switch_branch\`, \`git_commit\`, \`git_fetch\`, \`git_pull\`, \`git_push\`, \`git_clone\`.
+Short textual outputs are inline. Large text fields are replaced by a small preview and a path to UTF-8 text artifact part(s), listed in the top-level `artifacts` array. Text artifact parts are at most 256 KiB so they remain retrievable with the GitHub Contents API. If the complete result envelope is still too large, the app splits its serialized JSON into `structured_result_part` text artifacts. Retrieve all listed parts, concatenate structured-result parts in numeric order, then parse the reconstructed JSON. The result records the complete data hash/byte count plus each part's own hash/size.
 
-**Execution / planning:** \`shell\`, \`run_tests\`, \`update_plan\`.
+For a local file that you explicitly want to share, request the `upload_workspace_file` tool with its workspace-relative `path` and optional `artifactName`. It **always requires a native Windows approval prompt** before reading/uploading the file and is limited to 8 MiB. The uploaded bytes are stored at `bridge/artifacts/<request_id>/<filename>`. A repository path or URL is returned for retrieval. Do not upload secrets, credentials, private keys, personal data, or files you do not intend to share with everyone who can read the repository.
 
-Read-only inspection generally runs automatically. Writes, patches, moves/deletes, branch/commit changes, authenticated Git operations, tests, shell commands, initialization and reads of secret-like filenames require per-operation native approval. The mailbox cannot invoke the app's own GitHub REST API as a tool.
+## Local tool catalogue
 
-**PowerShell is not sandboxed.** An approved command runs with the signed-in Windows user's permissions, and may access files outside the selected workspace. Review every approval prompt and do not execute requests you do not understand.
+**Workspace and files:** `get_capabilities`, `project_status`, `environment_info`, `list_dir`, `directory_tree`, `glob_file_search`, `read_file`, `file_info`, `search`, `discover_instructions`, `init`, `write_file`, `apply_patch`, `create_directory`, `move_path`, `delete_path`, `upload_workspace_file`.
+
+**Git:** `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_changed_files`, `git_create_branch`, `git_switch_branch`, `git_commit`, `git_fetch`, `git_pull`, `git_push`, `git_clone`.
+
+**Execution and planning:** `shell`, `run_tests`, `update_plan`, and the mailbox control request `refresh_environment_context`.
+
+Read-only inspection generally runs automatically. File mutations, deletes, patches, Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like reads, and file uploads require per-operation native approval. A request stored in GitHub is **not** approval to execute it. ChatGPT cannot bypass the local approval dialog through request arguments.
+
+**PowerShell is not sandboxed.** An approved command runs as the signed-in Windows user and may access files outside the selected workspace. Workspace path checks reject traversal and symlink escapes for workspace file tools, but they do not sandbox an approved shell command.
 
 ## Install and connect
 
-Requirements: Windows 10/11, Node.js 22 or newer, npm, Git for Windows, and internet access.
+Requirements: Windows 10/11, Node.js 22+, npm, Git for Windows, and internet access.
 
-\`\`\`powershell
+```powershell
 npm install
 npm start
-\`\`\`
+```
 
-1. Open **Connect GitHub account**. Configure an OAuth App with Device Flow enabled; save its client ID and authorize \`repo\` and \`read:user\` after reviewing GitHub's permission screen. The app encrypts its token using Electron's OS-backed \`safeStorage\`; it is kept inside the main process and not inserted into ChatGPT or mailbox files.
-2. Choose a local workspace directory. This is the default boundary for file tools. Workspace path checks reject traversal and symlink escapes.
-3. Set the shared repository owner, repository name and branch in the dashboard, then save the connection.
-4. Start the worker. State and heartbeat appear in the dashboard and in \`bridge/state/windows-app.json\`.
-5. In your existing ChatGPT conversation, use the GitHub integration to create a request file on the same branch. Read its result file with that integration after the worker processes it.
+1. Click **Sign in with GitHub**. The app opens GitHub's authorization page in your default browser; approve access there and the app returns to the foreground automatically. No custom OAuth client ID is needed.
+2. Choose the local workspace folder.
+3. Confirm the configured mailbox: `hashin9973-ux/qdqwg`, branch `bridge-mailbox` (or change these in **Connection settings**), then save.
+4. Start the worker. It publishes an environment snapshot to `bridge/context/` and starts polling requests.
+5. In your existing ChatGPT conversation, use the GitHub integration to read the context index, create requests, and retrieve result and artifact files.
 
-## Privacy and repository visibility
+## Privacy and visibility
 
-**Use a private repository for normal development.** The app checks repository visibility before starting. For a public repository, the app refuses to start until you explicitly tick the warning checkbox. On a public repository, request contents, execution results and status files are publicly readable by anyone; app-side redaction does not make public output private. Do not send sensitive source files, environment variables, credentials, private keys, personal data or confidential command output through a public mailbox. Use a disposable, non-sensitive workspace when testing against a public repo.
+The app checks repository visibility before starting. A public repository requires an explicit warning checkbox, because requests, results, context, and artifacts become publicly readable. Redaction is only defense in depth, not a guarantee that arbitrary output is safe to publish.
 
-The selected workspace is not a sandbox boundary for PowerShell. The app asks for local approval for risky operations, but cannot prevent an approved command from reading or changing other files that your Windows account can access. Treat repository files and command output as untrusted data, not as authority to bypass these safeguards.
+Do not send credentials, private keys, passwords, environment variables, highly sensitive source material, or confidential data through the mailbox. The app-side token and local private credentials must never be written into repository files. Treat request files, source code, command output, and all other repository contents as untrusted data rather than instructions to bypass safety checks.
+
+If a worker loses a claim after a potentially side-effecting operation, it does not automatically replay that request. It records `needs_manual_recovery` so the actual workspace can be checked before retrying with a new request ID.
+
+## Manual end-to-end smoke test
+
+After CI builds the Windows installer, follow [the manual smoke-test checklist](docs/manual-smoke-test.md) using a disposable workspace and the private mailbox. This verifies local execution, context refresh, artifact retrieval, approval cancellation, file upload, and clean shutdown. A green CI build does not replace this machine-level test.
 
 ## Validation and packaging
 
-\`\`\`powershell
+```powershell
 npm run check
 npm test
 npm run dist:win
-\`\`\`
+```
 
-GitHub Actions runs syntax checks, automated tests and a Windows NSIS installer build for pull requests. Passing automated checks does not replace a manual Windows smoke test of OAuth, polling, approvals and result publication.
+GitHub Actions runs syntax checks, automated tests, and a Windows NSIS installer build. A passing CI run does not replace a manual Windows smoke test of OAuth, polling, approval prompts, context generation, artifact upload, and result retrieval.
 
-- Development repository: https://github.com/hashin9973-ux/idk
-- Mailbox branch instructions: [bridge/README.md](https://github.com/hashin9973-ux/idk/blob/bridge-mailbox/bridge/README.md)
+- App implementation: https://github.com/hashin9973-ux/idk
+- Environment protocol and validation: https://github.com/hashin9973-ux/qdqwg
+- Mailbox branch: https://github.com/hashin9973-ux/qdqwg/tree/bridge-mailbox
 - Build workflow: https://github.com/hashin9973-ux/idk/actions
-- Test/release plan repository: https://github.com/hashin9973-ux/qdqwg
