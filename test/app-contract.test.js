@@ -102,7 +102,7 @@ test('inline GitHub auth stores an encrypted app-side credential and does not re
   assert.match(auth, /safeStorage\.encryptString/);
   assert.match(auth, /safeStorage\.decryptString/);
   assert.match(auth, /runGitOperation/);
-  assert.match(html, /github-client-id/);
+  assert.doesNotMatch(html, /github-client-id/);
   assert.match(html, /separate login inside this app/i);
   assert.match(html, /open-chatgpt/);
   assert.match(js, /windowsBridge\.startGitHubLogin/);

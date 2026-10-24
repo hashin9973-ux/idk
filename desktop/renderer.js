@@ -148,7 +148,7 @@
           scheduleAuthPoll(Math.max(3, result.intervalSeconds || seconds)); return;
         }
         stopAuthPolling(); githubCodePanel.hidden = true; await refreshGitHubState();
-        setMessage(result.message || 'GitHub authorization was not completed.', result.status === 'denied' ? 'error' : '');
+        setMessage(result.message || 'GitHub authorization was not completed.', ['denied', 'error'].includes(result.status) ? 'error' : '');
       } catch (error) {
         stopAuthPolling(); setMessage(error.message || error, 'error'); await refreshGitHubState().catch(() => {});
       }
