@@ -8,6 +8,7 @@ const { promisify } = require('node:util');
 
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MAILBOX_CONTENT_BYTES = 12 * 1024 * 1024;
 
 function cleanError(value) {
   return String(value || 'GitHub request failed').replace(/[\r\n]+/g, ' ').slice(0, 500);
@@ -97,7 +98,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
     }
     const base = '/repos/' + owner + '/' + repository;
-    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state']);
+    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts']);
     let relative = '';
     let kind = '';
 
@@ -122,6 +123,10 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } else if (parts.length === 3 && allowedFolders.has(parts.slice(0, 2).join('/')) &&
         (parts[2] === '.gitkeep' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(parts[2]))) {
       kind = 'file';
+    } else if (parts.length === 4 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
+        /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(parts[2]) &&
+        /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(parts[3])) {
+      kind = 'artifact';
     } else if (relative === 'bridge/state/windows-app.json') {
       kind = 'state';
     } else {
@@ -140,15 +145,19 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       };
     }
 
-    if (kind !== 'file' && kind !== 'state') throw new Error('PUT is only permitted for mailbox file records.');
+    if (!['file', 'state', 'artifact'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records and approved artifact paths.');
     if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
     const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
     if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
         typeof input.body.message !== 'string' || input.body.message.length > 200 ||
-        typeof input.body.content !== 'string' || input.body.content.length > MAX_RESPONSE_BYTES ||
+        typeof input.body.content !== 'string' || input.body.content.length > MAX_MAILBOX_CONTENT_BYTES ||
         input.body.branch !== branch ||
         (input.body.sha !== undefined && (typeof input.body.sha !== 'string' || !/^[0-9a-f]{40}$/i.test(input.body.sha)))) {
       throw new Error('Invalid or unsupported mailbox write payload.');
+    }
+    if (kind === 'artifact') {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.body.content)) throw new Error('Artifact content must be Base64-encoded bytes.');
+      return { method, path: pathValue, body: input.body, url: 'https://api.github.com' + pathValue };
     }
     let payload;
     try {
@@ -167,6 +176,9 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     if (!isFolderMarker && relative.startsWith('bridge/claims/') && payload.protocol !== 'chatgpt-local-repo-claim/v1') {
       throw new Error('Claim files must use the supported claim protocol.');
+    }
+    if (!isFolderMarker && relative.startsWith('bridge/context/') && payload.protocol !== 'chatgpt-local-environment-context/v1') {
+      throw new Error('Environment context files must use the supported context protocol.');
     }
     if (relative === 'bridge/state/windows-app.json' && payload.protocol !== 'chatgpt-local-repo-state/v1') {
       throw new Error('Shared state files must use the supported state protocol.');
