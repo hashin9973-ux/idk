@@ -1,11 +1,9 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const { execFileSync } = require('node:child_process');
 const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
-const { createRepositoryBridge } = require('./repository-bridge');
 const { extractConversationSnapshot, extractConversationList, scrollConversationViewport } = require('./conversation-mirror');
 const {
   app,
@@ -50,7 +48,6 @@ let settings = {};
 let saveTimer = null;
 let toolBridge = null;
 let githubAuth = null;
-let repositoryBridge = null;
 let mirrorSyncTimer = null;
 let mirrorSyncInProgress = false;
 let lastMirrorSnapshot = null;
@@ -110,36 +107,24 @@ function getWorkspaceRoot() {
   return path.resolve(settings.workspaceRoot);
 }
 
-function hasBridgeBootstrap(conversationId, repository, branch) {
-  const contexts = settings.bridgeBootstrapContexts;
-  if (!contexts || typeof contexts !== 'object') return false;
-  return contexts[conversationId] === String(repository).toLowerCase() + '@' + String(branch || 'main');
+function normalizeWorkspaceRoot(rootPath) {
+  return path.resolve(String(rootPath || '')).toLowerCase();
 }
 
-function recordBridgeBootstrap(conversationId, repository, branch) {
+function hasBridgeBootstrap(conversationId, workspaceRoot) {
+  const contexts = settings.bridgeBootstrapContexts;
+  if (!contexts || typeof contexts !== 'object') return false;
+  return contexts[conversationId] === normalizeWorkspaceRoot(workspaceRoot);
+}
+
+function recordBridgeBootstrap(conversationId, workspaceRoot) {
   if (!conversationId) return;
   const contexts = settings.bridgeBootstrapContexts && typeof settings.bridgeBootstrapContexts === 'object'
     ? settings.bridgeBootstrapContexts : {};
-  contexts[conversationId] = String(repository).toLowerCase() + '@' + String(branch || 'main');
+  contexts[conversationId] = normalizeWorkspaceRoot(workspaceRoot);
   const entries = Object.entries(contexts).slice(-500);
   settings.bridgeBootstrapContexts = Object.fromEntries(entries);
   persistSettings();
-}
-
-function getWorkspaceGitHubRemotes() {
-  const output = execFileSync('git', ['remote', '-v'], {
-    cwd: getWorkspaceRoot(),
-    encoding: 'utf8',
-    timeout: 8000,
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'ignore']
-  });
-  const remotes = [];
-  for (const line of output.split(/\r?\n/)) {
-    const parts = line.trim().split(/\s+/);
-    if (parts.length >= 2 && parts[1]) remotes.push(parts[1]);
-  }
-  return [...new Set(remotes)];
 }
 
 function getActiveConversationUrl() {
@@ -622,7 +607,11 @@ function registerIpc() {
   });
   ipcMain.handle('overlay:select-workspace', async (event) => {
     assertLocalUi(event);
-    return selectWorkspace();
+    const result = await selectWorkspace();
+    if (result && !result.canceled && toolBridge) {
+      setTimeout(() => toolBridge.initializeCurrentConversation().catch(() => {}), 500);
+    }
+    return result;
   });
   ipcMain.handle('overlay:get-workspace', (event) => {
     assertLocalUi(event);
@@ -659,33 +648,12 @@ function registerIpc() {
   ipcMain.handle('overlay:github-poll-login', async (event) => {
     assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
-    const result = await githubAuth.pollLogin();
-    if (result.status === 'authenticated' && toolBridge) {
-      setTimeout(() => toolBridge.initializeCurrentConversation().catch(() => {}), 500);
-    }
-    return result;
+    return githubAuth.pollLogin();
   });
   ipcMain.handle('overlay:github-logout', (event) => {
     assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
-    const result = githubAuth.logout();
-    if (repositoryBridge) repositoryBridge.pollOnce().catch(() => {});
-    return result;
-  });
-  ipcMain.handle('overlay:github-set-bridge-config', (event, config) => {
-    assertAccountUi(event);
-    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
-    const saved = githubAuth.setBridgeConfig(config);
-    if (repositoryBridge) repositoryBridge.pollOnce().catch(() => {});
-    if (toolBridge) setTimeout(() => toolBridge.initializeCurrentConversation().catch(() => {}), 500);
-    return saved;
-  });
-  ipcMain.handle('overlay:repository-bridge-status', (event) => {
-    assertAccountUi(event);
-    return repositoryBridge ? repositoryBridge.getStatus() : {
-      state: 'starting',
-      message: 'Repository bridge is initializing.'
-    };
+    return githubAuth.logout();
   });
 }
 
@@ -874,26 +842,8 @@ if (!hasInstanceLock) {
       hasBridgeBootstrap,
       recordBridgeBootstrap
     });
-    repositoryBridge = createRepositoryBridge({
-      githubAuth,
-      dataDir: app.getPath('userData'),
-      getWorkspaceRepositories: getWorkspaceGitHubRemotes,
-      pollIntervalMs: 5000,
-      executeRequest: (request, context) => toolBridge.runTool(request.tool, request.args, request.callId, {
-        returnToChat: false,
-        requireApproval: true,
-        source: { repository: context.repository, branch: context.branch, callId: request.callId }
-      }),
-      notifyResult: record => toolBridge.deliverRepositoryResult(record),
-      onStatus: status => {
-        if (accountsWindow && !accountsWindow.isDestroyed() && !accountsWindow.webContents.isDestroyed()) {
-          accountsWindow.webContents.send('overlay:repository-bridge-status-changed', status);
-        }
-      }
-    });
     registerIpc();
     createMainWindow();
-    repositoryBridge.start();
     startMirrorSync();
     registerHotkey();
 
@@ -911,7 +861,6 @@ if (!hasInstanceLock) {
 app.on('before-quit', () => {
   if (mirrorSyncTimer) clearInterval(mirrorSyncTimer);
   mirrorSyncTimer = null;
-  if (repositoryBridge) repositoryBridge.stop();
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
 });
