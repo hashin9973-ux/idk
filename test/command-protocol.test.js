@@ -58,7 +58,7 @@ test('new slash commands map to the expected filesystem and Git tools', () => {
   assert.deepEqual(commands.parseSlashCommand('/rm src/a.txt'), { tool: 'delete_path', args: { path: 'src/a.txt' } });
   assert.deepEqual(commands.parseSlashCommand('/branch feature/example'), { tool: 'git_create_branch', args: { name: 'feature/example' } });
   assert.deepEqual(commands.parseSlashCommand('/switch main'), { tool: 'git_switch_branch', args: { name: 'main' } });
-  assert.deepEqual(commands.parseSlashCommand('/github'), { special: 'bridge_status' });
+  assert.deepEqual(commands.parseSlashCommand('/github'), { special: 'github_status' });
 });
 
 test('model-facing local tools do not include a duplicate GitHub API credential tool', () => {
