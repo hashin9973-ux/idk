@@ -501,12 +501,9 @@ function createToolBridge(deps) {
         const code = pre.querySelector('code');
         if (!code || !String(code.className || '').split(/\s+/).includes('language-assistant_tool')) continue;
         const raw = (code.innerText || code.textContent || '').trim();
-        let request;
-        try { request = JSON.parse(raw); } catch { continue; }
-        if (!request || typeof request !== 'object' || typeof request.tool !== 'string') continue;
         processedBlocks.add(pre);
         toolCallArmed = false;
-        sendInternal('call', 'payload', JSON.stringify(request));
+        sendInternal('call', 'payload', raw);
         break; // One app tool call per assistant response; subsequent calls wait for the returned result.
       }
     }
