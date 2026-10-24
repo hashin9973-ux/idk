@@ -1,6 +1,5 @@
 'use strict';
 
-const { validateRepositoryName, validateBranchName } = require('./repository-protocol');
 
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -37,33 +36,6 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
 
   function hasSavedToken() {
     try { return Boolean(getToken()); } catch { return false; }
-  }
-
-  function getBridgeConfig() {
-    const entry = githubSettings();
-    return {
-      repository: typeof entry.bridgeRepository === 'string' ? entry.bridgeRepository : '',
-      branch: typeof entry.bridgeBranch === 'string' && entry.bridgeBranch ? entry.bridgeBranch : 'main',
-      allowPublicRepository: entry.allowPublicRepository === true
-    };
-  }
-
-  function setBridgeConfig(value = {}) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      throw new Error('Bridge configuration must be an object.');
-    }
-    const repositoryRaw = String(value.repository || '').trim();
-    const repository = repositoryRaw ? validateRepositoryName(repositoryRaw) : '';
-    const branch = validateBranchName(value.branch || 'main');
-    if (value.allowPublicRepository !== undefined && typeof value.allowPublicRepository !== 'boolean') {
-      throw new Error('allowPublicRepository must be true or false.');
-    }
-    const entry = githubSettings();
-    entry.bridgeRepository = repository;
-    entry.bridgeBranch = branch;
-    entry.allowPublicRepository = value.allowPublicRepository === true;
-    persistSettings();
-    return getBridgeConfig();
   }
 
   function saveToken(token) {
@@ -106,7 +78,6 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       clientId: typeof settings.clientId === 'string' ? settings.clientId : '',
       authenticated: false,
       login: '',
-      ...getBridgeConfig()
     };
     const token = getToken();
     if (!token) return state;
@@ -236,7 +207,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     if (method === 'GET' && args.body !== undefined) throw new Error('GET requests must not include a body.');
     const token = getToken();
-    if (!token) throw new Error('Sign in to GitHub from the app Accounts dialog before using github_api.');
+    if (!token) throw new Error('Sign in to GitHub from the app Accounts dialog before using authenticated repository operations.');
     const url = new URL('https://api.github.com' + apiPath);
     if (args.query) {
       for (const [key, value] of Object.entries(args.query)) {
@@ -271,7 +242,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, requestApi, hasSavedToken, getBridgeConfig, setBridgeConfig };
+  return { getState, setClientId, startLogin, pollLogin, logout, requestApi, hasSavedToken };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };
