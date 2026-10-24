@@ -436,7 +436,7 @@ test('workspace file upload stores raw bytes and returns a repository locator', 
   const bytes = Buffer.from([0, 1, 2, 127, 128, 255]);
   const artifact = await bridge.publishWorkspaceFile('req-upload-binary', {
     path: 'output/sample.bin',
-    artifactName: 'sample.bin',
+    artifactName: '../sample.bin',
     bytes
   });
   assert.equal(artifact.path, 'bridge/artifacts/req-upload-binary/sample.bin');
