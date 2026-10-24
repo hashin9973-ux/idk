@@ -564,9 +564,30 @@ function createToolBridge(deps) {
         break; // One app tool call per assistant response; subsequent calls wait for the returned result.
       }
     }
-    const observer = new MutationObserver(scanToolBlocks);
+    let scanTimer = null;
+    let mirrorRefreshTimer = null;
+    function scheduleMirrorRefresh() {
+      if (mirrorRefreshTimer !== null) window.clearTimeout(mirrorRefreshTimer);
+      mirrorRefreshTimer = window.setTimeout(() => {
+        mirrorRefreshTimer = null;
+        sendInternal('mirror-refresh', 'update', String(Date.now()));
+      }, 350);
+    }
+    function scheduleScan() {
+      if (scanTimer !== null) window.clearTimeout(scanTimer);
+      scanTimer = window.setTimeout(() => {
+        scanTimer = null;
+        scanToolBlocks();
+        scheduleMirrorRefresh();
+      }, 150);
+    }
+
+    const observer = new MutationObserver(scheduleScan);
     observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    document.addEventListener('input', scheduleMirrorRefresh, true);
+    window.addEventListener('scroll', scheduleMirrorRefresh, true);
     scanToolBlocks();
+    scheduleMirrorRefresh();
   }
 
   function installChatToolBridge() {
