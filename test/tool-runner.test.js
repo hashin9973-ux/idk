@@ -114,6 +114,15 @@ test('workspace file mutations are automatic while commands and tests remain app
   assert.equal(tools.getToolPolicy('read_file', { path: '.env' }).requiresApproval, true);
 });
 
+test('secret-like write and patch targets require approval', () => {
+  assert.equal(tools.getToolPolicy('write_file', { path: '.env' }).requiresApproval, true);
+  assert.equal(tools.getToolPolicy('delete_path', { path: 'keys/id_rsa' }).requiresApproval, true);
+  assert.equal(tools.getToolPolicy('move_path', { source: 'config.json', destination: '.npmrc' }).requiresApproval, true);
+  assert.equal(tools.getToolPolicy('apply_patch', {
+    patch: '*** Begin Patch Patch\n*** Update File: .env\n@@ TOKEN\n-TOKEN=old\n+TOKEN=new\n*** End Patch'
+  }).requiresApproval, true);
+});
+
 test('init does not overwrite existing AGENTS.md', async () => {
   const root = fixture();
   try {
