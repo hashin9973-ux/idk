@@ -37,6 +37,10 @@ test('the visible surface is a bounded native mirror, not the embedded ChatGPT p
   assert.ok(main.includes('#stage-slideover-sidebar'));
   assert.ok(main.includes('optimizeChatTransport(chatView.webContents)'));
   assert.ok(main.includes('contents.insertCSS(TRANSPORT_CSS)'));
+  assert.ok(bridge.includes("sendInternal('mirror-refresh', 'update'"));
+  assert.ok(bridge.includes('new MutationObserver(scheduleScan)'));
+  assert.ok(bridge.includes('document.addEventListener(\'input\', scheduleMirrorRefresh, true)'));
+  assert.ok(main.includes('syncConversationMirror(false).catch(() => {}), 5000'));
   assert.ok(main.includes('overlay:mirror-snapshot'));
   assert.ok(main.includes('overlay:mirror-send-message'));
   assert.ok(main.includes('settings.lastConversationUrl'));
