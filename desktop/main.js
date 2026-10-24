@@ -425,9 +425,7 @@ if (!hasInstanceLock) {
     toolBridge = createToolBridge({
       dialog,
       getMainWindow: () => mainWindow,
-      getChatView: () => null,
       getWorkspaceRoot,
-      selectWorkspace,
       localTools,
       githubAuth
     });
@@ -437,7 +435,7 @@ if (!hasInstanceLock) {
       getSettings: () => settings,
       persistSettings,
       getWorkspaceRoot,
-      executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId, { deliverToChat: false }),
+      executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
       onState: broadcastBridgeState
     });
 
