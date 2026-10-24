@@ -12,8 +12,8 @@ const {
   scrollConversationViewport
 } = require('../desktop/conversation-mirror');
 
-function runInPage(fn, context) {
-  return vm.runInNewContext('(' + fn.toString() + ')()', context);
+function runInPage(fn, context, ...args) {
+  return vm.runInNewContext('(' + fn.toString() + ')(' + args.map(value => JSON.stringify(value)).join(',') + ')', context);
 }
 
 function makeMessage(index, options = {}) {
@@ -131,7 +131,7 @@ test('page scroll helper moves only one viewport at a time', () => {
       documentElement: {}
     },
     getComputedStyle: element => ({ overflowY: element === container ? 'auto' : 'visible' })
-  });
+  }, -1);
   assert.equal(result.ok, true);
   assert.equal(result.direction, -1);
   assert.ok(container.scrollTop < 1200);
