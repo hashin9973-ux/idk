@@ -11,11 +11,9 @@
   "scripts": {
     "prestart": "node desktop/prepare-gh-cli.js",
     "start": "electron .",
-    "pre-dist:win": "node desktop/prepare-gh-cli.js",
-    "pre-dist:win:dir": "node desktop/prepare-gh-cli.js",
     "check": "node --check desktop/prepare-gh-cli.js && node --check desktop/main.js && node --check desktop/preload.js && node --check desktop/renderer.js && node --check desktop/geometry.js && node --check desktop/tool-runner.js && node --check desktop/github-auth.js && node --check desktop/tool-bridge.js && node --check desktop/repository-bridge.js && node --check test/geometry.test.js && node --check test/app-contract.test.js && node --check test/tool-runner.test.js && node --check test/tool-bridge.test.js && node --check test/github-auth.test.js && node --check test/repository-bridge.test.js",
-    "dist:win": "electron-builder --win nsis --publish never",
-    "dist:win:dir": "electron-builder --win --dir --publish never",
+    "dist:win": "node desktop/prepare-gh-cli.js && electron-builder --win nsis --publish never",
+    "dist:win:dir": "node desktop/prepare-gh-cli.js && electron-builder --win --dir --publish never",
     "test": "node --test"
   },
   "devDependencies": {
@@ -38,7 +36,10 @@
       {
         "from": "vendor/gh",
         "to": "gh",
-        "filter": ["gh.exe", "LICENSE"]
+        "filter": [
+          "gh.exe",
+          "LICENSE"
+        ]
       }
     ],
     "win": {
