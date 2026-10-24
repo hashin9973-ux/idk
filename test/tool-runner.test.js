@@ -155,7 +155,8 @@ test('create_directory, move_path and delete_path have real effects inside the w
 test('mutating filesystem and Git tools require approval', () => {
   for (const name of [
     'create_directory','move_path','delete_path','git_create_branch',
-    'git_switch_branch','git_commit','write_file','apply_patch','shell','run_tests'
+    'git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone',
+    'write_file','apply_patch','shell','run_tests'
   ]) {
     assert.equal(tools.getToolPolicy(name).requiresApproval, true, name);
   }
