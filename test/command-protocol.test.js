@@ -47,8 +47,7 @@ test('expanded local tools are recognized by the fenced tool protocol', () => {
   const tools = [
     'environment_info', 'directory_tree', 'file_info', 'git_log', 'git_show',
     'git_branches', 'git_changed_files', 'discover_instructions', 'create_directory',
-    'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit',
-    'github_status', 'github_api'
+    'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit'
   ];
   for (const tool of tools) {
     const parsed = commands.parseToolCall(JSON.stringify({ version: 1, tool, args: {} }));
@@ -68,5 +67,11 @@ test('new slash commands map to the expected filesystem and Git tools', () => {
   assert.deepEqual(commands.parseSlashCommand('/rm src/a.txt'), { tool: 'delete_path', args: { path: 'src/a.txt' } });
   assert.deepEqual(commands.parseSlashCommand('/branch feature/example'), { tool: 'git_create_branch', args: { name: 'feature/example' } });
   assert.deepEqual(commands.parseSlashCommand('/switch main'), { tool: 'git_switch_branch', args: { name: 'main' } });
-  assert.deepEqual(commands.parseSlashCommand('/github'), { tool: 'github_status', args: {} });
+  assert.deepEqual(commands.parseSlashCommand('/github'), { special: 'bridge_status' });
+});
+
+test('model-facing local tools do not include a duplicate GitHub API credential tool', () => {
+  assert.equal(commands.TOOL_NAMES.has('github_api'), false);
+  assert.equal(commands.TOOL_NAMES.has('github_status'), false);
+  assert.throws(() => commands.parseToolCall(JSON.stringify({ tool: 'github_api', args: { method: 'GET', path: '/user' } })), /Unknown local tool/);
 });
