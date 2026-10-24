@@ -144,8 +144,8 @@ function getWorkspaceGitHubRemotes() {
 
 function getActiveConversationUrl() {
   const candidates = [
-    lastMirrorSnapshot && lastMirrorSnapshot.url,
-    settings.lastConversationUrl
+    settings.lastConversationUrl,
+    lastMirrorSnapshot && lastMirrorSnapshot.url
   ];
   for (const raw of candidates) {
     try {
@@ -587,6 +587,9 @@ function registerIpc() {
       return { ok: false, reason: 'invalid_conversation_id' };
     }
     const url = 'https://chatgpt.com/c/' + conversationId;
+    settings.lastConversationUrl = url;
+    persistSettings();
+    lastMirrorSnapshotSignature = '';
     await chatView.webContents.loadURL(url);
     return { ok: true, conversationId };
   });
@@ -595,6 +598,8 @@ function registerIpc() {
     if (!chatView || chatView.webContents.isDestroyed()) return { ok: false, reason: 'chat_view_unavailable' };
     settings.lastConversationUrl = '';
     persistSettings();
+    lastMirrorSnapshot = { url: CHATGPT_URL, title: 'New conversation', conversationId: '', messages: [], signedIn: true };
+    lastMirrorSnapshotSignature = '';
     await chatView.webContents.loadURL(CHATGPT_URL);
     return { ok: true };
   });
