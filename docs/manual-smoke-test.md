@@ -85,7 +85,8 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 - [ ] A read-only request produces a result file for the same ID.
 - [ ] Context refresh updates the snapshot index.
 - [ ] Large text is externalized and retrievable with size/hash metadata.
-- [ ] Workspace file edits run automatically without escaping the selected folder.\n- [ ] A declined shell command remains unexecuted and returns `cancelled`.
+- [ ] Workspace file edits run automatically without escaping the selected folder.
+- [ ] A declined shell command remains unexecuted and returns `cancelled`.
 - [ ] File upload requires a local approval and returns the exact bytes.
 - [ ] Stop state is published; no output is inserted into the ChatGPT conversation.
 
