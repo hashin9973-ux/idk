@@ -87,23 +87,9 @@ function parseSlashCommand(text) {
   }
 }
 
-function parseToolCall(raw) {
-  if (typeof raw !== 'string' || raw.length > 2 * 1024 * 1024) throw new Error('Tool request is missing or exceeds the 2 MiB limit.');
-  let value;
-  try { value = JSON.parse(raw); } catch { throw new Error('assistant_tool block must contain valid JSON.'); }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('assistant_tool request must be a JSON object.');
-  const extras = Object.keys(value).filter(k => !['tool','args','call_id','version'].includes(k));
-  if (extras.length) throw new Error('Unsupported top-level tool field: ' + extras.join(', '));
-  if (value.version !== undefined && value.version !== 1) throw new Error('Unsupported assistant_tool protocol version.');
-  if (typeof value.tool !== 'string' || !TOOL_NAMES.has(value.tool)) throw new Error('Unknown local tool request.');
-  if (value.args !== undefined && (!value.args || typeof value.args !== 'object' || Array.isArray(value.args))) throw new Error('args must be a JSON object.');
-  if (value.call_id !== undefined && (typeof value.call_id !== 'string' || value.call_id.length > 100)) throw new Error('call_id must be a short string.');
-  return { tool: value.tool, args: value.args || {}, callId: value.call_id || null };
-}
-
 function isKnownSlashCommand(text) {
   const parsed = parseSlashCommand(text);
   return Boolean(parsed);
 }
 
-module.exports = { HELP, TOOL_NAMES, splitArgs, parseSlashCommand, parseToolCall, isKnownSlashCommand };
+module.exports = { HELP, TOOL_NAMES, splitArgs, parseSlashCommand, isKnownSlashCommand };
