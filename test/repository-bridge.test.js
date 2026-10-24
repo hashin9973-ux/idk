@@ -231,6 +231,38 @@ test('invalid request JSON is reported and does not block later work', async () 
   }
 });
 
+test('malformed claim records are quarantined and do not block valid requests', async () => {
+  const badRequest = {
+    protocol: PROTOCOL, request_id: 'req-a-malformed-claim',
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const goodRequest = {
+    protocol: PROTOCOL, request_id: 'req-z-valid-after-claim',
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const fake = fakeGitHub({ initial: [
+    ['bridge/requests/' + badRequest.request_id + '.json', badRequest],
+    ['bridge/requests/' + goodRequest.request_id + '.json', goodRequest],
+    ['bridge/claims/' + badRequest.request_id + '.json', null]
+  ] });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => { executions++; return { ok: true, result: 'completed' }; },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    assert.equal(decode(fake.files.get('bridge/results/' + badRequest.request_id + '.json')).status, 'needs_manual_recovery');
+    assert.equal(decode(fake.files.get('bridge/results/' + goodRequest.request_id + '.json')).status, 'completed');
+    assert.equal(executions, 1, 'the malformed claim must not block later queue entries');
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test('a terminal claim with a missing result is quarantined instead of re-executed', async () => {
   const request = {
     protocol: PROTOCOL, request_id: 'req-terminal-no-result',
