@@ -287,14 +287,11 @@ function createRepositoryBridge(deps) {
     try {
       const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
       const entry = response && response.result;
-      if (!entry || entry.type !== 'file' || entry.encoding !== 'base64' || typeof entry.content !== 'string') {
-        throw new Error('GitHub returned an unexpected artifact file format.');
-      }
-      return {
-        content: Buffer.from(entry.content.replace(/\\s/g, ''), 'base64'),
-        sha: entry.sha || null,
-        entry
-      };
+      if (!entry || entry.type !== 'file') throw new Error('GitHub returned an unexpected artifact file format.');
+      const content = entry.encoding === 'base64' && typeof entry.content === 'string'
+        ? Buffer.from(entry.content.replace(/\\s/g, ''), 'base64')
+        : null;
+      return { content, sha: entry.sha || null, entry };
     } catch (error) {
       if (isNotFound(error)) return null;
       throw error;
@@ -307,8 +304,14 @@ function createRepositoryBridge(deps) {
     const existing = await readRemoteContent(relativePath);
     const contentHash = createHash('sha256').update(bytes).digest('hex');
     if (existing) {
-      const existingHash = createHash('sha256').update(existing.content).digest('hex');
-      if (existingHash === contentHash) {
+      const existingHash = existing.content
+        ? createHash('sha256').update(existing.content).digest('hex')
+        : null;
+      const gitBlobSha = createHash('sha1')
+        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+        .update(bytes)
+        .digest('hex');
+      if (existingHash === contentHash || (!existing.content && existing.sha === gitBlobSha)) {
         return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: contentHash };
       }
       throw new Error('Artifact path already exists with different content: ' + relativePath);
@@ -328,7 +331,14 @@ function createRepositoryBridge(deps) {
     } catch (error) {
       // A previous attempt may have published the same immutable artifact but lost its response.
       const reread = await readRemoteContent(relativePath).catch(() => null);
-      if (reread && createHash('sha256').update(reread.content).digest('hex') === contentHash) {
+      const gitBlobSha = createHash('sha1')
+        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+        .update(bytes)
+        .digest('hex');
+      if (reread && (
+        (reread.content && createHash('sha256').update(reread.content).digest('hex') === contentHash) ||
+        (!reread.content && reread.sha === gitBlobSha)
+      )) {
         return { ok: true, unchanged: true, sha: reread.sha, bytes: bytes.length, sha256: contentHash };
       }
       throw error;
@@ -655,6 +665,19 @@ function createRepositoryBridge(deps) {
     const artifactManifest = [];
     const artifactErrors = [];
     const safeReport = await externalizeLargeText(requestId, sanitizedReport, artifactManifest, artifactErrors);
+    const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
+      safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
+    if (uploadedArtifact) {
+      artifactManifest.unshift({
+        kind: 'uploaded_workspace_file',
+        path: uploadedArtifact.path,
+        url: uploadedArtifact.url,
+        media_type: uploadedArtifact.media_type,
+        bytes: uploadedArtifact.bytes,
+        sha256: uploadedArtifact.sha256,
+        field: 'result.artifact'
+      });
+    }
     let resultRecord = {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
