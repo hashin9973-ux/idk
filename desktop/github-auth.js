@@ -1,12 +1,13 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
 
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const BLOCKED_PATH_SEGMENTS = new Set([
-  'secrets', 'dependabot', 'secret-scanning', 'code-scanning', 'billing',
-  'audit-log', 'scim', 'public-keys', 'ssh-signing-keys', 'codespaces-secrets'
-]);
 
 function cleanError(value) {
   return String(value || 'GitHub request failed').replace(/[\r\n]+/g, ' ').slice(0, 500);
@@ -180,69 +181,203 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     return { authenticated: false, loggedOut: true };
   }
 
-  function validateApiPath(raw) {
-    if (typeof raw !== 'string' || raw.length < 2 || raw.length > 500 || !raw.startsWith('/') ||
-        raw.includes('://') || raw.includes('\\') || raw.includes('//') || raw.split('/').includes('..') ||
-        /[\r\n?#]/.test(raw) || /%2f|%5c|%2e/i.test(raw)) {
-      throw new Error('GitHub API path must be a relative API path beginning with / and must not contain traversal or query syntax.');
+  function validateRepository(value) {
+    if (typeof value !== 'string') throw new Error('repository must be owner/repository.');
+    const repository = value.trim().replace(/\.git$/i, '');
+    const parts = repository.split('/');
+    const partPattern = /^[A-Za-z0-9_.-]{1,100}$/;
+    if (parts.length !== 2 || parts.some(part => !partPattern.test(part) || part === '.' || part === '..')) {
+      throw new Error('repository must be a valid GitHub owner/repository name.');
     }
-    const allowed = /^\/(?:user(?:\/repos)?|repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)?|search\/(?:repositories|code|issues|commits)|rate_limit)(?:\/[A-Za-z0-9_.-]+)*$/;
-    if (!allowed.test(raw)) throw new Error('This GitHub API path is not in the app allowlist.');
-    const segments = raw.toLowerCase().split('/').filter(Boolean);
-    if (segments.some(segment => BLOCKED_PATH_SEGMENTS.has(segment))) {
-      throw new Error('This GitHub API path is blocked because it accesses sensitive security or account-management resources.');
-    }
-    return raw;
+    return parts[0] + '/' + parts[1];
   }
 
-  async function requestApi(args = {}) {
-    const method = String(args.method || 'GET').toUpperCase();
-    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw new Error('method must be GET, POST, PUT, PATCH, or DELETE.');
-    const apiPath = validateApiPath(args.path);
-    if (args.body !== undefined && (!args.body || typeof args.body !== 'object' || Array.isArray(args.body))) {
-      throw new Error('body must be a JSON object.');
+  function validateBranch(value) {
+    const branch = String(value || '').trim();
+    const parts = branch.split('/');
+    const forbidden = ['~', '^', ':', '?', '*', '[', ']', '\\'];
+    if (!branch || branch.length > 200 || branch.startsWith('-') || branch.startsWith('/') || branch.endsWith('/') ||
+        branch.includes('//') || branch.includes('..') || branch.includes('@{') ||
+        /[\s\r\n]/.test(branch) || forbidden.some(character => branch.includes(character)) ||
+        parts.some(part => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))) {
+      throw new Error('branch must be a valid Git branch name.');
     }
-    if (args.query !== undefined && (!args.query || typeof args.query !== 'object' || Array.isArray(args.query))) {
-      throw new Error('query must be a JSON object.');
+    return branch;
+  }
+
+  function validateRemoteName(value) {
+    const remote = String(value || 'origin').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/.test(remote)) {
+      throw new Error('remote must be a simple Git remote name such as origin.');
     }
-    if (method === 'GET' && args.body !== undefined) throw new Error('GET requests must not include a body.');
+    return remote;
+  }
+
+  function normalizeGitHubRemote(raw) {
+    const value = String(raw || '').trim();
+    let repositoryPath = '';
+    if (/^git@github\.com:/i.test(value)) {
+      repositoryPath = value.replace(/^git@github\.com:/i, '');
+    } else {
+      let url;
+      try { url = new URL(value); } catch { throw new Error('The selected Git remote is not a valid GitHub URL.'); }
+      if (url.hostname.toLowerCase() !== 'github.com' || url.username || url.password ||
+          !['https:', 'ssh:', 'git:'].includes(url.protocol) ||
+          (url.protocol === 'ssh:' && url.username.toLowerCase() !== 'git')) {
+        throw new Error('Authenticated local Git operations are restricted to credential-free GitHub remotes.');
+      }
+      repositoryPath = url.pathname.replace(/^\/+/, '');
+    }
+    repositoryPath = repositoryPath.replace(/\/+$/, '').replace(/\.git$/i, '');
+    const repository = validateRepository(repositoryPath);
+    return {
+      repository,
+      url: 'https://github.com/' + repository + '.git'
+    };
+  }
+
+  function redactOutput(value, token) {
+    let text = String(value || '');
+    if (token) {
+      text = text.split(token).join('[REDACTED]');
+      const encoded = Buffer.from('x-access-token:' + token, 'utf8').toString('base64');
+      if (encoded) text = text.split(encoded).join('[REDACTED]');
+    }
+    return text.replace(/authorization:\s*basic\s+\S+/ig, 'Authorization: [REDACTED]')
+      .slice(0, MAX_RESPONSE_BYTES);
+  }
+
+  async function runGitOperation(input = {}) {
+    const operation = String(input.operation || '');
+    if (!['fetch', 'pull', 'push', 'clone'].includes(operation)) {
+      throw new Error('Git operation must be fetch, pull, push, or clone.');
+    }
     const token = getToken();
-    if (!token) throw new Error('Sign in to GitHub from the app Accounts dialog before using authenticated repository operations.');
-    const url = new URL('https://api.github.com' + apiPath);
-    if (args.query) {
-      for (const [key, value] of Object.entries(args.query)) {
-        if (!/^[A-Za-z][A-Za-z0-9_-]{0,60}$/.test(key)) throw new Error('Invalid GitHub query parameter name.');
-        if (value === undefined || value === null) continue;
-        url.searchParams.set(key, Array.isArray(value) ? value.join(',') : String(value));
+    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using authenticated Git operations.');
+
+    const cwd = path.resolve(String(input.cwd || ''));
+    if (!input.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new Error('The selected local workspace is unavailable.');
+    }
+    const timeoutMs = Number.isInteger(input.timeoutMs) ? Math.min(Math.max(input.timeoutMs, 1000), 180000) : 120000;
+    const authEnvironment = {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: basic ' + Buffer.from('x-access-token:' + token, 'utf8').toString('base64'),
+      GIT_CONFIG_KEY_1: 'credential.helper',
+      GIT_CONFIG_VALUE_1: ''
+    };
+
+    async function executeGit(args, commandCwd = cwd) {
+      try {
+        const result = await execFileAsync('git', args, {
+          cwd: commandCwd,
+          env: authEnvironment,
+          encoding: 'utf8',
+          timeout: timeoutMs,
+          maxBuffer: 2 * MAX_RESPONSE_BYTES,
+          windowsHide: true,
+          shell: false
+        });
+        return {
+          exitCode: 0,
+          stdout: redactOutput(result.stdout, token),
+          stderr: redactOutput(result.stderr, token),
+          timedOut: false
+        };
+      } catch (error) {
+        if (error && error.code === 'ENOENT') throw new Error('Git for Windows was not found on PATH.');
+        const timedOut = Boolean(error && (error.killed || error.code === 'ETIMEDOUT'));
+        return {
+          exitCode: timedOut ? 124 : (Number.isInteger(error && error.code) ? error.code : 1),
+          stdout: redactOutput(error && error.stdout, token),
+          stderr: redactOutput(error && error.stderr, token),
+          timedOut
+        };
       }
     }
-    const options = {
-      method,
-      headers: {
-        Authorization: 'Bearer ' + token,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      },
-      signal: AbortSignal.timeout(30000)
-    };
-    if (args.body !== undefined && method !== 'GET') {
-      const body = JSON.stringify(args.body);
-      if (Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) throw new Error('GitHub request body exceeds the 1 MiB limit.');
-      options.headers['Content-Type'] = 'application/json';
-      options.body = body;
+
+    if (operation === 'clone') {
+      const repository = validateRepository(input.repository);
+      const destination = path.resolve(String(input.destination || ''));
+      if (!input.destination || destination === cwd) {
+        throw new Error('clone requires a new relative destination inside the selected workspace.');
+      }
+      const relative = path.relative(cwd, destination);
+      if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+        throw new Error('clone destination must stay inside the selected workspace.');
+      }
+      const parent = path.dirname(destination);
+      if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+        throw new Error('clone destination parent must already exist inside the workspace.');
+      }
+      if (fs.existsSync(destination)) {
+        const stat = fs.lstatSync(destination);
+        if (stat.isSymbolicLink() || !stat.isDirectory() || fs.readdirSync(destination).length) {
+          throw new Error('clone destination must not exist or must be an empty, non-symlink directory.');
+        }
+      }
+      const args = ['clone'];
+      if (input.branch !== undefined && input.branch !== null && String(input.branch).trim()) {
+        args.push('--branch', validateBranch(input.branch));
+      }
+      args.push('--', 'https://github.com/' + repository + '.git', destination);
+      const result = await executeGit(args, parent);
+      return {
+        operation,
+        repository,
+        path: relative.split(path.sep).join('/'),
+        cwd,
+        ...result
+      };
     }
-    const response = await fetchImpl(url, options);
-    const data = await readJson(response);
+
+    if (!fs.existsSync(path.join(cwd, '.git'))) {
+      throw new Error('The selected workspace is not a Git checkout.');
+    }
+    const remote = validateRemoteName(input.remote || 'origin');
+    const remoteResult = await executeGit(['remote', 'get-url', remote]);
+    if (remoteResult.exitCode !== 0) throw new Error('The local Git checkout has no readable remote named "' + remote + '".');
+    const normalized = normalizeGitHubRemote(remoteResult.stdout.trim());
+    const configOverride = 'remote.' + remote + '.url=' + normalized.url;
+    let branch = '';
+
+    if (operation === 'pull' || operation === 'push') {
+      const branchResult = await executeGit(['branch', '--show-current']);
+      const currentBranch = branchResult.stdout.trim();
+      if (branchResult.exitCode !== 0 || !currentBranch) {
+        throw new Error(operation + ' requires a checked-out local branch; detached HEAD is not supported.');
+      }
+      branch = input.branch !== undefined && String(input.branch).trim()
+        ? validateBranch(input.branch)
+        : validateBranch(currentBranch);
+      if (operation === 'pull' && branch !== currentBranch) {
+        throw new Error('pull only updates the currently checked-out branch. Select "' + branch + '" first or omit the branch argument.');
+      }
+    }
+
+    let args;
+    if (operation === 'fetch') {
+      args = ['-c', configOverride, 'fetch', '--prune', remote];
+    } else if (operation === 'pull') {
+      args = ['-c', configOverride, 'pull', '--ff-only', remote, branch];
+    } else {
+      args = ['-c', configOverride, 'push', remote, 'HEAD:refs/heads/' + branch];
+    }
+    const result = await executeGit(args);
     return {
-      method,
-      path: apiPath,
-      status: response.status,
-      rateLimitRemaining: response.headers?.get?.('x-ratelimit-remaining') || null,
-      result: data
+      operation,
+      repository: normalized.repository,
+      remote,
+      ...(branch ? { branch } : {}),
+      cwd,
+      ...result
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, requestApi, hasSavedToken };
+  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, runGitOperation };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };
