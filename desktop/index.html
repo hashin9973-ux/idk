@@ -69,6 +69,7 @@
           </div>
           <button id="select-workspace" class="button secondary" type="button">Choose folder</button>
         </section>
+        <p class="muted small sandbox-note">This selected folder is the local file-operation sandbox. Choose a folder you trust ChatGPT to modify or delete files in.</p>
 
         <div class="worker-row">
           <div class="worker-copy"><strong id="worker-title">Worker is stopped</strong><span class="muted small">Checks the mailbox every 15 seconds while running.</span></div>
@@ -105,7 +106,8 @@
           <summary>Safety and ChatGPT connection</summary>
           <p class="muted small">ChatGPT does not need a separate login inside this app. Use your normal ChatGPT conversation and its GitHub integration to create requests and read results. The app never injects tool output into that conversation and cannot access ChatGPT credentials or conversations.</p>
           <p class="muted small">ChatGPT’s standard website sign-in does not provide this app with a return callback, so after signing in in the browser, use Alt+Tab to return here.</p>
-          <p class="muted small">File changes, shell commands, tests, Git writes, and file uploads require a native Windows approval prompt. Approved PowerShell commands run with your Windows account permissions and are not sandboxed.</p>
+          <p class="muted small">Path-checked file changes inside the selected workspace can run automatically; the app rejects absolute paths, parent traversal, and symlink escapes. Choose a folder you trust ChatGPT to modify or delete files in.</p>
+          <p class="muted small">Shell commands, tests, Git writes, file uploads, and sensitive-file reads still require native Windows approval. Approved PowerShell commands run with your Windows account permissions and are not sandboxed, so approval is not the same as OS-level isolation.</p>
           <p class="muted small">Use a private mailbox. Never send secrets or private data through the repository.</p>
         </details>
       </section>
