@@ -19,6 +19,7 @@ function runInPage(fn, context, ...args) {
 function makeMessage(index, options = {}) {
   const visible = options.visible === true;
   const text = options.text === undefined ? 'Message ' + index : options.text;
+  const codeBlocks = Array.isArray(options.codeBlocks) ? options.codeBlocks : [];
   return {
     getAttribute(name) { return name === 'data-message-author-role' ? (index % 2 ? 'assistant' : 'user') : null; },
     getBoundingClientRect() {
@@ -27,21 +28,38 @@ function makeMessage(index, options = {}) {
         : { top: index < 25 ? -100 : 900, bottom: index < 25 ? -50 : 950, height: 50 };
     },
     cloneNode() {
+      let serialized = text;
+      const nodes = codeBlocks.map((block, blockIndex) => {
+        const marker = '__CODE_BLOCK_' + blockIndex + '__';
+        serialized += '\\n' + marker;
+        const pre = {
+          replaceWith(replacement) {
+            serialized = serialized.replace(marker, String(replacement.textContent || ''));
+          }
+        };
+        return {
+          className: block.language ? 'language-' + block.language : '',
+          innerText: String(block.text || ''),
+          textContent: String(block.text || ''),
+          closest: () => pre
+        };
+      });
       return {
-        innerText: text,
-        textContent: text,
-        querySelectorAll() { return []; }
+        get innerText() { return serialized; },
+        get textContent() { return serialized; },
+        querySelectorAll(selector) { return selector === 'pre code' ? nodes : []; }
       };
     },
     querySelectorAll() { return []; },
-    querySelector() { return null; }
+    querySelector(selector) { return selector === 'pre code' && codeBlocks.length ? {} : null; }
   };
 }
 
-function snapshotContext({ count = 40, visibleStart = 28, visibleEnd = 32, text } = {}) {
+function snapshotContext({ count = 40, visibleStart = 28, visibleEnd = 32, text, codeBlocks } = {}) {
   const nodes = Array.from({ length: count }, (_, index) => makeMessage(index, {
     visible: index >= visibleStart && index <= visibleEnd,
-    text: typeof text === 'function' ? text(index) : undefined
+    text: typeof text === 'function' ? text(index) : undefined,
+    codeBlocks: typeof codeBlocks === 'function' ? codeBlocks(index) : codeBlocks
   }));
   const editor = { value: '' };
   return {
@@ -53,6 +71,7 @@ function snapshotContext({ count = 40, visibleStart = 28, visibleEnd = 32, text 
       documentElement: {},
       scrollingElement: null,
       querySelectorAll() { return nodes; },
+      createTextNode(value) { return { textContent: String(value || '') }; },
       querySelector(selector) {
         if (String(selector).includes('stop-button')) return null;
         return editor;
@@ -84,6 +103,17 @@ test('snapshot copies the viewport and a small message buffer, not the entire th
   assert.ok(result.hasEarlier);
   assert.equal(result.hasLater, true);
   assert.equal(result.messages[0].id, 'assistant-25');
+});
+
+test('snapshot preserves rendered code blocks as fenced text for the native renderer', () => {
+  const context = snapshotContext({
+    codeBlocks: index => index === 29 ? [{ language: 'javascript', text: 'const count = 3;' }] : []
+  });
+  const result = runInPage(extractConversationSnapshot, context);
+  const codeMessage = result.messages.find(message => message.id === 'assistant-29');
+  assert.ok(codeMessage);
+  assert.equal(codeMessage.hasCode, true);
+  assert.ok(codeMessage.text.includes('```javascript\\nconst count = 3;\\n```'));
 });
 
 test('snapshot applies per-message and total payload bounds', () => {
