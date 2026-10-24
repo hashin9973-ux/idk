@@ -202,6 +202,35 @@ test('worker executes a request once, writes the actual result, claim and heartb
   }
 });
 
+test('invalid request JSON is reported and does not block later work', async () => {
+  const first = { protocol: PROTOCOL, request_id: 'req-a-bad', created_at: new Date().toISOString(), tool: 'project_status', args: {} };
+  const second = { protocol: PROTOCOL, request_id: 'req-z-good', created_at: new Date().toISOString(), tool: 'project_status', args: {} };
+  const fake = fakeGitHub({ initial: [
+    ['bridge/requests/req-a-bad.json', first],
+    ['bridge/requests/req-z-good.json', second]
+  ] });
+  fake.files.set('bridge/requests/req-a-bad.json', {
+    name: 'req-a-bad.json', type: 'file', encoding: 'base64',
+    content: Buffer.from('not-json', 'utf8').toString('base64'), sha: 'sha-corrupt'
+  });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => { executions++; return { ok: true, result: 'actual result' }; },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    assert.equal(decode(fake.files.get('bridge/results/req-a-bad.json')).status, 'rejected');
+    assert.equal(decode(fake.files.get('bridge/results/req-z-good.json')).status, 'completed');
+    assert.equal(executions, 1);
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test('duplicate polls do not execute a request again after its result exists', async () => {
   const request = {
     protocol: PROTOCOL, request_id: 'req-once', created_at: new Date().toISOString(),
