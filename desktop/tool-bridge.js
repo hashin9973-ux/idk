@@ -159,6 +159,10 @@ function createToolBridge(deps) {
         resolve({ ok: false, reason: 'composer_not_found' });
         return;
       }
+      if (document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop generating response"]')) {
+        resolve({ ok: false, reason: 'assistant_busy' });
+        return;
+      }
       const current = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
         ? editor.value
         : (editor.innerText || editor.textContent || '');
@@ -192,15 +196,28 @@ function createToolBridge(deps) {
     });
   }
 
-  async function returnMessageToChat(message) {
+  async function submitMessageToChat(message) {
+    if (typeof message !== 'string' || !message.trim() || message.length > 24000) {
+      return { ok: false, reason: 'invalid_message' };
+    }
     const view = getChatView();
-    if (!view || view.webContents.isDestroyed()) throw new Error('The ChatGPT view is unavailable.');
+    if (!view || view.webContents.isDestroyed()) return { ok: false, reason: 'chat_view_unavailable' };
     const source = '(' + insertAndSubmitToolMessage.toString() + ')(' + JSON.stringify(message) + ')';
-    const outcome = await view.webContents.executeJavaScript(source, true);
+    try {
+      return await view.webContents.executeJavaScript(source, true);
+    } catch (error) {
+      return { ok: false, reason: 'submission_error', error: String(error && error.message || error) };
+    }
+  }
+
+  async function returnMessageToChat(message) {
+    const outcome = await submitMessageToChat(message);
     if (outcome && outcome.ok) return outcome;
     const reason = outcome && outcome.reason === 'composer_has_draft'
       ? 'The ChatGPT composer already contains a draft. The app did not overwrite or submit it.'
-      : 'Could not submit the local result automatically. Copy the result from this dialog if needed.';
+      : outcome && outcome.reason === 'assistant_busy'
+        ? 'ChatGPT is still generating a response. The app did not overwrite or submit the message.'
+        : 'Could not submit the local result automatically. Copy the result from this dialog if needed.';
     const win = getMainWindow();
     const options = { type: 'info', title: 'Local tool result ready', message: reason, detail: String(message).slice(0, 6000), buttons: ['OK'] };
     if (win && !win.isDestroyed()) await dialog.showMessageBox(win, options);
@@ -524,7 +541,7 @@ function createToolBridge(deps) {
     });
   }
 
-  return { handleInternalUrl, installChatToolBridge, runTool, deliverRepositoryResult, returnMessageToChat, initializeCurrentConversation };
+  return { handleInternalUrl, installChatToolBridge, runTool, deliverRepositoryResult, returnMessageToChat, submitMessageToChat, initializeCurrentConversation };
 }
 
 module.exports = { createToolBridge, TOOL_ARGUMENT_KEYS, CODING_MODE_MESSAGE };
