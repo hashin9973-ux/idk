@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
@@ -262,42 +263,51 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('The selected local workspace is unavailable.');
     }
     const timeoutMs = Number.isInteger(input.timeoutMs) ? Math.min(Math.max(input.timeoutMs, 1000), 180000) : 120000;
-    const authEnvironment = {
-      ...process.env,
-      GIT_TERMINAL_PROMPT: '0',
-      GIT_CONFIG_COUNT: '2',
-      GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-      GIT_CONFIG_VALUE_0: 'AUTHORIZATION: basic ' + Buffer.from('x-access-token:' + token, 'utf8').toString('base64'),
-      GIT_CONFIG_KEY_1: 'credential.helper',
-      GIT_CONFIG_VALUE_1: ''
-    };
-
     async function executeGit(args, commandCwd = cwd) {
+      // Git hooks inherit a process environment. Use a fresh, empty hooks directory
+      // for each authenticated command so repository-configured hooks cannot read
+      // the temporary HTTP authorization header from their parent environment.
+      const emptyHooksPath = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-assistant-git-hooks-'));
+      const authEnvironment = {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_COUNT: '3',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: 'AUTHORIZATION: basic ' + Buffer.from('x-access-token:' + token, 'utf8').toString('base64'),
+        GIT_CONFIG_KEY_1: 'credential.helper',
+        GIT_CONFIG_VALUE_1: '',
+        GIT_CONFIG_KEY_2: 'core.hooksPath',
+        GIT_CONFIG_VALUE_2: emptyHooksPath
+      };
       try {
-        const result = await execFileAsyncImpl('git', args, {
-          cwd: commandCwd,
-          env: authEnvironment,
-          encoding: 'utf8',
-          timeout: timeoutMs,
-          maxBuffer: 2 * MAX_RESPONSE_BYTES,
-          windowsHide: true,
-          shell: false
-        });
-        return {
-          exitCode: 0,
-          stdout: redactOutput(result.stdout, token),
-          stderr: redactOutput(result.stderr, token),
-          timedOut: false
-        };
-      } catch (error) {
-        if (error && error.code === 'ENOENT') throw new Error('Git for Windows was not found on PATH.');
-        const timedOut = Boolean(error && (error.killed || error.code === 'ETIMEDOUT'));
-        return {
-          exitCode: timedOut ? 124 : (Number.isInteger(error && error.code) ? error.code : 1),
-          stdout: redactOutput(error && error.stdout, token),
-          stderr: redactOutput(error && error.stderr, token),
-          timedOut
-        };
+        try {
+          const result = await execFileAsyncImpl('git', args, {
+            cwd: commandCwd,
+            env: authEnvironment,
+            encoding: 'utf8',
+            timeout: timeoutMs,
+            maxBuffer: 2 * MAX_RESPONSE_BYTES,
+            windowsHide: true,
+            shell: false
+          });
+          return {
+            exitCode: 0,
+            stdout: redactOutput(result.stdout, token),
+            stderr: redactOutput(result.stderr, token),
+            timedOut: false
+          };
+        } catch (error) {
+          if (error && error.code === 'ENOENT') throw new Error('Git for Windows was not found on PATH.');
+          const timedOut = Boolean(error && (error.killed || error.code === 'ETIMEDOUT'));
+          return {
+            exitCode: timedOut ? 124 : (Number.isInteger(error && error.code) ? error.code : 1),
+            stdout: redactOutput(error && error.stdout, token),
+            stderr: redactOutput(error && error.stderr, token),
+            timedOut
+          };
+        }
+      } finally {
+        try { fs.rmSync(emptyHooksPath, { recursive: true, force: true }); } catch {}
       }
     }
 
