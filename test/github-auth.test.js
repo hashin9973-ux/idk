@@ -97,6 +97,7 @@ test('GitHub device flow stores credentials encrypted and validates the account'
 test('authenticated fetch normalizes SSH remotes to HTTPS without changing the saved remote', async () => {
   const calls = [];
   const workspace = tempWorkspace();
+  fs.mkdirSync(path.join(workspace, '.git'));
   const mockExec = async (file, args, options) => {
     calls.push({ file, args: [...args], options });
     if (args[0] === 'remote' && args[1] === 'get-url') return { stdout: 'git@github.com:example/private-repo.git\n', stderr: '' };
