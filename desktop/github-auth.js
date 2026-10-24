@@ -395,7 +395,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Git operation must be fetch, pull, push, or clone.');
     }
     const token = getToken();
-    if (!token) throw new Error('Sign in with GitHub in the app's GitHub access section before using authenticated Git operations.');
+    if (!token) throw new Error("Sign in with GitHub in the app's GitHub access section before using authenticated Git operations.");
 
     const cwd = path.resolve(String(input.cwd || ''));
     if (!input.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
