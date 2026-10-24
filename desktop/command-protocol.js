@@ -24,7 +24,7 @@ const HELP = [
   '/exec <PowerShell command> — run a local command (approval required)',
   '/github — show the configured repository bridge status (app diagnostic only)',
   '/workspace — select the project folder',
-  '/tools — send repository-bridge usage instructions to the current ChatGPT conversation',
+  '/tools — manually re-send repository-bridge instructions if automatic conversation setup needs recovery',
   '/plan [task] — ask ChatGPT to plan using local tools; /review — inspect current changes',
   '/help — show this list',
   '',
