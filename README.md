@@ -112,6 +112,10 @@ Do not send credentials, private keys, passwords, environment variables, highly 
 
 If a worker loses a claim after a potentially side-effecting operation, it does not automatically replay that request. It records `needs_manual_recovery` so the actual workspace can be checked before retrying with a new request ID.
 
+## Manual end-to-end smoke test
+
+After CI builds the Windows installer, follow [the manual smoke-test checklist](docs/manual-smoke-test.md) using a disposable workspace and the private mailbox. This verifies local execution, context refresh, artifact retrieval, approval cancellation, file upload, and clean shutdown. A green CI build does not replace this machine-level test.
+
 ## Validation and packaging
 
 ```powershell
