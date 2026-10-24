@@ -100,7 +100,7 @@ test('authenticated fetch normalizes SSH remotes to HTTPS without changing the s
   const mockExec = async (file, args, options) => {
     calls.push({ file, args: [...args], options });
     if (args[0] === 'remote' && args[1] === 'get-url') return { stdout: 'git@github.com:example/private-repo.git\n', stderr: '' };
-    if (args[0] === '-c') return { stdout: 'Fetched from GitHub\n', stderr: '' };
+    if (args[0] === 'fetch') return { stdout: 'Fetched from GitHub\n', stderr: '' };
     throw new Error('Unexpected Git command: ' + args.join(' '));
   };
   try {
@@ -111,10 +111,9 @@ test('authenticated fetch normalizes SSH remotes to HTTPS without changing the s
     assert.equal(result.operation, 'fetch');
     assert.equal(result.repository, 'example/private-repo');
     assert.match(result.stdout, /Fetched from GitHub/);
-    const netCall = calls.find(call => call.args[0] === '-c');
+    const netCall = calls.find(call => call.args[0] === 'fetch');
     assert.ok(netCall);
-    assert.ok(netCall.args[1].includes('remote.origin.url=https://github.com/example/private-repo.git'));
-    assert.deepEqual(netCall.args.slice(2), ['fetch', '--prune', 'origin']);
+    assert.deepEqual(netCall.args, ['fetch', '--prune', 'https://github.com/example/private-repo.git', '+refs/heads/*:refs/remotes/origin/*']);
     assert.equal(netCall.options.env.GIT_TERMINAL_PROMPT, '0');
     assert.equal(netCall.options.env.GIT_CONFIG_KEY_0, 'http.https://github.com/.extraheader');
     assert.equal(netCall.options.env.GIT_CONFIG_VALUE_0,
@@ -133,7 +132,7 @@ test('authenticated pull is fast-forward-only and refuses a different local bran
     calls.push({ args: [...args], options });
     if (args[0] === 'remote') return { stdout: 'https://github.com/example/project.git\n', stderr: '' };
     if (args[0] === 'branch') return { stdout: 'main\n', stderr: '' };
-    if (args[0] === '-c') return { stdout: 'Already up to date.\n', stderr: '' };
+    if (args[0] === 'pull') return { stdout: 'Already up to date.\n', stderr: '' };
     throw new Error('Unexpected Git command: ' + args.join(' '));
   };
   fs.mkdirSync(path.join(workspace, '.git'));
@@ -142,7 +141,7 @@ test('authenticated pull is fast-forward-only and refuses a different local bran
     await connect(auth);
     const result = await auth.runGitOperation({ operation: 'pull', cwd: workspace, remote: 'origin' });
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(calls.at(-1).args.slice(2), ['pull', '--ff-only', 'origin', 'main']);
+    assert.deepEqual(calls.at(-1).args, ['pull', '--ff-only', 'https://github.com/example/project.git', 'main']);
     await assert.rejects(auth.runGitOperation({
       operation: 'pull', cwd: workspace, remote: 'origin', branch: 'develop'
     }), /only updates the currently checked-out branch/i);
@@ -158,7 +157,7 @@ test('authenticated push never forces and targets the intended branch explicitly
     calls.push({ args: [...args], options });
     if (args[0] === 'remote') return { stdout: 'https://github.com/example/project.git\n', stderr: '' };
     if (args[0] === 'branch') return { stdout: 'feature/example\n', stderr: '' };
-    if (args[0] === '-c') return { stdout: 'To https://github.com/example/project.git\n', stderr: '' };
+    if (args[0] === 'push') return { stdout: 'To https://github.com/example/project.git\n', stderr: '' };
     throw new Error('Unexpected Git command: ' + args.join(' '));
   };
   fs.mkdirSync(path.join(workspace, '.git'));
@@ -167,7 +166,7 @@ test('authenticated push never forces and targets the intended branch explicitly
     await connect(auth);
     const result = await auth.runGitOperation({ operation: 'push', cwd: workspace, remote: 'origin' });
     assert.equal(result.exitCode, 0);
-    assert.deepEqual(calls.at(-1).args.slice(2), ['push', 'origin', 'HEAD:refs/heads/feature/example']);
+    assert.deepEqual(calls.at(-1).args, ['push', 'https://github.com/example/project.git', 'HEAD:refs/heads/feature/example']);
     assert.equal(calls.at(-1).args.includes('--force'), false);
   } finally {
     fs.rmSync(workspace, { recursive: true, force: true });
@@ -225,7 +224,7 @@ test('authenticated Git operations reject non-GitHub remotes and missing credent
     const { auth } = fixture(loginServer(), mockExec);
     await connect(auth);
     await assert.rejects(auth.runGitOperation({ operation: 'fetch', cwd: workspace }), /restricted to credential-free GitHub remotes/i);
-    assert.equal(calls.some(args => args[0] === '-c'), false);
+    assert.equal(calls.some(args => args[0] === 'fetch' || args[0] === 'pull' || args[0] === 'push'), false);
     auth.logout();
     await assert.rejects(auth.runGitOperation({ operation: 'fetch', cwd: workspace }), /Sign in with GitHub/i);
   } finally {
