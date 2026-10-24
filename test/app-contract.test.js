@@ -95,33 +95,29 @@ test('remote session allows sanitized clipboard write only', () => {
   assert.ok(main.includes('return allowedPermissions.has(permission)'));
 });
 
-test('desktop app runs the GitHub repository request/result bridge', () => {
+test('desktop app runs local assistant_tool requests inside the same ChatGPT conversation', () => {
   const main = read('desktop', 'main.js');
   const bridge = read('desktop', 'tool-bridge.js');
-  const repositoryBridge = read('desktop', 'repository-bridge.js');
-  const protocol = read('desktop', 'repository-protocol.js');
-  assert.ok(main.includes("require('./repository-bridge')"));
-  assert.ok(main.includes('repositoryBridge = createRepositoryBridge('));
-  assert.ok(main.includes('repositoryBridge.start()'));
-  assert.ok(main.includes('getWorkspaceGitHubRemotes'));
-  assert.ok(main.includes('getWorkspaceRepositories: getWorkspaceGitHubRemotes'));
-  assert.ok(repositoryBridge.includes('.chatgpt-bridge'));
-  assert.ok(repositoryBridge.includes('pending_publish'));
-  assert.ok(repositoryBridge.includes('indeterminate'));
-  assert.ok(repositoryBridge.includes("api('PUT'"));
-  assert.ok(protocol.includes('chatgpt-windows-bridge/request-v1'));
-  assert.ok(protocol.includes('call_id does not match the request filename.'));
-  assert.ok(bridge.includes('deliverRepositoryResult'));
+  const protocol = read('desktop', 'command-protocol.js');
+  const runner = read('desktop', 'tool-runner.js');
+  assert.ok(main.includes("require('./tool-runner')"));
+  assert.ok(main.includes("require('./tool-bridge')"));
+  assert.ok(main.includes("String(targetUrl).startsWith('assistant-tool:')"));
+  assert.ok(main.includes('toolBridge.installChatToolBridge()'));
+  assert.ok(bridge.includes('language-assistant_tool'));
+  assert.ok(bridge.includes('parseToolCall(raw)'));
+  assert.ok(bridge.includes('await runTool(request.tool, request.args, request.callId)'));
+  assert.ok(bridge.includes('submitMessageToChat'));
   assert.ok(bridge.includes('initializeCurrentConversation'));
   assert.ok(bridge.includes('buildBridgeContextMessage'));
   assert.ok(bridge.includes('bootstrapSignaled'));
   assert.ok(main.includes('hasBridgeBootstrap'));
   assert.ok(main.includes('recordBridgeBootstrap'));
-  assert.ok(bridge.includes('.chatgpt-bridge/requests/<call_id>.json'));
-  assert.ok(bridge.includes('This local tool request was not executed because it bypassed the GitHub repository bridge.'));
-  assert.ok(!bridge.includes('const request = parseToolCall(raw)'));
+  assert.ok(runner.includes('function executeTool'));
+  assert.ok(protocol.includes('assistant_tool'));
+  assert.ok(!main.includes("require('./repository-bridge')"));
+  assert.ok(!bridge.includes('.chatgpt-bridge/requests/'));
 });
-
 test('collapsing releases focus so the previous app can remain active', () => {
   const main = read('desktop', 'main.js');
   const toggle = main.slice(main.indexOf('function toggleOverlay()'), main.indexOf('function assertLocalUi'));
@@ -162,11 +158,9 @@ test('account login is isolated from the remote page and protects the GitHub tok
   assert.ok(auth.includes('safeStorage.decryptString'));
   assert.ok(auth.includes('BLOCKED_PATH_SEGMENTS'));
   assert.ok(accountsHtml.includes('github-client-id'));
-  assert.ok(accountsHtml.includes('github-repository'));
-  assert.ok(accountsHtml.includes('github-branch'));
-  assert.ok(accountsHtml.includes('github-allow-public'));
+  assert.ok(accountsHtml.includes('local repository operations'));
   assert.ok(accountsHtml.includes('separate from ChatGPT\'s existing GitHub integration'));
-  assert.ok(accountsJs.includes('setGitHubBridgeConfig'));
+  assert.ok(!accountsHtml.includes('github-repository'));
   assert.ok(accountsHtml.includes('chatgpt-login'));
   assert.ok(accountsJs.includes('startGitHubLogin'));
   assert.ok(!auth.includes('localStorage'));
