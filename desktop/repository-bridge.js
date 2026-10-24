@@ -485,49 +485,49 @@ function createRepositoryBridge(deps) {
     if (pollInFlight || !running) return;
     pollInFlight = true;
     const task = (async () => {
-    try {
-      const [files, resultFiles] = await Promise.all([
-        listFolder('bridge/requests'),
-        listFolder('bridge/results')
-      ]);
-      const sorted = files
-        .map(file => file.name)
-        .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
-        .sort();
-      const completedIds = new Set(resultFiles
-        .map(file => file.name)
-        .filter(name => name.endsWith('.json')));
-      const pending = sorted.filter(filename => !completedIds.has(filename));
-      pendingCount = pending.length;
-      const firstPoll = !lastPollAt;
-      lastPollAt = new Date().toISOString();
-      lastError = '';
-      announce();
-      await publishState(firstPoll);
-      for (const filename of pending) {
-        if (!running) break;
-        try {
-          await processRequest(filename);
-        } catch (error) {
-          lastError = 'Could not process request ' + filename.slice(0, -5) + ': ' + cleanError(error.message);
-          announce();
-        }
-      }
-      if (pending.length) {
-        const finalResults = await listFolder('bridge/results');
-        const finalCompletedIds = new Set(finalResults.map(file => file.name));
-        pendingCount = sorted.filter(filename => !finalCompletedIds.has(filename)).length;
+      try {
+        const [files, resultFiles] = await Promise.all([
+          listFolder('bridge/requests'),
+          listFolder('bridge/results')
+        ]);
+        const sorted = files
+          .map(file => file.name)
+          .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
+          .sort();
+        const completedIds = new Set(resultFiles
+          .map(file => file.name)
+          .filter(name => name.endsWith('.json')));
+        const pending = sorted.filter(filename => !completedIds.has(filename));
+        pendingCount = pending.length;
+        const firstPoll = !lastPollAt;
+        lastPollAt = new Date().toISOString();
+        lastError = '';
         announce();
-        await publishState(true);
+        await publishState(firstPoll);
+        for (const filename of pending) {
+          if (!running) break;
+          try {
+            await processRequest(filename);
+          } catch (error) {
+            lastError = 'Could not process request ' + filename.slice(0, -5) + ': ' + cleanError(error.message);
+            announce();
+          }
+        }
+        if (pending.length) {
+          const finalResults = await listFolder('bridge/results');
+          const finalCompletedIds = new Set(finalResults.map(file => file.name));
+          pendingCount = sorted.filter(filename => !finalCompletedIds.has(filename)).length;
+          announce();
+          await publishState(true);
+        }
+      } catch (error) {
+        lastError = cleanError(error.message);
+        announce();
+      } finally {
+        pollInFlight = false;
+        pollPromise = null;
+        announce();
       }
-    } catch (error) {
-      lastError = cleanError(error.message);
-      announce();
-    } finally {
-      pollInFlight = false;
-      pollPromise = null;
-      announce();
-    }
     })();
     pollPromise = task;
     return task;
