@@ -195,6 +195,8 @@ test('worker executes a request once, writes the actual result, claim and heartb
     const state = decode(fake.files.get('bridge/state/windows-app.json'));
     assert.match(state.status, /idle|processing/);
     assert.ok(state.updated_at);
+    assert.equal(state.workspace_selected, true);
+    assert.equal('workspace_name' in state, false, 'shared state does not disclose the local workspace folder name');
     const createCommits = fake.calls.filter(call => call.method === 'PUT');
     assert.ok(createCommits.length >= 5, 'folder markers, claim, result and state are committed');
   } finally {
