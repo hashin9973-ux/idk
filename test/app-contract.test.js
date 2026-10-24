@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
+const { buildBridgeContextMessage } = require('../desktop/tool-bridge');
 
 test('package starts the local desktop shell and packages desktop assets', () => {
   const pkg = JSON.parse(read('package.json'));
@@ -93,6 +94,15 @@ test('remote session allows sanitized clipboard write only', () => {
   assert.ok(main.includes("new Set(['clipboard-sanitized-write'])"));
   assert.ok(main.includes('callback(allowedPermissions.has(permission))'));
   assert.ok(main.includes('return allowedPermissions.has(permission)'));
+});
+
+test('automatic tool setup does not disclose an absolute local workspace path', () => {
+  const localPath = 'C:\\Users\\PrivateUser\\Projects\\sample';
+  const message = buildBridgeContextMessage({ workspaceRoot: localPath });
+  assert.ok(message.includes('Use workspace-relative paths'));
+  assert.equal(message.includes(localPath), false);
+  assert.equal(message.includes('PrivateUser'), false);
+  assert.ok(message.includes('assistant_tool'));
 });
 
 test('desktop app runs local assistant_tool requests inside the same ChatGPT conversation', () => {
