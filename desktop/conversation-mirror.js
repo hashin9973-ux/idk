@@ -75,6 +75,7 @@ function extractConversationSnapshot() {
     startIndex: start,
     endIndex: end,
     hasEarlier: start > 0,
+    hasLater: end < roleNodes.length,
     messages
   };
 }
