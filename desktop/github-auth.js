@@ -1,5 +1,7 @@
 'use strict';
 
+const { validateRepositoryName, validateBranchName } = require('./repository-protocol');
+
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const BLOCKED_PATH_SEGMENTS = new Set([
@@ -31,6 +33,37 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } catch {
       throw new Error('The saved GitHub token could not be decrypted. Sign in again.');
     }
+  }
+
+  function hasSavedToken() {
+    try { return Boolean(getToken()); } catch { return false; }
+  }
+
+  function getBridgeConfig() {
+    const entry = githubSettings();
+    return {
+      repository: typeof entry.bridgeRepository === 'string' ? entry.bridgeRepository : '',
+      branch: typeof entry.bridgeBranch === 'string' && entry.bridgeBranch ? entry.bridgeBranch : 'main',
+      allowPublicRepository: entry.allowPublicRepository === true
+    };
+  }
+
+  function setBridgeConfig(value = {}) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error('Bridge configuration must be an object.');
+    }
+    const repositoryRaw = String(value.repository || '').trim();
+    const repository = repositoryRaw ? validateRepositoryName(repositoryRaw) : '';
+    const branch = validateBranchName(value.branch || 'main');
+    if (value.allowPublicRepository !== undefined && typeof value.allowPublicRepository !== 'boolean') {
+      throw new Error('allowPublicRepository must be true or false.');
+    }
+    const entry = githubSettings();
+    entry.bridgeRepository = repository;
+    entry.bridgeBranch = branch;
+    entry.allowPublicRepository = value.allowPublicRepository === true;
+    persistSettings();
+    return getBridgeConfig();
   }
 
   function saveToken(token) {
@@ -237,7 +270,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, requestApi };
+  return { getState, setClientId, startLogin, pollLogin, logout, requestApi, hasSavedToken, getBridgeConfig, setBridgeConfig };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };
