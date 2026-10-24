@@ -157,7 +157,7 @@
     const area = byId('chatgpt-status');
     try {
       await window.assistantOverlay.openChatGPTLogin();
-      area.textContent = 'ChatGPT sign-in opened in the embedded conversation window. Complete login there, then return here.';
+      area.textContent = 'A temporary ChatGPT window opened using the mirror’s shared session. Complete sign-in or choose a thread, then close that window to return to the native mirror.';
       area.classList.remove('error');
       area.classList.add('success');
     } catch (error) {
