@@ -68,59 +68,59 @@ function createToolBridge(deps) {
 
   function displayApprovalValue(value, maxChars = 4000) {
     return String(value == null ? '' : value)
-      .replace(/\\r/g, '\\\\r')
-      .replace(/\\n/g, '\\\\n')
-      .replace(/\\t/g, '\\\\t')
-      .replace(/[\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]/g,
-        character => '\\\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'))
-      .replace(/[\\u202A-\\u202E\\u2066-\\u2069]/g,
+      .replace(/\r/g, '\\r')
+      .replace(/\n/g, '\\n')
+      .replace(/\t/g, '\\t')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,
+        character => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0'))
+      .replace(/[\u202A-\u202E\u2066-\u2069]/g,
         character => '[BIDI U+' + character.charCodeAt(0).toString(16).toUpperCase() + ']')
       .slice(0, maxChars);
   }
 
   function approvalDetail(tool, args, root) {
-    const header = 'Workspace: ' + displayApprovalValue(root, 1500) + '\\nTool: ' + tool + '\\n\\n';
-    const resultWarning = 'The result will be committed to the configured shared GitHub mailbox branch. Anyone with repository read access may see it; for a public repository, it is publicly readable.\\n\\n';
+    const header = 'Workspace: ' + displayApprovalValue(root, 1500) + '\nTool: ' + tool + '\n\n';
+    const resultWarning = 'The result will be committed to the configured shared GitHub mailbox branch. Anyone with repository read access may see it; for a public repository, it is publicly readable.\n\n';
     if (tool === 'upload_workspace_file') {
       const rawTarget = String(args.path || '(missing path)');
       const target = displayApprovalValue(rawTarget, 1200);
       const sensitive = localTools.looksSensitiveFile && localTools.looksSensitiveFile(rawTarget);
-      return header + resultWarning + 'Upload a local workspace file to the shared repository as a retrievable artifact.\\nPath: ' + target +
-        '\\nArtifact name: ' + displayApprovalValue(args.artifactName || path.basename(rawTarget), 240) +
-        '\\nThe full file bytes will be committed to GitHub and can be read by repository collaborators. ' +
-        (sensitive ? '\\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
-        '\\nMaximum upload size: 8 MiB.';
+      return header + resultWarning + 'Upload a local workspace file to the shared repository as a retrievable artifact.\nPath: ' + target +
+        '\nArtifact name: ' + displayApprovalValue(args.artifactName || path.basename(rawTarget), 240) +
+        '\nThe full file bytes will be committed to GitHub and can be read by repository collaborators. ' +
+        (sensitive ? '\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
+        '\nMaximum upload size: 8 MiB.';
     }
     if (GITHUB_GIT_TOOLS.has(tool)) {
       const repository = tool === 'git_clone' ? String(args.repository || '(missing repository)') : String(args.remote || 'origin');
       return header + resultWarning + 'Authenticated Git operation: ' + tool.replace('git_', '') +
-        '\\nRepository/remote: ' + displayApprovalValue(repository, 500) +
-        (args.path ? '\\nDestination inside workspace: ' + displayApprovalValue(args.path, 1200) : '') +
-        (args.branch ? '\\nBranch: ' + displayApprovalValue(args.branch, 200) : '') +
-        '\\nThe app-side GitHub credential stays inside the Windows app.';
+        '\nRepository/remote: ' + displayApprovalValue(repository, 500) +
+        (args.path ? '\nDestination inside workspace: ' + displayApprovalValue(args.path, 1200) : '') +
+        (args.branch ? '\nBranch: ' + displayApprovalValue(args.branch, 200) : '') +
+        '\nThe app-side GitHub credential stays inside the Windows app.';
     }
     if (tool === 'shell') {
-      return header + resultWarning + 'This PowerShell command runs with your Windows user permissions and is not sandboxed:\\n\\n' +
+      return header + resultWarning + 'This PowerShell command runs with your Windows user permissions and is not sandboxed:\n\n' +
         displayApprovalValue(args.command || '', 4000);
     }
     if (tool === 'apply_patch') {
       const plans = localTools.parsePatch(args.patch, root);
-      return header + resultWarning + 'Review the files this patch will modify:\\n' +
-        plans.map(item => item.kind.toUpperCase() + '  ' + displayApprovalValue(item.relative, 500)).join('\\n') +
-        '\\n\\nPatch preview (line breaks are shown as \\\\n; first 2500 characters):\\n' +
+      return header + resultWarning + 'Review the files this patch will modify:\n' +
+        plans.map(item => item.kind.toUpperCase() + '  ' + displayApprovalValue(item.relative, 500)).join('\n') +
+        '\n\nPatch preview (line breaks are shown as \\n; first 2500 characters):\n' +
         displayApprovalValue(String(args.patch || '').slice(0, 2500), 9000);
     }
     if (tool === 'write_file') {
-      return header + resultWarning + 'Create or overwrite: ' + displayApprovalValue(args.path, 1200) + '\\nBytes: ' +
+      return header + resultWarning + 'Create or overwrite: ' + displayApprovalValue(args.path, 1200) + '\nBytes: ' +
         Buffer.byteLength(String(args.content || ''), 'utf8') +
-        '\\n\\nContent preview (line breaks are shown as \\\\n):\\n' + displayApprovalValue(String(args.content || '').slice(0, 1800), 5000);
+        '\n\nContent preview (line breaks are shown as \\n):\n' + displayApprovalValue(String(args.content || '').slice(0, 1800), 5000);
     }
     if (tool === 'read_file') {
-      return header + resultWarning + 'The requested path appears to contain a credential or private key:\\n' + displayApprovalValue(args.path || '', 1200);
+      return header + resultWarning + 'The requested path appears to contain a credential or private key:\n' + displayApprovalValue(args.path || '', 1200);
     }
     if (tool === 'init') return header + resultWarning + 'Create AGENTS.md at the workspace root. An existing AGENTS.md will not be overwritten.';
     if (tool === 'run_tests') return header + resultWarning + 'Run the detected test command. Tests execute project code and may have side effects.';
-    return header + resultWarning + 'Arguments (control characters escaped):\\n' + displayApprovalValue(JSON.stringify(args, null, 2), 3500);
+    return header + resultWarning + 'Arguments (control characters escaped):\n' + displayApprovalValue(JSON.stringify(args, null, 2), 3500);
   }
 
   async function askApproval(tool, args, root) {
