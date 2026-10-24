@@ -144,7 +144,6 @@ function createRepositoryBridge(deps) {
   let publicRepository = null;
   let pendingCount = 0;
   let lastStatePublishAt = 0;
-  let lastPublishedSignature = '';
   const inMemoryClaims = new Set();
 
   function currentConfig() {
@@ -261,12 +260,10 @@ function createRepositoryBridge(deps) {
       workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
       workspace_name: getWorkspaceRoot ? require('node:path').basename(getWorkspaceRoot()) : null
     };
-    const signature = JSON.stringify({ ...snapshot, updated_at: undefined });
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
     try {
       const file = await readRemoteFile('bridge/state/windows-app.json');
       await writeRemoteJson('bridge/state/windows-app.json', snapshot, file && file.sha, false);
-      lastPublishedSignature = signature;
       lastStatePublishAt = now;
     } catch (error) {
       lastError = 'Could not publish shared state: ' + cleanError(error.message);
@@ -465,21 +462,18 @@ function createRepositoryBridge(deps) {
     if (pollInFlight || !running) return;
     pollInFlight = true;
     try {
-      const files = await listFolder('bridge/requests');
+      const [files, resultFiles] = await Promise.all([
+        listFolder('bridge/requests'),
+        listFolder('bridge/results')
+      ]);
       const sorted = files
         .map(file => file.name)
         .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
         .sort();
-      const pending = [];
-      for (const filename of sorted) {
-        const requestId = filename.slice(0, -5);
-        try {
-          if (!(await readRemoteFile('bridge/results/' + requestId + '.json'))) pending.push(filename);
-        } catch (error) {
-          if (!isCorruptMailboxFile(error)) throw error;
-          lastError = 'Result file for ' + requestId + ' is corrupt; the request was not replayed automatically.';
-        }
-      }
+      const completedIds = new Set(resultFiles
+        .map(file => file.name)
+        .filter(name => name.endsWith('.json')));
+      const pending = sorted.filter(filename => !completedIds.has(filename));
       pendingCount = pending.length;
       lastPollAt = new Date().toISOString();
       lastError = '';
@@ -488,6 +482,8 @@ function createRepositoryBridge(deps) {
       for (const filename of pending) {
         if (!running) break;
         await processRequest(filename);
+        if (pendingCount > 0) pendingCount--;
+        announce();
       }
     } catch (error) {
       lastError = cleanError(error.message);
