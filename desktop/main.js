@@ -1,51 +1,37 @@
+'use strict';
+
 const path = require('node:path');
 const fs = require('node:fs');
-const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
-const localTools = require('./tool-runner');
-const { createGitHubAuth } = require('./github-auth');
-const { createToolBridge } = require('./tool-bridge');
 const {
   app,
   BrowserWindow,
-  WebContentsView,
   screen,
-  session,
   ipcMain,
   globalShortcut,
   shell,
   dialog,
   safeStorage
 } = require('electron');
+const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
+const localTools = require('./tool-runner');
+const { createGitHubAuth } = require('./github-auth');
+const { createToolBridge } = require('./tool-bridge');
+const { createRepositoryBridge } = require('./repository-bridge');
 
-const CHATGPT_URL = 'https://chatgpt.com/';
-const SESSION_PARTITION = 'persist:chatgpt-assistant';
 const HEADER_HEIGHT = 58;
-const VIEW_INSET = 8;
-const BOTTOM_INSET = 8;
 const COLLAPSED_SIZE = 76;
-const EXPANDED_SIZE = { width: 460, height: 720 };
+const EXPANDED_SIZE = { width: 720, height: 780 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
-
-const EMBEDDED_HOSTS = new Set([
-  'chatgpt.com',
-  'chat.openai.com',
-  'openai.com',
-  'auth.openai.com',
-  'auth0.openai.com',
-  'accounts.google.com',
-  'login.microsoftonline.com',
-  'appleid.apple.com'
-]);
 
 let mainWindow = null;
 let accountsWindow = null;
-let chatView = null;
-let chatSession = null;
 let collapsed = false;
 let settings = {};
 let saveTimer = null;
-let toolBridge = null;
 let githubAuth = null;
+let toolBridge = null;
+let repositoryBridge = null;
+let finishingQuit = false;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -53,8 +39,8 @@ function getSettingsPath() {
 
 function loadSettings() {
   try {
-    const loaded = JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8'));
-    return loaded && typeof loaded === 'object' ? loaded : {};
+    const value = JSON.parse(fs.readFileSync(getSettingsPath(), 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   } catch {
     return {};
   }
@@ -63,36 +49,13 @@ function loadSettings() {
 function persistSettings() {
   try {
     fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true });
-    fs.writeFileSync(getSettingsPath(), JSON.stringify(settings, null, 2), 'utf8');
+    const temp = getSettingsPath() + '.tmp';
+    fs.writeFileSync(temp, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(temp, getSettingsPath());
   } catch (error) {
-    console.error('Could not save overlay settings:', error.message);
+    console.error('Could not save settings:', error.message);
   }
 }
-
-function saveSettingsSoon() {
-  if (!mainWindow || collapsed || mainWindow.isDestroyed()) return;
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
-    try {
-      const [width, height] = mainWindow.getSize();
-      const [x, y] = mainWindow.getPosition();
-      settings.bounds = { x, y, width, height };
-      persistSettings();
-    } catch (error) {
-      console.error('Could not save overlay position:', error.message);
-    }
-  }, 250);
-}
-
-function minimumSizeForBounds(bounds) {
-  const display = screen.getDisplayMatching(bounds);
-  return {
-    width: Math.min(360, Math.max(1, display.workArea.width)),
-    height: Math.min(480, Math.max(1, display.workArea.height))
-  };
-}
-
 
 function getWorkspaceRoot() {
   if (!settings.workspaceRoot || typeof settings.workspaceRoot !== 'string') {
@@ -109,171 +72,81 @@ function ensureWorkspaceRoot() {
   return root;
 }
 
-async function selectWorkspace() {
-  const root = getWorkspaceRoot();
-  const options = {
-    title: 'Choose a project workspace for ChatGPT Assistant',
-    defaultPath: fs.existsSync(root) ? root : app.getPath('documents'),
+function selectWorkspace() {
+  return dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+    title: 'Choose the local workspace ChatGPT can work with',
+    defaultPath: fs.existsSync(getWorkspaceRoot()) ? getWorkspaceRoot() : app.getPath('documents'),
     properties: ['openDirectory', 'createDirectory']
-  };
-  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
-  const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
-  if (result.canceled || !result.filePaths || !result.filePaths.length) {
-    return { canceled: true, workspaceRoot: getWorkspaceRoot() };
-  }
-  const selected = path.resolve(result.filePaths[0]);
-  if (!fs.existsSync(selected) || !fs.statSync(selected).isDirectory()) throw new Error('Selected workspace is not a directory.');
-  settings.workspaceRoot = selected;
-  persistSettings();
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('overlay:workspace-changed', selected);
-  }
-  return { canceled: false, workspaceRoot: selected };
+  }).then(result => {
+    if (result.canceled || !result.filePaths || !result.filePaths.length) {
+      return { canceled: true, workspaceRoot: getWorkspaceRoot() };
+    }
+    const selected = path.resolve(result.filePaths[0]);
+    if (!fs.existsSync(selected) || !fs.statSync(selected).isDirectory()) {
+      throw new Error('Selected workspace is not a directory.');
+    }
+    settings.workspaceRoot = selected;
+    persistSettings();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:workspace-changed', selected);
+    }
+    return { canceled: false, workspaceRoot: selected };
+  });
 }
 
 function clampBounds(bounds) {
   const safe = {
-    x: Number.isFinite(Number(bounds.x)) ? Number(bounds.x) : 0,
-    y: Number.isFinite(Number(bounds.y)) ? Number(bounds.y) : 0,
-    width: Number.isFinite(Number(bounds.width)) && Number(bounds.width) > 0 ? Number(bounds.width) : EXPANDED_SIZE.width,
-    height: Number.isFinite(Number(bounds.height)) && Number(bounds.height) > 0 ? Number(bounds.height) : EXPANDED_SIZE.height
+    x: Number.isFinite(Number(bounds && bounds.x)) ? Number(bounds.x) : 0,
+    y: Number.isFinite(Number(bounds && bounds.y)) ? Number(bounds.y) : 0,
+    width: Number.isFinite(Number(bounds && bounds.width)) && Number(bounds.width) > 0 ? Number(bounds.width) : EXPANDED_SIZE.width,
+    height: Number.isFinite(Number(bounds && bounds.height)) && Number(bounds.height) > 0 ? Number(bounds.height) : EXPANDED_SIZE.height
   };
   const display = screen.getDisplayMatching(safe);
-  return clampRectToWorkArea(safe, display.workArea, 360, 480);
+  return clampRectToWorkArea(safe, display.workArea, 560, 600);
 }
 
 function defaultBounds() {
   const work = screen.getPrimaryDisplay().workArea;
   return clampBounds({
-    x: work.x + work.width - EXPANDED_SIZE.width - 22,
-    y: work.y + work.height - EXPANDED_SIZE.height - 22,
+    x: work.x + Math.max(0, work.width - EXPANDED_SIZE.width - 30),
+    y: work.y + Math.max(0, work.height - EXPANDED_SIZE.height - 30),
     ...EXPANDED_SIZE
   });
 }
 
-function getSafeUrl(raw) {
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'https:') return null;
-    return url;
-  } catch {
-    return null;
-  }
+function clampBubble(bounds) {
+  const display = screen.getDisplayMatching({ x: bounds.x, y: bounds.y, width: COLLAPSED_SIZE, height: COLLAPSED_SIZE });
+  return clampBubbleToWorkArea(bounds, display.workArea, COLLAPSED_SIZE);
 }
 
-function isEmbeddedHost(hostname) {
-  const host = hostname.toLowerCase();
-  return EMBEDDED_HOSTS.has(host) ||
-    host.endsWith('.openai.com') ||
-    host.endsWith('.chatgpt.com');
-}
-
-function openExternalHttps(raw) {
-  const url = getSafeUrl(raw);
-  if (!url) return;
-  shell.openExternal(url.href).catch((error) => {
-    console.error('Could not open external URL:', error.message);
-  });
-}
-
-function attachNavigationPolicy(contents) {
-  const defaultAgent = contents.getUserAgent();
-  contents.setUserAgent(defaultAgent.replace(/\sElectron\/[\d.]+/g, ''));
-  contents.on('will-navigate', (event, targetUrl) => {
-    if (contents === (chatView && chatView.webContents) && String(targetUrl).startsWith('assistant-tool:')) {
-      event.preventDefault();
-      if (toolBridge) toolBridge.handleInternalUrl(contents, targetUrl).catch(error => console.error('Local tool request failed:', error.message));
-      return;
-    }
-    const url = getSafeUrl(targetUrl);
-    if (url && isEmbeddedHost(url.hostname)) return;
-
-    event.preventDefault();
-    if (url) openExternalHttps(url.href);
-  });
-
-  contents.setWindowOpenHandler(({ url }) => {
-    const parsed = getSafeUrl(url);
-    if (parsed && isEmbeddedHost(parsed.hostname)) {
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          parent: mainWindow,
-          width: 460,
-          height: 680,
-          autoHideMenuBar: true,
-          webPreferences: {
-            partition: SESSION_PARTITION,
-            nodeIntegration: false,
-            contextIsolation: true,
-            sandbox: true,
-            webSecurity: true
-          }
-        }
-      };
-    }
-
-    if (parsed) openExternalHttps(parsed.href);
-    return { action: 'deny' };
-  });
-
-  contents.on('did-create-window', (childWindow) => {
-    attachNavigationPolicy(childWindow.webContents);
-  });
-}
-
-function updateChatBounds() {
-  if (!mainWindow || mainWindow.isDestroyed() || !chatView || collapsed) return;
-  const [width, height] = mainWindow.getContentSize();
-  chatView.setBounds({
-    x: VIEW_INSET,
-    y: HEADER_HEIGHT,
-    width: Math.max(1, width - VIEW_INSET * 2),
-    height: Math.max(1, height - HEADER_HEIGHT - BOTTOM_INSET)
-  });
-}
-
-function sendCollapsedState() {
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoading()) {
-    mainWindow.webContents.send('overlay:collapsed-changed', collapsed);
-  }
-}
-
-function collapseWindow() {
+function saveWindowBounds() {
   if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
   const [width, height] = mainWindow.getSize();
   const [x, y] = mainWindow.getPosition();
   settings.bounds = { x, y, width, height };
-  clearTimeout(saveTimer);
   persistSettings();
+}
 
-  const bubbleX = x + width - COLLAPSED_SIZE;
-  const bubbleY = y + height - COLLAPSED_SIZE;
+function saveWindowBoundsSoon() {
+  if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveWindowBounds, 250);
+}
+
+function collapseWindow() {
+  if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
+  saveWindowBounds();
+  const [width, height] = mainWindow.getSize();
+  const [x, y] = mainWindow.getPosition();
   collapsed = true;
-  if (chatView) {
-    try {
-      mainWindow.contentView.removeChildView(chatView);
-    } catch (error) {
-      console.error('Could not detach ChatGPT view:', error.message);
-    }
-  }
-  // Temporarily remove the expanded-window minimum so the window can really shrink.
   mainWindow.setMinimumSize(1, 1);
   mainWindow.setResizable(false);
   mainWindow.setSkipTaskbar(true);
   mainWindow.setSize(COLLAPSED_SIZE, COLLAPSED_SIZE, true);
-  const bounds = clampBubble({ x: bubbleX, y: bubbleY });
+  const bounds = clampBubble({ x: x + width - COLLAPSED_SIZE, y: y + height - COLLAPSED_SIZE });
   mainWindow.setPosition(bounds.x, bounds.y, true);
-  sendCollapsedState();
-  // Releasing focus is important when the hotkey is used over a game or another app.
+  mainWindow.webContents.send('app:collapsed-changed', true);
   if (mainWindow.isFocused()) mainWindow.blur();
-}
-
-function clampBubble(bounds) {
-  const display = screen.getDisplayMatching({
-    x: bounds.x, y: bounds.y, width: COLLAPSED_SIZE, height: COLLAPSED_SIZE
-  });
-  return clampBubbleToWorkArea(bounds, display.workArea, COLLAPSED_SIZE);
 }
 
 function expandWindow() {
@@ -286,19 +159,12 @@ function expandWindow() {
     width: preferred.width || EXPANDED_SIZE.width,
     height: preferred.height || EXPANDED_SIZE.height
   });
-
   collapsed = false;
   mainWindow.setSkipTaskbar(false);
-  const minimum = minimumSizeForBounds(target);
-  mainWindow.setMinimumSize(minimum.width, minimum.height);
+  mainWindow.setMinimumSize(560, 600);
   mainWindow.setResizable(true);
   mainWindow.setBounds(target, true);
-  if (chatView) {
-    mainWindow.contentView.addChildView(chatView);
-    updateChatBounds();
-  }
-  sendCollapsedState();
-  saveSettingsSoon();
+  mainWindow.webContents.send('app:collapsed-changed', false);
 }
 
 function toggleOverlay() {
@@ -308,21 +174,31 @@ function toggleOverlay() {
   }
   if (collapsed) {
     expandWindow();
-    if (!mainWindow.isVisible()) mainWindow.show();
+    mainWindow.show();
     mainWindow.focus();
-    return;
+  } else {
+    collapseWindow();
+    mainWindow.show();
   }
-  collapseWindow();
-  if (!mainWindow.isVisible()) mainWindow.show();
-  // Do not reclaim focus after collapsing; the previous app should remain usable.
 }
 
-function assertLocalUi(event) {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    throw new Error('Only the local overlay UI may invoke this action.');
+function getSafeExternalUrl(raw) {
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'https:') return null;
+    if (!['github.com', 'docs.github.com'].includes(url.hostname)) return null;
+    return url;
+  } catch {
+    return null;
   }
-  const url = event.senderFrame?.url || '';
-  if (!url.startsWith('file://') || !url.endsWith('/desktop/index.html')) {
+}
+
+function assertLocalUi(event, filename) {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+    throw new Error('Only the local desktop UI may invoke this action.');
+  }
+  const url = event.senderFrame && event.senderFrame.url || '';
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/' + filename)) {
     throw new Error('Unexpected IPC sender.');
   }
 }
@@ -331,7 +207,7 @@ function assertAccountUi(event) {
   if (!accountsWindow || accountsWindow.isDestroyed() || event.sender !== accountsWindow.webContents) {
     throw new Error('Only the local Accounts window may invoke this action.');
   }
-  const url = event.senderFrame?.url || '';
+  const url = event.senderFrame && event.senderFrame.url || '';
   if (!url.startsWith('file://') || !url.endsWith('/desktop/accounts.html')) {
     throw new Error('Unexpected IPC sender for Accounts.');
   }
@@ -345,13 +221,13 @@ function createAccountsWindow() {
   }
   accountsWindow = new BrowserWindow({
     width: 560,
-    height: 650,
+    height: 630,
     minWidth: 480,
     minHeight: 520,
     parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
     modal: false,
     show: false,
-    title: 'ChatGPT Assistant · Accounts',
+    title: 'Windows Bridge · GitHub account',
     autoHideMenuBar: true,
     backgroundColor: '#10151d',
     webPreferences: {
@@ -362,93 +238,110 @@ function createAccountsWindow() {
       webSecurity: true
     }
   });
-  accountsWindow.once('ready-to-show', () => {
-    if (accountsWindow && !accountsWindow.isDestroyed()) accountsWindow.show();
+  const reference = accountsWindow;
+  reference.once('ready-to-show', () => {
+    if (!reference.isDestroyed()) reference.show();
   });
-  accountsWindow.on('closed', () => { accountsWindow = null; });
-  accountsWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const parsed = getSafeUrl(url);
-    if (parsed && parsed.hostname === 'github.com') openExternalHttps(parsed.href);
+  reference.on('closed', () => {
+    if (accountsWindow === reference) accountsWindow = null;
+  });
+  reference.webContents.setWindowOpenHandler(({ url }) => {
+    const safe = getSafeExternalUrl(url);
+    if (safe) shell.openExternal(safe.href).catch(() => {});
     return { action: 'deny' };
   });
-  accountsWindow.loadFile(path.join(__dirname, 'accounts.html'));
+  reference.loadFile(path.join(__dirname, 'accounts.html'));
 }
 
-function getChatViewForIpc() { return chatView; }
+function getUiState() {
+  return {
+    workspaceRoot: getWorkspaceRoot(),
+    bridge: repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false },
+    github: githubAuth ? null : null
+  };
+}
+
+function broadcastBridgeState(state) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('app:bridge-state', state);
+  }
+}
 
 function registerIpc() {
-  ipcMain.handle('overlay:collapse', (event) => {
-    assertLocalUi(event);
-    collapseWindow();
-    return { collapsed };
+  ipcMain.handle('app:get-state', event => {
+    assertLocalUi(event, 'index.html');
+    return getUiState();
   });
-  ipcMain.handle('overlay:expand', (event) => {
-    assertLocalUi(event);
-    expandWindow();
-    return { collapsed };
+  ipcMain.handle('app:save-bridge-config', (event, config) => {
+    assertLocalUi(event, 'index.html');
+    return repositoryBridge.setConfig(config);
   });
-  ipcMain.handle('overlay:reload-chat', (event) => {
-    assertLocalUi(event);
-    if (chatView && !chatView.webContents.isDestroyed()) chatView.webContents.reload();
-    return true;
+  ipcMain.handle('app:start-bridge', async event => {
+    assertLocalUi(event, 'index.html');
+    const state = await repositoryBridge.start();
+    broadcastBridgeState(state);
+    return state;
   });
-  ipcMain.handle('overlay:open-in-browser', (event) => {
-    assertLocalUi(event);
-    openExternalHttps(CHATGPT_URL);
-    return true;
+  ipcMain.handle('app:stop-bridge', async event => {
+    assertLocalUi(event, 'index.html');
+    const state = await repositoryBridge.stop();
+    broadcastBridgeState(state);
+    return state;
   });
-  ipcMain.handle('overlay:quit', (event) => {
-    assertLocalUi(event);
-    app.quit();
-    return true;
+  ipcMain.handle('app:poll-now', async event => {
+    assertLocalUi(event, 'index.html');
+    await repositoryBridge.pollOnce();
+    return repositoryBridge.getState();
   });
-  ipcMain.handle('overlay:select-workspace', async (event) => {
-    assertLocalUi(event);
+  ipcMain.handle('app:select-workspace', async event => {
+    assertLocalUi(event, 'index.html');
     return selectWorkspace();
   });
-  ipcMain.handle('overlay:get-workspace', (event) => {
-    assertLocalUi(event);
-    return { workspaceRoot: getWorkspaceRoot(), initialized: Boolean(toolBridge) };
-  });
-  ipcMain.handle('overlay:open-accounts', (event) => {
-    assertLocalUi(event);
+  ipcMain.handle('app:open-accounts', event => {
+    assertLocalUi(event, 'index.html');
     createAccountsWindow();
     return { opened: true };
   });
-
-  ipcMain.handle('overlay:open-chatgpt-login', (event) => {
-    assertAccountUi(event);
-    const view = getChatViewForIpc();
-    if (!view || view.webContents.isDestroyed()) throw new Error('ChatGPT view is unavailable.');
-    view.webContents.loadURL('https://chatgpt.com/auth/login').catch(error => console.error('Could not open ChatGPT sign-in:', error.message));
-    return { opened: true };
+  ipcMain.handle('app:collapse', event => {
+    assertLocalUi(event, 'index.html');
+    collapseWindow();
+    return { collapsed };
   });
-  ipcMain.handle('overlay:github-state', async (event) => {
+  ipcMain.handle('app:expand', event => {
+    assertLocalUi(event, 'index.html');
+    expandWindow();
+    return { collapsed };
+  });
+  ipcMain.handle('app:quit', event => {
+    assertLocalUi(event, 'index.html');
+    app.quit();
+    return true;
+  });
+
+  ipcMain.handle('app:github-state', async event => {
     assertAccountUi(event);
-    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.getState();
   });
-  ipcMain.handle('overlay:github-set-client-id', (event, clientId) => {
+  ipcMain.handle('app:github-set-client-id', (event, clientId) => {
     assertAccountUi(event);
-    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.setClientId(clientId);
   });
-  ipcMain.handle('overlay:github-start-login', async (event) => {
+  ipcMain.handle('app:github-start-login', async event => {
     assertAccountUi(event);
-    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     const result = await githubAuth.startLogin();
-    openExternalHttps(result.verificationUrl);
+    const safe = getSafeExternalUrl(result.verificationUrl);
+    if (safe) shell.openExternal(safe.href).catch(() => {});
     return result;
   });
-  ipcMain.handle('overlay:github-poll-login', async (event) => {
+  ipcMain.handle('app:github-poll-login', async event => {
     assertAccountUi(event);
-    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     return githubAuth.pollLogin();
   });
-  ipcMain.handle('overlay:github-logout', (event) => {
+  ipcMain.handle('app:github-logout', event => {
     assertAccountUi(event);
-    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
-    return githubAuth.logout();
+    const result = githubAuth.logout();
+    if (repositoryBridge) repositoryBridge.stop().catch(() => {});
+    return result;
   });
 }
 
@@ -458,9 +351,7 @@ function createMainWindow() {
     mainWindow.focus();
     return;
   }
-
   const bounds = clampBounds(settings.bounds || defaultBounds());
-  const minimum = minimumSizeForBounds(bounds);
   mainWindow = new BrowserWindow({
     ...bounds,
     width: bounds.width,
@@ -470,15 +361,15 @@ function createMainWindow() {
     backgroundColor: '#00000000',
     hasShadow: true,
     resizable: true,
-    minWidth: minimum.width,
-    minHeight: minimum.height,
+    minWidth: 560,
+    minHeight: 600,
     minimizable: true,
     maximizable: false,
     movable: true,
     alwaysOnTop: true,
     skipTaskbar: false,
     show: false,
-    title: 'ChatGPT Assistant',
+    title: 'Windows Repository Bridge',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -487,106 +378,24 @@ function createMainWindow() {
       webSecurity: true
     }
   });
-
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAlwaysOnTop(true);
-  mainWindow.on('close', () => {
-    // Flush bounds immediately; the debounced move timer is cleared on quit.
-    if (!collapsed && mainWindow && !mainWindow.isDestroyed()) {
-      const [width, height] = mainWindow.getSize();
-      const [x, y] = mainWindow.getPosition();
-      settings.bounds = { x, y, width, height };
-      clearTimeout(saveTimer);
-      persistSettings();
-    }
-  });
-  mainWindow.on('resize', updateChatBounds);
-  mainWindow.on('move', () => {
-    if (!collapsed && mainWindow && !mainWindow.isDestroyed()) {
-      const minimum = minimumSizeForBounds(mainWindow.getBounds());
-      mainWindow.setMinimumSize(minimum.width, minimum.height);
-    }
-    saveSettingsSoon();
-  });
+  mainWindow.on('resize', saveWindowBoundsSoon);
+  mainWindow.on('move', saveWindowBoundsSoon);
+  mainWindow.on('close', saveWindowBounds);
   mainWindow.on('closed', () => {
-    const detachedChatView = chatView;
-    chatView = null;
     mainWindow = null;
-    // Electron does not automatically destroy WebContentsView contents with the host window.
-    if (detachedChatView && !detachedChatView.webContents.isDestroyed()) {
-      detachedChatView.webContents.close();
-    }
   });
-  mainWindow.webContents.on('did-finish-load', sendCollapsedState);
-
-  chatView = new WebContentsView({
-    webPreferences: {
-      partition: SESSION_PARTITION,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      spellcheck: true
-    }
-  });
-  mainWindow.contentView.addChildView(chatView);
-  updateChatBounds();
-  attachNavigationPolicy(chatView.webContents);
-
-  chatView.webContents.on('did-create-window', (childWindow) => {
-    childWindow.setAlwaysOnTop(false);
-  });
-  chatView.webContents.on('render-process-gone', (_event, details) => {
-    console.error('ChatGPT view render process exited:', details.reason);
-  });
-  chatView.webContents.on('did-finish-load', () => {
-    if (toolBridge) toolBridge.installChatToolBridge();
-  });
-  chatView.webContents.loadURL(CHATGPT_URL).catch((error) => {
-    console.error('Could not load ChatGPT:', error.message);
-  });
-
-  mainWindow.loadFile(path.join(__dirname, 'index.html'));
-  mainWindow.once('ready-to-show', () => {
-    updateChatBounds();
+  mainWindow.webContents.once('did-finish-load', () => {
+    mainWindow.webContents.send('app:collapsed-changed', collapsed);
     mainWindow.show();
     mainWindow.focus();
   });
-}
-
-function configureRemoteSession() {
-  chatSession = session.fromPartition(SESSION_PARTITION);
-  // Let normal ChatGPT copy buttons write sanitized text to the clipboard, but
-  // deny clipboard reads and all unrelated permissions (camera, mic, location, etc.).
-  const allowedPermissions = new Set(['clipboard-sanitized-write']);
-  chatSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    callback(allowedPermissions.has(permission));
-  });
-  chatSession.setPermissionCheckHandler((_webContents, permission) => {
-    return allowedPermissions.has(permission);
-  });
-  // Keep the normal file-download workflow available in this wrapper. Downloads
-  // from the embedded ChatGPT session use the native Save As dialog; no file is
-  // written to an automatically chosen path without user confirmation.
-  chatSession.on('will-download', (event, item, webContents) => {
-    const source = webContents ? getSafeUrl(webContents.getURL()) : null;
-    if (!source || !isEmbeddedHost(source.hostname)) {
-      item.cancel();
-      return;
-    }
-    const rawName = item.getFilename() || 'ChatGPT-download';
-    const safeName = path.basename(rawName).replace(/[<>:"|?*]/g, '_').replace(/[\x00-\x1f]/g, '_') || 'ChatGPT-download';
-    item.setSaveDialogOptions({
-      title: 'Save ChatGPT download',
-      buttonLabel: 'Save',
-      defaultPath: path.join(app.getPath('downloads'), safeName)
-    });
-  });
+  mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
 function registerHotkey() {
-  const registered = globalShortcut.register(SHORTCUT, toggleOverlay);
-  if (!registered) {
+  if (!globalShortcut.register(SHORTCUT, toggleOverlay)) {
     console.warn('Global shortcut could not be registered:', SHORTCUT);
   }
 }
@@ -597,32 +406,39 @@ if (!hasInstanceLock) {
 } else {
   app.on('second-instance', () => {
     if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    else {
-      if (collapsed) expandWindow();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    if (collapsed) expandWindow();
+    mainWindow.show();
+    mainWindow.focus();
   });
 
   app.whenReady().then(() => {
-    app.setAppUserModelId('com.hashin997ux.chatgptassistant');
+    app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
     settings = loadSettings();
     ensureWorkspaceRoot();
-    configureRemoteSession();
+
     githubAuth = createGitHubAuth({
       safeStorage,
       getSettings: () => settings,
       persistSettings
     });
+
     toolBridge = createToolBridge({
       dialog,
       getMainWindow: () => mainWindow,
-      getChatView: () => chatView,
       getWorkspaceRoot,
-      selectWorkspace,
       localTools,
       githubAuth
     });
+
+    repositoryBridge = createRepositoryBridge({
+      githubAuth,
+      getSettings: () => settings,
+      persistSettings,
+      getWorkspaceRoot,
+      executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
+      onState: broadcastBridgeState
+    });
+
     registerIpc();
     createMainWindow();
     registerHotkey();
@@ -638,9 +454,14 @@ if (!hasInstanceLock) {
   });
 }
 
-app.on('before-quit', () => {
+app.on('before-quit', event => {
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
+  if (repositoryBridge && !finishingQuit) {
+    event.preventDefault();
+    finishingQuit = true;
+    repositoryBridge.stop().catch(() => {}).finally(() => app.quit());
+  }
 });
 
 app.on('window-all-closed', () => {

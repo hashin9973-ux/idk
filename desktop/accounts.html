@@ -4,27 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>ChatGPT Assistant · Accounts</title>
+  <title>Windows Bridge · GitHub account</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body class="accounts-body">
   <main class="accounts-shell">
-    <h1 class="accounts-heading">Connected accounts</h1>
-    <p class="accounts-subtitle">Sign-ins are handled by their providers. The app never asks you to paste account passwords or access tokens into chat.</p>
-
-    <section class="account-card" aria-labelledby="chatgpt-title">
-      <h2 id="chatgpt-title">ChatGPT</h2>
-      <p>The embedded ChatGPT website uses its own persistent sign-in session. Sign in here to keep using the same ChatGPT conversation with local tools.</p>
-      <button id="chatgpt-login" class="account-button primary" type="button">Open ChatGPT sign-in</button>
-      <p id="chatgpt-status" class="account-status" role="status">ChatGPT sign-in is managed by the embedded website.</p>
-    </section>
+    <h1 class="accounts-heading">GitHub connection</h1>
+    <p class="accounts-subtitle">The Windows worker needs repository access so it can read queued requests and write tool results and heartbeat state. This app-side credential is separate from ChatGPT’s GitHub integration.</p>
 
     <section class="account-card" aria-labelledby="github-title">
-      <h2 id="github-title">GitHub</h2>
-      <p>Connect GitHub to let ChatGPT read repository metadata and perform approved repository operations. The token is encrypted using Windows secure credential storage.</p>
+      <h2 id="github-title">Authenticate the local worker</h2>
+      <p>Use a GitHub OAuth App with Device Flow enabled. Authorization requests <code>repo</code> and <code>read:user</code>. Review the permission screen before approving. The access token is encrypted with Windows-backed Electron secure storage and never inserted into ChatGPT messages or mailbox files.</p>
       <label class="account-label" for="github-client-id">GitHub OAuth App client ID</label>
-      <input id="github-client-id" class="account-input" type="text" autocomplete="off" spellcheck="false" placeholder="Iv1.… or Ov23li…" maxlength="100">
-      <p class="account-note">Create an OAuth App in GitHub Developer settings and enable Device Flow. Authorization requests <code>repo</code> and <code>read:user</code> scopes. Review the requested access before approving.</p>
+      <input id="github-client-id" class="account-input" type="text" autocomplete="off" spellcheck="false" placeholder="Enter the OAuth App client ID" maxlength="100">
+      <p class="account-note">Create/configure this in GitHub Developer settings and enable Device Flow. Do not paste an access token or password here.</p>
       <div class="account-actions">
         <button id="github-save-client" class="account-button" type="button">Save client ID</button>
         <button id="github-login" class="account-button primary" type="button">Sign in with GitHub</button>
@@ -36,6 +29,10 @@
         <strong id="github-user-code"></strong>
         <p class="account-note">The app checks authorization with GitHub. Do not share this code with anyone else.</p>
       </div>
+    </section>
+    <section class="account-card">
+      <h2>Why this is separate</h2>
+      <p>Your existing ChatGPT conversation uses the ChatGPT GitHub integration to create request files and inspect results. The Windows app uses its own OAuth grant to poll the same branch and commit results. The shared repository is the mailbox; this app does not mirror or host your ChatGPT conversation.</p>
     </section>
   </main>
   <script src="accounts.js"></script>
