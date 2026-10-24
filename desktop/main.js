@@ -427,7 +427,8 @@ if (!hasInstanceLock) {
       getMainWindow: () => mainWindow,
       getWorkspaceRoot,
       localTools,
-      githubAuth
+      githubAuth,
+      uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
     });
 
     repositoryBridge = createRepositoryBridge({
