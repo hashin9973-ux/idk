@@ -88,6 +88,11 @@ test('desktop app runs the GitHub repository request/result bridge', () => {
   assert.ok(protocol.includes('chatgpt-windows-bridge/request-v1'));
   assert.ok(protocol.includes('call_id does not match the request filename.'));
   assert.ok(bridge.includes('deliverRepositoryResult'));
+  assert.ok(bridge.includes('initializeCurrentConversation'));
+  assert.ok(bridge.includes('buildBridgeContextMessage'));
+  assert.ok(bridge.includes('bootstrapSignaled'));
+  assert.ok(main.includes('hasBridgeBootstrap'));
+  assert.ok(main.includes('recordBridgeBootstrap'));
   assert.ok(bridge.includes('.chatgpt-bridge/requests/<call_id>.json'));
   assert.ok(bridge.includes('This local tool request was not executed because it bypassed the GitHub repository bridge.'));
   assert.ok(!bridge.includes('const request = parseToolCall(raw)'));
