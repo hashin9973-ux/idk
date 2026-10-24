@@ -162,6 +162,16 @@ function createToolBridge(deps) {
         bytes
       });
     }
+    if (tool === 'get_capabilities') {
+      const output = await localTools.executeTool(root, tool, args);
+      if (output && Array.isArray(output.tools)) {
+        output.tools.push(
+          { name: 'upload_workspace_file', mode: 'approval-required', args: ['path', 'artifactName'] },
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control', args: [] }
+        );
+      }
+      return output;
+    }
     if (!GITHUB_GIT_TOOLS.has(tool)) return localTools.executeTool(root, tool, args);
     if (!githubAuth || typeof githubAuth.runGitOperation !== 'function') {
       throw new Error('Authenticated local Git operations are unavailable in this app build.');
