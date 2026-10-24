@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createRepositoryBridge, REQUEST_DIR, RESULT_DIR } = require('../desktop/repository-bridge');
+const { createRepositoryBridge, REQUEST_DIR, RESULT_DIR, normalizeGitHubRemote } = require('../desktop/repository-bridge');
 const { REQUEST_PROTOCOL, RESULT_PROTOCOL } = require('../desktop/repository-protocol');
 
 const REPOSITORY = 'example/project';
@@ -70,6 +70,9 @@ function fixture(options = {}) {
   const bridge = createRepositoryBridge({
     githubAuth,
     dataDir,
+    getWorkspaceRepositories: async () => options.workspaceRemotes === undefined
+      ? ['https://github.com/' + REPOSITORY + '.git']
+      : options.workspaceRemotes,
     pollIntervalMs: 60_000,
     now: () => new Date('2026-10-24T00:00:00.000Z'),
     executeRequest: async (request, context) => {
@@ -196,6 +199,30 @@ test('a failed result publish is recoverable without rerunning the command', asy
     assert.equal(f.executions.length, 1);
     assert.ok(f.files.has(RESULT_DIR + '/retry-001.json'));
     assert.equal(f.notifications.length, 1);
+  } finally {
+    f.bridge.stop();
+    f.cleanup();
+  }
+});
+
+test('workspace identity accepts standard GitHub remote URL formats', () => {
+  assert.equal(normalizeGitHubRemote('https://github.com/Example/Project.git'), 'example/project');
+  assert.equal(normalizeGitHubRemote('git@github.com:Example/Project.git'), 'example/project');
+  assert.equal(normalizeGitHubRemote('ssh://git@github.com/Example/Project.git'), 'example/project');
+  assert.equal(normalizeGitHubRemote('https://other-host.example/Example/Project.git'), null);
+});
+
+test('bridge refuses to run tools against a workspace for another repository', async () => {
+  const f = fixture({
+    request: makeRequest('wrong-repo-001'),
+    callId: 'wrong-repo-001',
+    workspaceRemotes: ['https://github.com/someone/different-project.git']
+  });
+  try {
+    const result = await f.bridge.pollOnce();
+    assert.equal(result.state, 'error');
+    assert.match(result.error, /does not have a GitHub remote matching/i);
+    assert.equal(f.executions.length, 0);
   } finally {
     f.bridge.stop();
     f.cleanup();
