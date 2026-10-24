@@ -417,10 +417,11 @@ function createRepositoryBridge(deps) {
       const paths = [];
       for (let index = 0; index < chunks.length; index++) {
         const partName = slug + (chunks.length > 1 ? '-part-' + String(index + 1).padStart(3, '0') : '') + '.txt';
-        const relativePath = 'bridge/artifacts/' + requestId + '/' + String(artifactManifest.length + 1).padStart(3, '0') + '-' + partName;
+        const relativePath = 'bridge/artifacts/' + requestId + '/' + String(artifactManifest.length + artifactErrors.length + 1).padStart(3, '0') + '-' + partName;
         try {
           const stored = await writeRemoteContent(relativePath, chunks[index], '[local bridge] publish text output ' + partName);
           const entry = {
+            kind: 'text_output_part',
             path: relativePath,
             media_type: 'text/plain; charset=utf-8',
             bytes: stored.bytes,
@@ -437,7 +438,7 @@ function createRepositoryBridge(deps) {
       }
       const preview = value.slice(0, 900);
       const storedPaths = paths.length ? paths.join(', ') : '(artifact publication failed)';
-      return preview + (value.length > preview.length ? '\\n\\n[Output truncated in this result. Full output location: ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]' : '\\n\\n[Output externalized to ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]');
+      return preview + (value.length > preview.length ? '\n\n[Output truncated in this result. Full output location: ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]' : '\n\n[Output externalized to ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]');
     }
     if (Array.isArray(value)) {
       const output = [];
