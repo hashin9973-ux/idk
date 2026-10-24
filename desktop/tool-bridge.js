@@ -106,13 +106,15 @@ function createToolBridge(deps) {
       return header + 'Clone GitHub repository: ' + String(args.repository || '(missing repository)') +
         '\nDestination inside workspace: ' + String(args.path || '(missing path)') +
         (args.branch ? '\nBranch: ' + String(args.branch) : '') +
-        '\nUses the app-side GitHub credential internally; no credential is sent to chat.';
+        '\nUses the app-side GitHub credential internally; no credential is sent to chat.' +
+        '\nUser-defined Git hooks are disabled during this operation to protect the temporary credential environment.';
     }
     if (['git_fetch', 'git_pull', 'git_push'].includes(tool)) {
       return header + 'Git remote: ' + String(args.remote || 'origin') +
         (args.branch ? '\nBranch: ' + String(args.branch) : '') +
         '\nOperation: ' + tool.replace('git_', '') +
-        '\nThe app uses its private GitHub credential for HTTPS access. The saved remote URL is not changed.';
+        '\nThe app uses its private GitHub credential for HTTPS access. The saved remote URL is not changed.' +
+        '\nUser-defined Git hooks are disabled during this operation to protect the temporary credential environment.';
     }
     if (tool === 'init') return header + 'Create AGENTS.md at the workspace root. An existing AGENTS.md will not be overwritten.';
     if (tool === 'run_tests') return header + 'Run the detected test command. Tests execute project code and may have side effects.';
