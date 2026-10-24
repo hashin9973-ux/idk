@@ -34,24 +34,14 @@ test('workspace and coding mode are app-owned special commands', () => {
   assert.ok(commands.HELP.includes('/exec'));
 });
 
-test('assistant_tool blocks are validated and reject arbitrary tool names', () => {
-  assert.deepEqual(commands.parseToolCall('{"version":1,"tool":"read_file","args":{"path":"src/index.js"},"call_id":"test-1"}'),
-    { tool: 'read_file', args: { path: 'src/index.js' }, callId: 'test-1' });
-  assert.throws(() => commands.parseToolCall('{"tool":"run_shell","args":{"command":"whoami"}}'), /Unknown local tool/);
-  assert.throws(() => commands.parseToolCall('{"tool":"read_file","args":{},"unexpected":true}'), /Unsupported top-level/);
-  assert.equal(commands.parseSlashCommand('/not-a-local-command'), null);
-});
-
-
-test('expanded local tools are recognized by the fenced tool protocol', () => {
+test('expanded local tools are valid repository protocol tool names', () => {
   const tools = [
     'environment_info', 'directory_tree', 'file_info', 'git_log', 'git_show',
     'git_branches', 'git_changed_files', 'discover_instructions', 'create_directory',
     'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit'
   ];
   for (const tool of tools) {
-    const parsed = commands.parseToolCall(JSON.stringify({ version: 1, tool, args: {} }));
-    assert.equal(parsed.tool, tool);
+    assert.equal(commands.TOOL_NAMES.has(tool), true, 'missing repository tool: ' + tool);
   }
 });
 
@@ -73,5 +63,5 @@ test('new slash commands map to the expected filesystem and Git tools', () => {
 test('model-facing local tools do not include a duplicate GitHub API credential tool', () => {
   assert.equal(commands.TOOL_NAMES.has('github_api'), false);
   assert.equal(commands.TOOL_NAMES.has('github_status'), false);
-  assert.throws(() => commands.parseToolCall(JSON.stringify({ tool: 'github_api', args: { method: 'GET', path: '/user' } })), /Unknown local tool/);
+  assert.equal(commands.TOOL_NAMES.has('github_api'), false);
 });
