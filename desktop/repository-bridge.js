@@ -2,13 +2,13 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { parseRepositoryToolRequest } = require('./repository-protocol');
+const { parseRepositoryToolRequest, validateRepositoryName, validateBranchName } = require('./repository-protocol');
 
 const BRIDGE_DIR = '.chatgpt-bridge';
 const REQUEST_DIR = BRIDGE_DIR + '/requests';
 const RESULT_DIR = BRIDGE_DIR + '/results';
-const MAX_REQUEST_BYTES = 1024 * 1024;
-const MAX_RESULT_BYTES = 1024 * 1024;
+const MAX_REQUEST_BYTES = 600 * 1024;
+const MAX_RESULT_BYTES = 600 * 1024;
 const POLL_INTERVAL_MS = 5000;
 const MAX_LEDGER_ENTRIES = 1000;
 
@@ -129,16 +129,31 @@ function createRepositoryBridge(deps) {
     if (file.encoding === 'base64') content = Buffer.from(file.content.replace(/\s/g, ''), 'base64').toString('utf8');
     else if (file.encoding === 'utf-8' || file.encoding === 'utf8') content = file.content;
     else throw new Error('Unsupported GitHub content encoding: ' + String(file.encoding));
-    if (Buffer.byteLength(content, 'utf8') > MAX_REQUEST_BYTES) throw new Error('Repository bridge request exceeded the 1 MiB limit.');
+    if (Buffer.byteLength(content, 'utf8') > MAX_REQUEST_BYTES) throw new Error('Repository bridge request exceeded the safe 600 KiB limit.');
     return content;
   }
 
   async function publishResult(repository, branch, id, record) {
     const serialized = JSON.stringify(record, null, 2);
     if (Buffer.byteLength(serialized, 'utf8') > MAX_RESULT_BYTES) {
-      throw new Error('Repository bridge result exceeded the 1 MiB limit; narrow the tool output and retry with a new request ID.');
+      throw new Error('Repository bridge result exceeded the safe 600 KiB limit; narrow the tool output and retry with a new request ID.');
     }
     const resultPath = RESULT_DIR + '/' + id + '.json';
+
+    // Idempotency check before writing: a crash after GitHub accepted the commit
+    // must not cause a result to be overwritten or local work to be repeated.
+    try {
+      const existingText = await readTextFile(repository, branch, resultPath);
+      let existing;
+      try { existing = JSON.parse(existingText); } catch { throw new Error('A result file already exists but contains invalid JSON: ' + resultPath); }
+      if (existing.call_id !== id || existing.protocol !== 'chatgpt-windows-bridge/result-v1') {
+        throw new Error('A conflicting repository result already exists for call_id ' + id + '.');
+      }
+      return resultPath;
+    } catch (error) {
+      if (!/not found|404/i.test(String(error && error.message || error))) throw error;
+    }
+
     const body = {
       message: 'ChatGPT Windows bridge result: ' + id,
       content: Buffer.from(serialized, 'utf8').toString('base64'),
@@ -147,16 +162,16 @@ function createRepositoryBridge(deps) {
     try {
       await api('PUT', '/repos/' + repository + '/contents/' + resultPath, body);
     } catch (error) {
-      // A crash can occur after GitHub accepted a result but before the local ledger was updated.
-      // Verify an existing result rather than rerunning the local action or overwriting it.
-      if (!/sha|already exists|422|unprocessable/i.test(String(error && error.message || error))) throw error;
-      let existing;
-      try { existing = JSON.parse(await readTextFile(repository, branch, resultPath)); } catch { throw error; }
-      if (existing.call_id !== id || existing.protocol !== 'chatgpt-windows-bridge/result-v1') throw error;
+      // Verify before reporting a write failure: GitHub might have accepted the
+      // request even if the client lost the response.
+      try {
+        const existing = JSON.parse(await readTextFile(repository, branch, resultPath));
+        if (existing.call_id === id && existing.protocol === 'chatgpt-windows-bridge/result-v1') return resultPath;
+      } catch {}
+      throw error;
     }
     return resultPath;
   }
-
   async function verifyRepositoryPrivacy(repository, config) {
     if (privacyCache.key === repository && Date.now() - privacyCache.checkedAt < 5 * 60 * 1000 &&
         typeof privacyCache.isPrivate === 'boolean') {
@@ -179,18 +194,22 @@ function createRepositoryBridge(deps) {
 
   async function notify(record, resultPath) {
     try {
-      await notifyResult({ ...record, resultPath });
-      updateRecord(record.call_id, { notificationState: 'sent' });
+      const outcome = await notifyResult({ ...record, resultPath });
+      if (outcome && outcome.ok === false) {
+        throw new Error('The result could not be inserted into the active ChatGPT conversation: ' + String(outcome.reason || 'unknown reason'));
+      }
+      updateRecord(record.call_id, { notificationState: 'sent', nextNotificationAt: null });
       deletePendingResult(record.call_id);
+      return true;
     } catch (error) {
       updateRecord(record.call_id, {
         notificationState: 'pending',
         notificationError: String(error && error.message || error),
         nextNotificationAt: Date.now() + 30000
       });
+      return false;
     }
   }
-
   async function publishPendingRecord(id, repository, branch, record) {
     const resultPath = await publishResult(repository, branch, id, record);
     updateRecord(id, { state: 'published', resultPath, repository, branch });
@@ -231,11 +250,14 @@ function createRepositoryBridge(deps) {
           });
           continue;
         }
+        const targetRepository = entry.repository || record.repository || repository;
+        const targetBranch = entry.branch || record.branch || config.branch || 'main';
         try {
-          await publishPendingRecord(id, repository, config.branch, record);
+          await verifyRepositoryPrivacy(targetRepository, config);
+          await publishPendingRecord(id, targetRepository, targetBranch, record);
         } catch (error) {
           emitStatus('error', 'A completed local request is waiting for its result to be written to GitHub.', {
-            repository, branch: config.branch, call_id: id, error: String(error && error.message || error)
+            repository: targetRepository, branch: targetBranch, call_id: id, error: String(error && error.message || error)
           });
           return false;
         }
@@ -318,8 +340,8 @@ function createRepositoryBridge(deps) {
     busy = true;
     try {
       const config = getConfig();
-      const repository = String(config.repository || '').trim();
-      const branch = String(config.branch || '').trim() || 'main';
+      const repository = config.repository ? validateRepositoryName(String(config.repository).trim()) : '';
+      const branch = validateBranchName(String(config.branch || 'main').trim() || 'main');
       if (!repository) return emitStatus('not_configured', 'Choose the GitHub repository used as the local development bridge.');
       if (typeof githubAuth.hasSavedToken === 'function' && !githubAuth.hasSavedToken()) {
         return emitStatus('not_authenticated', 'Sign in to GitHub in Accounts to enable the repository bridge.', { repository, branch });
