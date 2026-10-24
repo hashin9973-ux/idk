@@ -42,6 +42,7 @@ const EMBEDDED_HOSTS = new Set([
 
 let mainWindow = null;
 let accountsWindow = null;
+let chatGPTSessionWindow = null;
 let chatView = null;
 let chatSession = null;
 let collapsed = false;
@@ -142,14 +143,19 @@ function getWorkspaceGitHubRemotes() {
 }
 
 function getActiveConversationUrl() {
-  const raw = lastMirrorSnapshot && lastMirrorSnapshot.url || settings.lastConversationUrl || '';
-  try {
-    const url = new URL(raw);
-    if (url.hostname !== 'chatgpt.com' || !/^\/c\/[A-Za-z0-9-]+\/?$/.test(url.pathname)) return '';
-    return 'https://chatgpt.com' + url.pathname.replace(/\/$/, '');
-  } catch {
-    return '';
+  const candidates = [
+    lastMirrorSnapshot && lastMirrorSnapshot.url,
+    settings.lastConversationUrl
+  ];
+  for (const raw of candidates) {
+    try {
+      const url = new URL(String(raw || ''));
+      if (url.hostname === 'chatgpt.com' && /^\/c\/[A-Za-z0-9-]+\/?$/.test(url.pathname)) {
+        return 'https://chatgpt.com' + url.pathname.replace(/\/$/, '');
+      }
+    } catch {}
   }
+  return '';
 }
 
 function persistActiveConversationUrl(raw) {
@@ -439,6 +445,58 @@ function assertAccountUi(event) {
   }
 }
 
+function createChatGPTSessionWindow() {
+  if (chatGPTSessionWindow && !chatGPTSessionWindow.isDestroyed()) {
+    chatGPTSessionWindow.show();
+    chatGPTSessionWindow.focus();
+    return;
+  }
+  chatGPTSessionWindow = new BrowserWindow({
+    width: 1120,
+    height: 820,
+    minWidth: 760,
+    minHeight: 560,
+    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+    modal: false,
+    show: false,
+    title: 'ChatGPT sign-in · close this window to return to the mirror',
+    autoHideMenuBar: true,
+    backgroundColor: '#10151d',
+    webPreferences: {
+      partition: SESSION_PARTITION,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      spellcheck: true
+    }
+  });
+  const windowRef = chatGPTSessionWindow;
+  windowRef.setMenuBarVisibility(false);
+  attachNavigationPolicy(windowRef.webContents);
+  const saveThread = (_event, url) => persistActiveConversationUrl(url);
+  windowRef.webContents.on('did-navigate', saveThread);
+  windowRef.webContents.on('did-navigate-in-page', saveThread);
+  windowRef.once('ready-to-show', () => {
+    if (!windowRef.isDestroyed()) {
+      windowRef.show();
+      windowRef.focus();
+    }
+  });
+  windowRef.on('closed', () => {
+    if (chatGPTSessionWindow === windowRef) chatGPTSessionWindow = null;
+    if (chatView && !chatView.webContents.isDestroyed()) {
+      const destination = getActiveConversationUrl() || CHATGPT_URL;
+      chatView.webContents.loadURL(destination).then(() => syncConversationMirror(true)).catch(error => {
+        console.error('Could not refresh ChatGPT after sign-in:', error.message);
+      });
+    }
+  });
+  windowRef.loadURL(getActiveConversationUrl() || 'https://chatgpt.com/auth/login').catch(error => {
+    console.error('Could not open ChatGPT sign-in:', error.message);
+  });
+}
+
 function createAccountsWindow() {
   if (accountsWindow && !accountsWindow.isDestroyed()) {
     accountsWindow.show();
@@ -535,6 +593,8 @@ function registerIpc() {
   ipcMain.handle('overlay:mirror-new-conversation', async (event) => {
     assertLocalUi(event);
     if (!chatView || chatView.webContents.isDestroyed()) return { ok: false, reason: 'chat_view_unavailable' };
+    settings.lastConversationUrl = '';
+    persistSettings();
     await chatView.webContents.loadURL(CHATGPT_URL);
     return { ok: true };
   });
@@ -571,9 +631,7 @@ function registerIpc() {
 
   ipcMain.handle('overlay:open-chatgpt-login', (event) => {
     assertAccountUi(event);
-    const view = getChatViewForIpc();
-    if (!view || view.webContents.isDestroyed()) throw new Error('ChatGPT view is unavailable.');
-    view.webContents.loadURL('https://chatgpt.com/auth/login').catch(error => console.error('Could not open ChatGPT sign-in:', error.message));
+    createChatGPTSessionWindow();
     return { opened: true };
   });
   ipcMain.handle('overlay:github-state', async (event) => {
