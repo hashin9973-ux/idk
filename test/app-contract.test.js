@@ -45,7 +45,7 @@ test('main process connects the GitHub mailbox worker without embedding or autom
   assert.match(main, /require\('\.\/repository-bridge'\)/);
   assert.match(main, /createRepositoryBridge/);
   assert.match(main, /createGitHubAuth/);
-  assert.match(main, /toolBridge\.runTool\(tool, args, requestId, \{ deliverToChat: false \}\)/);
+  assert.match(main, /toolBridge\.runTool\(tool, args, requestId\)/);
   assert.match(main, /'app:start-bridge'/);
   assert.match(main, /'app:stop-bridge'/);
   assert.match(main, /'app:poll-now'/);
@@ -83,7 +83,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
 test('mailbox tool execution is separated from the old ChatGPT page transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
   const main = read('desktop', 'main.js');
-  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, runOptions = \{\}\)/);
+  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
   assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);
