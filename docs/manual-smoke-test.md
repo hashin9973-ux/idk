@@ -8,18 +8,19 @@ This is a manual test because GitHub Actions cannot prove the app can connect to
 
 - Use a **private** copy of `hashin9973-ux/qdqwg` and the dedicated `bridge-mailbox` branch.
 - Create a disposable local workspace containing only harmless test files. Do not use the real Cyberpunk modding workspace for the first run.
-- Confirm the app-side GitHub OAuth login works and its requested `repo` permission has been reviewed.
+- Confirm the GitHub OAuth client ID is configured and the app can sign in through the main screen. The login opens the default browser; approve the device request there and confirm the app returns to the foreground.
 - Keep secrets, tokens, credentials, private keys, and confidential source material out of the workspace files you intend to upload.
 
 ## 1. Start and verify environment publication
 
 1. Launch the Windows Repository Bridge.
 2. Choose the disposable workspace folder.
-3. In Shared repository, set owner `hashin9973-ux`, repository `qdqwg`, and branch `bridge-mailbox`; save the connection.
-4. Start the worker.
-5. In GitHub, open `bridge/context/latest.json` on the `bridge-mailbox` branch.
-6. Confirm the index points to the five snapshots: environment, project, capabilities, directory tree, and instruction inventory.
-7. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
+3. Expand **Connection settings**, set owner `hashin9973-ux`, repository `qdqwg`, and branch `bridge-mailbox`, then save. Configure the GitHub OAuth client ID here if this is the first run.
+4. Sign in with GitHub from the main screen. Complete approval in the browser and verify the app returns to the foreground.
+5. Start the worker.
+6. In GitHub, open `bridge/context/latest.json` on the `bridge-mailbox` branch.
+7. Confirm the index points to the five snapshots: environment, project, capabilities, directory tree, and instruction inventory.
+8. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
 
 Expected outcome: the worker reports running, the mailbox has a heartbeat, and the context index and snapshot files are committed to the private branch.
 

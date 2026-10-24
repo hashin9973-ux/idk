@@ -43,7 +43,7 @@ function loginServer(token = 'gho-test-token') {
   return async url => {
     const target = String(url);
     if (target.endsWith('/login/device/code')) {
-      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
     }
     if (target.endsWith('/login/oauth/access_token')) return response({ access_token: token });
     if (target.endsWith('/user')) return response({ login: 'example-user' });
@@ -68,7 +68,7 @@ test('GitHub device flow stores credentials encrypted and validates the account'
     const target = String(url);
     calls.push({ url: target, method: options.method || 'GET', headers: options.headers || {} });
     if (target.endsWith('/login/device/code')) {
-      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
     }
     if (target.endsWith('/login/oauth/access_token')) {
       tokenPolls++;
@@ -83,6 +83,7 @@ test('GitHub device flow stores credentials encrypted and validates the account'
   const flow = await auth.startLogin();
   assert.equal(flow.userCode, 'ABCD-EFGH');
   assert.equal(flow.verificationUrl, 'https://github.com/login/device');
+  assert.equal(flow.verificationUrlComplete, 'https://github.com/login/device?user_code=ABCD-EFGH');
   assert.equal((await auth.pollLogin()).status, 'pending');
   assert.deepEqual(await auth.pollLogin(), { status: 'authenticated', login: 'example-user' });
   assert.equal(settings.github.encryptedToken.includes('gho-not-a-real-token'), false);
@@ -248,7 +249,7 @@ test('repository API allows only the configured mailbox contents routes', async 
     const target = String(url);
     calls.push({ url: target, options });
     if (target.endsWith('/login/device/code')) {
-      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
     }
     if (target.endsWith('/login/oauth/access_token')) return response({ access_token: 'gho-mailbox-test-token' });
     if (target.endsWith('/user')) return response({ login: 'example-user' });

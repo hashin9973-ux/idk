@@ -1,6 +1,24 @@
-# Desktop application notes
+# Windows Repository Bridge — desktop app
 
-The app embeds the real ChatGPT website in a persistent Electron session and connects the current ChatGPT conversation to local tools through the app-owned `assistant_tool` fence convention.
+This app is a local Windows worker for your existing ChatGPT conversation. ChatGPT remains in your normal browser; requests, results, environment context, and explicitly uploaded files travel through a private GitHub repository branch.
+
+## First-time setup
+
+1. In **Connection settings**, set the private mailbox repository and branch. Defaults are `hashin9973-ux/qdqwg` and `bridge-mailbox`.
+2. Configure a GitHub OAuth App with Device Flow enabled, then paste its client ID into Connection settings. The app only needs the public client ID; its access token is stored with Windows-backed Electron `safeStorage`.
+3. Choose the workspace folder.
+4. Click **Sign in with GitHub**. The default browser opens to GitHub's device-authorization page. If already signed in, you can use that browser session to authorize access. The app detects completion and returns to the foreground.
+5. Click **Start worker**. Keep typing instructions in your existing ChatGPT conversation, using its GitHub integration to create mailbox requests and read results.
+
+ChatGPT does not need a separate login inside this worker. **Open ChatGPT** opens `https://chatgpt.com/` in the default browser. This app does not access ChatGPT cookies or credentials and does not inject results into ChatGPT messages.
+
+## Trust boundaries
+
+- The worker polls the configured mailbox every 15 seconds.
+- A private repository is strongly recommended because requests, results, context, and artifacts live in that repository.
+- Read-only workspace inspection normally runs without approval. File changes, Git writes, shell commands, tests, and uploads require native Windows approval.
+- PowerShell is not sandboxed: an approved command runs with the signed-in Windows user's permissions.
+- The app uses GitHub as transport. It is not a second AI agent and does not send or type messages into ChatGPT.
 
 ## Run and verify
 
@@ -10,28 +28,3 @@ npm run check
 npm test
 npm start
 ```
-
-## Tool flow
-
-Type `/tools` into the embedded ChatGPT composer. ChatGPT can then emit one fenced `assistant_tool` JSON request per assistant response. The app validates the request, applies the relevant approval policy, runs the local operation, and posts the actual result back into the same conversation. ChatGPT chooses the next operation after inspecting the result.
-
-This is a website-DOM bridge, not native tool registration inside the ChatGPT web product. Site UI changes can affect detection and need compatibility fixes.
-
-## Local tool families
-
-- Workspace inspection: project/environment status, directories and trees, glob search, ranged file reads, metadata, full-text search, and `AGENTS.md` discovery.
-- File operations: initialize instructions, atomic writes, multi-file patch, directory creation, move, and delete.
-- Git: status, diffs, history, show, branches, changed files, branch creation/switching, and commits.
-- Execution: PowerShell and test commands, both behind native approval.
-- Planning: local plan state.
-- GitHub: OAuth Device Flow, connection status, and an allowlisted REST bridge. Non-GET requests need native approval.
-
-## Accounts
-
-The titlebar Accounts button opens a separate local window. ChatGPT sign-in occurs on the embedded website and uses its persistent web session. GitHub sign-in uses an OAuth App with Device Flow enabled; its client ID is configured in the Accounts window. The app requests `repo` and `read:user` scopes and stores the OAuth token encrypted with Electron `safeStorage`. It does not expose credentials to renderer JavaScript or place them in chat.
-
-## Approval / trust model
-
-Filesystem paths are relative to the selected workspace; traversal and symlink escape are rejected. Sensitive-looking files are excluded from search and require approval to read. Mutations, Git changes, shell commands, tests, and GitHub API writes require per-operation approval.
-
-PowerShell is not sandboxed and runs as the current Windows user. Git network operations (such as `git push`) use the machine's existing Git Credential Manager; the app's encrypted token is used only by its GitHub REST bridge.

@@ -24,7 +24,6 @@ const EXPANDED_SIZE = { width: 720, height: 780 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 
 let mainWindow = null;
-let accountsWindow = null;
 let collapsed = false;
 let settings = {};
 let saveTimer = null;
@@ -160,6 +159,7 @@ function expandWindow() {
     height: preferred.height || EXPANDED_SIZE.height
   });
   collapsed = false;
+  mainWindow.setAlwaysOnTop(true);
   mainWindow.setSkipTaskbar(false);
   mainWindow.setMinimumSize(560, 600);
   mainWindow.setResizable(true);
@@ -186,11 +186,35 @@ function getSafeExternalUrl(raw) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:') return null;
-    if (!['github.com', 'docs.github.com'].includes(url.hostname)) return null;
+    if (!['github.com', 'docs.github.com', 'chatgpt.com'].includes(url.hostname)) return null;
     return url;
   } catch {
     return null;
   }
+}
+
+async function openInBrowserAndYield(raw) {
+  const safe = getSafeExternalUrl(raw);
+  if (!safe) throw new Error('Blocked external authentication URL.');
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setAlwaysOnTop(false);
+    mainWindow.blur();
+  }
+  try {
+    await shell.openExternal(safe.href);
+    return { opened: true };
+  } catch (error) {
+    bringMainWindowForward();
+    throw error;
+  }
+}
+
+function bringMainWindowForward() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (collapsed) expandWindow();
+  mainWindow.setAlwaysOnTop(true);
+  mainWindow.show();
+  mainWindow.focus();
 }
 
 function assertLocalUi(event, filename) {
@@ -201,56 +225,6 @@ function assertLocalUi(event, filename) {
   if (!url.startsWith('file://') || !url.endsWith('/desktop/' + filename)) {
     throw new Error('Unexpected IPC sender.');
   }
-}
-
-function assertAccountUi(event) {
-  if (!accountsWindow || accountsWindow.isDestroyed() || event.sender !== accountsWindow.webContents) {
-    throw new Error('Only the local Accounts window may invoke this action.');
-  }
-  const url = event.senderFrame && event.senderFrame.url || '';
-  if (!url.startsWith('file://') || !url.endsWith('/desktop/accounts.html')) {
-    throw new Error('Unexpected IPC sender for Accounts.');
-  }
-}
-
-function createAccountsWindow() {
-  if (accountsWindow && !accountsWindow.isDestroyed()) {
-    accountsWindow.show();
-    accountsWindow.focus();
-    return;
-  }
-  accountsWindow = new BrowserWindow({
-    width: 560,
-    height: 630,
-    minWidth: 480,
-    minHeight: 520,
-    parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
-    modal: false,
-    show: false,
-    title: 'Windows Bridge · GitHub account',
-    autoHideMenuBar: true,
-    backgroundColor: '#10151d',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true
-    }
-  });
-  const reference = accountsWindow;
-  reference.once('ready-to-show', () => {
-    if (!reference.isDestroyed()) reference.show();
-  });
-  reference.on('closed', () => {
-    if (accountsWindow === reference) accountsWindow = null;
-  });
-  reference.webContents.setWindowOpenHandler(({ url }) => {
-    const safe = getSafeExternalUrl(url);
-    if (safe) shell.openExternal(safe.href).catch(() => {});
-    return { action: 'deny' };
-  });
-  reference.loadFile(path.join(__dirname, 'accounts.html'));
 }
 
 function getUiState() {
@@ -288,19 +262,9 @@ function registerIpc() {
     broadcastBridgeState(state);
     return state;
   });
-  ipcMain.handle('app:poll-now', async event => {
-    assertLocalUi(event, 'index.html');
-    await repositoryBridge.pollOnce();
-    return repositoryBridge.getState();
-  });
   ipcMain.handle('app:select-workspace', async event => {
     assertLocalUi(event, 'index.html');
     return selectWorkspace();
-  });
-  ipcMain.handle('app:open-accounts', event => {
-    assertLocalUi(event, 'index.html');
-    createAccountsWindow();
-    return { opened: true };
   });
   ipcMain.handle('app:collapse', event => {
     assertLocalUi(event, 'index.html');
@@ -318,30 +282,36 @@ function registerIpc() {
     return true;
   });
 
-  ipcMain.handle('app:github-state', async event => {
-    assertAccountUi(event);
+  ipcMain.handle('app:github-state', event => {
+    assertLocalUi(event, 'index.html');
     return githubAuth.getState();
   });
   ipcMain.handle('app:github-set-client-id', (event, clientId) => {
-    assertAccountUi(event);
+    assertLocalUi(event, 'index.html');
     return githubAuth.setClientId(clientId);
   });
   ipcMain.handle('app:github-start-login', async event => {
-    assertAccountUi(event);
+    assertLocalUi(event, 'index.html');
     const result = await githubAuth.startLogin();
-    const safe = getSafeExternalUrl(result.verificationUrl);
-    if (safe) shell.openExternal(safe.href).catch(() => {});
+    const target = result.verificationUrlComplete || result.verificationUrl;
+    await openInBrowserAndYield(target);
     return result;
   });
   ipcMain.handle('app:github-poll-login', async event => {
-    assertAccountUi(event);
-    return githubAuth.pollLogin();
+    assertLocalUi(event, 'index.html');
+    const result = await githubAuth.pollLogin();
+    if (result.status === 'authenticated') bringMainWindowForward();
+    return result;
   });
   ipcMain.handle('app:github-logout', event => {
-    assertAccountUi(event);
+    assertLocalUi(event, 'index.html');
     const result = githubAuth.logout();
     if (repositoryBridge) repositoryBridge.stop().catch(() => {});
     return result;
+  });
+  ipcMain.handle('app:open-chatgpt', async event => {
+    assertLocalUi(event, 'index.html');
+    return openInBrowserAndYield('https://chatgpt.com/');
   });
 }
 

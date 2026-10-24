@@ -195,7 +195,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
   async function requestApi(input = {}) {
     const route = validateMailboxRequest(input);
     const token = getToken();
-    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using the repository mailbox.');
+    if (!token) throw new Error('Sign in with GitHub in the app's GitHub access section before using the repository mailbox.');
     const response = await fetchImpl(route.url, {
       method: route.method,
       headers: {
@@ -261,6 +261,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     return {
       userCode: String(data.user_code),
       verificationUrl: 'https://github.com/login/device',
+      verificationUrlComplete: typeof data.verification_uri_complete === 'string' ? data.verification_uri_complete : '',
       intervalSeconds: interval,
       expiresInSeconds: Math.max(60, Number(data.expires_in) || 900)
     };
@@ -394,7 +395,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Git operation must be fetch, pull, push, or clone.');
     }
     const token = getToken();
-    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using authenticated Git operations.');
+    if (!token) throw new Error('Sign in with GitHub in the app's GitHub access section before using authenticated Git operations.');
 
     const cwd = path.resolve(String(input.cwd || ''));
     if (!input.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
