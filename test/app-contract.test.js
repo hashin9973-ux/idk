@@ -79,6 +79,8 @@ test('desktop app runs the GitHub repository request/result bridge', () => {
   assert.ok(main.includes("require('./repository-bridge')"));
   assert.ok(main.includes('repositoryBridge = createRepositoryBridge('));
   assert.ok(main.includes('repositoryBridge.start()'));
+  assert.ok(main.includes('getWorkspaceGitHubRemotes'));
+  assert.ok(main.includes('getWorkspaceRepositories: getWorkspaceGitHubRemotes'));
   assert.ok(repositoryBridge.includes('.chatgpt-bridge'));
   assert.ok(repositoryBridge.includes('pending_publish'));
   assert.ok(repositoryBridge.includes('indeterminate'));
