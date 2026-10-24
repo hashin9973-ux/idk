@@ -144,9 +144,7 @@ test('local tool catalogue is exposed without duplicating ChatGPT GitHub access'
   }
   assert.ok(!bridge.includes("githubAuth.requestApi(args)"));
   assert.ok(!protocol.includes("'github_api'"));
-  assert.ok(!protocol.includes("'github_status'"));
   assert.ok(protocol.includes("case 'github': return { special: 'github_status' }"));
-  assert.ok(!bridge.includes('githubAuth.requestApi(args)'));
 });
 
 test('account login is isolated from the remote page and protects the GitHub token', () => {
@@ -159,7 +157,9 @@ test('account login is isolated from the remote page and protects the GitHub tok
   assert.ok(main.includes("safeStorage"));
   assert.ok(auth.includes('safeStorage.encryptString'));
   assert.ok(auth.includes('safeStorage.decryptString'));
-  assert.ok(auth.includes('BLOCKED_PATH_SEGMENTS'));
+  assert.ok(auth.includes('runGitOperation'));
+  assert.ok(auth.includes('GIT_CONFIG_VALUE_0'));
+  assert.ok(!auth.includes('requestApi(args)'));
   assert.ok(accountsHtml.includes('github-client-id'));
   assert.ok(accountsHtml.includes('local repository operations'));
   assert.ok(accountsHtml.includes('separate from ChatGPT\'s existing GitHub integration'));
@@ -167,5 +167,6 @@ test('account login is isolated from the remote page and protects the GitHub tok
   assert.ok(accountsHtml.includes('chatgpt-login'));
   assert.ok(accountsJs.includes('startGitHubLogin'));
   assert.ok(!auth.includes('localStorage'));
-  assert.ok(!auth.includes('process.env'));
+  assert.ok(auth.includes('GIT_TERMINAL_PROMPT'));
+  assert.ok(!auth.includes('github_api'));
 });
