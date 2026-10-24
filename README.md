@@ -59,6 +59,28 @@ Example:
 
 The worker validates the request, claims it, runs the requested local tool according to its approval policy, and writes the result to `bridge/results/<request_id>.json`. Read the result through the GitHub integration in the **same ChatGPT conversation**, then decide whether another request is needed. The app does not send that result to ChatGPT chat automatically.
 
+### Batch local operations
+
+Use `tool: "batch"` when several local operations can be planned in advance. One request produces one consolidated result, while the worker still validates each step and shows a separate native approval for every protected operation. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted.
+
+```json
+{
+  "protocol": "chatgpt-local-repo-bridge/v1",
+  "request_id": "req-20261025-inspect",
+  "created_at": "2026-10-25T10:00:00Z",
+  "tool": "batch",
+  "args": {
+    "steps": [
+      { "id": "status", "tool": "git_status", "args": {} },
+      { "id": "manifest", "tool": "read_file", "args": { "path": "package.json" } },
+      { "id": "copy", "tool": "write_file", "args": { "path": "package-copy.json", "content": { "$ref": "manifest.result.content" } } }
+    ]
+  }
+}
+```
+
+A reference must point to an earlier step, using `{"$ref":"stepId.result.content"}` to substitute that value into the next step's arguments. Use the current `bridge/context/capabilities.json` catalog for tool-specific parameter schemas. Batch results include each step's ID, tool, status, and output; large outputs are externalized by the same artifact mechanism.
+
 Use unique IDs containing letters, digits, underscores, or hyphens; the first character must be alphanumeric and the length must be 1–80 characters. Maximum request size is 1 MiB. Requests are immutable after publication.
 
 ### Useful mailbox paths
@@ -69,7 +91,7 @@ Use unique IDs containing letters, digits, underscores, or hyphens; the first ch
 | `bridge/results/<id>.json` | Actual result, status, and artifact manifest |
 | `bridge/claims/<id>.json` | Claim and recovery state; prevents blind replay after an uncertain crash |
 | `bridge/state/windows-app.json` | Worker heartbeat, pending count, active request ID, and error |
-| `bridge/context/latest.json` | Index of the last published environment snapshot |
+| `bridge/context/latest.json` | Index for the last published environment snapshot and paths to compact context and detail files |
 | `bridge/context/environment.json` | OS/runtime/machine context after redaction |
 | `bridge/context/project.json` | Workspace and detected project information |
 | `bridge/context/capabilities.json` | Available local tools and execution policy |
@@ -89,7 +111,7 @@ For a local file that you explicitly want to share, request the `upload_workspac
 
 ## Local tool catalogue
 
-**Workspace and files:** `get_capabilities`, `project_status`, `environment_info`, `list_dir`, `directory_tree`, `glob_file_search`, `read_file`, `file_info`, `search`, `discover_instructions`, `init`, `write_file`, `apply_patch`, `create_directory`, `move_path`, `delete_path`, `upload_workspace_file`.
+**Batch workflow:** `batch` (1–20 sequential calls, earlier-result references, per-operation approval).\n\n**Workspace and files:** `get_capabilities`, `project_status`, `environment_info`, `list_dir`, `directory_tree`, `glob_file_search`, `read_file`, `file_info`, `search`, `discover_instructions`, `init`, `write_file`, `apply_patch`, `create_directory`, `move_path`, `delete_path`, `upload_workspace_file`.
 
 **Git:** `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_changed_files`, `git_create_branch`, `git_switch_branch`, `git_commit`, `git_fetch`, `git_pull`, `git_push`, `git_clone`.
 
