@@ -28,6 +28,7 @@ test('the visible surface is a bounded native mirror, not the embedded ChatGPT p
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
   const mirror = read('desktop', 'conversation-mirror.js');
+  const bridge = read('desktop', 'tool-bridge.js');
   assert.ok(html.includes('ChatGPT Mirror'));
   assert.ok(html.includes('Active ChatGPT conversation mirror'));
   assert.ok(html.includes('Message ChatGPT in this conversation'));
