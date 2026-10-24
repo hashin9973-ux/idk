@@ -157,6 +157,7 @@ function createToolBridge(deps) {
       const maxBytes = 8 * 1024 * 1024;
       if (stat.size > maxBytes) throw new Error('File exceeds the 8 MiB upload limit.');
       const bytes = fs.readFileSync(target);
+      if (bytes.length > maxBytes) throw new Error('File exceeded the 8 MiB upload limit while being read.');
       return uploadWorkspaceFile(requestId, {
         path: path.relative(root, target).replace(/\\/g, '/'),
         artifactName: args.artifactName || path.basename(target),
