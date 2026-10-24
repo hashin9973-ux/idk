@@ -104,6 +104,22 @@ function getWorkspaceRoot() {
   return path.resolve(settings.workspaceRoot);
 }
 
+function hasBridgeBootstrap(conversationId, repository, branch) {
+  const contexts = settings.bridgeBootstrapContexts;
+  if (!contexts || typeof contexts !== 'object') return false;
+  return contexts[conversationId] === String(repository).toLowerCase() + '@' + String(branch || 'main');
+}
+
+function recordBridgeBootstrap(conversationId, repository, branch) {
+  if (!conversationId) return;
+  const contexts = settings.bridgeBootstrapContexts && typeof settings.bridgeBootstrapContexts === 'object'
+    ? settings.bridgeBootstrapContexts : {};
+  contexts[conversationId] = String(repository).toLowerCase() + '@' + String(branch || 'main');
+  const entries = Object.entries(contexts).slice(-500);
+  settings.bridgeBootstrapContexts = Object.fromEntries(entries);
+  persistSettings();
+}
+
 function getWorkspaceGitHubRemotes() {
   const output = execFileSync('git', ['remote', '-v'], {
     cwd: getWorkspaceRoot(),
@@ -661,7 +677,9 @@ if (!hasInstanceLock) {
       getWorkspaceRoot,
       selectWorkspace,
       localTools,
-      githubAuth
+      githubAuth,
+      hasBridgeBootstrap,
+      recordBridgeBootstrap
     });
     repositoryBridge = createRepositoryBridge({
       githubAuth,
