@@ -1,4 +1,4 @@
-name: Build and publish ChatGPT Assistant for Windows
+name: Build and package Windows Repository Bridge
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: chatgpt-assistant-windows-${{ github.ref }}
+  group: windows-repository-bridge-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ChatGPT-Assistant-Windows-${{ github.run_number }}
+          name: Windows-Repository-Bridge-${{ github.run_number }}
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 14
@@ -53,7 +53,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: win-build-${{ github.run_number }}-${{ github.run_attempt }}
-          name: ChatGPT Assistant Windows build ${{ github.run_number }}
+          name: Windows Repository Bridge build ${{ github.run_number }}
           body: |
             Automatically built from commit ${{ github.sha }}.
 
