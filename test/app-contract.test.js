@@ -138,3 +138,13 @@ test('environment snapshots and result artifacts stay in the repository channel'
   assert.match(readme, /Read the result through the GitHub integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
 });
+
+test('manual smoke-test documentation covers local execution and artifact retrieval', () => {
+  const guide = read('docs', 'manual-smoke-test.md');
+  assert.match(guide, /private repo and dedicated branch/i);
+  assert.match(guide, /read-only request produces a result/i);
+  assert.match(guide, /large text is externalized and retrievable/i);
+  assert.match(guide, /declined write remains unexecuted/i);
+  assert.match(guide, /file upload requires a local approval/i);
+  assert.match(guide, /no output is inserted into the ChatGPT conversation/i);
+});
