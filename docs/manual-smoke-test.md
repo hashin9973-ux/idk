@@ -25,7 +25,7 @@ Expected outcome: the worker reports running, the mailbox has a heartbeat, and t
 
 ## 2. Test a read-only request through the existing ChatGPT conversation
 
-In the same ChatGPT conversation that has access to the GitHub integration, create a new file on `bridge-mailbox` at `bridge/requests/req-smoke-project-status-001.json`:
+In the same ChatGPT conversation that has access to the GitHub integration, create a new file on `bridge-mailbox` at `bridge/requests/req-smoke-project-status-001.json`. If you have run this test before, replace the example ID with a fresh unique ID in both the filename and `request_id`:
 
 ```json
 {
@@ -60,10 +60,10 @@ Expected outcome: the inline result is a preview, while the complete tool output
 
 Use only harmless disposable files.
 
-1. Submit a `write_file` request targeting a new file in the disposable workspace.
+1. Submit a `write_file` request targeting a new file in the disposable workspace. For example, use `tool: "write_file"` and `args: {"path":"approval-test.txt","content":"should-not-exist"}`.
 2. When the native Windows approval dialog appears, choose **Cancel**.
 3. Read the result and verify it is marked `cancelled`; confirm the file was not created.
-4. Submit an `upload_workspace_file` request for the harmless test file.
+4. Submit an `upload_workspace_file` request for the harmless test file, for example `tool: "upload_workspace_file"` with `args: {"path":"harmless.txt","artifactName":"uploaded-harmless.txt"}`.
 5. Verify the native approval dialog appears before the file is read/uploaded. Approve once.
 6. Read the result. Verify `bridge/artifacts/<request_id>/<filename>`, byte size, SHA-256, and GitHub URL are present. Retrieve the artifact and compare bytes.
 
