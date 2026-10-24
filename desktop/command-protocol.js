@@ -20,6 +20,10 @@ const HELP = [
   '/mkdir <path> — create a directory; /mv <source> <destination> — move a file or directory',
   '/rm <path> — delete a file or an empty directory; /branch <name> — create a branch',
   '/switch <name> — switch branch; /commit <message> — commit staged changes or selected paths',
+  '/fetch [remote] — fetch from a GitHub remote using the app-side credential (approval required)',
+  '/pull [remote] [branch] — fast-forward the current branch from GitHub (approval required)',
+  '/push [remote] [branch] — push the current commit to GitHub (approval required)',
+  '/clone <owner/repository> <path> [branch] — clone into the selected workspace (approval required),
   '/test [command] — run the detected tests or an explicit test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
   '/github — show the app-side GitHub sign-in status (not a ChatGPT tool)',
@@ -80,6 +84,12 @@ function parseSlashCommand(text) {
     case 'branch': return words.length === 1 ? { tool: 'git_create_branch', args: { name: words[0] } } : need('/branch <name>');
     case 'switch': return words.length === 1 ? { tool: 'git_switch_branch', args: { name: words[0] } } : need('/switch <name>');
     case 'commit': return rest ? { tool: 'git_commit', args: { message: rest } } : need('/commit <message>');
+    case 'fetch': return words.length <= 1 ? { tool: 'git_fetch', args: { remote: words[0] || 'origin' } } : need('/fetch [remote]');
+    case 'pull': return words.length <= 2 ? { tool: 'git_pull', args: { ...(words[0] ? { remote: words[0] } : {}), ...(words[1] ? { branch: words[1] } : {}) } } : need('/pull [remote] [branch]');
+    case 'push': return words.length <= 2 ? { tool: 'git_push', args: { ...(words[0] ? { remote: words[0] } : {}), ...(words[1] ? { branch: words[1] } : {}) } } : need('/push [remote] [branch]');
+    case 'clone': return words.length >= 2 && words.length <= 3
+      ? { tool: 'git_clone', args: { repository: words[0], path: words[1], ...(words[2] ? { branch: words[2] } : {}) } }
+      : need('/clone <owner/repository> <path> [branch]');
     case 'test': case 'tests': return { tool: 'run_tests', args: rest ? { command: rest } : {} };
     case 'exec': return rest ? { tool: 'shell', args: { command: rest } } : need('/exec <PowerShell command>');
     case 'github': return { special: 'github_status' };
