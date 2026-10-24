@@ -497,8 +497,8 @@ test('environment refresh publishes a compact context index and keeps instructio
 });
 
 
-test('oversized structured results remain retrievable through a full-result JSON artifact', async () => {
-  const entries = Array.from({ length: 220 }, (_, index) => ({
+test('oversized structured results are split into retrievable artifact parts', async () => {
+  const entries = Array.from({ length: 600 }, (_, index) => ({
     id: index,
     detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
   }));
@@ -522,13 +522,26 @@ test('oversized structured results remain retrievable through a full-result JSON
     await bridge.start();
     const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
     assert.equal(result.status, 'completed');
-    assert.equal(result.artifacts.length, 1);
-    assert.equal(result.artifacts[0].kind, 'structured_result');
-    const stored = fake.files.get(result.artifacts[0].path);
-    assert.ok(stored);
-    const full = JSON.parse(Buffer.from(stored.content, 'base64').toString('utf8'));
+    assert.ok(result.artifacts.length > 1);
+    assert.ok(result.artifacts.every(item => item.kind === 'structured_result_part'));
+    assert.deepEqual(
+      result.artifacts.map(item => item.part).sort((a, b) => a - b),
+      Array.from({ length: result.artifacts.length }, (_, index) => index + 1)
+    );
+    const fullText = result.artifacts
+      .slice()
+      .sort((a, b) => a.part - b.part)
+      .map(item => {
+        const stored = fake.files.get(item.path);
+        assert.ok(stored, 'every result part must be retrievable');
+        assert.equal(Buffer.byteLength(Buffer.from(stored.content, 'base64')), item.bytes);
+        return Buffer.from(stored.content, 'base64').toString('utf8');
+      })
+      .join('');
+    const full = JSON.parse(fullText);
     assert.equal(full.result.result.entries.length, entries.length);
-    assert.equal(full.result.result.entries[219].detail, entries[219].detail);
+    assert.equal(full.result.result.entries[599].detail, entries[599].detail);
+    assert.equal(Buffer.byteLength(fullText, 'utf8'), result.result.bytes);
   } finally {
     await bridge.stop();
   }
