@@ -700,10 +700,12 @@ function createRepositoryBridge(deps) {
       const originalStatus = safeReport && safeReport.ok
         ? (artifactErrors.length ? 'partial' : 'completed')
         : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
+      let failedArtifactPath = 'bridge/artifacts/' + requestId + '/full-result-' + fullResultHash.slice(0, 12);
       try {
         for (let index = 0; index < chunks.length; index++) {
           const artifactPath = 'bridge/artifacts/' + requestId + '/full-result-' +
             fullResultHash.slice(0, 12) + '-part-' + String(index + 1).padStart(3, '0') + '.txt';
+          failedArtifactPath = artifactPath;
           const stored = await writeRemoteContent(
             artifactPath,
             chunks[index],
@@ -741,7 +743,7 @@ function createRepositoryBridge(deps) {
         };
       } catch (error) {
         artifactErrors.push({
-          path: 'bridge/artifacts/' + requestId + '/full-result-' + fullResultHash.slice(0, 12),
+          path: failedArtifactPath,
           message: cleanError(error.message)
         });
         const failedStatus = safeReport && safeReport.ok
@@ -755,8 +757,9 @@ function createRepositoryBridge(deps) {
           created_at: remote.value.created_at,
           completed_at: resultRecord.completed_at,
           error: 'The structured result exceeded the inline mailbox limit and not all structured-result artifact parts could be published.',
-          artifacts: structuredArtifacts,
-          artifacts_total: structuredArtifacts.length,
+          artifacts: [...artifactManifest, ...structuredArtifacts].slice(0, 100),
+          artifacts_total: artifactManifest.length + structuredArtifacts.length,
+          artifacts_truncated: artifactManifest.length + structuredArtifacts.length > 100,
           artifact_errors: artifactErrors.slice(0, 10),
           artifact_errors_total: artifactErrors.length
         };
