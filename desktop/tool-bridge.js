@@ -157,7 +157,7 @@ function createToolBridge(deps) {
     return githubAuth.runGitOperation(call);
   }
 
-  async function runTool(tool, inputArgs, callId = null, runOptions = {}) {
+  async function runTool(tool, inputArgs, callId = null) {
     const root = getWorkspaceRoot();
     const args = { ...(inputArgs || {}) };
     const id = callId || randomUUID();
