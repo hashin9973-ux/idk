@@ -81,7 +81,7 @@ npm start
 
 Open **Accounts**, then configure the GitHub OAuth App client ID (with Device Flow enabled), sign in, and set the bridge repository and branch. The OAuth grant requests `repo` and `read:user`; review and grant permissions on GitHub itself. The token is encrypted using Electron's Windows-backed `safeStorage`.
 
-The Accounts window displays the poller status. An idle status means that the app is connected and waiting for a request. For development use, enable the bridge instructions in the current ChatGPT conversation with `/tools`; this sends a normal message into that thread explaining the request/result protocol. This activation step is still manual in the current branch and should be automated before calling the workflow seamless.
+The Accounts window displays the poller status. An idle status means that the app is connected and waiting for a request. After GitHub authentication and repository configuration are saved, the app automatically adds one bridge-context message to an idle active ChatGPT conversation. This supplies the model with the request/result protocol without requiring `/tools` on every thread. The message is part of the conversation history; the app cannot install a real system prompt or register a native ChatGPT tool. Use `/tools` only to re-send the instructions if setup failed or the repository/branch changed.
 
 ## Familiar local commands
 
