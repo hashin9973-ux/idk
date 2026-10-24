@@ -462,7 +462,11 @@ function registerIpc() {
   ipcMain.handle('overlay:github-poll-login', async (event) => {
     assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
-    return githubAuth.pollLogin();
+    const result = await githubAuth.pollLogin();
+    if (result.status === 'authenticated' && toolBridge) {
+      setTimeout(() => toolBridge.initializeCurrentConversation().catch(() => {}), 500);
+    }
+    return result;
   });
   ipcMain.handle('overlay:github-logout', (event) => {
     assertAccountUi(event);
@@ -476,6 +480,7 @@ function registerIpc() {
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
     const saved = githubAuth.setBridgeConfig(config);
     if (repositoryBridge) repositoryBridge.pollOnce().catch(() => {});
+    if (toolBridge) setTimeout(() => toolBridge.initializeCurrentConversation().catch(() => {}), 500);
     return saved;
   });
   ipcMain.handle('overlay:repository-bridge-status', (event) => {
