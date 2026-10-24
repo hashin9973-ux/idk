@@ -138,6 +138,7 @@ function createRepositoryBridge(deps) {
   let running = false;
   let timer = null;
   let pollInFlight = false;
+  let pollPromise = null;
   let activeRequestId = null;
   let lastPollAt = null;
   let lastError = '';
@@ -483,6 +484,7 @@ function createRepositoryBridge(deps) {
   async function pollOnce() {
     if (pollInFlight || !running) return;
     pollInFlight = true;
+    const task = (async () => {
     try {
       const [files, resultFiles] = await Promise.all([
         listFolder('bridge/requests'),
@@ -523,8 +525,12 @@ function createRepositoryBridge(deps) {
       announce();
     } finally {
       pollInFlight = false;
+      pollPromise = null;
       announce();
     }
+    })();
+    pollPromise = task;
+    return task;
   }
 
   function scheduleNextPoll() {
@@ -561,6 +567,10 @@ function createRepositoryBridge(deps) {
     running = false;
     clearTimeout(timer);
     timer = null;
+    const activePoll = pollPromise;
+    if (activePoll) {
+      try { await activePoll; } catch {}
+    }
     announce();
     try { await publishState(true); } catch {}
     return stateSnapshot();
