@@ -58,6 +58,8 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /chatgpt\.com\/auth\/login\//);
   assert.match(main, /startGitHubCliLogin/);
   assert.match(main, /githubAuth\.importToken/);
+  assert.match(main, /stdio: \['pipe', 'pipe', 'pipe'\]/);
+  assert.match(main, /login\.child\.stdin\.end\('\n'\)/);
   assert.match(main, /repositoryBridge\.stop\(\)/);
   assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|WebContentsView|conversation-mirror|installChatToolBridge/);
 });
