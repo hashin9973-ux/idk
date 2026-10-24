@@ -289,6 +289,16 @@ function createRepositoryBridge(deps) {
       return { acquired: false, recovered: true };
     }
     if (prior && ['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
+      const missingResult = await readRemoteFile('bridge/results/' + requestId + '.json');
+      if (!missingResult) {
+        await publishResult(requestId, {
+          protocol: RESULT_PROTOCOL,
+          request_id: requestId,
+          status: 'needs_manual_recovery',
+          completed_at: new Date().toISOString(),
+          error: 'The claim is terminal but its result file is missing. The local operation was not replayed; inspect the workspace before retrying with a new request ID.'
+        });
+      }
       return { acquired: false, terminal: true };
     }
     if (prior && prior.value.status === 'result_pending' && prior.value.result) {
@@ -391,7 +401,7 @@ function createRepositoryBridge(deps) {
 
     let report;
     try {
-      report = await executeTool(request.tool, request.args, requestId, { deliverToChat: false, publishToRepository: true });
+      report = await executeTool(request.tool, request.args, requestId);
     } catch (error) {
       report = { ok: false, error: cleanError(error.message), tool: request.tool, call_id: requestId };
     }
@@ -475,10 +485,11 @@ function createRepositoryBridge(deps) {
         .filter(name => name.endsWith('.json')));
       const pending = sorted.filter(filename => !completedIds.has(filename));
       pendingCount = pending.length;
+      const firstPoll = !lastPollAt;
       lastPollAt = new Date().toISOString();
       lastError = '';
       announce();
-      await publishState(false);
+      await publishState(firstPoll);
       for (const filename of pending) {
         if (!running) break;
         await processRequest(filename);
