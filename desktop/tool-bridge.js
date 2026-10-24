@@ -38,6 +38,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
+  batch: ['steps', 'stopOnError'],
   github_status: [],
   github_api: ['method', 'path', 'body', 'query']
 });
@@ -46,6 +47,79 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
 const MAX_RESULT_CHARS = 4 * 1024 * 1024;
 const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clone']);
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
+
+const TOOL_DESCRIPTIONS = Object.freeze({
+  get_capabilities: 'Return the local tool catalog, parameter schemas, permission modes and workspace capabilities.',
+  project_status: 'Summarize project type, repository status and top-level files.',
+  environment_info: 'Describe the Windows runtime, shell and relevant development environment.',
+  list_dir: 'List entries in a workspace-relative directory.',
+  directory_tree: 'Return a bounded directory tree for the selected workspace.',
+  glob_file_search: 'Find workspace files by glob pattern.',
+  read_file: 'Read a UTF-8 text file or a bounded line range.',
+  file_info: 'Return metadata and hashes for a workspace file.',
+  search: 'Search workspace text files for a literal string or regular expression.',
+  git_status: 'Return the current Git branch and working-tree status.',
+  git_diff: 'Return a Git diff, optionally restricted to relative paths.',
+  git_log: 'Inspect recent Git history.',
+  git_show: 'Inspect a Git commit or object.',
+  git_branches: 'List local Git branches.',
+  git_changed_files: 'List changed workspace files.',
+  discover_instructions: 'Find applicable project instruction files without assuming their contents.',
+  init: 'Create a starter AGENTS.md if none exists; requires approval.',
+  write_file: 'Create or replace a UTF-8 file inside the selected workspace.',
+  apply_patch: 'Apply a focused patch to workspace files.',
+  create_directory: 'Create a workspace-relative directory.',
+  move_path: 'Move or rename a workspace-relative path.',
+  delete_path: 'Delete a workspace-relative file or directory.',
+  git_create_branch: 'Create a Git branch; requires approval.',
+  git_switch_branch: 'Switch Git branches; requires approval.',
+  git_commit: 'Create a Git commit; requires approval.',
+  git_fetch: 'Fetch a Git remote using the app GitHub credential; requires approval.',
+  git_pull: 'Pull from a Git remote using the app GitHub credential; requires approval.',
+  git_push: 'Push to a Git remote using the app GitHub credential; requires approval.',
+  git_clone: 'Clone a repository into the selected workspace; requires approval.',
+  shell: 'Run a PowerShell command as the signed-in Windows user; requires approval and is not sandboxed.',
+  run_tests: 'Run a project-native test command; requires approval.',
+  update_plan: 'Maintain a short local task plan.',
+  upload_workspace_file: 'Publish an explicitly approved workspace file as a retrievable repository artifact.',
+  refresh_environment_context: 'Refresh the shared compact environment context and detailed snapshots.',
+  batch: 'Execute 1–20 local tool calls sequentially in one mailbox request. Supports references to earlier step results.'
+});
+const REQUIRED_ARGUMENTS = Object.freeze({
+  read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
+  apply_patch: ['patch'], create_directory: ['path'], move_path: ['source', 'destination'],
+  delete_path: ['path'], git_create_branch: ['name'], git_switch_branch: ['name'],
+  git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
+  upload_workspace_file: ['path'], batch: ['steps']
+});
+const STRING_ARGUMENTS = new Set(['path','pattern','query','ref','message','content','patch','name','source','destination','remote','branch','repository','artifactName','command']);
+const INTEGER_ARGUMENTS = new Set(['maxDepth','maxEntries','startLine','endLine','maxResults','contextLines','maxCount','timeoutMs']);
+const BOOLEAN_ARGUMENTS = new Set(['recursive','staged','regex','caseSensitive','stopOnError']);
+const ARRAY_ARGUMENTS = new Set(['paths','items','steps']);
+function argumentType(tool, name) {
+  if (name === 'args' || name === 'body' || (name === 'query' && tool === 'github_api')) return 'object';
+  if (ARRAY_ARGUMENTS.has(name)) return 'array';
+  if (INTEGER_ARGUMENTS.has(name)) return 'integer';
+  if (BOOLEAN_ARGUMENTS.has(name)) return 'boolean';
+  if (STRING_ARGUMENTS.has(name)) return 'string';
+  return 'object';
+}
+function parameterSchema(tool) {
+  const names = (TOOL_ARGUMENT_KEYS[tool] || []).filter(name => name !== 'approved');
+  const properties = {};
+  for (const name of names) {
+    const type = argumentType(tool, name);
+    properties[name] = { type, description: name + ' parameter for ' + tool + '.' };
+    if (type === 'array') properties[name].items = name === 'steps' ? { type: 'object' } : { type: 'string' };
+  }
+  if (tool === 'batch') {
+    properties.steps = { type: 'array', minItems: 1, maxItems: 20, description: 'Ordered tool steps. Use {"$ref":"stepId.result.content"} to insert an earlier step output into an argument.', items: {
+      type: 'object', properties: { id: { type: 'string' }, tool: { type: 'string' }, args: { type: 'object', additionalProperties: true } },
+      required: ['id','tool','args'], additionalProperties: false
+    }};
+  }
+  return { type: 'object', properties, required: REQUIRED_ARGUMENTS[tool] || [], additionalProperties: false };
+}
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
@@ -64,6 +138,55 @@ function createToolBridge(deps) {
     if (!isPlainObject(args)) throw new Error('Tool args must be a JSON object.');
     const extra = Object.keys(args).filter(key => !allowed.includes(key));
     if (extra.length) throw new Error('Unsupported argument field(s) for ' + tool + ': ' + extra.join(', '));
+    if (tool === 'batch') validateBatchArgs(args);
+  }
+
+  function validateBatchArgs(args) {
+    if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > 20) {
+      throw new Error('batch.steps must contain between 1 and 20 tool steps.');
+    }
+    if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') {
+      throw new Error('batch.stopOnError must be a boolean.');
+    }
+    const ids = new Set();
+    for (const [index, step] of args.steps.entries()) {
+      if (!isPlainObject(step)) throw new Error('batch step ' + (index + 1) + ' must be an object.');
+      if (Object.keys(step).some(key => !['id','tool','args'].includes(key))) throw new Error('batch step contains unsupported fields.');
+      if (typeof step.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$/.test(step.id)) throw new Error('batch step IDs must be 1–20 simple characters.');
+      if (ids.has(step.id)) throw new Error('duplicate batch step ID: ' + step.id);
+      ids.add(step.id);
+      if (typeof step.tool !== 'string' || step.tool === 'batch' || step.tool === 'refresh_environment_context' || BLOCKED_TOOLS_FOR_MAILBOX.has(step.tool)) {
+        throw new Error('batch step ' + step.id + ' uses an unsupported or non-nestable tool.');
+      }
+      if (!isPlainObject(step.args)) throw new Error('batch step ' + step.id + ' args must be an object.');
+      if (Object.hasOwn(step.args, 'approved')) throw new Error('batch steps cannot bypass local approval with an approved argument.');
+      validateArgs(step.tool, step.args);
+    }
+  }
+
+  function resolveBatchRefs(value, completed, depth = 0) {
+    if (depth > 30) throw new Error('batch reference nesting is too deep.');
+    if (Array.isArray(value)) return value.map(item => resolveBatchRefs(item, completed, depth + 1));
+    if (!isPlainObject(value)) return value;
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === '$ref') {
+      if (typeof value.$ref !== 'string' || !value.$ref.length || value.$ref.length > 500) throw new Error('batch $ref must be a non-empty path string.');
+      const parts = value.$ref.split('.');
+      const stepId = parts.shift();
+      if (!stepId || !completed.has(stepId)) throw new Error('batch reference must point to a completed earlier step: ' + value.$ref);
+      let current = completed.get(stepId);
+      for (const part of parts) {
+        if (!part || ['__proto__','prototype','constructor'].includes(part)) throw new Error('unsafe batch reference path.');
+        if (Array.isArray(current) && /^\d+$/.test(part)) current = current[Number(part)];
+        else if (isPlainObject(current) && Object.hasOwn(current, part)) current = current[part];
+        else throw new Error('batch reference path not found: ' + value.$ref);
+      }
+      if (current === undefined) throw new Error('batch reference resolved to undefined: ' + value.$ref);
+      return current;
+    }
+    const output = {};
+    for (const [key, item] of Object.entries(value)) output[key] = resolveBatchRefs(item, completed, depth + 1);
+    return output;
   }
 
   function displayApprovalValue(value, maxChars = 4000) {
@@ -188,9 +311,20 @@ function createToolBridge(deps) {
       const output = await localTools.executeTool(root, tool, args);
       if (output && Array.isArray(output.tools)) {
         output.tools.push(
-          { name: 'upload_workspace_file', mode: 'approval-required', args: ['path', 'artifactName'] },
-          { name: 'refresh_environment_context', mode: 'repository-bridge-control', args: [] }
+          { name: 'batch', mode: 'local-batch' },
+          { name: 'upload_workspace_file', mode: 'approval-required' },
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
         );
+        output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
+          ...item,
+          description: TOOL_DESCRIPTIONS[item.name] || ('Run the ' + item.name + ' workspace tool.'),
+          parameters: parameterSchema(item.name)
+        }));
+        output.tool_calling = {
+          mode: 'repository-mailbox-batch',
+          rule: 'Submit multiple steps in one batch request; each step is independently validated and approval-gated.',
+          reference_syntax: '{"$ref":"priorStepId.result.content"}'
+        };
       }
       return output;
     }
@@ -216,6 +350,39 @@ function createToolBridge(deps) {
     return githubAuth.runGitOperation(call);
   }
 
+
+  async function executeBatch(args, parentId) {
+    const completed = new Map();
+    const steps = [];
+    let failed = false;
+    let stoppedAt = null;
+    for (const step of args.steps) {
+      let outcome;
+      try {
+        const resolvedArgs = resolveBatchRefs(step.args, completed);
+        const childId = (String(parentId).slice(0, 55) || 'batch') + '-' + step.id;
+        outcome = await runTool(step.tool, resolvedArgs, childId);
+      } catch (error) {
+        outcome = { ok: false, error: String(error && error.message || error) };
+      }
+      completed.set(step.id, outcome);
+      const item = { id: step.id, tool: step.tool, ok: outcome.ok === true };
+      if (outcome.cancelled) item.cancelled = true;
+      if (outcome.error) item.error = outcome.error;
+      if (outcome.message && !outcome.ok) item.message = outcome.message;
+      if (outcome.ok) item.result = outcome.result;
+      steps.push(item);
+      if (!outcome.ok) {
+        failed = true;
+        if (args.stopOnError !== false) { stoppedAt = step.id; break; }
+      }
+    }
+    return {
+      ok: !failed,
+      result: { steps, completed_steps: steps.length, requested_steps: args.steps.length, stopped_at: stoppedAt }
+    };
+  }
+
   async function runTool(tool, inputArgs, callId = null) {
     const root = getWorkspaceRoot();
     const args = { ...(inputArgs || {}) };
@@ -223,28 +390,32 @@ function createToolBridge(deps) {
     let result;
     try {
       validateArgs(tool, args);
-      const policy = tool === 'upload_workspace_file'
-        ? { tool, requiresApproval: true, automatic: false }
-        : localTools.getToolPolicy(tool, args);
-      if (policy.requiresApproval) {
-        const approved = await askApproval(tool, args, root);
-        if (!approved) {
-          result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
+      if (tool === 'batch') {
+        result = await executeBatch(args, id);
+      } else {
+        const policy = tool === 'upload_workspace_file'
+          ? { tool, requiresApproval: true, automatic: false }
+          : localTools.getToolPolicy(tool, args);
+        if (policy.requiresApproval) {
+          const approved = await askApproval(tool, args, root);
+          if (!approved) {
+            result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
+          } else {
+            if (policy.sensitivePath || tool === 'read_file') args.approved = true;
+            const output = await executeLocalTool(root, tool, args, id);
+            if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
+              result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
+            } else {
+              result = { ok: true, result: output };
+            }
+          }
         } else {
-          if (policy.sensitivePath || tool === 'read_file') args.approved = true;
           const output = await executeLocalTool(root, tool, args, id);
           if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
             result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
           } else {
             result = { ok: true, result: output };
           }
-        }
-      } else {
-        const output = await executeLocalTool(root, tool, args, id);
-        if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
-          result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
-        } else {
-          result = { ok: true, result: output };
         }
       }
     } catch (error) {
