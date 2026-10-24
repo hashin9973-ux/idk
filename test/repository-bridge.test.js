@@ -336,6 +336,43 @@ test('public repositories require explicit opt-in before the worker can start', 
   assert.equal(fake.calls.some(call => call.method === 'PUT'), false);
 });
 
+test('graceful stop waits for the active operation and publishes its result', async () => {
+  const request = {
+    protocol: PROTOCOL, request_id: 'req-graceful-stop',
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/req-graceful-stop.json', request]] });
+  const fixture = settingsFixture();
+  let releaseExecution;
+  let markExecutionStarted;
+  const executionStarted = new Promise(resolve => { markExecutionStarted = resolve; });
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => {
+      markExecutionStarted();
+      return new Promise(resolve => { releaseExecution = resolve; });
+    },
+    intervalMs: 5000
+  });
+
+  const startPromise = bridge.start();
+  await executionStarted;
+  let stopResolved = false;
+  const stopPromise = bridge.stop().then(state => {
+    stopResolved = true;
+    return state;
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stopResolved, false, 'stop should wait while the tool is still running');
+  releaseExecution({ ok: true, result: 'finished before shutdown' });
+  const [startState, stopState] = await Promise.all([startPromise, stopPromise]);
+  assert.equal(startState.running, false);
+  assert.equal(stopState.running, false);
+  assert.equal(decode(fake.files.get('bridge/results/req-graceful-stop.json')).status, 'completed');
+  assert.equal(decode(fake.files.get('bridge/state/windows-app.json')).status, 'stopped');
+});
+
 test('a started worker can be stopped cleanly', async () => {
   const fake = fakeGitHub();
   const fixture = settingsFixture(true);
