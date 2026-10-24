@@ -257,8 +257,7 @@ function createRepositoryBridge(deps) {
       pending_count: pendingCount,
       last_poll_at: lastPollAt,
       last_error: lastError || null,
-      workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
-      workspace_name: getWorkspaceRoot ? require('node:path').basename(getWorkspaceRoot()) : null
+      workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot())
     };
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
     try {
@@ -285,6 +284,19 @@ function createRepositoryBridge(deps) {
         status: 'needs_manual_recovery',
         completed_at: new Date().toISOString(),
         error: 'The request claim file is corrupt. The app refused to execute this request again; inspect the workspace and claim file manually.'
+      });
+      return { acquired: false, recovered: true };
+    }
+    if (prior && (!isPlainObject(prior.value) ||
+        prior.value.protocol !== 'chatgpt-local-repo-claim/v1' ||
+        prior.value.request_id !== requestId ||
+        !['processing', 'result_pending', 'completed', 'needs_manual_recovery'].includes(prior.value.status))) {
+      await publishResult(requestId, {
+        protocol: RESULT_PROTOCOL,
+        request_id: requestId,
+        status: 'needs_manual_recovery',
+        completed_at: new Date().toISOString(),
+        error: 'The existing claim file is malformed or has an unknown state. The local operation was not replayed; inspect the workspace and claim file before retrying.'
       });
       return { acquired: false, recovered: true };
     }
@@ -492,7 +504,12 @@ function createRepositoryBridge(deps) {
       await publishState(firstPoll);
       for (const filename of pending) {
         if (!running) break;
-        await processRequest(filename);
+        try {
+          await processRequest(filename);
+        } catch (error) {
+          lastError = 'Could not process request ' + filename.slice(0, -5) + ': ' + cleanError(error.message);
+          announce();
+        }
       }
       if (pending.length) {
         const finalResults = await listFolder('bridge/results');
