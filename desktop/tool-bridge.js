@@ -57,15 +57,14 @@ const CODING_MODE_MESSAGE = [
 
 const BRIDGE_CONTEXT_MARKER = 'CHATGPT_ASSISTANT_LOCAL_TOOLS_CONTEXT_V1';
 
-function buildBridgeContextMessage(config = {}) {
-  const workspaceRoot = String(config.workspaceRoot || '');
+function buildBridgeContextMessage() {
   return [
     '[' + BRIDGE_CONTEXT_MARKER + ']',
     'This is one-time local-tool setup context added by the ChatGPT Assistant desktop app to this existing conversation. It is not a request to acknowledge the setup.',
     '',
     CODING_MODE_MESSAGE,
     '',
-    'Current selected Windows workspace: ' + workspaceRoot,
+    'The selected Windows workspace is maintained privately by the desktop app. Use workspace-relative paths; do not ask for or repeat an absolute local path unless it is specifically needed.',
     'If the most recent user task is unfinished local development work, continue that task using direct assistant_tool blocks without asking the user to repeat it. If no such task is pending, apply these instructions to future development requests and do not produce a setup acknowledgement.'
   ].join('\n');
 }
@@ -323,7 +322,7 @@ function createToolBridge(deps) {
       const users = Array.from(document.querySelectorAll('[data-message-author-role="user"]'));
       const hasInstructions = users.some(node => {
         const text = String(node.innerText || node.textContent || '');
-        return text.includes('CONTEXT_MARKER_VALUE') && text.includes('WORKSPACE_ROOT_VALUE');
+        return text.includes('CONTEXT_MARKER_VALUE') && text.includes('assistant_tool');
       });
       const generating = Boolean(document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"], button[aria-label="Stop generating response"]'));
       const editor = document.querySelector('#prompt-textarea, [data-testid="prompt-textarea"], form [contenteditable="true"], textarea');
@@ -377,7 +376,7 @@ function createToolBridge(deps) {
     }
     if (parsed.special === 'coding_mode') {
       const workspaceRoot = getWorkspaceRoot();
-      await returnMessageToChat('Local development tools for this conversation:\n\n' + buildBridgeContextMessage({ workspaceRoot }));
+      await returnMessageToChat('Local development tools for this conversation:\n\n' + buildBridgeContextMessage());
       return;
     }
     if (parsed.special === 'github_status') {
