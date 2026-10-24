@@ -412,7 +412,7 @@ if (!hasInstanceLock) {
   });
 
   app.whenReady().then(() => {
-    app.setAppUserModelId('com.hashin997ux.chatgptassistant');
+    app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
     settings = loadSettings();
     ensureWorkspaceRoot();
 
