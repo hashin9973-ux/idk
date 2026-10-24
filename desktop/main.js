@@ -191,7 +191,7 @@ function ensureWorkspaceRoot() {
 
 function selectWorkspace() {
   return dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
-    title: 'Choose the local workspace ChatGPT can work with',
+    title: 'Choose the sandbox folder ChatGPT may modify and delete files inside',
     defaultPath: fs.existsSync(getWorkspaceRoot()) ? getWorkspaceRoot() : app.getPath('documents'),
     properties: ['openDirectory', 'createDirectory']
   }).then(result => {
