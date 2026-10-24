@@ -68,8 +68,133 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) throw new Error('GitHub response exceeded the 1 MiB limit.');
     let value;
     try { value = text ? JSON.parse(text) : {}; } catch { throw new Error('GitHub returned an unexpected non-JSON response.'); }
-    if (!response.ok) throw new Error(cleanError(value.message || value.error_description || value.error || response.statusText));
+    if (!response.ok) {
+      const message = cleanError(value.message || value.error_description || value.error || response.statusText);
+      throw new Error('GitHub HTTP ' + response.status + ': ' + message);
+    }
     return value;
+  }
+
+  function validateMailboxRequest(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('Repository API request must be an object.');
+    }
+    const method = String(input.method || 'GET').toUpperCase();
+    const pathValue = input.path;
+    if (!['GET', 'PUT'].includes(method)) throw new Error('The repository bridge only permits GitHub GET and PUT requests.');
+    if (typeof pathValue !== 'string' || !pathValue.startsWith('/') || pathValue.includes('\\') ||
+        pathValue.includes('%') || pathValue.includes('?') || pathValue.includes('#')) {
+      throw new Error('Invalid GitHub repository API path.');
+    }
+    const rootSettings = getSettings() || {};
+    const bridge = rootSettings.repositoryBridge || {};
+    const owner = String(bridge.owner || '').trim();
+    const repository = String(bridge.repo || '').trim();
+    const branch = validateBranch(bridge.branch || 'bridge-mailbox');
+    const namePattern = /^[A-Za-z0-9_.-]{1,100}$/;
+    if (!namePattern.test(owner) || owner === '.' || owner === '..' ||
+        !namePattern.test(repository) || repository === '.' || repository === '..') {
+      throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
+    }
+    const base = '/repos/' + owner + '/' + repository;
+    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state']);
+    let relative = '';
+    let kind = '';
+
+    if (pathValue === base) {
+      if (method !== 'GET' || input.body !== undefined || input.query !== undefined) {
+        throw new Error('Only repository metadata GET is allowed at this endpoint.');
+      }
+      return { method, path: base, query: undefined, body: undefined, url: 'https://api.github.com' + base };
+    }
+
+    const prefix = base + '/contents/';
+    if (!pathValue.startsWith(prefix)) throw new Error('GitHub route is outside the configured repository mailbox.');
+    relative = pathValue.slice(prefix.length);
+    const parts = relative.split('/');
+    if (parts.some(part => !part || part === '.' || part === '..' || !/^[A-Za-z0-9_.-]+$/.test(part))) {
+      throw new Error('Invalid repository mailbox path segment.');
+    }
+    if (relative === 'bridge/README.md') {
+      kind = 'documentation';
+    } else if (parts.length === 2 && allowedFolders.has(relative)) {
+      kind = 'directory';
+    } else if (parts.length === 3 && allowedFolders.has(parts.slice(0, 2).join('/')) &&
+        (parts[2] === '.gitkeep' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(parts[2]))) {
+      kind = 'file';
+    } else if (relative === 'bridge/state/windows-app.json') {
+      kind = 'state';
+    } else {
+      throw new Error('Path is outside the supported repository mailbox folders.');
+    }
+
+    if (method === 'GET') {
+      if (input.body !== undefined) throw new Error('GET requests cannot include a body.');
+      if (!input.query || typeof input.query !== 'object' || Array.isArray(input.query) ||
+          Object.keys(input.query).length !== 1 || input.query.ref !== branch) {
+        throw new Error('Mailbox reads must target the configured branch only.');
+      }
+      return {
+        method, path: pathValue, query: { ref: branch }, body: undefined,
+        url: 'https://api.github.com' + pathValue + '?ref=' + encodeURIComponent(branch)
+      };
+    }
+
+    if (kind !== 'file' && kind !== 'state') throw new Error('PUT is only permitted for mailbox file records.');
+    if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
+    const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
+    if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
+        typeof input.body.message !== 'string' || input.body.message.length > 200 ||
+        typeof input.body.content !== 'string' || input.body.content.length > MAX_RESPONSE_BYTES ||
+        input.body.branch !== branch ||
+        (input.body.sha !== undefined && (typeof input.body.sha !== 'string' || !/^[0-9a-f]{40}$/i.test(input.body.sha)))) {
+      throw new Error('Invalid or unsupported mailbox write payload.');
+    }
+    let payload;
+    try {
+      const decoded = Buffer.from(input.body.content, 'base64').toString('utf8');
+      payload = JSON.parse(decoded);
+    } catch {
+      throw new Error('Mailbox write content must be Base64-encoded JSON.');
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Mailbox file content must be a JSON object.');
+    if (relative.startsWith('bridge/requests/') && parts[2] !== '.gitkeep') {
+      throw new Error('The Windows worker cannot create or overwrite ChatGPT request files.');
+    }
+    if (relative.startsWith('bridge/results/') && payload.protocol !== 'chatgpt-local-repo-result/v1') {
+      throw new Error('Result files must use the supported result protocol.');
+    }
+    if (relative.startsWith('bridge/claims/') && payload.protocol !== 'chatgpt-local-repo-claim/v1') {
+      throw new Error('Claim files must use the supported claim protocol.');
+    }
+    if (relative === 'bridge/state/windows-app.json' && payload.protocol !== 'chatgpt-local-repo-state/v1') {
+      throw new Error('Shared state files must use the supported state protocol.');
+    }
+    const body = {
+      message: input.body.message,
+      content: input.body.content,
+      branch,
+      ...(input.body.sha ? { sha: input.body.sha } : {})
+    };
+    return { method, path: pathValue, body, query: undefined, url: 'https://api.github.com' + pathValue };
+  }
+
+  async function requestApi(input = {}) {
+    const route = validateMailboxRequest(input);
+    const token = getToken();
+    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using the repository mailbox.');
+    const response = await fetchImpl(route.url, {
+      method: route.method,
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(route.body ? { 'Content-Type': 'application/json' } : {})
+      },
+      ...(route.body ? { body: JSON.stringify(route.body) } : {}),
+      signal: AbortSignal.timeout(15000)
+    });
+    return { status: response.status, result: await readJson(response) };
   }
 
   async function getState() {
@@ -388,7 +513,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, runGitOperation };
+  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, runGitOperation, requestApi };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };
