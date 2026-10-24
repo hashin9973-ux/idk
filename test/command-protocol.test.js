@@ -29,6 +29,7 @@ test('additional aliases map to supported local tools', () => {
 test('workspace and coding mode are app-owned special commands', () => {
   assert.equal(commands.parseSlashCommand('/workspace').special, 'workspace');
   assert.equal(commands.parseSlashCommand('/tools').special, 'coding_mode');
+  assert.ok(commands.HELP.includes('automatic conversation setup'));
   assert.equal(commands.parseSlashCommand('/plan make a small feature').special, 'plan_mode');
   assert.equal(commands.parseSlashCommand('/review').special, 'review_mode');
   assert.ok(commands.HELP.includes('/exec'));
@@ -63,5 +64,4 @@ test('new slash commands map to the expected filesystem and Git tools', () => {
 test('model-facing local tools do not include a duplicate GitHub API credential tool', () => {
   assert.equal(commands.TOOL_NAMES.has('github_api'), false);
   assert.equal(commands.TOOL_NAMES.has('github_status'), false);
-  assert.equal(commands.TOOL_NAMES.has('github_api'), false);
 });
