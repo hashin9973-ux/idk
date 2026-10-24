@@ -101,12 +101,17 @@ test('search skips secret-like files but still searches hidden project metadata'
   } finally { cleanup(root); }
 });
 
-test('writes, patches, tests and PowerShell require approval policy', () => {
-  assert.equal(tools.getToolPolicy('write_file').requiresApproval, true);
-  assert.equal(tools.getToolPolicy('apply_patch').requiresApproval, true);
-  assert.equal(tools.getToolPolicy('run_tests').requiresApproval, true);
-  assert.equal(tools.getToolPolicy('shell').requiresApproval, true);
+test('workspace file mutations are automatic while commands and tests remain approval-gated', () => {
+  for (const name of ['write_file', 'apply_patch', 'create_directory', 'move_path', 'delete_path']) {
+    const policy = tools.getToolPolicy(name);
+    assert.equal(policy.requiresApproval, false, name);
+    assert.equal(policy.automatic, true, name);
+  }
+  for (const name of ['run_tests', 'shell', 'git_commit', 'git_push', 'git_clone', 'init']) {
+    assert.equal(tools.getToolPolicy(name).requiresApproval, true, name);
+  }
   assert.equal(tools.getToolPolicy('project_status').requiresApproval, false);
+  assert.equal(tools.getToolPolicy('read_file', { path: '.env' }).requiresApproval, true);
 });
 
 test('init does not overwrite existing AGENTS.md', async () => {
@@ -152,11 +157,13 @@ test('create_directory, move_path and delete_path have real effects inside the w
   } finally { cleanup(root); }
 });
 
-test('mutating filesystem and Git tools require approval', () => {
+test('workspace file mutations are automatic but Git operations require approval', () => {
+  for (const name of ['create_directory','move_path','delete_path','write_file','apply_patch']) {
+    assert.equal(tools.getToolPolicy(name).requiresApproval, false, name);
+  }
   for (const name of [
-    'create_directory','move_path','delete_path','git_create_branch',
-    'git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone',
-    'write_file','apply_patch','shell','run_tests'
+    'git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone',
+    'shell','run_tests'
   ]) {
     assert.equal(tools.getToolPolicy(name).requiresApproval, true, name);
   }
