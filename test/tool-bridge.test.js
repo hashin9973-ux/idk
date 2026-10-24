@@ -313,3 +313,32 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('agent context packs Windows environment, project commands, instruction metadata, and tool schemas into one result', async () => {
+  const root = fixture();
+  try {
+    fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({
+      name: 'context-fixture',
+      scripts: { test: 'node --test', lint: 'eslint .' }
+    }), 'utf8');
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 1 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('get_agent_context', {}, 'req-agent-context');
+    assert.equal(result.ok, true);
+    assert.equal(result.result.protocol, 'chatgpt-local-agent-context/v1');
+    assert.equal(result.result.project_commands.name, 'context-fixture');
+    assert.equal(result.result.project_commands.scripts.test, 'node --test');
+    assert.ok(Array.isArray(result.result.directory_overview.entries));
+    assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
+    assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
+    assert.ok(Array.isArray(result.result.instruction_files));
+    assert.equal(result.result.instruction_files.some(item => Object.hasOwn(item, 'content')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
