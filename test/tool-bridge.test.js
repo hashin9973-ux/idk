@@ -127,3 +127,29 @@ test('tool bridge preserves large local text so the repository layer can externa
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('workspace artifact uploads reject files above 8 MiB without publishing them', async () => {
+  const root = fixture();
+  const oversizedPath = path.join(root, 'too-big.bin');
+  try {
+    fs.writeFileSync(oversizedPath, Buffer.alloc(8 * 1024 * 1024 + 1));
+    let approvals = 0;
+    let uploads = 0;
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvals++; return { response: 0 }; } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {},
+      uploadWorkspaceFile: async () => { uploads++; return { path: 'should-not-exist' }; }
+    });
+    const result = await bridge.runTool('upload_workspace_file', { path: 'too-big.bin' }, 'req-too-big');
+    assert.equal(approvals, 1);
+    assert.equal(uploads, 0);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /8 MiB upload limit/i);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
