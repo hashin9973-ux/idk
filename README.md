@@ -15,11 +15,13 @@ The GitHub repository is the communication channel between ChatGPT and the deskt
 ## Current implementation status
 
 - The repository-backed request/result protocol and Windows poller are being implemented on the `feature/repository-backed-local-bridge` branch.
-- The local tool backend already supports workspace inspection, file edits, Git inspection/changes, shell commands, tests, and planning.
+- The visible app surface is now a native mirror for the active ChatGPT conversation: it renders only a viewport-sized window of messages plus a small overscan buffer, has an on-demand recent-thread picker, and submits text through the same authenticated ChatGPT session.
+- The ChatGPT website remains loaded off-screen as the authenticated transport because the public website does not expose a supported way to attach arbitrary native tools to an existing account conversation. The hidden web session still executes ChatGPT's page JavaScript and builds its DOM; the mirror reduces what the app visibly renders and what it copies into the native UI, but it does not eliminate all background website CPU/network cost.
+- The native mirror currently supports text messages, code/text display, thread selection, and bounded older/newer viewport paging. Uploading files/images and faithfully rendering all ChatGPT rich content (audio, interactive widgets, citations, etc.) are not mirrored yet; use the temporary ChatGPT window when those features are needed.
 - Local operations arriving through the repository queue require a native, per-request approval.
 - The queue keeps a local execution ledger, avoids blindly rerunning requests after a crash, and publishes an `indeterminate` result when it cannot prove whether an interrupted command completed.
 - The configured bridge repository must be private unless you explicitly enable public-repository use in Accounts. Results can contain source code and command output.
-- The app still embeds the ChatGPT web page in its current window. **The requested lightweight, viewport-only conversation mirror is not implemented yet.** The existing same-conversation result injection also depends on ChatGPT's page composer and may need adjustments when ChatGPT changes its DOM. Do not treat a CI build as proof that the mirror or interactive workflow has been manually validated.
+- The native window no longer displays the full ChatGPT website; it renders a custom lightweight conversation surface and keeps the authenticated ChatGPT page off-screen. This is still a DOM-backed mirror, not a documented ChatGPT API integration. The result/sending bridge depends on page selectors and may need updates when ChatGPT changes its DOM. A CI build is not a substitute for manual sign-in and interaction testing.
 
 ## Request/result protocol
 
@@ -66,7 +68,7 @@ Execution/planning:
 
 - `shell`, `run_tests`, `update_plan`, `get_capabilities`
 
-Paths are relative to the workspace selected in the app. The current implementation uses that selected folder for local execution; select the actual project checkout, not a generic empty workspace. Shell commands execute as the signed-in Windows user and are **not sandboxed**. Review each approval request carefully.
+Paths are relative to the workspace selected in the app. The current implementation uses that selected folder for local execution; select the actual project checkout, not a generic empty workspace. The app restores the most recently selected conversation on startup and lets you switch among recent threads from the native mirror. Shell commands execute as the signed-in Windows user and are **not sandboxed**. Review each approval request carefully.
 
 ## Sign in and configure the bridge
 
