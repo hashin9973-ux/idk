@@ -195,7 +195,21 @@ function createToolBridge(deps) {
           document.querySelector('button[aria-label="Send message"]') ||
           document.querySelector('button[aria-label="Send"]');
         if (!send || send.disabled) {
-          resolve({ ok: false, inserted: true, reason: 'send_button_not_ready' });
+          const latest = editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement
+            ? editor.value
+            : (editor.innerText || editor.textContent || '');
+          // Clear only the exact content this helper inserted, never a later user draft.
+          if (latest === message) {
+            if (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement) {
+              const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(editor), 'value')?.set;
+              if (setter) setter.call(editor, '');
+              else editor.value = '';
+            } else {
+              editor.textContent = '';
+            }
+            editor.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          resolve({ ok: false, reason: 'send_button_not_ready' });
           return;
         }
         send.click();
@@ -328,7 +342,7 @@ function createToolBridge(deps) {
       const editor = document.querySelector('#prompt-textarea, [data-testid="prompt-textarea"], form [contenteditable="true"], textarea');
       const text = editor ? (editor instanceof HTMLTextAreaElement || editor instanceof HTMLInputElement ? editor.value : (editor.innerText || editor.textContent || '')) : '';
       return { conversationId, hasInstructions, generating, composerHasDraft: Boolean(String(text).trim()), url: location.href };
-    })()`.replace("'CONTEXT_MARKER_VALUE'", JSON.stringify(BRIDGE_CONTEXT_MARKER)).replace("'WORKSPACE_ROOT_VALUE'", JSON.stringify(workspaceRoot));
+    })()`.replace("'CONTEXT_MARKER_VALUE'", JSON.stringify(BRIDGE_CONTEXT_MARKER));
     let state;
     try { state = await view.webContents.executeJavaScript(inspectionScript, true); }
     catch (error) { return { ok: false, reason: 'conversation_inspection_failed', error: String(error && error.message || error) }; }
@@ -347,9 +361,16 @@ function createToolBridge(deps) {
     if (conversationBootstrapInFlight.has(bootstrapKey)) return { ok: false, reason: 'initialization_in_progress' };
     conversationBootstrapInFlight.add(bootstrapKey);
     try {
-      const outcome = await returnMessageToChat(buildBridgeContextMessage({ workspaceRoot }));
-      if (outcome && outcome.ok) recordBridgeBootstrap(state.conversationId, workspaceRoot);
-      return { ...outcome, conversationId: state.conversationId, workspaceRoot };
+      const outcome = await submitMessageToChat(buildBridgeContextMessage());
+      if (outcome && outcome.ok) {
+        recordBridgeBootstrap(state.conversationId, workspaceRoot);
+      } else if (retryAttempt < 20 && outcome &&
+          ['assistant_busy', 'composer_has_draft', 'send_button_not_ready'].includes(outcome.reason)) {
+        // Automatic setup should not interrupt the user with a dialog. Retry after
+        // the user draft is sent or ChatGPT finishes generating.
+        setTimeout(() => initializeCurrentConversation(state.conversationId, retryAttempt + 1).catch(() => {}), 3000);
+      }
+      return { ...(outcome || { ok: false, reason: 'unknown' }), conversationId: state.conversationId, workspaceRoot };
     } finally {
       conversationBootstrapInFlight.delete(bootstrapKey);
     }
