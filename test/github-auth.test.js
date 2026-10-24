@@ -364,6 +364,27 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.equal(calls.length, beforeRejectedCalls, 'invalid routes and payloads are rejected before network requests');
 });
 
+test('GitHub CLI token import validates the account before storing the token encrypted', async () => {
+  const calls = [];
+  const mockFetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith('/user')) {
+      assert.equal(options.headers.Authorization, 'Bearer gho-imported-test-token');
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected test URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  assert.deepEqual(await auth.importToken('gho-imported-test-token'), {
+    authenticated: true,
+    login: 'example-user'
+  });
+  assert.equal(settings.github.encryptedToken.includes('gho-imported-test-token'), false);
+  assert.equal((await auth.getState()).authenticated, true);
+  await assert.rejects(auth.importToken('short'), /valid access token/i);
+  assert.equal(calls.length, 2);
+});
+
 test('GitHub logout removes the encrypted credential', async () => {
   const mockFetch = loginServer('gho-test');
   const { auth, settings } = fixture(mockFetch);

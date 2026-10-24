@@ -312,6 +312,27 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     return { status: 'authenticated', login: state.login };
   }
 
+  async function importToken(rawToken) {
+    const token = String(rawToken || '').trim();
+    if (token.length < 20 || token.length > 8192 || /\s/.test(token)) {
+      throw new Error('GitHub did not return a valid access token.');
+    }
+    const response = await fetchImpl('https://api.github.com/user', {
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28'
+      },
+      signal: AbortSignal.timeout(12000)
+    });
+    const profile = await readJson(response);
+    if (typeof profile.login !== 'string' || !profile.login) {
+      throw new Error('GitHub token validation did not return an account name.');
+    }
+    saveToken(token);
+    return { authenticated: true, login: profile.login };
+  }
+
   function logout() {
     const entry = githubSettings();
     delete entry.encryptedToken;
@@ -527,7 +548,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, runGitOperation, requestApi };
+  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, importToken, runGitOperation, requestApi };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };

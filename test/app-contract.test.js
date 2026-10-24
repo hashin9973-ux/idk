@@ -12,6 +12,8 @@ test('packaging includes the native Windows worker and mailbox implementation', 
   const pkg = JSON.parse(read('package.json'));
   assert.equal(pkg.main, 'desktop/main.js');
   assert.ok(pkg.build.files.includes('desktop/**/*'));
+  assert.ok(pkg.build.extraResources.some(resource => resource.from === 'vendor/gh' && resource.to === 'gh'));
+  assert.match(pkg.scripts['pre-dist:win'], /prepare-gh-cli/);
   assert.match(pkg.description, /shared GitHub repository mailbox/i);
   assert.match(pkg.scripts.check, /desktop\/repository-bridge\.js/);
   assert.match(pkg.scripts.check, /test\/repository-bridge\.test\.js/);
@@ -22,12 +24,12 @@ test('dashboard consolidates GitHub, workspace, worker and settings into one win
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
   for (const id of [
-    'collapse', 'quit', 'github-status', 'github-login', 'github-logout', 'github-client-id',
+    'collapse', 'quit', 'github-status', 'github-login', 'github-logout',
     'repo-owner', 'repo-name', 'repo-branch', 'public-warning', 'bridge-config-form',
     'save-config', 'select-workspace', 'worker-toggle', 'open-chatgpt',
-    'open-github-oauth-settings', 'request-count', 'active-request', 'last-poll', 'last-error'
+    'request-count', 'active-request', 'last-poll', 'last-error'
   ]) assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
-  for (const action of ['saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'getState', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'openChatGPT', 'openGitHubOAuthSettings', 'onBridgeState']) {
+  for (const action of ['saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'getState', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'openChatGPT', 'onBridgeState']) {
     assert.ok(renderer.includes('windowsBridge.' + action), 'renderer does not invoke ' + action);
   }
   assert.doesNotMatch(html, /open-accounts|poll-now|accounts\.html/);
@@ -35,6 +37,8 @@ test('dashboard consolidates GitHub, workspace, worker and settings into one win
   assert.match(html, /publicly readable/i);
   assert.match(html, /PowerShell.*not sandboxed/i);
   assert.match(html, /default browser/i);
+  assert.match(html, /official GitHub CLI browser authorization flow/i);
+  assert.doesNotMatch(html, /github-client-id|open-github-oauth-settings|Create an OAuth App/);
   assert.match(html, /sign in to ChatGPT/i);
   assert.doesNotMatch(renderer, /githubLogin\.disabled = authBusy \|\| busy \|\| !githubState\.configured/);
 });
@@ -50,14 +54,15 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:github-poll-login'/);
   assert.match(main, /'app:open-chatgpt'/);
   assert.match(main, /chatgpt\.com\/auth\/login\//);
-  assert.match(main, /github\.com\/settings\/developers/);
+  assert.match(main, /startGitHubCliLogin/);
+  assert.match(main, /githubAuth\.importToken/);
   assert.match(main, /repositoryBridge\.stop\(\)/);
   assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|WebContentsView|conversation-mirror|installChatToolBridge/);
 });
 
 test('preload exposes specific mailbox and login actions without generic Node access', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'openChatGPT', 'openGitHubOAuthSettings', 'getGitHubState', 'setGitHubClientId', 'startGitHubLogin', 'pollGitHubLogin', 'logoutGitHub', 'onBridgeState']) {
+  for (const action of ['getState', 'saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'openChatGPT', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'logoutGitHub', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /openAccounts|pollNow|node:fs|process\.env|ipcRenderer\.send\(/);

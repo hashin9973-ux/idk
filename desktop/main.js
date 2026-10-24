@@ -1,6 +1,9 @@
 'use strict';
 
 const path = require('node:path');
+const { spawn, execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileAsync = promisify(execFile);
 const fs = require('node:fs');
 const {
   app,
@@ -31,6 +34,7 @@ let githubAuth = null;
 let toolBridge = null;
 let repositoryBridge = null;
 let finishingQuit = false;
+let pendingGitHubCliLogin = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -54,6 +58,90 @@ function persistSettings() {
   } catch (error) {
     console.error('Could not save settings:', error.message);
   }
+}
+
+function resolveGitHubCliPath() {
+  const bundledPath = app.isPackaged
+    ? path.join(process.resourcesPath, 'gh', 'gh.exe')
+    : path.join(__dirname, '..', 'vendor', 'gh', 'gh.exe');
+  return fs.existsSync(bundledPath) ? bundledPath : 'gh';
+}
+
+function githubCliEnvironment() {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  for (const name of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GH_HOST']) {
+    delete env[name];
+  }
+  return env;
+}
+
+function readGitHubCliToken() {
+  return execFileAsync(resolveGitHubCliPath(), ['auth', 'token', '--hostname', 'github.com'], {
+    encoding: 'utf8', timeout: 20000, windowsHide: true, env: githubCliEnvironment()
+  }).then(result => {
+    const token = String(result.stdout || '').trim();
+    if (!token) throw new Error('GitHub CLI returned an empty token.');
+    return token;
+  });
+}
+
+function cleanLoginOutput(value) {
+  return String(value || '')
+    .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim().slice(0, 500);
+}
+
+function captureDeviceCode(login, chunk) {
+  login.output = (login.output + String(chunk || '')).slice(-12000);
+  const match = login.output.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/i);
+  if (match) login.userCode = match[1].toUpperCase();
+}
+
+async function completeGitHubCliLogin(login) {
+  login.status = 'finishing';
+  const token = await readGitHubCliToken();
+  const state = await githubAuth.importToken(token);
+  login.login = state.login;
+  login.status = 'authenticated';
+}
+
+function startGitHubCliLogin() {
+  let child;
+  try {
+    child = spawn(resolveGitHubCliPath(), [
+      'auth', 'login', '--web', '--hostname', 'github.com',
+      '--git-protocol', 'https', '--clipboard'
+    ], {
+      windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: githubCliEnvironment()
+    });
+  } catch (error) {
+    throw new Error('Could not start GitHub sign-in: ' + cleanLoginOutput(error.message));
+  }
+
+  const login = { child, status: 'pending', output: '', userCode: '', login: '', message: '' };
+  pendingGitHubCliLogin = login;
+  child.stdout.on('data', chunk => captureDeviceCode(login, chunk));
+  child.stderr.on('data', chunk => captureDeviceCode(login, chunk));
+  child.once('error', error => {
+    login.status = 'error';
+    login.message = 'Could not start GitHub sign-in. Reinstall the app and try again. ' + cleanLoginOutput(error.message);
+  });
+  child.once('close', (code, signal) => {
+    if (login.status === 'error') return;
+    if (code !== 0) {
+      login.status = 'error';
+      login.message = cleanLoginOutput(login.output) ||
+        ('GitHub sign-in did not complete' + (signal ? ' (' + signal + ')' : '') + '. Try again.');
+      return;
+    }
+    completeGitHubCliLogin(login).catch(error => {
+      login.status = 'error';
+      login.message = cleanLoginOutput(error.message) || 'Could not finish GitHub sign-in. Try again.';
+    });
+  });
+  return { mode: 'github-cli', userCode: '', verificationUrl: 'https://github.com/login/device', intervalSeconds: 3 };
 }
 
 function getWorkspaceRoot() {
@@ -286,36 +374,65 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     return githubAuth.getState();
   });
-  ipcMain.handle('app:github-set-client-id', (event, clientId) => {
-    assertLocalUi(event, 'index.html');
-    return githubAuth.setClientId(clientId);
-  });
   ipcMain.handle('app:github-start-login', async event => {
     assertLocalUi(event, 'index.html');
-    const result = await githubAuth.startLogin();
-    const target = result.verificationUrlComplete || result.verificationUrl;
-    await openInBrowserAndYield(target);
-    return result;
+    if (pendingGitHubCliLogin && ['pending', 'finishing'].includes(pendingGitHubCliLogin.status)) {
+      return { mode: 'github-cli', userCode: pendingGitHubCliLogin.userCode, intervalSeconds: 3 };
+    }
+    if (pendingGitHubCliLogin && pendingGitHubCliLogin.status === 'authenticated') {
+      const result = { status: 'authenticated', login: pendingGitHubCliLogin.login, mode: 'github-cli' };
+      pendingGitHubCliLogin = null;
+      bringMainWindowForward();
+      return result;
+    }
+    pendingGitHubCliLogin = null;
+    const current = await githubAuth.getState();
+    if (current.authenticated) return { status: 'authenticated', login: current.login, mode: 'github-cli' };
+    try {
+      const token = await readGitHubCliToken();
+      const connected = await githubAuth.importToken(token);
+      return { status: 'authenticated', login: connected.login, mode: 'github-cli' };
+    } catch {
+      // No reusable CLI login; begin a new browser authorization.
+    }
+    const flow = startGitHubCliLogin();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.blur();
+    }
+    return flow;
   });
   ipcMain.handle('app:github-poll-login', async event => {
     assertLocalUi(event, 'index.html');
-    const result = await githubAuth.pollLogin();
-    if (result.status === 'authenticated') bringMainWindowForward();
-    return result;
+    const login = pendingGitHubCliLogin;
+    if (login) {
+      if (login.status === 'pending' || login.status === 'finishing') {
+        return { status: 'pending', intervalSeconds: 3, ...(login.userCode ? { userCode: login.userCode } : {}) };
+      }
+      pendingGitHubCliLogin = null;
+      if (login.status === 'authenticated') {
+        bringMainWindowForward();
+        return { status: 'authenticated', login: login.login };
+      }
+      bringMainWindowForward();
+      return { status: 'error', message: login.message || 'GitHub sign-in failed. Try again.' };
+    }
+    const state = await githubAuth.getState();
+    return state.authenticated
+      ? { status: 'authenticated', login: state.login }
+      : { status: 'error', message: state.error || 'No GitHub sign-in is in progress. Click Sign in with GitHub to try again.' };
   });
   ipcMain.handle('app:github-logout', event => {
     assertLocalUi(event, 'index.html');
     const result = githubAuth.logout();
+    if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
+    pendingGitHubCliLogin = null;
     if (repositoryBridge) repositoryBridge.stop().catch(() => {});
     return result;
   });
   ipcMain.handle('app:open-chatgpt', async event => {
     assertLocalUi(event, 'index.html');
     return openInBrowserAndYield('https://chatgpt.com/auth/login/');
-  });
-  ipcMain.handle('app:open-github-oauth-settings', async event => {
-    assertLocalUi(event, 'index.html');
-    return openInBrowserAndYield('https://github.com/settings/developers');
   });
 }
 
@@ -433,6 +550,7 @@ if (!hasInstanceLock) {
 app.on('before-quit', event => {
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
+  if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;

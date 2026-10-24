@@ -4,7 +4,7 @@
   const body = document.body;
   const form = byId('bridge-config-form');
   const ownerInput = byId('repo-owner'), repoInput = byId('repo-name'), branchInput = byId('repo-branch');
-  const clientIdInput = byId('github-client-id'), publicWarning = byId('public-warning');
+  const publicWarning = byId('public-warning');
   const settingsPanel = byId('settings-panel'), statusPill = byId('status-pill'), statusDot = byId('status-dot'), statusLabel = byId('status-label');
   const workerTitle = byId('worker-title'), requestCount = byId('request-count'), activeRequest = byId('active-request');
   const lastPoll = byId('last-poll'), lastErrorRow = byId('last-error-row'), lastError = byId('last-error');
@@ -12,7 +12,6 @@
   const saveButton = byId('save-config'), workerToggle = byId('worker-toggle'), selectWorkspaceButton = byId('select-workspace');
   const githubStatus = byId('github-status'), githubLogin = byId('github-login'), githubLogout = byId('github-logout');
   const githubCodePanel = byId('github-code-panel'), githubUserCode = byId('github-user-code');
-  const openGitHubOAuthSettingsButton = byId('open-github-oauth-settings');
   const collapseButton = byId('collapse'), quitButton = byId('quit'), ballButton = byId('assistant-ball'), openChatGPTButton = byId('open-chatgpt');
   let busy = false, authBusy = false, currentState = null, githubState = null, authTimer = null;
 
@@ -65,15 +64,12 @@
       githubLogout.hidden = false;
       githubLogout.disabled = busy || authBusy;
     } else {
-      githubStatus.textContent = githubState.configured ? 'Not connected. Sign in to let the Windows worker access the mailbox.' : 'One-time setup: add your GitHub OAuth client ID in Connection settings.';
+      githubStatus.textContent = 'Not connected. Sign in to authorize the app to access your configured GitHub mailbox repository.';
       githubStatus.classList.remove('success-text');
-      githubLogin.textContent = authBusy ? 'Waiting for GitHub…' : (githubState.configured ? 'Sign in with GitHub' : 'Set up GitHub sign-in');
-      // Keep this entry point clickable: without a client ID it guides the user
-      // to the one-time setup field instead of looking broken/disabled.
+      githubLogin.textContent = authBusy ? 'Waiting for GitHub…' : 'Sign in with GitHub';
       githubLogin.disabled = authBusy || busy;
       githubLogout.hidden = true;
     }
-    if (githubState.clientId && !clientIdInput.value) clientIdInput.value = githubState.clientId;
   }
   async function refreshGitHubState() {
     const state = await window.windowsBridge.getGitHubState();
@@ -91,7 +87,7 @@
       publicWarning.checked = Boolean(config.allowPublicMailbox);
       renderState(config);
       const github = await refreshGitHubState();
-      settingsPanel.open = !config.configured || !github.configured;
+      settingsPanel.open = !config.configured;
     } catch (error) { setMessage(error.message || error, 'error'); }
   }
   function readBridgeConfig() {
@@ -99,8 +95,6 @@
   }
   async function saveSettings() {
     const state = await window.windowsBridge.saveBridgeConfig(readBridgeConfig());
-    const clientId = clientIdInput.value.trim();
-    if (clientId) await window.windowsBridge.setGitHubClientId(clientId);
     renderState(state);
     await refreshGitHubState();
     return state;
@@ -147,7 +141,11 @@
         }
         if (result.status === 'pending') {
           githubStatus.textContent = 'Waiting for approval in your browser…';
-          scheduleAuthPoll(Math.max(5, result.intervalSeconds || seconds)); return;
+          if (result.userCode) {
+            githubUserCode.textContent = result.userCode;
+            githubCodePanel.hidden = false;
+          }
+          scheduleAuthPoll(Math.max(3, result.intervalSeconds || seconds)); return;
         }
         stopAuthPolling(); githubCodePanel.hidden = true; await refreshGitHubState();
         setMessage(result.message || 'GitHub authorization was not completed.', result.status === 'denied' ? 'error' : '');
@@ -161,19 +159,18 @@
     try {
       const existing = await refreshGitHubState();
       if (existing.authenticated) { setMessage('Already connected to GitHub.', 'success'); return; }
-      if (!existing.configured) {
-        settingsPanel.open = true;
-        clientIdInput.focus();
-        clientIdInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        setMessage('GitHub sign-in needs a one-time OAuth App client ID. Use the link under Connection settings, enable Device Flow, paste the Client ID, and save settings.');
+      const flow = await window.windowsBridge.startGitHubLogin();
+      if (flow.status === 'authenticated') {
+        await refreshGitHubState();
+        githubCodePanel.hidden = true;
+        setMessage('GitHub connected as @' + (flow.login || 'your account') + '.', 'success');
         return;
       }
-      const flow = await window.windowsBridge.startGitHubLogin();
       authBusy = true; renderGitHub(githubState);
       githubUserCode.textContent = flow.userCode || '';
       githubCodePanel.hidden = !flow.userCode;
-      setMessage('GitHub opened in your default browser. Approve access there; the app will return to the foreground automatically.');
-      scheduleAuthPoll(flow.intervalSeconds || 5);
+      setMessage('GitHub opened in your default browser. Approve access there; the app will reconnect automatically. If GitHub asks for a device code, paste it from your clipboard.');
+      scheduleAuthPoll(flow.intervalSeconds || 3);
     } catch (error) {
       stopAuthPolling(); setMessage(error.message || error, 'error'); await refreshGitHubState().catch(() => {});
     }
@@ -184,7 +181,7 @@
     try {
       stopAuthPolling(); await window.windowsBridge.logoutGitHub(); await refreshGitHubState();
       const state = await window.windowsBridge.getState(); renderState(state.bridge || {});
-      setMessage('GitHub disconnected.', 'success');
+      setMessage('App disconnected from GitHub. The GitHub CLI browser session remains signed in.', 'success');
     } catch (error) { setMessage(error.message || error, 'error'); }
     finally { busy = false; if (currentState) renderState(currentState); renderGitHub(githubState); }
   });
@@ -196,12 +193,6 @@
       if (!result.canceled) { renderWorkspace(result.workspaceRoot); setMessage('Workspace selected.', 'success'); }
     } catch (error) { setMessage(error.message || error, 'error'); }
     finally { busy = false; if (currentState) renderState(currentState); }
-  });
-  openGitHubOAuthSettingsButton.addEventListener('click', async () => {
-    try {
-      await window.windowsBridge.openGitHubOAuthSettings();
-      setMessage('GitHub Developer settings opened in your default browser. Create an OAuth App, enable Device Flow, then paste its Client ID here.', 'success');
-    } catch (error) { setMessage(error.message || error, 'error'); }
   });
   openChatGPTButton.addEventListener('click', async () => {
     try {

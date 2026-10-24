@@ -33,7 +33,7 @@
         <section class="account-row" aria-labelledby="account-heading">
           <div class="section-copy">
             <p class="eyebrow">ACCOUNT</p><h2 id="account-heading">GitHub access</h2>
-            <p id="github-status" class="muted">Checking connection…</p><p class="muted small account-helper">Sign-in opens your default browser. After approval, the app returns to the foreground.</p>
+            <p id="github-status" class="muted">Checking connection…</p><p class="muted small account-helper">Sign in once in your browser. The app securely stores the authorization for the configured mailbox.</p>
           </div>
           <div class="account-actions">
             <button id="github-login" class="button primary" type="button">Sign in with GitHub</button>
@@ -84,10 +84,8 @@
               <div class="form-row"><label for="repo-owner">Repository owner</label><input id="repo-owner" name="owner" value="hashin9973-ux" maxlength="100" required spellcheck="false" autocomplete="off"></div>
               <div class="form-row"><label for="repo-name">Repository</label><input id="repo-name" name="repo" value="qdqwg" maxlength="100" required spellcheck="false" autocomplete="off"></div>
               <div class="form-row"><label for="repo-branch">Mailbox branch</label><input id="repo-branch" name="branch" value="bridge-mailbox" maxlength="120" required spellcheck="false" autocomplete="off"></div>
-              <div class="form-row"><label for="github-client-id">GitHub OAuth client ID <span class="label-note">one-time setup</span></label><input id="github-client-id" name="clientId" maxlength="100" spellcheck="false" autocomplete="off" placeholder="Paste your OAuth App client ID"></div>
             </div>
-            <p class="muted small">This app needs a GitHub OAuth App client ID before sign-in can start. Enable Device Flow, then paste the client ID here. Never paste a password, client secret, or access token.</p>
-            <p class="muted small"><button id="open-github-oauth-settings" class="text-button" type="button">Open GitHub Developer settings to create an OAuth App ↗</button></p>
+            <p class="muted small">Sign-in uses the official GitHub CLI browser authorization flow bundled with this app. Approve the permissions on GitHub itself; never paste a password, client secret, or access token into this app.</p>
             <label class="checkbox-label warning-note"><input id="public-warning" name="allowPublicMailbox" type="checkbox"><span>This repository is public, and I understand that requests, results, context, and uploaded files on this branch will be publicly readable.</span></label>
             <div class="settings-actions"><button id="save-config" class="button secondary" type="submit">Save settings</button></div>
           </form>

@@ -21,7 +21,7 @@ You ──instructions──> Existing ChatGPT conversation
                   Actual Windows workspace
 ```
 
-The ChatGPT GitHub integration and the app's GitHub OAuth token are separate credentials. The app stores its OAuth token using Electron's OS-backed `safeStorage`. The app does not host a second AI agent or mirror the ChatGPT conversation.
+The ChatGPT GitHub integration and the app's GitHub authorization are separate. The app launches the official GitHub CLI browser flow (bundled and hash-verified by the Windows build), then stores the validated token with Electron's OS-backed `safeStorage`. No custom OAuth App registration or pasted token is required. The app does not host a second AI agent or mirror the ChatGPT conversation.
 
 ## Recommended connection
 
@@ -98,9 +98,9 @@ npm install
 npm start
 ```
 
-1. In **Connection settings**, paste the client ID of a GitHub OAuth App with Device Flow enabled (use the new **Open GitHub Developer settings** link if you haven't created one), then choose **Sign in with GitHub**. GitHub opens in your default browser; after approval, the app returns to the foreground.
+1. Click **Sign in with GitHub**. The app opens GitHub's authorization page in your default browser; approve access there and the app returns to the foreground automatically. No custom OAuth client ID is needed.
 2. Choose the local workspace folder.
-3. Configure `hashin9973-ux/qdqwg` and branch `bridge-mailbox`, then save.
+3. Confirm the configured mailbox: `hashin9973-ux/qdqwg`, branch `bridge-mailbox` (or change these in **Connection settings**), then save.
 4. Start the worker. It publishes an environment snapshot to `bridge/context/` and starts polling requests.
 5. In your existing ChatGPT conversation, use the GitHub integration to read the context index, create requests, and retrieve result and artifact files.
 
