@@ -42,7 +42,8 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   github_api: ['method', 'path', 'body', 'query']
 });
 
-const MAX_RESULT_CHARS = 90000;
+// Preserve complete local tool output for the repository bridge to externalize into artifact files.
+const MAX_RESULT_CHARS = 4 * 1024 * 1024;
 const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clone']);
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
