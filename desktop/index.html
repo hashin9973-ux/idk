@@ -10,24 +10,30 @@
 <body>
   <main class="overlay-frame">
     <header class="titlebar">
-      <div class="drag-zone" aria-label="Drag to move overlay">
+      <div class="drag-zone" aria-label="Drag to move mirror">
         <div class="brand-orb" aria-hidden="true"><span></span></div>
         <div class="brand-copy">
-          <strong>ChatGPT Assistant</strong>
-          <span id="workspace-label">Ctrl+Shift+Space · Loading workspace…</span>
+          <strong>ChatGPT Mirror</strong>
+          <span id="conversation-title">Connecting to your conversation…</span>
         </div>
       </div>
-      <nav class="window-controls" aria-label="Window controls">
-        <button id="reload-chat" class="icon-button" type="button" title="Reload ChatGPT" aria-label="Reload ChatGPT">
+      <nav class="window-controls" aria-label="Mirror controls">
+        <button id="threads" class="icon-button" type="button" title="Choose an existing conversation" aria-label="Choose conversation">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h10M4 20h8"/></svg>
+        </button>
+        <button id="new-conversation" class="icon-button" type="button" title="Start a new ChatGPT conversation" aria-label="New conversation">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button id="reload-chat" class="icon-button" type="button" title="Refresh the conversation mirror" aria-label="Refresh mirror">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4.8 16.5A8 8 0 0 0 19 12M4 17v-5h5M19.2 7.5A8 8 0 0 0 5 12"/></svg>
         </button>
-        <button id="select-workspace" class="icon-button" type="button" title="Choose project workspace" aria-label="Choose project workspace">
+        <button id="select-workspace" class="icon-button" type="button" title="Choose local project workspace" aria-label="Choose project workspace">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M3 10h18"/></svg>
         </button>
-        <button id="accounts" class="icon-button" type="button" title="Manage ChatGPT and GitHub accounts" aria-label="Manage accounts">
+        <button id="accounts" class="icon-button" type="button" title="Manage ChatGPT and app-side GitHub accounts" aria-label="Manage accounts">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-3.4 3.1-5.2 7-5.2s6.4 1.8 7 5.2"/></svg>
         </button>
-        <button id="open-browser" class="icon-button" type="button" title="Open ChatGPT in browser" aria-label="Open ChatGPT in browser">
+        <button id="open-browser" class="icon-button" type="button" title="Open the current ChatGPT thread in a full browser" aria-label="Open current thread in browser">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/></svg>
         </button>
         <button id="collapse" class="icon-button" type="button" title="Collapse to assistant ball" aria-label="Collapse to assistant ball">
@@ -38,17 +44,62 @@
         </button>
       </nav>
     </header>
-    <section class="chat-surface" aria-label="ChatGPT web chat"></section>
+
+    <section class="chat-surface mirror-surface" aria-label="Active ChatGPT conversation mirror">
+      <div class="mirror-status" aria-live="polite">
+        <span id="connection-dot" class="connection-dot"></span>
+        <span id="status-text">Connecting to the same ChatGPT conversation…</span>
+        <span class="mirror-status-spacer"></span>
+        <span id="message-range" class="message-range"></span>
+      </div>
+
+      <section id="conversation-picker" class="conversation-picker" aria-label="Recent conversations" hidden>
+        <div class="picker-heading">
+          <strong>Choose a conversation</strong>
+          <button id="close-picker" class="picker-close" type="button" aria-label="Close conversation picker">×</button>
+        </div>
+        <div id="conversation-list" class="conversation-list"></div>
+        <div id="picker-empty" class="picker-empty" hidden>No recent conversations were found in the signed-in ChatGPT session.</div>
+      </section>
+
+      <div id="message-list" class="message-list" role="log" aria-live="polite" aria-relevant="additions text">
+        <div id="empty-state" class="empty-state">
+          <div class="empty-orb"><span></span><span></span><span></span></div>
+          <h1>Your conversation, without the full website</h1>
+          <p>This mirror displays the active ChatGPT thread and a small viewport-sized message window. Your conversation remains on ChatGPT.</p>
+          <button id="choose-conversation-empty" class="secondary-button" type="button">Choose an existing conversation</button>
+          <button id="new-conversation-empty" class="text-button" type="button">Start a new conversation</button>
+        </div>
+      </div>
+
+      <div class="message-tools">
+        <button id="load-earlier" class="load-earlier-button" type="button" hidden>↑ Load earlier messages</button>
+        <button id="load-newer" class="load-earlier-button" type="button" hidden>Load newer messages ↓</button>
+        <span id="snapshot-note">Only the current viewport and a small buffer are mirrored.</span>
+      </div>
+
+      <form id="message-form" class="composer" autocomplete="off">
+        <textarea id="message-input" rows="1" maxlength="24000" placeholder="Message ChatGPT in this conversation…" aria-label="Message ChatGPT"></textarea>
+        <button id="send-message" class="send-button" type="submit" aria-label="Send message" title="Send message">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+        </button>
+      </form>
+      <div class="composer-footer">
+        <span id="composer-warning">Messages use the same signed-in ChatGPT session. File uploads are not mirrored yet.</span>
+        <span>Enter to send · Shift+Enter for a new line</span>
+      </div>
+      <div id="mirror-error" class="mirror-error" role="alert" hidden></div>
+    </section>
   </main>
 
   <div class="bubble-stage" aria-label="Collapsed assistant">
     <div class="bubble-drag-ring" title="Drag from the edge to move the assistant">
-      <button id="assistant-ball" class="assistant-ball" type="button" aria-label="Expand ChatGPT Assistant" aria-expanded="true">
+      <button id="assistant-ball" class="assistant-ball" type="button" aria-label="Expand ChatGPT Mirror" aria-expanded="true">
         <span class="ball-glow"></span>
         <span class="ball-core"><span></span><span></span><span></span></span>
       </button>
     </div>
-    <span id="bubble-label" class="sr-only">Open ChatGPT</span>
+    <span id="bubble-label" class="sr-only">Open ChatGPT Mirror</span>
   </div>
   <script src="renderer.js"></script>
 </body>

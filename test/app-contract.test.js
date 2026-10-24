@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
 const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
+const { buildBridgeContextMessage } = require('../desktop/tool-bridge');
 
 test('package starts the local desktop shell and packages desktop assets', () => {
   const pkg = JSON.parse(read('package.json'));
@@ -16,15 +17,49 @@ test('package starts the local desktop shell and packages desktop assets', () =>
 test('expanded and collapsed UI control IDs match the renderer', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
-  for (const id of ['collapse', 'reload-chat', 'accounts', 'open-browser', 'quit', 'assistant-ball']) {
+  for (const id of ['collapse', 'reload-chat', 'accounts', 'open-browser', 'quit', 'assistant-ball', 'threads', 'new-conversation', 'message-list', 'message-input', 'send-message', 'load-earlier', 'load-newer']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing UI control: ' + id);
     assert.ok(renderer.includes("'" + id + "'"), 'renderer does not bind UI control: ' + id);
   }
 });
 
+test('the visible surface is a bounded native mirror, not the embedded ChatGPT page', () => {
+  const main = read('desktop', 'main.js');
+  const html = read('desktop', 'index.html');
+  const renderer = read('desktop', 'renderer.js');
+  const mirror = read('desktop', 'conversation-mirror.js');
+  const bridge = read('desktop', 'tool-bridge.js');
+  assert.ok(html.includes('ChatGPT Mirror'));
+  assert.ok(html.includes('Active ChatGPT conversation mirror'));
+  assert.ok(html.includes('Message ChatGPT in this conversation'));
+  assert.ok(main.includes('require(\'./conversation-mirror\')'));
+  assert.ok(main.includes('x: -viewportWidth - 100'));
+  assert.ok(main.includes('const TRANSPORT_CSS'));
+  assert.ok(main.includes('#stage-slideover-sidebar'));
+  assert.ok(main.includes('optimizeChatTransport(chatView.webContents)'));
+  assert.ok(main.includes('contents.insertCSS(TRANSPORT_CSS)'));
+  assert.ok(bridge.includes("sendInternal('mirror-refresh', 'update'"));
+  assert.ok(bridge.includes('new MutationObserver(scheduleScan)'));
+  assert.ok(bridge.includes('document.addEventListener(\'input\', scheduleMirrorRefresh, true)'));
+  assert.ok(main.includes('syncConversationMirror(false).catch(() => {}), 5000'));
+  assert.ok(main.includes('overlay:mirror-snapshot'));
+  assert.ok(main.includes('overlay:mirror-send-message'));
+  assert.ok(main.includes('settings.lastConversationUrl'));
+  assert.ok(mirror.includes('const maxMessages = 16'));
+  assert.ok(mirror.includes('rect.bottom > 0 && rect.top < window.innerHeight'));
+  assert.ok(mirror.includes('scrollConversationViewport'));
+  assert.ok(renderer.includes('onMirrorSnapshot'));
+  assert.ok(renderer.includes('listMirrorConversations'));
+  assert.ok(renderer.includes('sendMirrorMessage'));
+  assert.ok(renderer.includes('snapshot.signedIn === false'));
+  assert.ok(!html.includes('iframe'));
+});
+
 test('remote ChatGPT content uses a separate isolated WebContentsView', () => {
   const main = read('desktop', 'main.js');
   assert.ok(main.includes("new WebContentsView("));
+  assert.ok(main.includes("windowRef.loadURL(getActiveConversationUrl() || 'https://chatgpt.com/auth/login')"));
+  assert.ok(main.includes('function createChatGPTSessionWindow()'));
   assert.ok(main.includes("partition: SESSION_PARTITION"));
   assert.ok(main.includes("contents.setWindowOpenHandler("));
   assert.ok(main.includes("contents.on('will-navigate'"));
@@ -71,20 +106,46 @@ test('remote session allows sanitized clipboard write only', () => {
   assert.ok(main.includes('return allowedPermissions.has(permission)'));
 });
 
-test('desktop app wires the local tool bridge into the ChatGPT view', () => {
+test('automatic tool setup does not disclose an absolute local workspace path', () => {
+  const localPath = 'C:\\Users\\PrivateUser\\Projects\\sample';
+  const message = buildBridgeContextMessage({ workspaceRoot: localPath });
+  assert.ok(message.includes('Use workspace-relative paths'));
+  assert.equal(message.includes(localPath), false);
+  assert.equal(message.includes('PrivateUser'), false);
+  assert.ok(message.includes('assistant_tool'));
+});
+
+test('desktop app runs local assistant_tool requests inside the same ChatGPT conversation', () => {
   const main = read('desktop', 'main.js');
   const bridge = read('desktop', 'tool-bridge.js');
+  const protocol = read('desktop', 'command-protocol.js');
+  const runner = read('desktop', 'tool-runner.js');
   assert.ok(main.includes("require('./tool-runner')"));
   assert.ok(main.includes("require('./tool-bridge')"));
   assert.ok(main.includes("String(targetUrl).startsWith('assistant-tool:')"));
-  assert.ok(main.includes("toolBridge.installChatToolBridge()"));
-  assert.ok(bridge.includes("language-assistant_tool"));
-  assert.ok(bridge.includes("toolCallArmed = false"));
-  assert.ok(bridge.includes("button[data-testid=\"stop-button\"]"));
-  assert.ok(bridge.includes("const latestUser = users.length ? users[users.length - 1] : null"));
-  assert.ok(bridge.includes("break; // One app tool call per assistant response"));
+  assert.ok(main.includes('toolBridge.installChatToolBridge()'));
+  assert.ok(bridge.includes('language-assistant_tool'));
+  assert.ok(bridge.includes('parseToolCall(raw)'));
+  assert.ok(bridge.includes('await runTool(request.tool, request.args, request.callId)'));
+  assert.ok(bridge.includes('submitMessageToChat'));
+  assert.ok(bridge.includes('initializeCurrentConversation'));
+  assert.ok(bridge.includes('buildBridgeContextMessage'));
+  assert.ok(bridge.includes('if (latest === message)'));
+  const bootstrap = bridge.slice(bridge.indexOf('async function initializeCurrentConversation'), bridge.indexOf('async function handleSlash'));
+  assert.ok(bootstrap.includes('submitMessageToChat(buildBridgeContextMessage())'));
+  assert.ok(bootstrap.includes('composer_has_draft'));
+  assert.ok(bootstrap.includes('setTimeout'));
+  assert.ok(!bootstrap.includes('returnMessageToChat'));
+  assert.ok(bridge.includes('bootstrapSignaled'));
+  assert.ok(main.includes('hasBridgeBootstrap'));
+  assert.ok(main.includes('recordBridgeBootstrap'));
+  assert.ok(runner.includes('function executeTool'));
+  assert.ok(protocol.includes('assistant_tool'));
+  assert.ok(!main.includes("require('./repository-bridge')"));
+  assert.ok(bridge.includes('runGitOperation(call)'));
+  assert.ok(bridge.includes('User-defined Git hooks are disabled during this operation'));
+  assert.ok(!bridge.includes('.chatgpt-bridge/requests/'));
 });
-
 test('collapsing releases focus so the previous app can remain active', () => {
   const main = read('desktop', 'main.js');
   const toggle = main.slice(main.indexOf('function toggleOverlay()'), main.indexOf('function assertLocalUi'));
@@ -95,7 +156,7 @@ test('collapsing releases focus so the previous app can remain active', () => {
 });
 
 
-test('expanded tool catalogue is wired through the same ChatGPT page bridge', () => {
+test('local tool catalogue is exposed without duplicating ChatGPT GitHub access', () => {
   const runner = read('desktop', 'tool-runner.js');
   const bridge = read('desktop', 'tool-bridge.js');
   const protocol = read('desktop', 'command-protocol.js');
@@ -103,14 +164,14 @@ test('expanded tool catalogue is wired through the same ChatGPT page bridge', ()
     'environment_info', 'directory_tree', 'file_info', 'git_log', 'git_show',
     'git_branches', 'git_changed_files', 'discover_instructions', 'create_directory',
     'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit',
-    'github_status', 'github_api'
+    'git_fetch', 'git_pull', 'git_push', 'git_clone'
   ]) {
     assert.ok(runner.includes(tool) || bridge.includes(tool), 'missing tool implementation: ' + tool);
     assert.ok(protocol.includes(tool), 'tool protocol does not accept: ' + tool);
   }
-  assert.ok(bridge.includes('language-assistant_tool'));
-  assert.ok(bridge.includes('githubAuth.requestApi(args)'));
-    assert.ok(bridge.includes("requiresApproval: String(args.method || 'GET').toUpperCase() !== 'GET'"));
+  assert.ok(!bridge.includes("githubAuth.requestApi(args)"));
+  assert.ok(!protocol.includes("'github_api'"));
+  assert.ok(protocol.includes("case 'github': return { special: 'github_status' }"));
 });
 
 test('account login is isolated from the remote page and protects the GitHub token', () => {
@@ -123,10 +184,18 @@ test('account login is isolated from the remote page and protects the GitHub tok
   assert.ok(main.includes("safeStorage"));
   assert.ok(auth.includes('safeStorage.encryptString'));
   assert.ok(auth.includes('safeStorage.decryptString'));
-  assert.ok(auth.includes('BLOCKED_PATH_SEGMENTS'));
+  assert.ok(auth.includes('runGitOperation'));
+  assert.ok(auth.includes('GIT_CONFIG_VALUE_0'));
+  assert.ok(auth.includes("GIT_CONFIG_KEY_2: 'core.hooksPath'"));
+  assert.ok(auth.includes('chatgpt-assistant-git-hooks-'));
+  assert.ok(!auth.includes('requestApi(args)'));
   assert.ok(accountsHtml.includes('github-client-id'));
+  assert.ok(accountsHtml.includes('local repository operations'));
+  assert.ok(accountsHtml.includes('separate from ChatGPT\'s existing GitHub integration'));
+  assert.ok(!accountsHtml.includes('github-repository'));
   assert.ok(accountsHtml.includes('chatgpt-login'));
   assert.ok(accountsJs.includes('startGitHubLogin'));
   assert.ok(!auth.includes('localStorage'));
-  assert.ok(!auth.includes('process.env'));
+  assert.ok(auth.includes('GIT_TERMINAL_PROMPT'));
+  assert.ok(!auth.includes('github_api'));
 });

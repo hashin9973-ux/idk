@@ -29,30 +29,22 @@ test('additional aliases map to supported local tools', () => {
 test('workspace and coding mode are app-owned special commands', () => {
   assert.equal(commands.parseSlashCommand('/workspace').special, 'workspace');
   assert.equal(commands.parseSlashCommand('/tools').special, 'coding_mode');
+  assert.ok(commands.HELP.includes('assistant_tool'));
+  assert.ok(commands.HELP.includes('app GitHub credential'));
   assert.equal(commands.parseSlashCommand('/plan make a small feature').special, 'plan_mode');
   assert.equal(commands.parseSlashCommand('/review').special, 'review_mode');
   assert.ok(commands.HELP.includes('/exec'));
 });
 
-test('assistant_tool blocks are validated and reject arbitrary tool names', () => {
-  assert.deepEqual(commands.parseToolCall('{"version":1,"tool":"read_file","args":{"path":"src/index.js"},"call_id":"test-1"}'),
-    { tool: 'read_file', args: { path: 'src/index.js' }, callId: 'test-1' });
-  assert.throws(() => commands.parseToolCall('{"tool":"run_shell","args":{"command":"whoami"}}'), /Unknown local tool/);
-  assert.throws(() => commands.parseToolCall('{"tool":"read_file","args":{},"unexpected":true}'), /Unsupported top-level/);
-  assert.equal(commands.parseSlashCommand('/not-a-local-command'), null);
-});
-
-
-test('expanded local tools are recognized by the fenced tool protocol', () => {
+test('expanded local tools are recognized by the direct assistant_tool protocol', () => {
   const tools = [
     'environment_info', 'directory_tree', 'file_info', 'git_log', 'git_show',
     'git_branches', 'git_changed_files', 'discover_instructions', 'create_directory',
     'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit',
-    'github_status', 'github_api'
+    'git_fetch', 'git_pull', 'git_push', 'git_clone'
   ];
   for (const tool of tools) {
-    const parsed = commands.parseToolCall(JSON.stringify({ version: 1, tool, args: {} }));
-    assert.equal(parsed.tool, tool);
+    assert.equal(commands.TOOL_NAMES.has(tool), true, 'missing repository tool: ' + tool);
   }
 });
 
@@ -68,5 +60,32 @@ test('new slash commands map to the expected filesystem and Git tools', () => {
   assert.deepEqual(commands.parseSlashCommand('/rm src/a.txt'), { tool: 'delete_path', args: { path: 'src/a.txt' } });
   assert.deepEqual(commands.parseSlashCommand('/branch feature/example'), { tool: 'git_create_branch', args: { name: 'feature/example' } });
   assert.deepEqual(commands.parseSlashCommand('/switch main'), { tool: 'git_switch_branch', args: { name: 'main' } });
-  assert.deepEqual(commands.parseSlashCommand('/github'), { tool: 'github_status', args: {} });
+  assert.deepEqual(commands.parseSlashCommand('/github'), { special: 'github_status' });
+  assert.deepEqual(commands.parseSlashCommand('/fetch'), { tool: 'git_fetch', args: { remote: 'origin' } });
+  assert.deepEqual(commands.parseSlashCommand('/fetch upstream'), { tool: 'git_fetch', args: { remote: 'upstream' } });
+  assert.deepEqual(commands.parseSlashCommand('/pull'), { tool: 'git_pull', args: {} });
+  assert.deepEqual(commands.parseSlashCommand('/pull upstream develop'), { tool: 'git_pull', args: { remote: 'upstream', branch: 'develop' } });
+  assert.deepEqual(commands.parseSlashCommand('/push origin main'), { tool: 'git_push', args: { remote: 'origin', branch: 'main' } });
+  assert.deepEqual(commands.parseSlashCommand('/clone owner/project my-project main'), { tool: 'git_clone', args: { repository: 'owner/project', path: 'my-project', branch: 'main' } });
+});
+
+test('model-facing local tools do not include a duplicate GitHub API credential tool', () => {
+  assert.equal(commands.TOOL_NAMES.has('github_api'), false);
+  assert.equal(commands.TOOL_NAMES.has('github_status'), false);
+});
+
+test('assistant_tool request parser validates local tool calls before execution', () => {
+  assert.deepEqual(commands.parseToolCall('{"version":1,"tool":"read_file","args":{"path":"src/index.js"},"call_id":"test-1"}'), {
+    tool: 'read_file', args: { path: 'src/index.js' }, callId: 'test-1'
+  });
+  assert.deepEqual(commands.parseToolCall('{"version":1,"tool":"git_push","args":{"remote":"origin"}}'), {
+    tool: 'git_push', args: { remote: 'origin' }, callId: null
+  });
+  assert.throws(() => commands.parseToolCall('not json'), /valid JSON/);
+  assert.throws(() => commands.parseToolCall('{"version":2,"tool":"read_file"}'), /protocol version/);
+  assert.throws(() => commands.parseToolCall('{"version":1,"tool":"github_api","args":{}}'), /Unknown local tool/);
+  assert.throws(() => commands.parseToolCall('{"version":1,"tool":"read_file","args":{},"unexpected":true}'), /Unsupported top-level/);
+  assert.throws(() => commands.parseToolCall('{"version":1,"tool":"read_file","args":[]}'), /args must be a JSON object/);
+  assert.throws(() => commands.parseToolCall('{"version":1,"tool":"read_file","args":{},"call_id":"../secret"}'), /call_id must be/);
+  assert.throws(() => commands.parseToolCall('x'.repeat(24001)), /under 24,000/);
 });

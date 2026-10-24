@@ -4,6 +4,18 @@ contextBridge.exposeInMainWorld('assistantOverlay', Object.freeze({
   collapse: () => ipcRenderer.invoke('overlay:collapse'),
   expand: () => ipcRenderer.invoke('overlay:expand'),
   reloadChat: () => ipcRenderer.invoke('overlay:reload-chat'),
+  getMirrorSnapshot: () => ipcRenderer.invoke('overlay:mirror-snapshot'),
+  sendMirrorMessage: (message) => ipcRenderer.invoke('overlay:mirror-send-message', message),
+  listMirrorConversations: () => ipcRenderer.invoke('overlay:mirror-list-conversations'),
+  openMirrorConversation: (conversationId) => ipcRenderer.invoke('overlay:mirror-open-conversation', conversationId),
+  newMirrorConversation: () => ipcRenderer.invoke('overlay:mirror-new-conversation'),
+  scrollMirrorConversation: (direction) => ipcRenderer.invoke('overlay:mirror-scroll', direction),
+  onMirrorSnapshot(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, snapshot) => callback(snapshot && typeof snapshot === 'object' ? snapshot : {});
+    ipcRenderer.on('overlay:mirror-snapshot', listener);
+    return () => ipcRenderer.removeListener('overlay:mirror-snapshot', listener);
+  },
   openInBrowser: () => ipcRenderer.invoke('overlay:open-in-browser'),
   quit: () => ipcRenderer.invoke('overlay:quit'),
   selectWorkspace: () => ipcRenderer.invoke('overlay:select-workspace'),
