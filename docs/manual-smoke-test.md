@@ -1,6 +1,6 @@
 # Manual Windows Smoke Test
 
-Use this checklist after downloading the Windows installer from a successful run of the [working-branch CI workflow](https://github.com/hashin9973-ux/idk/actions/runs/40097937592).
+Use this checklist after downloading the Windows installer from the latest successful [working-branch CI build](https://github.com/hashin9973-ux/idk/actions/workflows/validate.yml). The Actions run's **Artifacts** section contains the `Windows-Repository-Bridge-...` ZIP; extract it to get the installer.
 
 This is a manual test because GitHub Actions cannot prove the app can connect to the user's actual Windows machine or that the ChatGPT GitHub integration can read the same mailbox.
 
