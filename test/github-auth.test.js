@@ -294,6 +294,18 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.equal(writeCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
   assert.equal(JSON.parse(writeCall.options.body).branch, 'bridge-mailbox');
 
+  for (const folder of ['requests', 'results', 'claims', 'state']) {
+    await auth.requestApi({
+      method: 'PUT',
+      path: '/repos/example/private-repo/contents/bridge/' + folder + '/.gitkeep',
+      body: {
+        message: '[local bridge] folder marker',
+        content: Buffer.from(JSON.stringify({ purpose: 'mailbox folder marker' })).toString('base64'),
+        branch: 'bridge-mailbox'
+      }
+    });
+  }
+
   const beforeRejectedCalls = calls.length;
   await assert.rejects(auth.requestApi({ method: 'GET', path: '/user' }), /outside the configured repository mailbox/i);
   await assert.rejects(auth.requestApi({
