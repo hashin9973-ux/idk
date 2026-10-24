@@ -482,8 +482,13 @@ function createRepositoryBridge(deps) {
       for (const filename of pending) {
         if (!running) break;
         await processRequest(filename);
-        if (pendingCount > 0) pendingCount--;
+      }
+      if (pending.length) {
+        const finalResults = await listFolder('bridge/results');
+        const finalCompletedIds = new Set(finalResults.map(file => file.name));
+        pendingCount = sorted.filter(filename => !finalCompletedIds.has(filename)).length;
         announce();
+        await publishState(true);
       }
     } catch (error) {
       lastError = cleanError(error.message);
