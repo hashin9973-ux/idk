@@ -1,5 +1,6 @@
 const path = require('node:path');
 const fs = require('node:fs');
+const { execFileSync } = require('node:child_process');
 const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
@@ -101,6 +102,22 @@ function getWorkspaceRoot() {
     settings.workspaceRoot = path.join(app.getPath('documents'), 'ChatGPTWorkspace');
   }
   return path.resolve(settings.workspaceRoot);
+}
+
+function getWorkspaceGitHubRemotes() {
+  const output = execFileSync('git', ['remote', '-v'], {
+    cwd: getWorkspaceRoot(),
+    encoding: 'utf8',
+    timeout: 8000,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
+  const remotes = [];
+  for (const line of output.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 2 && parts[1]) remotes.push(parts[1]);
+  }
+  return [...new Set(remotes)];
 }
 
 function ensureWorkspaceRoot() {
@@ -644,6 +661,7 @@ if (!hasInstanceLock) {
     repositoryBridge = createRepositoryBridge({
       githubAuth,
       dataDir: app.getPath('userData'),
+      getWorkspaceRepositories: getWorkspaceGitHubRemotes,
       pollIntervalMs: 5000,
       executeRequest: (request, context) => toolBridge.runTool(request.tool, request.args, request.callId, {
         returnToChat: false,
