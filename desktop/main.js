@@ -90,19 +90,6 @@ function readGitHubCliToken() {
   });
 }
 
-async function clearGitHubCliCredentials() {
-  try {
-    await execFileAsync(resolveGitHubCliPath(), ['auth', 'logout', '--hostname', 'github.com'], {
-      encoding: 'utf8',
-      timeout: 12000,
-      windowsHide: true,
-      env: githubCliEnvironment()
-    });
-  } catch {
-    // No saved GitHub CLI login is normal during first-run setup.
-  }
-}
-
 function cleanLoginOutput(value) {
   return String(value || '')
     .replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')
@@ -131,8 +118,8 @@ async function completeGitHubCliLogin(login) {
   login.status = 'finishing';
   const token = await readGitHubCliToken();
   const state = await githubAuth.importToken(token);
-  // The app retains its own token encrypted in Electron safeStorage.
-  await clearGitHubCliCredentials();
+  // Keep the CLI's own OS-backed credential store untouched; the app keeps its
+  // independently encrypted token in Electron safeStorage.
   login.login = state.login;
   login.status = 'authenticated';
 }
@@ -418,9 +405,7 @@ function registerIpc() {
     pendingGitHubCliLogin = null;
     const current = await githubAuth.getState();
     if (current.authenticated) return { status: 'authenticated', login: current.login, mode: 'github-cli' };
-    // Do not silently adopt a global GitHub CLI session. A click should start
-    // this app's own browser authorization when its encrypted token is absent.
-    await clearGitHubCliCredentials();
+    // Explicitly launch the browser flow instead of silently adopting a CLI login.
     const flow = startGitHubCliLogin();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.setAlwaysOnTop(false);
