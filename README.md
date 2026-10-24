@@ -95,7 +95,7 @@ For a local file that you explicitly want to share, request the `upload_workspac
 
 **Execution and planning:** `shell`, `run_tests`, `update_plan`, and the mailbox control request `refresh_environment_context`.
 
-Read-only inspection and path-checked file operations inside the selected workspace run automatically. Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like reads, and file uploads require per-operation native approval. A request stored in GitHub is **not** approval to execute it. ChatGPT cannot bypass the local approval policy through request arguments.
+Read-only inspection and path-checked file operations inside the selected workspace run automatically. Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like operations, and file uploads require per-operation native approval. A request stored in GitHub is **not** approval to execute it. ChatGPT cannot bypass the local approval policy through request arguments.
 
 **PowerShell is not sandboxed.** An approved command runs as the signed-in Windows user and may access files outside the selected workspace. Workspace path checks reject traversal and symlink escapes for workspace file tools, but they do not sandbox an approved shell command.
 
