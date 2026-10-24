@@ -105,11 +105,11 @@ function createRepositoryBridge(deps) {
 
   function normalizeGitHubRemote(remote) {
     let value = String(remote || '').trim();
-    value = value.replace(/^git@github\\.com:/i, '');
-    value = value.replace(/^ssh:\/\/git@github\\.com\//i, '');
-    value = value.replace(/^https?:\/\/github\\.com\//i, '');
-    value = value.replace(/^git:\/\/github\\.com\//i, '');
-    value = value.replace(/\\.git$/i, '').replace(/\/+$/, '');
+    value = value.replace(/^git@github\.com:/i, '');
+    value = value.replace(/^ssh:\/\/git@github\.com\//i, '');
+    value = value.replace(/^https?:\/\/github\.com\//i, '');
+    value = value.replace(/^git:\/\/github\.com\//i, '');
+    value = value.replace(/\.git$/i, '').replace(/\/+$/, '');
     const match = value.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
     return match ? (match[1] + '/' + match[2]).toLowerCase() : null;
   }
@@ -425,9 +425,9 @@ module.exports = {
   RESULT_DIR,
   normalizeGitHubRemote: (remote) => {
     let value = String(remote || '').trim();
-    value = value.replace(/^git@github\\.com:/i, '').replace(/^ssh:\/\/git@github\\.com\//i, '');
-    value = value.replace(/^https?:\/\/github\\.com\//i, '').replace(/^git:\/\/github\\.com\//i, '');
-    value = value.replace(/\\.git$/i, '').replace(/\/+$/, '');
+    value = value.replace(/^git@github\.com:/i, '').replace(/^ssh:\/\/git@github\.com\//i, '');
+    value = value.replace(/^https?:\/\/github\.com\//i, '').replace(/^git:\/\/github\.com\//i, '');
+    value = value.replace(/\.git$/i, '').replace(/\/+$/, '');
     const match = value.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
     return match ? (match[1] + '/' + match[2]).toLowerCase() : null;
   },
