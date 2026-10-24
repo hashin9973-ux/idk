@@ -99,3 +99,31 @@ test('tool capabilities advertise the separate upload and context-refresh contro
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('tool bridge preserves large local text so the repository layer can externalize the complete output', async () => {
+  const root = fixture();
+  try {
+    const longText = 'full-output\\n' + 'Z'.repeat(220000);
+    const largeOutputTools = {
+      ...localTools,
+      async executeTool(workspaceRoot, tool, args) {
+        if (tool === 'read_file') return { path: args.path, content: longText };
+        return localTools.executeTool(workspaceRoot, tool, args);
+      }
+    };
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 1 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools: largeOutputTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('read_file', { path: 'large.txt' }, 'req-large-read');
+    assert.equal(result.ok, true);
+    assert.equal(result.result.content, longText);
+    assert.equal(result.truncatedForMailbox, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
