@@ -116,6 +116,7 @@ test('desktop app runs local assistant_tool requests inside the same ChatGPT con
   assert.ok(runner.includes('function executeTool'));
   assert.ok(protocol.includes('assistant_tool'));
   assert.ok(!main.includes("require('./repository-bridge')"));
+  assert.ok(bridge.includes('runGitOperation(call)'));
   assert.ok(!bridge.includes('.chatgpt-bridge/requests/'));
 });
 test('collapsing releases focus so the previous app can remain active', () => {
@@ -135,15 +136,17 @@ test('local tool catalogue is exposed without duplicating ChatGPT GitHub access'
   for (const tool of [
     'environment_info', 'directory_tree', 'file_info', 'git_log', 'git_show',
     'git_branches', 'git_changed_files', 'discover_instructions', 'create_directory',
-    'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit'
+    'move_path', 'delete_path', 'git_create_branch', 'git_switch_branch', 'git_commit',
+    'git_fetch', 'git_pull', 'git_push', 'git_clone'
   ]) {
     assert.ok(runner.includes(tool) || bridge.includes(tool), 'missing tool implementation: ' + tool);
     assert.ok(protocol.includes(tool), 'tool protocol does not accept: ' + tool);
   }
-  assert.ok(bridge.includes('deliverRepositoryResult'));
   assert.ok(!bridge.includes("githubAuth.requestApi(args)"));
   assert.ok(!protocol.includes("'github_api'"));
   assert.ok(!protocol.includes("'github_status'"));
+  assert.ok(protocol.includes("case 'github': return { special: 'github_status' }"));
+  assert.ok(!bridge.includes('githubAuth.requestApi(args)'));
 });
 
 test('account login is isolated from the remote page and protects the GitHub token', () => {
