@@ -659,7 +659,7 @@ function createRepositoryBridge(deps) {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
-      status: safeReport && safeReport.ok ? 'completed' : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      status: safeReport && safeReport.ok ? (artifactErrors.length ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
       created_at: remote.value.created_at,
       completed_at: new Date().toISOString(),
       result: safeReport,
