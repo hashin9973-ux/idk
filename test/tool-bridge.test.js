@@ -234,3 +234,82 @@ test('native approval details escape remote newlines and bidirectional control c
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('batch runs multiple tools in one bridge request and can pass a prior result into a later call', async () => {
+  const root = fixture();
+  try {
+    fs.writeFileSync(path.join(root, 'source.txt'), 'hello from batch\n', 'utf8');
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 1 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('batch', { steps: [
+      { id: 'read', tool: 'read_file', args: { path: 'source.txt' } },
+      { id: 'copy', tool: 'write_file', args: { path: 'copy.txt', content: { '$ref': 'read.result.content' } } },
+      { id: 'verify', tool: 'read_file', args: { path: 'copy.txt' } }
+    ] }, 'req-batch-reference');
+    assert.equal(result.ok, true);
+    assert.equal(result.result.completed_steps, 3);
+    assert.equal(result.result.steps[1].ok, true);
+    assert.equal(result.result.steps[2].result.content, 'hello from batch\n');
+    assert.equal(fs.readFileSync(path.join(root, 'copy.txt'), 'utf8'), 'hello from batch\n');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('batch applies native approval per protected step and stops after a declined operation', async () => {
+  const root = fixture();
+  try {
+    let approvalCalls = 0;
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvalCalls++; return { response: 1 }; } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('batch', { steps: [
+      { id: 'inspect', tool: 'project_status', args: {} },
+      { id: 'write', tool: 'shell', args: { command: "Set-Content -LiteralPath 'must-not-exist.txt' -Value 'no'" } },
+      { id: 'later', tool: 'project_status', args: {} }
+    ] }, 'req-batch-approval');
+    assert.equal(result.ok, false);
+    assert.equal(approvalCalls, 1);
+    assert.equal(result.result.stopped_at, 'write');
+    assert.equal(result.result.steps.length, 2);
+    assert.equal(result.result.steps[1].cancelled, true);
+    assert.equal(fs.existsSync(path.join(root, 'must-not-exist.txt')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('tool capabilities expose parameter schemas and the batch reference syntax', async () => {
+  const root = fixture();
+  try {
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 1 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('get_capabilities', {}, 'req-schema-catalog');
+    assert.equal(result.ok, true);
+    const tools = result.result.tools;
+    const batch = tools.find(item => item.name === 'batch');
+    const write = tools.find(item => item.name === 'write_file');
+    assert.equal(batch.parameters.properties.steps.type, 'array');
+    assert.deepEqual(write.parameters.required, ['path', 'content']);
+    assert.match(batch.description, /one mailbox request/i);
+    assert.equal(result.result.tool_calling.reference_syntax, '{\"$ref\":\"priorStepId.result.content\"}');
+    assert.equal(tools.some(item => item.name === 'github_api'), false);
+    assert.equal(tools.some(item => item.name === 'github_status'), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
