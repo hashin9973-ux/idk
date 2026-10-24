@@ -120,6 +120,12 @@ test('desktop app runs local assistant_tool requests inside the same ChatGPT con
   assert.ok(bridge.includes('submitMessageToChat'));
   assert.ok(bridge.includes('initializeCurrentConversation'));
   assert.ok(bridge.includes('buildBridgeContextMessage'));
+  assert.ok(bridge.includes('if (latest === message)'));
+  const bootstrap = bridge.slice(bridge.indexOf('async function initializeCurrentConversation'), bridge.indexOf('async function handleSlash'));
+  assert.ok(bootstrap.includes('submitMessageToChat(buildBridgeContextMessage())'));
+  assert.ok(bootstrap.includes('composer_has_draft'));
+  assert.ok(bootstrap.includes('setTimeout'));
+  assert.ok(!bootstrap.includes('returnMessageToChat'));
   assert.ok(bridge.includes('bootstrapSignaled'));
   assert.ok(main.includes('hasBridgeBootstrap'));
   assert.ok(main.includes('recordBridgeBootstrap'));
