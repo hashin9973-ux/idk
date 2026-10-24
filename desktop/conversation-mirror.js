@@ -30,6 +30,17 @@ function extractConversationSnapshot() {
     const rect = node.getBoundingClientRect();
     const copy = node.cloneNode(true);
     copy.querySelectorAll('button, svg, [role="toolbar"], [data-testid*="feedback"], [aria-label*="Copy"]').forEach(item => item.remove());
+    // The page DOM contains rendered code nodes, not literal Markdown fences.
+    // Convert them to bounded fences so the native renderer can preserve code formatting.
+    for (const code of Array.from(copy.querySelectorAll('pre code'))) {
+      const pre = code.closest('pre');
+      if (!pre) continue;
+      const languageMatch = String(code.className || '').match(/(?:^|\s)language-([A-Za-z0-9_+-]+)/);
+      const language = languageMatch ? languageMatch[1] : '';
+      const codeText = String(code.innerText || code.textContent || '').replace(/\n$/, '');
+      const fencedText = '\n\`\`\`' + language + '\n' + codeText + '\n\`\`\`\n';
+      pre.replaceWith(document.createTextNode(fencedText));
+    }
     let text = String(copy.innerText || copy.textContent || '').trim();
     const imageAlts = Array.from(node.querySelectorAll('img[alt]'))
       .map(img => String(img.getAttribute('alt') || '').trim()).filter(Boolean).slice(0, 6);
