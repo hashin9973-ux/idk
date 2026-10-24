@@ -31,6 +31,16 @@ The ChatGPT GitHub integration and the app's GitHub authorization are separate. 
 
 Use the same repository and branch in the app dashboard and in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
 
+## Sandbox and approval boundary
+
+The shared mailbox repository uses `sandbox/` for ordinary ChatGPT-authored work files. Keep normal files, drafts, project notes, and deliverables there. The `bridge/` directory is the transport layer: create new immutable requests only in `bridge/requests/<id>.json`, read results from `bridge/results/`, and retrieve context from `bridge/context/`. Do not edit or delete other bridge files.
+
+On Windows, the **selected local workspace folder is the file-operation sandbox**. Path-based file tools reject absolute paths, parent traversal, and symlink escapes. Ordinary workspace file edits and directory operations run automatically so routine coding work does not need repeated prompts. The app still requires native approval for PowerShell commands, tests, Git writes, file uploads, workspace initialization, and sensitive-file reads. PowerShell itself is not sandboxed: an approved command can access files outside the selected workspace.
+
+Important distinction: `sandbox/` is an operating convention for ChatGPT's GitHub work area, not a GitHub-enforced path permission. GitHub repository access is granted at repository level. Keep the mailbox private and protect the app source in its separate repository. Local path validation is enforced by the desktop app; it does not constrain actions performed directly through the GitHub integration.
+
+A GitHub request is never approval to execute a command. The local app's policy cannot be overridden by request arguments.
+
 ## Request → tool result → next action
 
 Create one uniquely named JSON file on the configured branch at `bridge/requests/<request_id>.json`.
@@ -85,7 +95,7 @@ For a local file that you explicitly want to share, request the `upload_workspac
 
 **Execution and planning:** `shell`, `run_tests`, `update_plan`, and the mailbox control request `refresh_environment_context`.
 
-Read-only inspection generally runs automatically. File mutations, deletes, patches, Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like reads, and file uploads require per-operation native approval. A request stored in GitHub is **not** approval to execute it. ChatGPT cannot bypass the local approval dialog through request arguments.
+Read-only inspection and path-checked file operations inside the selected workspace run automatically. Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like reads, and file uploads require per-operation native approval. A request stored in GitHub is **not** approval to execute it. ChatGPT cannot bypass the local approval policy through request arguments.
 
 **PowerShell is not sandboxed.** An approved command runs as the signed-in Windows user and may access files outside the selected workspace. Workspace path checks reject traversal and symlink escapes for workspace file tools, but they do not sandbox an approved shell command.
 
