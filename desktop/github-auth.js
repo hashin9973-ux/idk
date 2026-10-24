@@ -105,7 +105,8 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       configured: typeof settings.clientId === 'string' && OAUTH_CLIENT_ID_PATTERN.test(settings.clientId),
       clientId: typeof settings.clientId === 'string' ? settings.clientId : '',
       authenticated: false,
-      login: ''
+      login: '',
+      ...getBridgeConfig()
     };
     const token = getToken();
     if (!token) return state;
