@@ -86,7 +86,7 @@ function createToolBridge(deps) {
       type: 'warning',
       title: 'Approve local coding tool',
       message: 'Allow ChatGPT Assistant to run "' + tool + '"?',
-      detail: approvalDetail(tool, args, root) + '\n\nThis approval applies to this operation only.',
+      detail: approvalDetail(tool, args, root) + (source ? '\n\nSource: GitHub repository bridge\nRepository: ' + source.repository + '\nBranch: ' + source.branch + '\nRequest ID: ' + source.callId + '\nThe result will be committed to this repository.' : '') + '\n\nThis approval applies to this operation only.',
       buttons: ['Approve once', 'Cancel'],
       defaultId: 1,
       cancelId: 1,
@@ -292,14 +292,15 @@ function createToolBridge(deps) {
       return;
     }
     if (target.hostname === 'call') {
-      const raw = target.searchParams.get('payload') || '';
-      try {
-        const request = parseToolCall(raw);
-        await runTool(request.tool, request.args, request.callId);
-      } catch (error) {
-        await returnMessageToChat('Invalid assistant_tool request; no local action was executed.\n' +
-          String(error && error.message || error));
-      }
+      // Do not execute direct fenced assistant_tool blocks. The repository is the
+      // request channel; executing this path would bypass the agreed GitHub queue.
+      await returnMessageToChat(
+        'This local tool request was not executed because it bypassed the GitHub repository bridge. ' +
+        'Use the existing ChatGPT GitHub integration to create a unique request JSON file at ' +
+        '.chatgpt-bridge/requests/<call_id>.json on the configured bridge branch, using protocol ' +
+        '"chatgpt-windows-bridge/request-v1". The Windows app will ask for approval, execute it locally, ' +
+        'commit the result to .chatgpt-bridge/results/<call_id>.json, and return the real output here.'
+      );
     }
   }
 
