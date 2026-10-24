@@ -4,6 +4,7 @@ const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
+const { createRepositoryBridge } = require('./repository-bridge');
 const {
   app,
   BrowserWindow,
@@ -46,6 +47,7 @@ let settings = {};
 let saveTimer = null;
 let toolBridge = null;
 let githubAuth = null;
+let repositoryBridge = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -448,7 +450,23 @@ function registerIpc() {
   ipcMain.handle('overlay:github-logout', (event) => {
     assertAccountUi(event);
     if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
-    return githubAuth.logout();
+    const result = githubAuth.logout();
+    if (repositoryBridge) repositoryBridge.pollOnce().catch(() => {});
+    return result;
+  });
+  ipcMain.handle('overlay:github-set-bridge-config', (event, config) => {
+    assertAccountUi(event);
+    if (!githubAuth) throw new Error('GitHub authentication is not initialized.');
+    const saved = githubAuth.setBridgeConfig(config);
+    if (repositoryBridge) repositoryBridge.pollOnce().catch(() => {});
+    return saved;
+  });
+  ipcMain.handle('overlay:repository-bridge-status', (event) => {
+    assertAccountUi(event);
+    return repositoryBridge ? repositoryBridge.getStatus() : {
+      state: 'starting',
+      message: 'Repository bridge is initializing.'
+    };
   });
 }
 
@@ -623,8 +641,25 @@ if (!hasInstanceLock) {
       localTools,
       githubAuth
     });
+    repositoryBridge = createRepositoryBridge({
+      githubAuth,
+      dataDir: app.getPath('userData'),
+      pollIntervalMs: 5000,
+      executeRequest: (request, context) => toolBridge.runTool(request.tool, request.args, request.callId, {
+        returnToChat: false,
+        requireApproval: true,
+        source: { repository: context.repository, branch: context.branch, callId: request.callId }
+      }),
+      notifyResult: record => toolBridge.deliverRepositoryResult(record),
+      onStatus: status => {
+        if (accountsWindow && !accountsWindow.isDestroyed() && !accountsWindow.webContents.isDestroyed()) {
+          accountsWindow.webContents.send('overlay:repository-bridge-status-changed', status);
+        }
+      }
+    });
     registerIpc();
     createMainWindow();
+    repositoryBridge.start();
     registerHotkey();
 
     app.on('activate', () => {
@@ -639,6 +674,7 @@ if (!hasInstanceLock) {
 }
 
 app.on('before-quit', () => {
+  if (repositoryBridge) repositoryBridge.stop();
   clearTimeout(saveTimer);
   globalShortcut.unregisterAll();
 });
