@@ -118,5 +118,4 @@
   });
   window.addEventListener('beforeunload', stopPolling);
   refresh();
-  refreshBridgeStatus();
 })();
