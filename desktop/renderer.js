@@ -12,6 +12,7 @@
   const saveButton = byId('save-config'), workerToggle = byId('worker-toggle'), selectWorkspaceButton = byId('select-workspace');
   const githubStatus = byId('github-status'), githubLogin = byId('github-login'), githubLogout = byId('github-logout');
   const githubCodePanel = byId('github-code-panel'), githubUserCode = byId('github-user-code');
+  const openGitHubOAuthSettingsButton = byId('open-github-oauth-settings');
   const collapseButton = byId('collapse'), quitButton = byId('quit'), ballButton = byId('assistant-ball'), openChatGPTButton = byId('open-chatgpt');
   let busy = false, authBusy = false, currentState = null, githubState = null, authTimer = null;
 
@@ -66,8 +67,10 @@
     } else {
       githubStatus.textContent = githubState.configured ? 'Not connected. Sign in to let the Windows worker access the mailbox.' : 'One-time setup: add your GitHub OAuth client ID in Connection settings.';
       githubStatus.classList.remove('success-text');
-      githubLogin.textContent = authBusy ? 'Waiting for GitHub…' : 'Sign in with GitHub';
-      githubLogin.disabled = authBusy || busy || !githubState.configured;
+      githubLogin.textContent = authBusy ? 'Waiting for GitHub…' : (githubState.configured ? 'Sign in with GitHub' : 'Set up GitHub sign-in');
+      // Keep this entry point clickable: without a client ID it guides the user
+      // to the one-time setup field instead of looking broken/disabled.
+      githubLogin.disabled = authBusy || busy;
       githubLogout.hidden = true;
     }
     if (githubState.clientId && !clientIdInput.value) clientIdInput.value = githubState.clientId;
@@ -158,7 +161,13 @@
     try {
       const existing = await refreshGitHubState();
       if (existing.authenticated) { setMessage('Already connected to GitHub.', 'success'); return; }
-      if (!existing.configured) { settingsPanel.open = true; throw new Error('Add your GitHub OAuth client ID under Connection settings first.'); }
+      if (!existing.configured) {
+        settingsPanel.open = true;
+        clientIdInput.focus();
+        clientIdInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setMessage('GitHub sign-in needs a one-time OAuth App client ID. Use the link under Connection settings, enable Device Flow, paste the Client ID, and save settings.');
+        return;
+      }
       const flow = await window.windowsBridge.startGitHubLogin();
       authBusy = true; renderGitHub(githubState);
       githubUserCode.textContent = flow.userCode || '';
@@ -188,9 +197,17 @@
     } catch (error) { setMessage(error.message || error, 'error'); }
     finally { busy = false; if (currentState) renderState(currentState); }
   });
+  openGitHubOAuthSettingsButton.addEventListener('click', async () => {
+    try {
+      await window.windowsBridge.openGitHubOAuthSettings();
+      setMessage('GitHub Developer settings opened in your default browser. Create an OAuth App, enable Device Flow, then paste its Client ID here.', 'success');
+    } catch (error) { setMessage(error.message || error, 'error'); }
+  });
   openChatGPTButton.addEventListener('click', async () => {
-    try { await window.windowsBridge.openChatGPT(); setMessage('ChatGPT opened in your default browser. Continue using your existing conversation there.', 'success'); }
-    catch (error) { setMessage(error.message || error, 'error'); }
+    try {
+      await window.windowsBridge.openChatGPT();
+      setMessage('ChatGPT login page opened in your default browser. After signing in, use Alt+Tab to return to this app.', 'success');
+    } catch (error) { setMessage(error.message || error, 'error'); }
   });
   workerToggle.addEventListener('click', runWorkerAction);
   collapseButton.addEventListener('click', () => window.windowsBridge.collapse().catch(error => setMessage(error.message || error, 'error')));

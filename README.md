@@ -98,7 +98,7 @@ npm install
 npm start
 ```
 
-1. In **Connection settings**, paste the client ID of a GitHub OAuth App with Device Flow enabled, then choose **Sign in with GitHub**. GitHub opens in your default browser; after approval, the app returns to the foreground.
+1. In **Connection settings**, paste the client ID of a GitHub OAuth App with Device Flow enabled (use the new **Open GitHub Developer settings** link if you haven't created one), then choose **Sign in with GitHub**. GitHub opens in your default browser; after approval, the app returns to the foreground.
 2. Choose the local workspace folder.
 3. Configure `hashin9973-ux/qdqwg` and branch `bridge-mailbox`, then save.
 4. Start the worker. It publishes an environment snapshot to `bridge/context/` and starts polling requests.

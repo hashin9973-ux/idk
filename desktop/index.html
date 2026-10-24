@@ -47,6 +47,19 @@
 
         <div class="subtle-divider"></div>
 
+        <section class="account-row chatgpt-row" aria-labelledby="chatgpt-heading">
+          <div class="section-copy">
+            <p class="eyebrow">CHATGPT</p>
+            <h2 id="chatgpt-heading">ChatGPT browser session</h2>
+            <p class="muted small">Opens the official sign-in page in your default browser. After signing in, switch back to this app with Alt+Tab.</p>
+          </div>
+          <div class="account-actions">
+            <button id="open-chatgpt" class="button secondary" type="button">Sign in to ChatGPT ↗</button>
+          </div>
+        </section>
+
+        <div class="subtle-divider"></div>
+
         <section class="workspace-row" aria-labelledby="workspace-heading">
           <div class="workspace-symbol" aria-hidden="true">⌘</div>
           <div class="workspace-copy">
@@ -73,7 +86,8 @@
               <div class="form-row"><label for="repo-branch">Mailbox branch</label><input id="repo-branch" name="branch" value="bridge-mailbox" maxlength="120" required spellcheck="false" autocomplete="off"></div>
               <div class="form-row"><label for="github-client-id">GitHub OAuth client ID <span class="label-note">one-time setup</span></label><input id="github-client-id" name="clientId" maxlength="100" spellcheck="false" autocomplete="off" placeholder="Paste your OAuth App client ID"></div>
             </div>
-            <p class="muted small">The OAuth App must have Device Flow enabled. Paste only its client ID here—never a password, client secret, or access token.</p>
+            <p class="muted small">This app needs a GitHub OAuth App client ID before sign-in can start. Enable Device Flow, then paste the client ID here. Never paste a password, client secret, or access token.</p>
+            <p class="muted small"><button id="open-github-oauth-settings" class="text-button" type="button">Open GitHub Developer settings to create an OAuth App ↗</button></p>
             <label class="checkbox-label warning-note"><input id="public-warning" name="allowPublicMailbox" type="checkbox"><span>This repository is public, and I understand that requests, results, context, and uploaded files on this branch will be publicly readable.</span></label>
             <div class="settings-actions"><button id="save-config" class="button secondary" type="submit">Save settings</button></div>
           </form>
@@ -91,7 +105,8 @@
 
         <details class="details-panel safety-panel">
           <summary>Safety and ChatGPT connection</summary>
-          <p class="muted small">ChatGPT does not need a separate login inside this app. Use your normal ChatGPT conversation and its GitHub integration to create requests and read results. The app never injects tool output into that conversation. <button id="open-chatgpt" class="text-button" type="button">Open ChatGPT in your browser ↗</button><span class="muted"> Normal ChatGPT web sign-in has no callback to this worker, so use Alt+Tab to return after signing in; the bridge does not access ChatGPT credentials or conversations.</span></p>
+          <p class="muted small">ChatGPT does not need a separate login inside this app. Use your normal ChatGPT conversation and its GitHub integration to create requests and read results. The app never injects tool output into that conversation and cannot access ChatGPT credentials or conversations.</p>
+          <p class="muted small">ChatGPT’s standard website sign-in does not provide this app with a return callback, so after signing in in the browser, use Alt+Tab to return here.</p>
           <p class="muted small">File changes, shell commands, tests, Git writes, and file uploads require a native Windows approval prompt. Approved PowerShell commands run with your Windows account permissions and are not sandboxed.</p>
           <p class="muted small">Use a private mailbox. Never send secrets or private data through the repository.</p>
         </details>

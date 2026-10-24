@@ -311,7 +311,11 @@ function registerIpc() {
   });
   ipcMain.handle('app:open-chatgpt', async event => {
     assertLocalUi(event, 'index.html');
-    return openInBrowserAndYield('https://chatgpt.com/');
+    return openInBrowserAndYield('https://chatgpt.com/auth/login/');
+  });
+  ipcMain.handle('app:open-github-oauth-settings', async event => {
+    assertLocalUi(event, 'index.html');
+    return openInBrowserAndYield('https://github.com/settings/developers');
   });
 }
 

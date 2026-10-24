@@ -25,9 +25,9 @@ test('dashboard consolidates GitHub, workspace, worker and settings into one win
     'collapse', 'quit', 'github-status', 'github-login', 'github-logout', 'github-client-id',
     'repo-owner', 'repo-name', 'repo-branch', 'public-warning', 'bridge-config-form',
     'save-config', 'select-workspace', 'worker-toggle', 'open-chatgpt',
-    'request-count', 'active-request', 'last-poll', 'last-error'
+    'open-github-oauth-settings', 'request-count', 'active-request', 'last-poll', 'last-error'
   ]) assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
-  for (const action of ['saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'getState', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'openChatGPT', 'onBridgeState']) {
+  for (const action of ['saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'getState', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'openChatGPT', 'openGitHubOAuthSettings', 'onBridgeState']) {
     assert.ok(renderer.includes('windowsBridge.' + action), 'renderer does not invoke ' + action);
   }
   assert.doesNotMatch(html, /open-accounts|poll-now|accounts\.html/);
@@ -35,6 +35,8 @@ test('dashboard consolidates GitHub, workspace, worker and settings into one win
   assert.match(html, /publicly readable/i);
   assert.match(html, /PowerShell.*not sandboxed/i);
   assert.match(html, /default browser/i);
+  assert.match(html, /sign in to ChatGPT/i);
+  assert.doesNotMatch(renderer, /githubLogin\.disabled = authBusy \|\| busy \|\| !githubState\.configured/);
 });
 
 test('main process opens login in the system browser and returns focus after GitHub approval', () => {
@@ -47,13 +49,15 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
   assert.match(main, /'app:open-chatgpt'/);
+  assert.match(main, /chatgpt\.com\/auth\/login\//);
+  assert.match(main, /github\.com\/settings\/developers/);
   assert.match(main, /repositoryBridge\.stop\(\)/);
   assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|WebContentsView|conversation-mirror|installChatToolBridge/);
 });
 
 test('preload exposes specific mailbox and login actions without generic Node access', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'openChatGPT', 'getGitHubState', 'setGitHubClientId', 'startGitHubLogin', 'pollGitHubLogin', 'logoutGitHub', 'onBridgeState']) {
+  for (const action of ['getState', 'saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'openChatGPT', 'openGitHubOAuthSettings', 'getGitHubState', 'setGitHubClientId', 'startGitHubLogin', 'pollGitHubLogin', 'logoutGitHub', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /openAccounts|pollNow|node:fs|process\.env|ipcRenderer\.send\(/);

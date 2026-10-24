@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   stopBridge: () => ipcRenderer.invoke('app:stop-bridge'),
   selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
   openChatGPT: () => ipcRenderer.invoke('app:open-chatgpt'),
+  openGitHubOAuthSettings: () => ipcRenderer.invoke('app:open-github-oauth-settings'),
   collapse: () => ipcRenderer.invoke('app:collapse'),
   expand: () => ipcRenderer.invoke('app:expand'),
   quit: () => ipcRenderer.invoke('app:quit'),
