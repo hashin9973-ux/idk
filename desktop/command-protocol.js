@@ -31,7 +31,7 @@ const HELP = [
   'ChatGPT local tool requests are JSON files committed through the existing GitHub integration to .chatgpt-bridge/requests/<call_id>.json.',
   'The Windows app executes one request at a time and commits the result to .chatgpt-bridge/results/<call_id>.json, then returns the result to the same conversation.',
   'Every request from the repository bridge requires native confirmation. Supported local tools are discoverable with get_capabilities. Do not send credentials or secrets into the repository.'
-].join('\\n');
+].join('\n');
 
 function splitArgs(text) {
   const result = [];
