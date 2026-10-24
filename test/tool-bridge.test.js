@@ -153,3 +153,33 @@ test('workspace artifact uploads reject files above 8 MiB without publishing the
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('native approval details escape remote newlines and bidirectional control characters', async () => {
+  const root = fixture();
+  try {
+    let capturedOptions = null;
+    const bridge = createToolBridge({
+      dialog: {
+        async showMessageBox(options) {
+          capturedOptions = options;
+          return { response: 1 };
+        }
+      },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const command = ['Write-Output safe', 'Tool: delete_path', 'Approve once'].join('\n') + '\u202E';
+    const result = await bridge.runTool('shell', { command }, 'req-dialog-injection');
+    assert.equal(result.ok, false);
+    assert.equal(result.cancelled, true);
+    assert.ok(capturedOptions);
+    assert.ok(capturedOptions.detail.includes('Write-Output safe\\nTool: delete_path\\nApprove once'));
+    assert.ok(capturedOptions.detail.includes('[BIDI U+202E]'));
+    assert.equal(capturedOptions.detail.includes(command), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
