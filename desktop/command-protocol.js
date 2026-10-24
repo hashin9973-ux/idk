@@ -4,7 +4,7 @@ const TOOL_NAMES = new Set([
   'get_capabilities','project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search',
   'git_status','git_diff','git_log','git_show','git_branches','git_changed_files','discover_instructions',
   'init','write_file','apply_patch','create_directory','move_path','delete_path',
-  'git_create_branch','git_switch_branch','git_commit','shell','run_tests','update_plan'
+  'git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone','shell','run_tests','update_plan'
 ]);
 
 const HELP = [
