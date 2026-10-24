@@ -4,11 +4,14 @@ const {spawnSync,spawn}=require('node:child_process');
 const MAX_FILE=1024*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=128*1024,MAX_RESULTS=150,MAX_MS=120000;
 const IGNORED=new Set(['.git','node_modules','.venv','venv','dist','build','coverage','.next','.cache','target','bin','obj','__pycache__']);
 function looksSensitiveFile(file){
- const name=path.basename(file).toLowerCase();
- return /^\.env(?:\.|$)/i.test(name) ||
+ const segments=String(file).split(/[\\/]+/).filter(Boolean);
+ return segments.some(segment=>{
+  const name=segment.toLowerCase();
+  return /^\.env(?:\.|$)/i.test(name) ||
    /^\.(?:npmrc|pypirc|netrc|dockerconfigjson)$/i.test(name) ||
    /(?:^|[._-])(credentials?|secrets?|tokens?|api[_-]?keys?|private|auth|id_rsa|id_ed25519|id_ecdsa|id_dsa)(?:[._-]|$)/i.test(name) ||
    /\.(?:pem|pfx|p12|key|jks|kdbx)$/i.test(name);
+ });
 }
 let plan=[];
 
