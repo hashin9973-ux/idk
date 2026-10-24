@@ -317,7 +317,7 @@ test('repository API allows only the configured mailbox contents routes', async 
     path: '/repos/example/private-repo/contents/bridge/context/environment.json',
     body: {
       message: '[local bridge] environment context',
-      content: Buffer.from(JSON.stringify(contextPayload, null, 2) + '\\n').toString('base64'),
+      content: Buffer.from(JSON.stringify(contextPayload, null, 2)).toString('base64'),
       branch: 'bridge-mailbox'
     }
   });
