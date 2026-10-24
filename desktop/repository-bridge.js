@@ -16,6 +16,7 @@ function createRepositoryBridge(deps) {
   const {
     githubAuth,
     dataDir,
+    getWorkspaceRepositories,
     executeRequest,
     notifyResult = async () => {},
     onStatus = () => {},
@@ -100,6 +101,31 @@ function createRepositoryBridge(deps) {
 
   function getConfig() {
     return typeof githubAuth.getBridgeConfig === 'function' ? githubAuth.getBridgeConfig() : {};
+  }
+
+  function normalizeGitHubRemote(remote) {
+    let value = String(remote || '').trim();
+    value = value.replace(/^git@github\\.com:/i, '');
+    value = value.replace(/^ssh:\/\/git@github\\.com\//i, '');
+    value = value.replace(/^https?:\/\/github\\.com\//i, '');
+    value = value.replace(/^git:\/\/github\\.com\//i, '');
+    value = value.replace(/\\.git$/i, '').replace(/\/+$/, '');
+    const match = value.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+    return match ? (match[1] + '/' + match[2]).toLowerCase() : null;
+  }
+
+  async function verifyWorkspaceRepository(repository) {
+    if (typeof getWorkspaceRepositories !== 'function') return;
+    let remotes;
+    try { remotes = await getWorkspaceRepositories(); }
+    catch {
+      throw new Error('The selected workspace is not a Git checkout with a GitHub remote. Select the local clone of ' + repository + ' before allowing the bridge to run tools.');
+    }
+    const configured = repository.toLowerCase();
+    const matches = Array.isArray(remotes) && remotes.some(remote => normalizeGitHubRemote(remote) === configured);
+    if (!matches) {
+      throw new Error('The selected workspace does not have a GitHub remote matching ' + repository + '. Select the matching local checkout so the bridge cannot run against the wrong project.');
+    }
   }
 
   async function api(method, apiPath, body, query) {
@@ -346,6 +372,7 @@ function createRepositoryBridge(deps) {
       if (typeof githubAuth.hasSavedToken === 'function' && !githubAuth.hasSavedToken()) {
         return emitStatus('not_authenticated', 'Sign in to GitHub in Accounts to enable the repository bridge.', { repository, branch });
       }
+      await verifyWorkspaceRepository(repository);
       await verifyRepositoryPrivacy(repository, config);
       if (!(await recoverPending(config, repository))) return getStatus();
 
@@ -396,6 +423,14 @@ module.exports = {
   BRIDGE_DIR,
   REQUEST_DIR,
   RESULT_DIR,
+  normalizeGitHubRemote: (remote) => {
+    let value = String(remote || '').trim();
+    value = value.replace(/^git@github\\.com:/i, '').replace(/^ssh:\/\/git@github\\.com\//i, '');
+    value = value.replace(/^https?:\/\/github\\.com\//i, '').replace(/^git:\/\/github\\.com\//i, '');
+    value = value.replace(/\\.git$/i, '').replace(/\/+$/, '');
+    const match = value.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+    return match ? (match[1] + '/' + match[2]).toLowerCase() : null;
+  },
   MAX_REQUEST_BYTES,
   MAX_RESULT_BYTES,
   createRepositoryBridge
