@@ -113,7 +113,7 @@ function createToolBridge(deps) {
       const plans = localTools.parsePatch(args.patch, root);
       return header + resultWarning + 'Review the files this patch will modify:\n' +
         plans.map(item => item.kind.toUpperCase() + '  ' + displayApprovalValue(item.relative, 500)).join('\n') +
-        '\\n\\nPatch preview (line breaks are shown as \\\\n; first 2500 characters):\\n' +
+        '\n\nPatch preview (line breaks are shown as \\\\n; first 2500 characters):\n' +
         displayApprovalValue(String(args.patch || '').slice(0, 2500), 9000);
     }
     if (tool === 'write_file') {
