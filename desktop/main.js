@@ -437,7 +437,8 @@ if (!hasInstanceLock) {
       persistSettings,
       getWorkspaceRoot,
       executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
-      onState: broadcastBridgeState
+      onState: broadcastBridgeState,
+      publishContextOnStart: true
     });
 
     registerIpc();
