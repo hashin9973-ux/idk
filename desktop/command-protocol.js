@@ -4,8 +4,7 @@ const TOOL_NAMES = new Set([
   'get_capabilities','project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search',
   'git_status','git_diff','git_log','git_show','git_branches','git_changed_files','discover_instructions',
   'init','write_file','apply_patch','create_directory','move_path','delete_path',
-  'git_create_branch','git_switch_branch','git_commit','shell','run_tests','update_plan',
-  'github_status','github_api'
+  'git_create_branch','git_switch_branch','git_commit','shell','run_tests','update_plan'
 ]);
 
 const HELP = [
@@ -23,14 +22,15 @@ const HELP = [
   '/switch <name> — switch branch; /commit <message> — commit staged changes or selected paths',
   '/test [command] — run the detected tests or an explicit test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
-  '/github — check GitHub login status',
+  '/github — show the configured repository bridge status (app diagnostic only)',
   '/workspace — select the project folder',
-  '/tools — enable this local coding-tool protocol for the current ChatGPT conversation',
+  '/tools — send repository-bridge usage instructions to the current ChatGPT conversation',
   '/plan [task] — ask ChatGPT to plan using local tools; /review — inspect current changes',
   '/help — show this list',
   '',
-  'ChatGPT tool calls use a fenced assistant_tool block with a JSON object.',
-  'Supported tools are discoverable with get_capabilities. Writes, deletes, commands, tests, commits and GitHub writes require approval.'
+  'ChatGPT local tool requests are JSON files committed through the existing GitHub integration to .chatgpt-bridge/requests/<call_id>.json.',
+  'The Windows app executes one request at a time and commits the result to .chatgpt-bridge/results/<call_id>.json, then returns the result to the same conversation.',
+  'Every request from the repository bridge requires native confirmation. Supported local tools are discoverable with get_capabilities. Do not send credentials or secrets into the repository.'
 ].join('\\n');
 
 function splitArgs(text) {
@@ -82,7 +82,7 @@ function parseSlashCommand(text) {
     case 'commit': return rest ? { tool: 'git_commit', args: { message: rest } } : need('/commit <message>');
     case 'test': case 'tests': return { tool: 'run_tests', args: rest ? { command: rest } : {} };
     case 'exec': return rest ? { tool: 'shell', args: { command: rest } } : need('/exec <PowerShell command>');
-    case 'github': return { tool: 'github_status', args: {} };
+    case 'github': return { special: 'bridge_status' };
     default: return null;
   }
 }
