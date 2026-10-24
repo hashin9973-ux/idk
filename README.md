@@ -2,7 +2,7 @@
 
 A Windows desktop worker that lets your **existing ChatGPT conversation** inspect and operate on a selected local workspace through a shared GitHub repository.
 
-**The conversation stays human-facing.** You type instructions into ChatGPT. The app never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer or conversation. All machine-to-machine traffic travels through the repository mailbox.
+**The conversation stays human-facing. The only input placed into ChatGPT is what you type yourself.** The app never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer or conversation. All machine-to-machine traffic travels through the repository mailbox.
 
 ## Architecture
 
