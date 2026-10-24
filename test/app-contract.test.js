@@ -124,17 +124,17 @@ test('environment snapshots and result artifacts stay in the repository channel'
   const html = read('desktop', 'index.html');
   const readme = read('README.md');
 
-  assert.match(bridge, /chatgpt-local-environment-context\\/v1/);
-  assert.match(bridge, /bridge\\/context\\/latest\\.json/);
-  assert.match(bridge, /refresh_environment_context/);
-  assert.match(bridge, /externalizeLargeText/);
-  assert.match(bridge, /bridge\\/artifacts\\//);
-  assert.match(auth, /bridge\\/context/);
-  assert.match(auth, /bridge\\/artifacts/);
-  assert.match(toolBridge, /upload_workspace_file/);
-  assert.match(toolBridge, /requiresApproval: true/);
+  assert.ok(bridge.includes('chatgpt-local-environment-context/v1'));
+  assert.ok(bridge.includes('bridge/context/latest.json'));
+  assert.ok(bridge.includes('refresh_environment_context'));
+  assert.ok(bridge.includes('externalizeLargeText'));
+  assert.ok(bridge.includes('bridge/artifacts/'));
+  assert.ok(auth.includes('bridge/context'));
+  assert.ok(auth.includes('bridge/artifacts'));
+  assert.ok(toolBridge.includes('upload_workspace_file'));
+  assert.ok(toolBridge.includes('requiresApproval: true'));
   assert.match(html, /never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer/i);
-  assert.match(readme, /only user-authored input/i);
+  assert.match(readme, /only input placed into ChatGPT is what you type yourself/i);
   assert.match(readme, /Read the result through the GitHub integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
 });
