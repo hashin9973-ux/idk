@@ -139,7 +139,8 @@ function createRepositoryBridge(deps) {
     getWorkspaceRoot,
     executeTool,
     onState = () => {},
-    intervalMs = DEFAULT_INTERVAL_MS
+    intervalMs = DEFAULT_INTERVAL_MS,
+    publishContextOnStart = false
   } = deps;
 
   const workerId = randomUUID();
@@ -792,10 +793,12 @@ function createRepositoryBridge(deps) {
     await ensureFolders();
     running = true;
     lastError = '';
-    try {
-      await publishEnvironmentContext();
-    } catch (error) {
-      lastError = 'Environment context publication failed: ' + cleanError(error.message);
+    if (publishContextOnStart) {
+      try {
+        await publishEnvironmentContext();
+      } catch (error) {
+        lastError = 'Environment context publication failed: ' + cleanError(error.message);
+      }
     }
     announce();
     await publishState(true);
