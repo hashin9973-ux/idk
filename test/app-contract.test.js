@@ -143,6 +143,7 @@ test('desktop app runs local assistant_tool requests inside the same ChatGPT con
   assert.ok(protocol.includes('assistant_tool'));
   assert.ok(!main.includes("require('./repository-bridge')"));
   assert.ok(bridge.includes('runGitOperation(call)'));
+  assert.ok(bridge.includes('User-defined Git hooks are disabled during this operation'));
   assert.ok(!bridge.includes('.chatgpt-bridge/requests/'));
 });
 test('collapsing releases focus so the previous app can remain active', () => {
