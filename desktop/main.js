@@ -124,7 +124,8 @@ function captureDeviceCode(login, chunk) {
     try {
       if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\\n');
     } catch {}
-  }}
+  }
+}
 
 async function completeGitHubCliLogin(login) {
   login.status = 'finishing';
