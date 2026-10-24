@@ -22,15 +22,15 @@ const HELP = [
   '/switch <name> — switch branch; /commit <message> — commit staged changes or selected paths',
   '/test [command] — run the detected tests or an explicit test command (approval required)',
   '/exec <PowerShell command> — run a local command (approval required)',
-  '/github — show the configured repository bridge status (app diagnostic only)',
+  '/github — show the app-side GitHub sign-in status (not a ChatGPT tool)',
   '/workspace — select the project folder',
-  '/tools — manually re-send repository-bridge instructions if automatic conversation setup needs recovery',
+  '/tools — re-send local-tool instructions if automatic conversation setup needs recovery',
   '/plan [task] — ask ChatGPT to plan using local tools; /review — inspect current changes',
   '/help — show this list',
   '',
-  'ChatGPT local tool requests are JSON files committed through the existing GitHub integration to .chatgpt-bridge/requests/<call_id>.json.',
-  'The Windows app executes one request at a time and commits the result to .chatgpt-bridge/results/<call_id>.json, then returns the result to the same conversation.',
-  'Every request from the repository bridge requires native confirmation. Supported local tools are discoverable with get_capabilities. Do not send credentials or secrets into the repository.'
+  'When local workspace access is needed, emit exactly one fenced assistant_tool block containing a JSON object with version: 1, tool, args, and optional call_id.',
+  'The desktop app validates the request, runs the tool on the selected local workspace, asks for native approval when required, and inserts the actual result into this same ChatGPT conversation.',
+  'Wait for that result before requesting another local tool. Do not use GitHub commits as a tool transport, and do not request the app GitHub credential.'
 ].join('\n');
 
 function splitArgs(text) {
@@ -87,9 +87,34 @@ function parseSlashCommand(text) {
   }
 }
 
+function parseToolCall(raw) {
+  if (typeof raw !== 'string' || raw.length > 24000) throw new Error('assistant_tool payload must be text under 24,000 characters.');
+  let value;
+  try { value = JSON.parse(raw); } catch { throw new Error('assistant_tool payload is not valid JSON.'); }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('assistant_tool payload must be a JSON object.');
+  const allowed = new Set(['version', 'tool', 'args', 'call_id']);
+  const extra = Object.keys(value).filter(key => !allowed.has(key));
+  if (extra.length) throw new Error('Unsupported top-level field(s): ' + extra.join(', '));
+  if (value.version !== 1) throw new Error('Unsupported assistant_tool protocol version.');
+  if (typeof value.tool !== 'string' || !TOOL_NAMES.has(value.tool)) {
+    throw new Error('Unknown local tool: ' + String(value.tool || '(missing)'));
+  }
+  if (value.args !== undefined && (!value.args || typeof value.args !== 'object' || Array.isArray(value.args))) {
+    throw new Error('args must be a JSON object.');
+  }
+  let callId = null;
+  if (value.call_id !== undefined) {
+    if (typeof value.call_id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(value.call_id)) {
+      throw new Error('call_id must be a short ID containing only letters, numbers, dot, underscore or hyphen.');
+    }
+    callId = value.call_id;
+  }
+  return { tool: value.tool, args: value.args || {}, callId };
+}
+
 function isKnownSlashCommand(text) {
   const parsed = parseSlashCommand(text);
   return Boolean(parsed);
 }
 
-module.exports = { HELP, TOOL_NAMES, splitArgs, parseSlashCommand, isKnownSlashCommand };
+module.exports = { HELP, TOOL_NAMES, splitArgs, parseSlashCommand, parseToolCall, isKnownSlashCommand };
