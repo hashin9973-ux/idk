@@ -91,7 +91,7 @@
 
         <details class="details-panel safety-panel">
           <summary>Safety and ChatGPT connection</summary>
-          <p class="muted small">ChatGPT does not need a separate login inside this app. Use your normal ChatGPT conversation and its GitHub integration to create requests and read results. The app never injects tool output into that conversation. <button id="open-chatgpt" class="text-button" type="button">Open ChatGPT in your browser ↗</button></p>
+          <p class="muted small">ChatGPT does not need a separate login inside this app. Use your normal ChatGPT conversation and its GitHub integration to create requests and read results. The app never injects tool output into that conversation. <button id="open-chatgpt" class="text-button" type="button">Open ChatGPT in your browser ↗</button><span class="muted"> Normal ChatGPT web sign-in has no callback to this worker, so use Alt+Tab to return after signing in; the bridge does not access ChatGPT credentials or conversations.</span></p>
           <p class="muted small">File changes, shell commands, tests, Git writes, and file uploads require a native Windows approval prompt. Approved PowerShell commands run with your Windows account permissions and are not sandboxed.</p>
           <p class="muted small">Use a private mailbox. Never send secrets or private data through the repository.</p>
         </details>
