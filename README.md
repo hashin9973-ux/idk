@@ -99,7 +99,7 @@ Use unique IDs containing letters, digits, underscores, or hyphens; the first ch
 | `bridge/context/instructions.json` | Instruction file paths, hashes, and sizes—not their contents |
 | `bridge/artifacts/<request_id>/...` | Full outputs and explicitly uploaded files |
 
-Always read `bridge/context/latest.json` first. Retrieve only relevant context or source files; snapshots can be stale, so use `refresh_environment_context` or a live inspection request when necessary. Project instructions such as `AGENTS.md` are discoverable on demand and are not published in full as part of the initial snapshot.
+Use the `get_agent_context` tool as the first request when the app build exposes it; this returns a compact context and tool catalog in one result. Do not fetch context files separately unless this tool is unavailable. Retrieve only relevant context or source files; snapshots can be stale, so use `refresh_environment_context` or a live inspection request when necessary. Project instructions such as `AGENTS.md` are discoverable on demand and are not published in full as part of the initial snapshot.
 
 ## Results and files
 
