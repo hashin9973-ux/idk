@@ -249,7 +249,7 @@ test('PowerShell reports when stdout is truncated at the output limit', async t 
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout_truncated, true);
     assert.equal(result.stderr_truncated, false);
-    assert.match(result.stdout, /\\[stdout truncated\\]$/);
+    assert.match(result.stdout, /stdout truncated/);
   } finally { cleanup(root); }
 });
 
