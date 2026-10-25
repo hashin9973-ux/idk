@@ -149,11 +149,13 @@ test('environment snapshots and result artifacts stay in the repository channel'
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
 });
 
-test('manual smoke-test documentation covers local execution and artifact retrieval', () => {
+test('manual smoke-test documentation covers local execution, truncated-output recovery, and artifact retrieval', () => {
   const guide = read('docs', 'manual-smoke-test.md');
   assert.match(guide, /private repo and dedicated branch/i);
   assert.match(guide, /read-only request produces a result/i);
-  assert.match(guide, /large text is externalized and retrievable/i);
+  assert.match(guide, /large output is marked incomplete honestly/i);
+  assert.match(guide, /stable-sorted pages of 50 entries/i);
+  assert.match(guide, /not a safety denial/i);
   assert.match(guide, /workspace file edits run automatically without escaping the selected folder/i);
   assert.match(guide, /declined shell command remains unexecuted/i);
   assert.match(guide, /file upload requires a local approval/i);
