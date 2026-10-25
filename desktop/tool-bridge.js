@@ -827,10 +827,24 @@ function createToolBridge(deps) {
       retrieval_rules: [
         'The shared snapshot is refreshed in the background by the Windows worker. Request a fresh live context when a just-made workspace change matters.',
         'Fetch full instruction contents and source files only when relevant to the current task.',
-        'Use batch for up to 50 known operations to minimize GitHub request/result round trips; references may only point to earlier completed steps.',
+        'Use batch for up to 50 known operations to minimize GitHub request/result round trips; independent steps may run concurrently and references may only point to earlier completed steps.',
         'Use workspace-relative paths. Protected steps follow the current local approval setting.',
         'The shell runs as the signed-in Windows user and is not sandboxed.'
       ],
+      development_workflow: {
+        purpose: 'Complete the user’s actual software task reliably, using only the context and tools needed for the current step.',
+        rules: [
+          'For substantial tasks, define acceptance criteria and a short implementation plan before editing. Keep the plan proportional to the task.',
+          'Match architecture to scope. Do not collapse a complex game, app, or multi-system feature into one HTML/Python/source file unless the user explicitly requests a single-file deliverable.',
+          'Inspect project instructions, entry points, manifests, and relevant modules before choosing architecture. Reuse existing conventions; avoid rewriting unrelated code.',
+          'Implement in small, integrated vertical slices. Batch independent inspections and verification; use explicit result references for dependent batch steps.',
+          'A submitted mailbox request is not a completed operation. Read the exact matching result and verify request_id, status, tool ok, exitCode, timedOut, stdout, stderr, and truncation flags before deciding what happened.',
+          'If the matching result is not visible yet, inspect the matching claim and worker state, then re-read that result. Do not call it blocked or submit a duplicate while the first request may still be running. Never replay an uncertain side-effecting request ID.',
+          'After edits, run relevant project-native checks and tests. For user-visible applications, also run an available end-to-end smoke test. Fix failures and rerun verification before claiming completion.',
+          'Distinguish verified behavior from unverified behavior in the final report. Never claim a test, build, browser check, or full playthrough passed unless its actual result supports the claim.',
+          'Prefer targeted reads/search and bounded output over dumping the whole workspace. Automatically paginate truncated listings or results where practical instead of asking the user to run commands manually.'
+        ]
+      },
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
     };
   }
