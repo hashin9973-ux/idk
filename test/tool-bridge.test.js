@@ -292,6 +292,45 @@ test('batch runs multiple tools in one bridge request and can pass a prior resul
 });
 
 
+test('batch runs independent steps concurrently and preserves request-order results', async () => {
+  const root = fixture();
+  try {
+    let active = 0;
+    let maximumActive = 0;
+    const concurrentTools = {
+      ...localTools,
+      async executeTool(workspaceRoot, tool, args) {
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        active--;
+        return { tool, completed: true };
+      }
+    };
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 1 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools: concurrentTools,
+      githubAuth: {}
+    });
+    const steps = Array.from({ length: 6 }, (_, index) => ({
+      id: 'parallel' + index,
+      tool: 'project_status',
+      args: {}
+    }));
+    const result = await bridge.runTool('batch', { steps, maxConcurrency: 3 }, 'req-batch-concurrency');
+    assert.equal(result.ok, true, result.error || 'concurrent batch failed');
+    assert.equal(result.result.completed_steps, 6);
+    assert.equal(result.result.max_concurrency, 3);
+    assert.deepEqual(result.result.steps.map(step => step.id), steps.map(step => step.id));
+    assert.ok(maximumActive > 1, 'independent operations should overlap');
+    assert.ok(maximumActive <= 3, 'parallel work should respect the configured concurrency cap');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('batch accepts task-sized workflows beyond twenty steps in one bridge request', async () => {
   const root = fixture();
   try {
@@ -328,12 +367,15 @@ test('batch applies native approval per protected step and stops after a decline
       { id: 'inspect', tool: 'project_status', args: {} },
       { id: 'write', tool: 'shell', args: { command: "Set-Content -LiteralPath 'must-not-exist.txt' -Value 'no'" } },
       { id: 'later', tool: 'project_status', args: {} }
-    ] }, 'req-batch-approval');
+    ], maxConcurrency: 1 }, 'req-batch-approval');
     assert.equal(result.ok, false);
     assert.equal(approvalCalls, 1);
     assert.equal(result.result.stopped_at, 'write');
-    assert.equal(result.result.steps.length, 2);
+    assert.equal(result.result.steps.length, 3);
     assert.equal(result.result.steps[1].cancelled, true);
+    assert.equal(result.result.steps[2].skipped, true);
+    assert.equal(result.result.completed_steps, 2);
+    assert.equal(result.result.skipped_steps, 1);
     assert.equal(fs.existsSync(path.join(root, 'must-not-exist.txt')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -362,6 +404,8 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     assert.equal(result.result.tool_calling.catalog_version, 1);
     assert.equal(batch.parameters.properties.steps.type, 'array');
     assert.equal(batch.parameters.properties.steps.maxItems, 50);
+    assert.equal(batch.parameters.properties.maxConcurrency.default, 4);
+    assert.equal(batch.parameters.properties.maxConcurrency.maximum, 8);
     assert.ok(batch.parameters.properties.steps.items.properties.tool.enum.includes('read_file'));
     assert.equal(batch.parameters.properties.steps.items.properties.tool.enum.includes('batch'), false);
     assert.deepEqual(write.parameters.required, ['path', 'content']);
