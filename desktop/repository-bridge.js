@@ -1162,6 +1162,11 @@ function createRepositoryBridge(deps) {
     if (activePoll) {
       try { await activePoll; } catch {}
     }
+    // Stop accepting new work first, then wait for already-claimed requests so
+    // the app is not torn down while a command is running or its result is publishing.
+    if (requestTasks.size) {
+      await Promise.allSettled([...requestTasks.values()]);
+    }
     announce();
     try { await publishState(true); } catch {}
     return stateSnapshot();
