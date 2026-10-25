@@ -382,6 +382,7 @@ test('duplicate polls do not execute a request again after its result exists', a
   });
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/req-once.json'));
     await bridge.pollOnce();
     assert.equal(executions, 1);
   } finally {
