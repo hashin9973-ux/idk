@@ -92,3 +92,16 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 - [ ] Quit stops the worker and removes the tray icon; no output is inserted into the ChatGPT conversation.
 
 Automated tests and a successful installer build are necessary but not substitutes for this smoke test.
+
+
+## Optional Colab vision smoke test
+
+1. With GitHub connected, call vision_status; it should report inactive if vision has never been enabled.
+2. Call vision_activate and follow the notebook URL. Add QDQWG_TOKEN in Colab Secrets and run the notebook worker cell. A new model cache requires several gigabytes of Drive space and a one-time llama.cpp build.
+3. Poll vision_status until it says ready and confirms model_loaded: true. Opening the notebook alone is not readiness.
+4. Call vision_analyze_screenshot with {"source":"desktop","waitMs":0}. Confirm the returned status is pending or report-available and record the same request_id.
+5. If pending, call vision_wait with that exact request_id. Confirm report_available, input_image.sha256 and result request ID match the queued request, and report_path points to bridge/vision/reports/<request_id>.txt.
+6. Call vision_deactivate. Confirm enabled:false and runtime_kept_alive:true; do not expect Colab or its browser tab to close.
+7. Test recoverable statuses by intentionally disconnecting Colab and verify that the app says disconnected, not report-available. Restore the runtime and re-run the worker cell.
+
+These manual integration checks require a real Google account, a permitted Colab runtime/GPU and a repository-scoped token. Unit tests use a fake mailbox/API and are not a live Colab test.

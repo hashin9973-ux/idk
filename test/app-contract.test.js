@@ -207,3 +207,36 @@ test('manual smoke-test documentation covers local execution, truncated-output r
   assert.match(guide, /file upload requires a local approval/i);
   assert.match(guide, /no output is inserted into the ChatGPT conversation/i);
 });
+
+
+test('optional Colab vision bridge is wired to the existing mailbox without autostart or runtime shutdown', () => {
+  const main = read('desktop', 'main.js');
+  const bridge = read('desktop', 'tool-bridge.js');
+  const vision = read('desktop', 'vision-service.js');
+  const auth = read('desktop', 'github-auth.js');
+  const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
+  const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
+  for (const name of ['vision_activate', 'vision_deactivate', 'vision_status', 'vision_analyze_screenshot', 'vision_wait']) {
+    assert.ok(bridge.includes(name), 'missing vision tool ' + name);
+  }
+  assert.ok(main.includes('createVisionService'));
+  assert.ok(main.includes('captureDesktopScreenshot'));
+  assert.ok(main.includes('encodeVisionJpeg'));
+  assert.ok(main.includes('colab.research.google.com'));
+  assert.ok(vision.includes('runtime_kept_alive: true'));
+  assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
+  assert.ok(vision.includes('input_sha256'));
+  assert.ok(vision.includes('VISION_RESULT_PROTOCOL'));
+  assert.ok(auth.includes('bridge/vision/runtime.json'));
+  assert.ok(auth.includes('chatgpt-colab-vision-control/v1'));
+  assert.ok(python.includes('userdata.get("QDQWG_TOKEN")'));
+  assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
+  assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
+  assert.ok(python.includes('llama-server'));
+  assert.ok(python.includes('bridge/vision/control.json'));
+  assert.ok(python.includes('bridge/vision/results/'));
+  assert.ok(python.includes('def cleanup_screenshot'));
+  assert.equal(main.slice(main.indexOf('app.whenReady().then')).includes('visionService.activate('), false);
+  assert.equal(/process\.kill|kill\(\)|shutdown.*Colab/i.test(vision), false);
+});
+

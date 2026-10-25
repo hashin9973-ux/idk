@@ -173,3 +173,12 @@ GitHub Actions runs syntax checks, automated tests, and a Windows NSIS installer
 - Environment protocol and validation: https://github.com/hashin9973-ux/qdqwg
 - Mailbox branch: https://github.com/hashin9973-ux/qdqwg/tree/bridge-mailbox
 - Build workflow: https://github.com/hashin9973-ux/idk/actions
+
+
+## Optional Colab vision tool
+
+Screenshot understanding is opt-in and uses vision/vision_worker.ipynb with the pre-quantized Qwen3-VL 8B Q4_K_M GGUF and its F16 mmproj. The desktop app exposes vision_activate, vision_deactivate, vision_status, vision_analyze_screenshot, and vision_wait through the same GitHub mailbox protocol. Activation opens Colab only when needed; you must complete any Google authorization and run the notebook worker cell. The app never starts Colab at desktop startup and deactivation disables new requests without terminating the runtime.
+
+Colab uses a fine-grained GitHub token stored in Colab Secrets as QDQWG_TOKEN, restricted to this repository with Contents read/write permissions. Do not paste tokens or passwords into the notebook, source tree or mailbox. Add the secret and run the notebook only after reviewing its code. Drive storage is used to cache the 5.03 GB Q4_K_M model and 1.16 GB F16 projector between runtimes; Colab GPU availability and uptime are not guaranteed. Model downloads and llama.cpp compilation occur only after vision_activate enables vision and the worker cell is run.
+
+The app captures one screenshot only when vision_analyze_screenshot is explicitly requested and approved (unless Auto-accept everything is already enabled). It compresses images to at most 600 KiB for the GitHub Contents API, uploads a temporary artifact and queues a unique job. Colab checks request ID and image SHA-256, writes a text report plus JSON result, then attempts to delete the screenshot artifact. If a run disconnects before cleanup, occasional orphaned uploads may require manual cleanup. vision_wait polls the original request ID and never submits another screenshot.

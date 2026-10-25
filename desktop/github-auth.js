@@ -98,7 +98,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
     }
     const base = '/repos/' + owner + '/' + repository;
-    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts']);
+    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
     let relative = '';
     let kind = '';
 
@@ -118,11 +118,19 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     if (relative === 'bridge/README.md') {
       kind = 'documentation';
-    } else if (parts.length === 2 && allowedFolders.has(relative)) {
+    } else if (allowedFolders.has(relative)) {
       kind = 'directory';
     } else if (parts.length === 3 && allowedFolders.has(parts.slice(0, 2).join('/')) &&
         (parts[2] === '.gitkeep' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(parts[2]))) {
       kind = 'file';
+    } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'vision' &&
+        ['control.json', 'runtime.json'].includes(parts[2])) {
+      kind = parts[2] === 'control.json' ? 'vision-control' : 'vision-runtime';
+    } else if (parts.length === 4 && parts[0] === 'bridge' && parts[1] === 'vision' &&
+        ['requests', 'results', 'reports', 'claims'].includes(parts[2]) &&
+        /^vision-[a-f0-9]{24}\.(json|txt)$/.test(parts[3]) &&
+        (parts[2] === 'reports' ? parts[3].endsWith('.txt') : parts[3].endsWith('.json'))) {
+      kind = parts[2] === 'reports' ? 'vision-report' : 'vision-record';
     } else if (parts.length === 4 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
         /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(parts[2]) &&
         /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(parts[3])) {
@@ -145,7 +153,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       };
     }
 
-    if (!['file', 'state', 'artifact'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records and approved artifact paths.');
+    if (!['file', 'state', 'artifact', 'vision-control', 'vision-runtime', 'vision-record', 'vision-report'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records, vision state/job paths and approved artifact paths.');
     if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
     const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
     if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
@@ -155,8 +163,8 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
         (input.body.sha !== undefined && (typeof input.body.sha !== 'string' || !/^[0-9a-f]{40}$/i.test(input.body.sha)))) {
       throw new Error('Invalid or unsupported mailbox write payload.');
     }
-    if (kind === 'artifact') {
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.body.content)) throw new Error('Artifact content must be Base64-encoded bytes.');
+    if (kind === 'artifact' || kind === 'vision-report') {
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(input.body.content)) throw new Error('Artifact/report content must be Base64-encoded bytes.');
       return { method, path: pathValue, body: input.body, url: 'https://api.github.com' + pathValue };
     }
     let payload;
@@ -167,6 +175,15 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Mailbox write content must be Base64-encoded JSON.');
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Mailbox file content must be a JSON object.');
+    if (kind === 'vision-control' && payload.protocol !== 'chatgpt-colab-vision-control/v1') throw new Error('Vision control must use chatgpt-colab-vision-control/v1.');
+    if (kind === 'vision-runtime' && payload.protocol !== 'chatgpt-colab-vision-runtime/v1') throw new Error('Vision runtime state must use chatgpt-colab-vision-runtime/v1.');
+    if (kind === 'vision-record') {
+      const expectedProtocol = parts[2] === 'requests' ? 'chatgpt-colab-vision-request/v1'
+        : parts[2] === 'results' ? 'chatgpt-colab-vision-result/v1'
+          : parts[2] === 'claims' ? 'chatgpt-colab-vision-claim/v1' : null;
+      if (!expectedProtocol || payload.protocol !== expectedProtocol) throw new Error('Vision job records must use the protocol designated for their mailbox folder.');
+      if (payload.request_id && payload.request_id !== parts[3].replace(/\.json$/, '')) throw new Error('Vision record request ID must match its filename.');
+    }
     const isFolderMarker = parts.length === 3 && parts[2] === '.gitkeep';
     if (relative.startsWith('bridge/requests/') && !isFolderMarker) {
       throw new Error('The Windows worker cannot create or overwrite ChatGPT request files.');

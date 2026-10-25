@@ -25,8 +25,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Set up Python for notebook syntax validation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      - name: Validate notebook JSON and Python syntax
+        shell: pwsh
+        run: |
+          python -c "import json,pathlib; p=pathlib.Path('vision/vision_worker.ipynb'); n=json.loads(p.read_text(encoding='utf-8')); cells=[c for c in n['cells'] if c['cell_type']=='code']; [compile(''.join(c['source']), f'{p}:cell{i}', 'exec') for i,c in enumerate(cells)]; print(f'Validated {len(cells)} notebook code cells')"
       - name: Check JavaScript syntax
         run: npm run check
       - name: Run local tool and app tests

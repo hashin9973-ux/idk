@@ -332,6 +332,56 @@ test('repository API allows only the configured mailbox contents routes', async 
       branch: 'bridge-mailbox'
     }
   });
+  // Vision paths are narrowly scoped to control/runtime records, job JSON and reports.
+  const visionControl = {
+    protocol: 'chatgpt-colab-vision-control/v1',
+    enabled: true,
+    updated_at: '2026-10-25T00:00:00.000Z',
+    revision: 1
+  };
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/vision/control.json',
+    body: {
+      message: '[vision bridge] activate',
+      content: Buffer.from(JSON.stringify(visionControl)).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  const visionRequest = {
+    protocol: 'chatgpt-colab-vision-request/v1',
+    request_id: 'vision-aaaaaaaaaaaaaaaaaaaaaaaa',
+    status: 'queued',
+    idempotency_key: 'vision-aaaaaaaaaaaaaaaaaaaaaaaa'
+  };
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/vision/requests/vision-aaaaaaaaaaaaaaaaaaaaaaaa.json',
+    body: {
+      message: '[vision bridge] queue request',
+      content: Buffer.from(JSON.stringify(visionRequest)).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/vision/reports/vision-aaaaaaaaaaaaaaaaaaaaaaaa.txt',
+    body: {
+      message: '[vision bridge] publish report',
+      content: Buffer.from('Overview: a visible desktop window').toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/vision/requests',
+    query: { ref: 'bridge-mailbox' }
+  });
+  await assert.rejects(auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/private/credentials.json',
+    query: { ref: 'bridge-mailbox' }
+  }), /outside the supported repository mailbox folders/i);
   const beforeRejectedCalls = calls.length;
   await assert.rejects(auth.requestApi({ method: 'GET', path: '/user' }), /outside the configured repository mailbox/i);
   await assert.rejects(auth.requestApi({
