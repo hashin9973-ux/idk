@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   quit: () => ipcRenderer.invoke('app:quit'),
   getGitHubState: () => ipcRenderer.invoke('app:github-state'),
   startGitHubLogin: () => ipcRenderer.invoke('app:github-start-login'),
+  reconnectGitHub: () => ipcRenderer.invoke('app:github-reconnect'),
   pollGitHubLogin: () => ipcRenderer.invoke('app:github-poll-login'),
   onBridgeState(callback) {
     if (typeof callback !== 'function') return () => {};
