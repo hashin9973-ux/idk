@@ -13,7 +13,7 @@ const DEFAULT_INTERVAL_MS = 15000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESULT_BYTES = 90 * 1024;
-const MAX_INLINE_TEXT_BYTES = 12 * 1024;
+const MAX_INLINE_TEXT_BYTES = 32 * 1024;
 const MAX_ARTIFACT_PART_BYTES = 256 * 1024;
 const MAX_WORKSPACE_UPLOAD_BYTES = 8 * 1024 * 1024;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
@@ -410,35 +410,13 @@ function createRepositoryBridge(deps) {
 
   async function externalizeLargeText(requestId, value, artifactManifest, artifactErrors, keyPath = 'output') {
     if (typeof value === 'string') {
-      const byteCount = Buffer.byteLength(value, 'utf8');
-      if (byteCount <= MAX_INLINE_TEXT_BYTES) return value;
-      const chunks = splitUtf8Text(value, MAX_ARTIFACT_PART_BYTES);
-      const slug = String(keyPath).replace(/[^A-Za-z0-9_-]/g, '-').replace(/-+/g, '-').slice(0, 36) || 'output';
-      const paths = [];
-      for (let index = 0; index < chunks.length; index++) {
-        const partName = slug + (chunks.length > 1 ? '-part-' + String(index + 1).padStart(3, '0') : '') + '.txt';
-        const relativePath = 'bridge/artifacts/' + requestId + '/' + String(artifactManifest.length + artifactErrors.length + 1).padStart(3, '0') + '-' + partName;
-        try {
-          const stored = await writeRemoteContent(relativePath, chunks[index], '[local bridge] publish text output ' + partName);
-          const entry = {
-            kind: 'text_output_part',
-            path: relativePath,
-            media_type: 'text/plain; charset=utf-8',
-            bytes: stored.bytes,
-            sha256: stored.sha256,
-            part: index + 1,
-            parts: chunks.length,
-            field: keyPath
-          };
-          artifactManifest.push(entry);
-          paths.push(relativePath);
-        } catch (error) {
-          artifactErrors.push({ path: relativePath, message: cleanError(error.message) });
-        }
-      }
-      const preview = value.slice(0, 900);
-      const storedPaths = paths.length ? paths.join(', ') : '(artifact publication failed)';
-      return preview + (value.length > preview.length ? '\n\n[Output truncated in this result. Full output location: ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]' : '\n\n[Output externalized to ' + storedPaths + '. Retrieve the artifact file(s) through GitHub.]');
+      if (Buffer.byteLength(value, 'utf8') <= MAX_INLINE_TEXT_BYTES) return value;
+      // Keep normal tool calls to one request file plus one result file. Do not force
+      // ChatGPT to fetch a third artifact just to inspect ordinary tool output.
+      const chunks = splitUtf8Text(value, Math.floor(MAX_INLINE_TEXT_BYTES / 2));
+      const first = chunks[0] || '';
+      const last = chunks.length > 1 ? chunks[chunks.length - 1] : '';
+      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. Request a narrower line range, search, or smaller batch for the omitted content.]\n\n' + last;
     }
     if (Array.isArray(value)) {
       const output = [];
@@ -455,6 +433,70 @@ function createRepositoryBridge(deps) {
     return output;
   }
 
+  function compactRecordForInlineResult(record) {
+    const output = JSON.parse(JSON.stringify(record));
+    const marker = ' … [shortened to fit the two-operation result limit] … ';
+    function collect(value, parent, key, strings, arrays) {
+      if (typeof value === 'string') {
+        if (value.length > 80) strings.push({ parent, key, value, length: value.length });
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      if (Array.isArray(value)) {
+        if (value.length > 3) {
+          const estimate = Buffer.byteLength(JSON.stringify(value), 'utf8');
+          arrays.push({ parent, key, value, estimate, length: value.length });
+        }
+        for (let index = 0; index < value.length; index++) collect(value[index], value, index, strings, arrays);
+        return;
+      }
+      for (const [childKey, childValue] of Object.entries(value)) collect(childValue, value, childKey, strings, arrays);
+    }
+    let serialized = JSON.stringify(output);
+    let rounds = 0;
+    const targetBytes = MAX_RESULT_BYTES - 2048;
+    while (Buffer.byteLength(serialized, 'utf8') > targetBytes && rounds++ < 4000) {
+      const strings = [];
+      const arrays = [];
+      collect(output, null, null, strings, arrays);
+      strings.sort((a, b) => b.length - a.length);
+      if (strings.length) {
+        const slot = strings[0];
+        const nextLength = Math.max(48, Math.floor(slot.length / 2));
+        if (nextLength <= marker.length + 8) {
+          slot.parent[slot.key] = slot.value.slice(0, Math.max(24, nextLength - 3)) + '…';
+        } else {
+          const keep = Math.floor((nextLength - marker.length) / 2);
+          slot.parent[slot.key] = slot.value.slice(0, keep) + marker + slot.value.slice(-keep);
+        }
+      } else {
+        arrays.sort((a, b) => b.estimate - a.estimate);
+        if (!arrays.length) break;
+        const slot = arrays[0];
+        const omitted = slot.value.length - 3;
+        slot.parent[slot.key] = [slot.value[0], { _bridge_truncated: true, omitted_items: omitted }, slot.value[slot.value.length - 1]];
+      }
+      serialized = JSON.stringify(output);
+    }
+    if (Buffer.byteLength(serialized, 'utf8') > targetBytes) {
+      return {
+        protocol: RESULT_PROTOCOL,
+        request_id: record.request_id,
+        tool: record.tool,
+        status: 'partial',
+        created_at: record.created_at,
+        completed_at: record.completed_at,
+        output_truncated: true,
+        result: { ok: Boolean(record.result && record.result.ok), note: 'The result was too large for one self-contained response. Repeat with narrower paths, line ranges, searches, or a smaller batch.' },
+        artifacts: record.artifacts || [],
+        artifact_errors: record.artifact_errors || []
+      };
+    }
+    output.output_truncated = true;
+    output.output_note = 'Some result fields were shortened to preserve the two-operation workflow. Request the relevant file range, search result, or smaller batch for omitted detail.';
+    if (output.status === 'completed') output.status = 'partial';
+    return output;
+  }
   async function upsertContextJson(relativePath, value) {
     const existing = await readRemoteFile(relativePath);
     return writeRemoteJson(relativePath, value, existing && existing.sha, false);
@@ -691,79 +733,7 @@ function createRepositoryBridge(deps) {
       artifact_errors: artifactErrors
     };
     if (Buffer.byteLength(JSON.stringify(resultRecord), 'utf8') > MAX_RESULT_BYTES) {
-      // Split the full record into small text files so the GitHub Contents API and ChatGPT's
-      // repository reader can retrieve every part even when the serialized JSON is large.
-      const fullResultText = JSON.stringify(resultRecord, null, 2) + '\n';
-      const fullResultHash = createHash('sha256').update(fullResultText, 'utf8').digest('hex');
-      const chunks = splitUtf8Text(fullResultText, MAX_ARTIFACT_PART_BYTES);
-      const structuredArtifacts = [];
-      const originalStatus = safeReport && safeReport.ok
-        ? (artifactErrors.length ? 'partial' : 'completed')
-        : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
-      let failedArtifactPath = 'bridge/artifacts/' + requestId + '/full-result-' + fullResultHash.slice(0, 12);
-      try {
-        for (let index = 0; index < chunks.length; index++) {
-          const artifactPath = 'bridge/artifacts/' + requestId + '/full-result-' +
-            fullResultHash.slice(0, 12) + '-part-' + String(index + 1).padStart(3, '0') + '.txt';
-          failedArtifactPath = artifactPath;
-          const stored = await writeRemoteContent(
-            artifactPath,
-            chunks[index],
-            '[local bridge] publish structured result part ' + (index + 1)
-          );
-          structuredArtifacts.push({
-            kind: 'structured_result_part',
-            path: artifactPath,
-            media_type: 'text/plain; charset=utf-8',
-            bytes: stored.bytes,
-            sha256: stored.sha256,
-            part: index + 1,
-            parts: chunks.length,
-            field: 'result_record'
-          });
-        }
-        resultRecord = {
-          protocol: RESULT_PROTOCOL,
-          request_id: requestId,
-          tool: request.tool,
-          status: originalStatus,
-          created_at: remote.value.created_at,
-          completed_at: resultRecord.completed_at,
-          result: {
-            ok: Boolean(safeReport && safeReport.ok),
-            note: 'The structured result exceeded the inline mailbox limit. Retrieve all structured_result_part artifacts, order them by part, concatenate them, and parse the reconstructed JSON.',
-            artifact_paths: structuredArtifacts.map(item => item.path),
-            bytes: Buffer.byteLength(fullResultText, 'utf8'),
-            sha256: fullResultHash,
-            parts: structuredArtifacts.length
-          },
-          artifacts: structuredArtifacts,
-          artifact_errors: artifactErrors.slice(0, 10),
-          artifact_errors_total: artifactErrors.length
-        };
-      } catch (error) {
-        artifactErrors.push({
-          path: failedArtifactPath,
-          message: cleanError(error.message)
-        });
-        const failedStatus = safeReport && safeReport.ok
-          ? 'partial'
-          : safeReport && safeReport.cancelled ? 'cancelled' : 'failed';
-        resultRecord = {
-          protocol: RESULT_PROTOCOL,
-          request_id: requestId,
-          tool: request.tool,
-          status: failedStatus,
-          created_at: remote.value.created_at,
-          completed_at: resultRecord.completed_at,
-          error: 'The structured result exceeded the inline mailbox limit and not all structured-result artifact parts could be published.',
-          artifacts: [...artifactManifest, ...structuredArtifacts].slice(0, 100),
-          artifacts_total: artifactManifest.length + structuredArtifacts.length,
-          artifacts_truncated: artifactManifest.length + structuredArtifacts.length > 100,
-          artifact_errors: artifactErrors.slice(0, 10),
-          artifact_errors_total: artifactErrors.length
-        };
-      }
+      resultRecord = compactRecordForInlineResult(resultRecord);
     }
 
     const pendingClaim = {
