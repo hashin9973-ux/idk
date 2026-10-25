@@ -441,11 +441,19 @@ function createToolBridge(deps) {
         outcome = { ok: false, error: String(error && error.message || error) };
       }
       completed.set(step.id, outcome);
-      const item = { id: step.id, tool: step.tool, ok: outcome.ok === true };
+      const item = {
+        id: step.id,
+        tool: step.tool,
+        call_id: outcome.call_id || (String(parentId).slice(0, 55) + '-' + step.id),
+        ok: outcome.ok === true,
+        status: outcome.ok === true ? 'success' : outcome.cancelled ? 'cancelled' : 'failed'
+      };
       if (outcome.cancelled) item.cancelled = true;
       if (outcome.error) item.error = outcome.error;
       if (outcome.message && !outcome.ok) item.message = outcome.message;
-      if (outcome.ok) item.result = outcome.result;
+      if (outcome.result !== undefined) item.result = outcome.result;
+      if (outcome.result && Number.isInteger(outcome.result.exitCode)) item.exit_code = outcome.result.exitCode;
+      if (outcome.result && outcome.result.timedOut === true) item.timed_out = true;
       steps.push(item);
       if (!outcome.ok) {
         failed = true;
