@@ -191,8 +191,15 @@ test('worker executes a request once, writes the actual result, claim and heartb
     assert.equal(result.status, 'completed');
     assert.equal(result.result.ok, true);
     assert.equal(JSON.stringify(result).includes(process.cwd()), false, 'local absolute path is redacted');
+    assert.ok(result.timing_ms, 'worker latency diagnostics should be published with each result');
+    assert.equal(Number.isInteger(result.timing_ms.github_api_calls_before_result_publish), true);
+    assert.equal(Number.isInteger(result.timing_ms.github_api_ms_before_result_publish), true);
+    assert.equal(Number.isInteger(result.timing_ms.tool_wall_time), true);
+    assert.equal(fake.calls.filter(call => call.method === 'GET' && call.path.endsWith('/contents/bridge/claims/' + request.request_id + '.json')).length, 0, 'new claims should use create-only fast path');
+    assert.equal(fake.calls.filter(call => call.method === 'GET' && call.path.endsWith('/contents/bridge/results/' + request.request_id + '.json')).length, 0, 'result publication should use create-only fast path');
     const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
     assert.equal(claim.status, 'completed');
+    assert.ok(claim.result, 'completed claim is a recovery journal for interrupted result publication');
     const state = decode(fake.files.get('bridge/state/windows-app.json'));
     assert.match(state.status, /idle|processing/);
     assert.ok(state.updated_at);
@@ -200,6 +207,11 @@ test('worker executes a request once, writes the actual result, claim and heartb
     assert.equal('workspace_name' in state, false, 'shared state does not disclose the local workspace folder name');
     const createCommits = fake.calls.filter(call => call.method === 'PUT');
     assert.ok(createCommits.length >= 5, 'folder markers, claim, result and state are committed');
+    const resultFolderGetsBefore = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/results').length;
+    await bridge.pollOnce();
+    const resultFolderGetsAfter = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/results').length;
+    assert.equal(resultFolderGetsAfter, resultFolderGetsBefore, 'normal polling should not refetch the growing result folder');
+    assert.equal(executions, 1, 'cached completed result must not rerun');
   } finally {
     await bridge.stop();
   }
