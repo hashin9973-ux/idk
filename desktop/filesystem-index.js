@@ -156,6 +156,7 @@ class FilesystemIndexMonitor {
     this.dirtyParents = new Set();
     this.fullRebuildRequested = false;
     this.flushing = false;
+    this.flushPromise = null;
     this.rebuildPromise = null;
   }
 
@@ -165,7 +166,11 @@ class FilesystemIndexMonitor {
     if (!stat.isDirectory()) throw new Error('Filesystem index root must be a directory.');
     this.running = true;
     this.openWatcher();
-    this.reconcileTimer = setInterval(() => { void this.fullRebuild(); }, this.watcher ? this.reconcileMs : this.fallbackPollMs);
+    // A synchronous watcher setup failure may already have started fallback polling.
+    // Do not create a second interval in that case.
+    if (!this.reconcileTimer) {
+      this.reconcileTimer = setInterval(() => { void this.fullRebuild(); }, this.watcher ? this.reconcileMs : this.fallbackPollMs);
+    }
     // Index creation is asynchronous so a large workspace cannot hold up worker startup.
     void this.fullRebuild();
   }
@@ -286,6 +291,17 @@ class FilesystemIndexMonitor {
   }
 
   async flushChanges() {
+    if (this.flushPromise) return this.flushPromise;
+    const task = this.flushChangesCore();
+    this.flushPromise = task;
+    try {
+      return await task;
+    } finally {
+      if (this.flushPromise === task) this.flushPromise = null;
+    }
+  }
+
+  async flushChangesCore() {
     if (!this.running || this.flushing) return;
     // Never apply incremental changes over a full scan that has not finished.
     // The scan's finally block schedules us again after it releases the lock.
@@ -407,6 +423,10 @@ class FilesystemIndexMonitor {
     const activeRebuild = this.rebuildPromise;
     if (activeRebuild) {
       try { await activeRebuild; } catch {}
+    }
+    const activeFlush = this.flushPromise;
+    if (activeFlush) {
+      try { await activeFlush; } catch {}
     }
   }
 
