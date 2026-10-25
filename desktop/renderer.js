@@ -73,7 +73,7 @@
   function renderWorkspace(state) {
     const workspace = state || {};
     const root = typeof workspace.root === 'string' ? workspace.root : '';
-    const leaf = root.split(/[\\\\/]/).filter(Boolean).pop() || root;
+    const leaf = root.split(/[\\/]/).filter(Boolean).pop() || root;
     const index = workspace.index || {};
     workspaceLabel.textContent = root ? 'Workspace: ' + leaf : 'Choose workspace folder';
     const details = [];
