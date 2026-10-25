@@ -235,6 +235,48 @@ test('run_tests honors an explicit project-native PowerShell command and timeout
   } finally { cleanup(root); }
 });
 
+test('PowerShell waits for final stdout before returning success', async t => {
+  if (process.platform !== 'win32') {
+    t.skip('PowerShell execution is only available on Windows.');
+    return;
+  }
+  const root = fixture();
+  const startedAt = Date.now();
+  try {
+    const result = await tools.executeTool(root, 'shell', {
+      command: "Start-Sleep -Milliseconds 350; Write-Output 'final terminal output'; exit 0",
+      timeoutMs: 5000
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.timedOut, false);
+    assert.ok(result.durationMs >= 300, 'execution must wait for the foreground command to finish');
+    assert.ok(Date.now() - startedAt >= 300);
+    assert.match(result.stdout, /final terminal output/);
+  } finally { cleanup(root); }
+});
+
+test('PowerShell timeout always returns a terminal result and partial output', async t => {
+  if (process.platform !== 'win32') {
+    t.skip('PowerShell execution is only available on Windows.');
+    return;
+  }
+  const root = fixture();
+  try {
+    const startedAt = Date.now();
+    const result = await tools.executeTool(root, 'shell', {
+      command: "Write-Output 'output before timeout'; Start-Sleep -Seconds 60; Write-Output 'unreachable output'",
+      timeoutMs: 1500
+    });
+    assert.equal(result.timedOut, true);
+    assert.notEqual(result.exitCode, 0);
+    assert.equal(result.timeoutMs, 1500);
+    assert.ok(Date.now() - startedAt < 10000, 'timeout must resolve even if a child keeps pipes open');
+    assert.match(result.timeoutMessage, /process tree/);
+    assert.match(result.stdout, /output before timeout/);
+    assert.doesNotMatch(result.stdout, /unreachable output/);
+  } finally { cleanup(root); }
+});
+
 test('PowerShell reports when stdout is truncated at the output limit', async t => {
   if (process.platform !== 'win32') {
     t.skip('PowerShell execution is only available on Windows.');
