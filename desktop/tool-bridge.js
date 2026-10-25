@@ -10,7 +10,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   project_status: [],
   environment_info: [],
   list_dir: ['path'],
-  directory_tree: ['path', 'maxDepth', 'maxEntries'],
+  directory_tree: ['path', 'maxDepth', 'maxEntries', 'format'],
   glob_file_search: ['pattern'],
   read_file: ['path', 'approved', 'startLine', 'endLine'],
   file_info: ['path'],
@@ -55,7 +55,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   project_status: 'Summarize detected project technologies, whether the selected workspace is a Git repository, current branch/status, and top-level entries.',
   environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
   list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
-  directory_tree: 'Return a bounded workspace-relative tree. Common generated/dependency directories and symlinks are skipped.',
+  directory_tree: 'Return a bounded workspace-relative tree. Use format=paths for a compact listing that minimizes transfer size; common generated/dependency directories and symlinks are skipped.',
   glob_file_search: 'Find workspace files using a glob such as **/*.js. Skips common generated/dependency directories.',
   read_file: 'Read UTF-8 text from a workspace-relative file. Use startLine/endLine for a 1-based inclusive range of at most 5,000 lines. Secret-like paths require local approval.',
   file_info: 'Return type, byte size, timestamps, permissions, and a SHA-256 digest for regular files.',
@@ -112,6 +112,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   command: { type: 'string', description: 'PowerShell command to execute from the workspace. Arbitrary commands run with the signed-in user permissions and require local approval.', minLength: 1, maxLength: 20000 },
   maxDepth: { type: 'integer', description: 'Maximum directory depth (1–12). Defaults to 4.', minimum: 1, maximum: 12, default: 4 },
   maxEntries: { type: 'integer', description: 'Maximum tree entries (1–2,000). Defaults to 500.', minimum: 1, maximum: 2000, default: 500 },
+  format: { type: 'string', description: 'Use paths for a compact path-only listing, or entries for structured file records.', enum: ['entries', 'paths'], default: 'entries' },
   startLine: { type: 'integer', description: 'First line to return, 1-based and inclusive. Defaults to line 1.', minimum: 1 },
   endLine: { type: 'integer', description: 'Last line to return, 1-based and inclusive. At most 5,000 lines can be read in one call.' , minimum: 1 },
   maxResults: { type: 'integer', description: 'Maximum matching lines to return (1–150). Defaults to 100.', minimum: 1, maximum: 150, default: 100 },
@@ -230,7 +231,7 @@ function isPlainObject(value) {
 }
 
 function createToolBridge(deps) {
-  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile } = deps;
+  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll } = deps;
 
   function validateArgs(tool, args) {
     if (BLOCKED_TOOLS_FOR_MAILBOX.has(tool)) {
@@ -529,7 +530,7 @@ function createToolBridge(deps) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
       localTools.executeTool(root, 'environment_info', {}),
       localTools.executeTool(root, 'project_status', {}),
-      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: 2, maxEntries: 120 }),
+      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: 2, maxEntries: 180, format: 'paths' }),
       localTools.executeTool(root, 'discover_instructions', {}),
       executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog')
     ]);
@@ -599,7 +600,9 @@ function createToolBridge(deps) {
           ? { tool, requiresApproval: true, automatic: false }
           : localTools.getToolPolicy(tool, args);
         if (policy.requiresApproval) {
-          const approved = await askApproval(tool, args, root);
+          const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
+            ? true
+            : await askApproval(tool, args, root);
           if (!approved) {
             result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
           } else {
