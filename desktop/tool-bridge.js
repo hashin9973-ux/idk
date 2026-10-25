@@ -842,7 +842,11 @@ function createToolBridge(deps) {
           'If the matching result is not visible yet, inspect the matching claim and worker state, then re-read that result. Do not call it blocked or submit a duplicate while the first request may still be running. Never replay an uncertain side-effecting request ID.',
           'After edits, run relevant project-native checks and tests. For user-visible applications, also run an available end-to-end smoke test. Fix failures and rerun verification before claiming completion.',
           'Distinguish verified behavior from unverified behavior in the final report. Never claim a test, build, browser check, or full playthrough passed unless its actual result supports the claim.',
-          'Prefer targeted reads/search and bounded output over dumping the whole workspace. Automatically paginate truncated listings or results where practical instead of asking the user to run commands manually.'
+          'Prefer targeted reads/search and bounded output over dumping the whole workspace. Automatically paginate truncated listings or results where practical instead of asking the user to run commands manually.',
+          'Vision is optional: use it only when a visible UI, rendering, dialog, or screenshot materially helps answer the task. Prefer source, logs, tests, and structured evidence when sufficient.',
+          'Before visual inspection, call vision_status; if needed, call vision_activate and confirm actual Colab runtime/model readiness. Opening Colab is not readiness, and setup may require user sign-in, GPU startup, and running the notebook worker.',
+          'Capture one targeted screenshot with a narrow question. If vision_analyze_screenshot returns a pending request ID, call vision_wait with that same ID instead of uploading duplicate screenshots. Vision can be slow; continue other useful work while waiting when possible.',
+          'Screenshots are uploaded through the GitHub mailbox and remain in Git history even if the artifact file is later deleted; avoid sensitive desktop content. After visual work, call vision_deactivate to disable new requests, but never claim this shuts down the Colab runtime or unloads its model.'
         ]
       },
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
