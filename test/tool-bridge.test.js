@@ -386,7 +386,7 @@ test('agent context packs Windows environment, project commands, instruction met
       githubAuth: {}
     });
     const result = await bridge.runTool('get_agent_context', {}, 'req-agent-context');
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, result.error || JSON.stringify(result));
     assert.equal(result.result.protocol, 'chatgpt-local-agent-context/v1');
     assert.equal(result.result.project_commands.name, 'context-fixture');
     assert.equal(result.result.project_commands.scripts.test, 'node --test');
