@@ -394,6 +394,10 @@ class FilesystemIndexMonitor {
     this.reconcileTimer = null;
     this.closeWatcher();
     this.dirtyParents.clear();
+    const activeRebuild = this.rebuildPromise;
+    if (activeRebuild) {
+      try { await activeRebuild; } catch {}
+    }
   }
 
   getState() {
