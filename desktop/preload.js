@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   minimizeToTray: () => ipcRenderer.invoke('app:minimize-to-tray'),
   quit: () => ipcRenderer.invoke('app:quit'),
   getGitHubState: () => ipcRenderer.invoke('app:github-state'),
+  retryConnection: () => ipcRenderer.invoke('app:retry-connection'),
   startGitHubLogin: () => ipcRenderer.invoke('app:github-start-login'),
   reconnectGitHub: () => ipcRenderer.invoke('app:github-reconnect'),
   pollGitHubLogin: () => ipcRenderer.invoke('app:github-poll-login'),
