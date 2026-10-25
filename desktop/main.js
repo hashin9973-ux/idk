@@ -674,16 +674,30 @@ function registerIpc() {
     }
     return visionService.status();
   });
-  ipcMain.handle('app:vision-open-sign-in', async event => {
+  ipcMain.handle('app:vision-connect-colab', async event => {
     assertLocalUi(event, 'index.html');
-    const browser = await openInBrowserAndYield(COLAB_NOTEBOOK_URL);
-    return {
-      status: 'opened',
-      opened: Boolean(browser && browser.opened),
-      notebook_url: COLAB_NOTEBOOK_URL,
-      vision_activated: false,
-      message: 'Colab opened in your default browser. Complete Google sign-in if prompted. Opening the notebook does not start the vision model.'
-    };
+    if (!visionService) {
+      return {
+        status: 'error',
+        connected: false,
+        opened: false,
+        vision_activated: false,
+        message: appInitializationError || 'Colab vision service is unavailable in this app session.'
+      };
+    }
+    const githubState = githubAuth
+      ? await githubAuth.getState()
+      : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+    if (!githubState.authenticated) {
+      return {
+        status: 'action_required',
+        connected: false,
+        opened: false,
+        vision_activated: false,
+        message: 'The app must be signed in to GitHub before it can read the shared mailbox and verify a Colab connection. Use Sign in to GitHub first.'
+      };
+    }
+    return visionService.connectColab();
   });
   ipcMain.handle('app:vision-setup-check', async event => {
     assertLocalUi(event, 'index.html');
