@@ -116,6 +116,7 @@ test('the status window minimizes to the system tray and the worker starts autom
   assert.match(main, /label: 'Open status'/);
   assert.match(main, /label: 'Quit'/);
   assert.match(main, /mainWindow\.on\('minimize', event => \{\s*event\.preventDefault\(\);\s*hideToTray\(\);/);
+  assert.match(main, /mainWindow\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*hideToTray\(\);/);
   assert.match(main, /function startAutoConnectLoop\(\)/);
   assert.match(main, /setInterval\(\(\) => \{ void attemptAutoConnect\(\); \}, AUTO_CONNECT_INTERVAL_MS\)/);
   assert.match(main, /owner: 'hashin9973-ux'/);
