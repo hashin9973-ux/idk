@@ -1,15 +1,22 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
+const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS } = require('./tool-bridge');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
+const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
+const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
-const DEFAULT_INTERVAL_MS = 15000;
+const DEFAULT_INTERVAL_MS = 2000;
+const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESULT_BYTES = 90 * 1024;
+const MAX_INLINE_TEXT_BYTES = 32 * 1024;
+const MAX_ARTIFACT_PART_BYTES = 256 * 1024;
+const MAX_WORKSPACE_UPLOAD_BYTES = 8 * 1024 * 1024;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 const BLOCKED_TOOLS = new Set(['github_api', 'github_status']);
@@ -49,12 +56,14 @@ function validateRequest(requestId, request) {
   if (typeof request.created_at !== 'string' || request.created_at.length > 80) {
     throw new Error('Request must include a created_at timestamp.');
   }
-  if (typeof request.tool !== 'string' || !Object.hasOwn(TOOL_ARGUMENT_KEYS, request.tool) ||
+  const isContextRequest = request.tool === CONTEXT_REQUEST_TOOL;
+  if (typeof request.tool !== 'string' ||
+      (!isContextRequest && !Object.hasOwn(TOOL_ARGUMENT_KEYS, request.tool)) ||
       BLOCKED_TOOLS.has(request.tool)) {
     throw new Error('Unknown or unsupported local tool.');
   }
   if (!isPlainObject(request.args)) throw new Error('Request args must be a JSON object.');
-  const allowed = TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
+  const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
   return { request_id: requestId, tool: request.tool, args: { ...request.args } };
@@ -131,7 +140,9 @@ function createRepositoryBridge(deps) {
     getWorkspaceRoot,
     executeTool,
     onState = () => {},
-    intervalMs = DEFAULT_INTERVAL_MS
+    intervalMs = DEFAULT_INTERVAL_MS,
+    contextRefreshIntervalMs = DEFAULT_CONTEXT_REFRESH_MS,
+    publishContextOnStart = false
   } = deps;
 
   const workerId = randomUUID();
@@ -146,6 +157,8 @@ function createRepositoryBridge(deps) {
   let pendingCount = 0;
   let lastStatePublishAt = 0;
   const inMemoryClaims = new Set();
+  let lastContextRefreshAt = 0;
+  let lastContextWorkspace = '';
 
   function currentConfig() {
     const settings = getSettings() || {};
@@ -235,7 +248,7 @@ function createRepositoryBridge(deps) {
   }
 
   async function ensureFolders() {
-    for (const folder of ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state']) {
+    for (const folder of ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts']) {
       const entries = await listFolder(folder);
       if (entries.length) continue;
       const placeholder = folder + '/.gitkeep';
@@ -258,7 +271,9 @@ function createRepositoryBridge(deps) {
       pending_count: pendingCount,
       last_poll_at: lastPollAt,
       last_error: lastError || null,
-      workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot())
+      workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
+      context_path: 'bridge/context/latest.json',
+      artifact_root: 'bridge/artifacts/'
     };
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
     try {
@@ -269,6 +284,356 @@ function createRepositoryBridge(deps) {
       lastError = 'Could not publish shared state: ' + cleanError(error.message);
       announce();
     }
+  }
+
+  async function readRemoteContent(relativePath) {
+    const config = currentConfig();
+    try {
+      const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
+      const entry = response && response.result;
+      if (!entry || entry.type !== 'file') throw new Error('GitHub returned an unexpected artifact file format.');
+      const content = entry.encoding === 'base64' && typeof entry.content === 'string'
+        ? Buffer.from(entry.content.replace(/\\s/g, ''), 'base64')
+        : null;
+      return { content, sha: entry.sha || null, entry };
+    } catch (error) {
+      if (isNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  async function writeRemoteContent(relativePath, content, message) {
+    const config = currentConfig();
+    const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
+    const existing = await readRemoteContent(relativePath);
+    const contentHash = createHash('sha256').update(bytes).digest('hex');
+    if (existing) {
+      const existingHash = existing.content
+        ? createHash('sha256').update(existing.content).digest('hex')
+        : null;
+      const gitBlobSha = createHash('sha1')
+        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+        .update(bytes)
+        .digest('hex');
+      if (existingHash === contentHash || (!existing.content && existing.sha === gitBlobSha)) {
+        return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: contentHash };
+      }
+      throw new Error('Artifact path already exists with different content: ' + relativePath);
+    }
+    try {
+      const response = await api('PUT', apiPath(relativePath), {
+        message: message || '[local bridge] publish artifact ' + path.posix.basename(relativePath),
+        content: bytes.toString('base64'),
+        branch: config.branch
+      });
+      return {
+        ok: true,
+        sha: response.result && response.result.content && response.result.content.sha || null,
+        bytes: bytes.length,
+        sha256: contentHash
+      };
+    } catch (error) {
+      // A previous attempt may have published the same immutable artifact but lost its response.
+      const reread = await readRemoteContent(relativePath).catch(() => null);
+      const gitBlobSha = createHash('sha1')
+        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+        .update(bytes)
+        .digest('hex');
+      if (reread && (
+        (reread.content && createHash('sha256').update(reread.content).digest('hex') === contentHash) ||
+        (!reread.content && reread.sha === gitBlobSha)
+      )) {
+        return { ok: true, unchanged: true, sha: reread.sha, bytes: bytes.length, sha256: contentHash };
+      }
+      throw error;
+    }
+  }
+
+  function safeArtifactName(raw, fallback) {
+    let value = String(raw || fallback || 'artifact.bin')
+      .replace(/[\\/\\\\]/g, '_')
+      .replace(/[^A-Za-z0-9_.-]/g, '_')
+      .replace(/^[^A-Za-z0-9]+/, '')
+      .slice(0, 120);
+    if (!value || value === '.' || value === '..') value = 'artifact.bin';
+    return value;
+  }
+
+  async function publishWorkspaceFile(requestId, file) {
+    if (typeof requestId !== 'string' || !SAFE_ID.test(requestId)) throw new Error('Invalid request ID for file upload.');
+    if (!file || typeof file !== 'object' || !Buffer.isBuffer(file.bytes)) {
+      throw new TypeError('Workspace upload must include file bytes.');
+    }
+    if (file.bytes.length > MAX_WORKSPACE_UPLOAD_BYTES) {
+      throw new Error('Workspace file exceeds the 8 MiB upload limit.');
+    }
+    const fileName = safeArtifactName(file.artifactName, path.basename(String(file.path || 'artifact.bin')));
+    const relativePath = 'bridge/artifacts/' + requestId + '/' + fileName;
+    const stored = await writeRemoteContent(relativePath, file.bytes, '[local bridge] upload ' + fileName);
+    const config = currentConfig();
+    const extension = path.extname(fileName).toLowerCase();
+    const mediaTypes = {
+      '.txt': 'text/plain', '.md': 'text/markdown', '.json': 'application/json',
+      '.js': 'text/javascript', '.ts': 'text/typescript', '.css': 'text/css',
+      '.html': 'text/html', '.xml': 'application/xml', '.csv': 'text/csv',
+      '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp', '.gif': 'image/gif', '.svg': 'image/svg+xml',
+      '.pdf': 'application/pdf', '.zip': 'application/zip', '.7z': 'application/x-7z-compressed',
+      '.log': 'text/plain', '.patch': 'text/x-diff', '.diff': 'text/x-diff'
+    };
+    return {
+      path: relativePath,
+      url: 'https://github.com/' + config.owner + '/' + config.repo + '/blob/' +
+        encodeURIComponent(config.branch) + '/' + relativePath.split('/').map(encodeURIComponent).join('/'),
+      media_type: mediaTypes[extension] || 'application/octet-stream',
+      bytes: stored.bytes,
+      sha256: stored.sha256,
+      github_blob_sha: stored.sha,
+      repository_visibility: publicRepository === true ? 'public' : publicRepository === false ? 'private' : 'unknown',
+      note: 'The full file is stored in the shared repository; ChatGPT should retrieve this path through its GitHub integration.'
+    };
+  }
+
+  function splitUtf8Text(value, limitBytes) {
+    const chunks = [];
+    let chunk = '';
+    let chunkBytes = 0;
+    for (const character of value) {
+      const bytes = Buffer.byteLength(character, 'utf8');
+      if (chunk && chunkBytes + bytes > limitBytes) {
+        chunks.push(chunk);
+        chunk = '';
+        chunkBytes = 0;
+      }
+      chunk += character;
+      chunkBytes += bytes;
+    }
+    if (chunk || chunks.length === 0) chunks.push(chunk);
+    return chunks;
+  }
+
+  async function externalizeLargeText(requestId, value, artifactManifest, artifactErrors, keyPath = 'output') {
+    if (typeof value === 'string') {
+      if (Buffer.byteLength(value, 'utf8') <= MAX_INLINE_TEXT_BYTES) return value;
+      // Keep normal tool calls to one request file plus one result file. Do not force
+      // ChatGPT to fetch a third artifact just to inspect ordinary tool output.
+      const chunks = splitUtf8Text(value, Math.floor(MAX_INLINE_TEXT_BYTES / 2));
+      const first = chunks[0] || '';
+      const last = chunks.length > 1 ? chunks[chunks.length - 1] : '';
+      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. Request a narrower line range, search, or smaller batch for the omitted content.]\n\n' + last;
+    }
+    if (Array.isArray(value)) {
+      const output = [];
+      for (let index = 0; index < value.length; index++) {
+        output.push(await externalizeLargeText(requestId, value[index], artifactManifest, artifactErrors, keyPath + '.' + index));
+      }
+      return output;
+    }
+    if (!isPlainObject(value)) return value;
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      output[key] = await externalizeLargeText(requestId, item, artifactManifest, artifactErrors, keyPath + '.' + key);
+    }
+    return output;
+  }
+
+  function compactRecordForInlineResult(record) {
+    const output = JSON.parse(JSON.stringify(record));
+    const marker = ' … [shortened to fit the two-operation result limit] … ';
+    function collect(value, parent, key, strings, arrays) {
+      if (typeof value === 'string') {
+        if (value.length > 80) strings.push({ parent, key, value, length: value.length });
+        return;
+      }
+      if (!value || typeof value !== 'object') return;
+      if (Array.isArray(value)) {
+        if (value.length > 3) {
+          const estimate = Buffer.byteLength(JSON.stringify(value), 'utf8');
+          arrays.push({ parent, key, value, estimate, length: value.length });
+        }
+        for (let index = 0; index < value.length; index++) collect(value[index], value, index, strings, arrays);
+        return;
+      }
+      for (const [childKey, childValue] of Object.entries(value)) collect(childValue, value, childKey, strings, arrays);
+    }
+    let serialized = JSON.stringify(output);
+    let rounds = 0;
+    const targetBytes = MAX_RESULT_BYTES - 2048;
+    while (Buffer.byteLength(serialized, 'utf8') > targetBytes && rounds++ < 4000) {
+      const strings = [];
+      const arrays = [];
+      collect(output, null, null, strings, arrays);
+      strings.sort((a, b) => b.length - a.length);
+      if (strings.length) {
+        for (const slot of strings) {
+          const nextLength = Math.max(48, Math.floor(slot.length / 2));
+          if (nextLength <= marker.length + 8) {
+            slot.parent[slot.key] = slot.value.slice(0, Math.max(24, nextLength - 3)) + '…';
+          } else {
+            const keep = Math.floor((nextLength - marker.length) / 2);
+            slot.parent[slot.key] = slot.value.slice(0, keep) + marker + slot.value.slice(-keep);
+          }
+        }
+      } else {
+        arrays.sort((a, b) => b.estimate - a.estimate);
+        if (!arrays.length) break;
+        const slot = arrays[0];
+        const omitted = slot.value.length - 3;
+        slot.parent[slot.key] = [slot.value[0], { _bridge_truncated: true, omitted_items: omitted }, slot.value[slot.value.length - 1]];
+      }
+      serialized = JSON.stringify(output);
+    }
+    if (Buffer.byteLength(serialized, 'utf8') > targetBytes) {
+      return {
+        protocol: RESULT_PROTOCOL,
+        request_id: record.request_id,
+        tool: record.tool,
+        status: 'partial',
+        created_at: record.created_at,
+        completed_at: record.completed_at,
+        output_truncated: true,
+        result: { ok: Boolean(record.result && record.result.ok), note: 'The result was too large for one self-contained response. Repeat with narrower paths, line ranges, searches, or a smaller batch.' },
+        artifacts: record.artifacts || [],
+        artifact_errors: record.artifact_errors || []
+      };
+    }
+    output.output_truncated = true;
+    output.output_note = 'Some result fields were shortened to preserve the two-operation workflow. Request the relevant file range, search result, or smaller batch for omitted detail.';
+    if (output.status === 'completed') output.status = 'partial';
+    return output;
+  }
+  function contextComparable(value) {
+    if (Array.isArray(value)) return value.map(contextComparable);
+    if (!isPlainObject(value)) return value;
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'generated_at' || key === 'freeMemoryBytes') continue;
+      output[key] = contextComparable(item);
+    }
+    return output;
+  }
+
+  async function upsertContextJson(relativePath, value) {
+    const existing = await readRemoteFile(relativePath);
+    if (existing && JSON.stringify(contextComparable(existing.value)) === JSON.stringify(contextComparable(value))) {
+      return { ok: true, unchanged: true, sha: existing.sha };
+    }
+    return writeRemoteJson(relativePath, value, existing && existing.sha, false);
+  }
+
+  async function publishEnvironmentContext() {
+    const generatedAt = new Date().toISOString();
+    const root = getWorkspaceRoot ? getWorkspaceRoot() : '';
+    const files = {};
+    const contextReports = {};
+    const collectors = [
+      ['environment', 'environment_info', {}],
+      ['project', 'project_status', {}],
+      ['capabilities', 'get_capabilities', {}],
+      ['project_commands', 'read_file', { path: 'package.json' }],
+      ['directory_tree', 'directory_tree', { path: '.', maxDepth: 3, maxEntries: 250 }],
+      ['instructions', 'discover_instructions', {}]
+    ];
+    for (const [name, tool, args] of collectors) {
+      const relativePath = 'bridge/context/' + name + '.json';
+      let report;
+      try {
+        report = await executeTool(tool, args, 'context-' + randomUUID());
+        report = sanitizeForRepository(report, root);
+        if (name === 'environment' && report && report.result && typeof report.result === 'object') {
+          delete report.result.freeMemoryBytes;
+        }
+        if (name === 'project_commands') {
+          const content = report && report.ok && report.result && report.result.content;
+          if (typeof content === 'string') {
+            try {
+              const manifest = JSON.parse(content);
+              report = { ok: true, result: {
+                available: true,
+                manifest: 'package.json',
+                name: typeof manifest.name === 'string' ? manifest.name : null,
+                packageManager: typeof manifest.packageManager === 'string' ? manifest.packageManager : null,
+                engines: manifest.engines && typeof manifest.engines === 'object' ? manifest.engines : null,
+                scripts: manifest.scripts && typeof manifest.scripts === 'object' ? manifest.scripts : {}
+              } };
+            } catch { report = { ok: true, result: { available: false, parse_error: true, manifest: 'package.json' } }; }
+          } else {
+            report = { ok: true, result: { available: false, manifest: 'package.json' } };
+          }
+        }
+        if (name === 'instructions' && report && report.result && Array.isArray(report.result.instructions)) {
+          report.result.instructions = report.result.instructions.map(item => ({
+            path: item.path,
+            bytes: Buffer.byteLength(String(item.content || ''), 'utf8'),
+            sha256: createHash('sha256').update(String(item.content || ''), 'utf8').digest('hex')
+          }));
+          report.result.note = 'Instruction contents are intentionally not included in the environment snapshot. Request discover_instructions or read the relevant AGENTS.md file to retrieve content on demand.';
+        }
+        contextReports[name] = report;
+      } catch (error) {
+        report = { ok: false, error: cleanError(error.message) };
+      }
+      const record = {
+        protocol: CONTEXT_PROTOCOL,
+        name,
+        tool,
+        generated_at: generatedAt,
+        data: report
+      };
+      await upsertContextJson(relativePath, record);
+      files[name] = relativePath;
+    }
+    const capabilityData = contextReports.capabilities && contextReports.capabilities.result || {};
+    const instructionData = contextReports.instructions && contextReports.instructions.result || {};
+    const projectCommandData = contextReports.project_commands && contextReports.project_commands.result || { available: false };
+    const projectCommandList = [];
+    const projectEntries = new Set((contextReports.project && contextReports.project.result && contextReports.project.result.topLevelEntries || []).map(String));
+    const scripts = projectCommandData.scripts && typeof projectCommandData.scripts === 'object' ? projectCommandData.scripts : {};
+    if (typeof scripts.test === 'string') projectCommandList.push({ name: 'test', command: 'npm test', source: 'package.json scripts.test' });
+    if (typeof scripts.check === 'string') projectCommandList.push({ name: 'check', command: 'npm run check', source: 'package.json scripts.check' });
+    if (typeof scripts.lint === 'string') projectCommandList.push({ name: 'lint', command: 'npm run lint', source: 'package.json scripts.lint' });
+    if (projectEntries.has('pyproject.toml') || projectEntries.has('pytest.ini') || projectEntries.has('tests')) projectCommandList.push({ name: 'test', command: 'python -m pytest', source: 'Python project marker; verify dependencies first' });
+    if (projectEntries.has('Cargo.toml')) projectCommandList.push({ name: 'test', command: 'cargo test', source: 'Cargo.toml' });
+    if (projectEntries.has('go.mod')) projectCommandList.push({ name: 'test', command: 'go test ./...', source: 'go.mod' });
+    if (projectEntries.has('pom.xml')) projectCommandList.push({ name: 'test', command: 'mvn test', source: 'pom.xml' });
+    if (projectEntries.has('gradlew.bat')) projectCommandList.push({ name: 'test', command: '.\\gradlew.bat test', source: 'gradlew.bat' });
+    else if (projectEntries.has('build.gradle') || projectEntries.has('build.gradle.kts')) projectCommandList.push({ name: 'test', command: 'gradle test', source: 'Gradle build file' });
+    if (projectEntries.has('global.json') || [...projectEntries].some(name => name.endsWith('.sln') || name.endsWith('.csproj'))) projectCommandList.push({ name: 'test', command: 'dotnet test', source: '.NET project marker' });
+    const index = {
+      protocol: CONTEXT_PROTOCOL,
+      generated_at: generatedAt,
+      worker_id: workerId,
+      workspace_selected: Boolean(root),
+      retrieval_policy: 'Use agent_context as the compact workspace and tool entry point. Detailed snapshots are available via files only when needed. Context is refreshed at startup, every few minutes, and when the selected workspace changes; request an explicit refresh if freshness matters.',
+      agent_context: {
+        protocol: 'chatgpt-local-agent-context/v1',
+        generated_at: generatedAt,
+        environment: contextReports.environment && contextReports.environment.result || null,
+        project: contextReports.project && contextReports.project.result || null,
+        project_commands: { ...projectCommandData, suggested: projectCommandList },
+        directory_overview: contextReports.directory_tree && contextReports.directory_tree.result || null,
+        instruction_files: Array.isArray(instructionData.instructions) ? instructionData.instructions.map(item => ({ ...item, contents_included: false })) : [],
+        tool_catalog: {
+          protocol: capabilityData.protocol || null,
+          catalog_version: capabilityData.catalog_version || 1,
+          tools: Array.isArray(capabilityData.tools) ? capabilityData.tools : [],
+          tool_calling: capabilityData.tool_calling || null
+        },
+        operating_rules: [
+          'Use workspace-relative paths for file operations.',
+          'Inspect relevant project instructions and source before editing.',
+          'Batch known operations into one request; every step returns its own status and output.',
+          'Protected operations still require native Windows approval.',
+          'PowerShell is not sandboxed and runs as the signed-in Windows user.',
+          'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.'
+        ]
+      },
+      files
+    };
+    await upsertContextJson('bridge/context/latest.json', index);
+    lastContextRefreshAt = Date.now();
+    lastContextWorkspace = String(root || '');
+    return index;
   }
 
   async function acquireClaim(requestId) {
@@ -414,30 +779,48 @@ function createRepositoryBridge(deps) {
 
     let report;
     try {
-      report = await executeTool(request.tool, request.args, requestId);
+      if (request.tool === CONTEXT_REQUEST_TOOL) {
+        report = { ok: true, result: await publishEnvironmentContext() };
+      } else {
+        report = await executeTool(request.tool, request.args, requestId);
+      }
     } catch (error) {
       report = { ok: false, error: cleanError(error.message), tool: request.tool, call_id: requestId };
     }
 
-    const safeReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    const artifactManifest = [];
+    const artifactErrors = [];
+    const safeReport = await externalizeLargeText(requestId, sanitizedReport, artifactManifest, artifactErrors);
+    const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
+      safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
+    const outputWasShortened = JSON.stringify(safeReport).includes('[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED.') ||
+      JSON.stringify(safeReport).includes('shortened to fit the two-operation result limit');
+    if (uploadedArtifact) {
+      artifactManifest.unshift({
+        kind: 'uploaded_workspace_file',
+        path: uploadedArtifact.path,
+        url: uploadedArtifact.url,
+        media_type: uploadedArtifact.media_type,
+        bytes: uploadedArtifact.bytes,
+        sha256: uploadedArtifact.sha256,
+        field: 'result.artifact'
+      });
+    }
     let resultRecord = {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
-      status: safeReport && safeReport.ok ? 'completed' : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      status: safeReport && safeReport.ok ? (artifactErrors.length || outputWasShortened ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      output_truncated: outputWasShortened,
       created_at: remote.value.created_at,
       completed_at: new Date().toISOString(),
-      result: safeReport
+      result: safeReport,
+      artifacts: artifactManifest,
+      artifact_errors: artifactErrors
     };
     if (Buffer.byteLength(JSON.stringify(resultRecord), 'utf8') > MAX_RESULT_BYTES) {
-      resultRecord = {
-        protocol: RESULT_PROTOCOL,
-        request_id: requestId,
-        tool: request.tool,
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        error: 'Local result exceeded the size limit and was not uploaded. Retry with a narrower read or search.'
-      };
+      resultRecord = compactRecordForInlineResult(resultRecord);
     }
 
     const pendingClaim = {
@@ -503,6 +886,17 @@ function createRepositoryBridge(deps) {
         lastPollAt = new Date().toISOString();
         lastError = '';
         announce();
+        const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
+        const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);
+        const contextWorkspaceChanged = Boolean(lastContextRefreshAt) && currentWorkspace !== lastContextWorkspace;
+        if (publishContextOnStart && (contextWorkspaceChanged || contextExpired)) {
+          try {
+            await publishEnvironmentContext();
+          } catch (error) {
+            lastError = 'Background context refresh failed: ' + cleanError(error.message);
+            announce();
+          }
+        }
         await publishState(firstPoll);
         for (const filename of pending) {
           if (!running) break;
@@ -539,7 +933,7 @@ function createRepositoryBridge(deps) {
     timer = setTimeout(async () => {
       await pollOnce();
       scheduleNextPoll();
-    }, Math.max(5000, intervalMs));
+    }, Math.max(2000, intervalMs));
   }
 
   async function start() {
@@ -556,6 +950,13 @@ function createRepositoryBridge(deps) {
     await ensureFolders();
     running = true;
     lastError = '';
+    if (publishContextOnStart) {
+      try {
+        await publishEnvironmentContext();
+      } catch (error) {
+        lastError = 'Environment context publication failed: ' + cleanError(error.message);
+      }
+    }
     announce();
     await publishState(true);
     await pollOnce();
@@ -585,12 +986,14 @@ function createRepositoryBridge(deps) {
     return stateSnapshot();
   }
 
-  return { start, stop, pollOnce, setConfig, getState: stateSnapshot };
+  return { start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext, publishWorkspaceFile };
 }
 
 module.exports = {
   PROTOCOL,
   RESULT_PROTOCOL,
+  CONTEXT_PROTOCOL,
+  CONTEXT_REQUEST_TOOL,
   DEFAULT_BRANCH,
   validateConfig,
   validateRequest,

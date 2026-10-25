@@ -43,7 +43,7 @@ function loginServer(token = 'gho-test-token') {
   return async url => {
     const target = String(url);
     if (target.endsWith('/login/device/code')) {
-      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
     }
     if (target.endsWith('/login/oauth/access_token')) return response({ access_token: token });
     if (target.endsWith('/user')) return response({ login: 'example-user' });
@@ -68,7 +68,7 @@ test('GitHub device flow stores credentials encrypted and validates the account'
     const target = String(url);
     calls.push({ url: target, method: options.method || 'GET', headers: options.headers || {} });
     if (target.endsWith('/login/device/code')) {
-      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
     }
     if (target.endsWith('/login/oauth/access_token')) {
       tokenPolls++;
@@ -83,6 +83,7 @@ test('GitHub device flow stores credentials encrypted and validates the account'
   const flow = await auth.startLogin();
   assert.equal(flow.userCode, 'ABCD-EFGH');
   assert.equal(flow.verificationUrl, 'https://github.com/login/device');
+  assert.equal(flow.verificationUrlComplete, 'https://github.com/login/device?user_code=ABCD-EFGH');
   assert.equal((await auth.pollLogin()).status, 'pending');
   assert.deepEqual(await auth.pollLogin(), { status: 'authenticated', login: 'example-user' });
   assert.equal(settings.github.encryptedToken.includes('gho-not-a-real-token'), false);
@@ -248,7 +249,7 @@ test('repository API allows only the configured mailbox contents routes', async 
     const target = String(url);
     calls.push({ url: target, options });
     if (target.endsWith('/login/device/code')) {
-      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', expires_in: 900, interval: 5 });
+      return response({ device_code: 'device-secret', user_code: 'ABCD-EFGH', verification_uri: 'https://github.com/login/device', verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH', expires_in: 900, interval: 5 });
     }
     if (target.endsWith('/login/oauth/access_token')) return response({ access_token: 'gho-mailbox-test-token' });
     if (target.endsWith('/user')) return response({ login: 'example-user' });
@@ -294,7 +295,7 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.equal(writeCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
   assert.equal(JSON.parse(writeCall.options.body).branch, 'bridge-mailbox');
 
-  for (const folder of ['requests', 'results', 'claims', 'state']) {
+  for (const folder of ['requests', 'results', 'claims', 'state', 'context', 'artifacts']) {
     await auth.requestApi({
       method: 'PUT',
       path: '/repos/example/private-repo/contents/bridge/' + folder + '/.gitkeep',
@@ -306,6 +307,31 @@ test('repository API allows only the configured mailbox contents routes', async 
     });
   }
 
+  const contextPayload = {
+    protocol: 'chatgpt-local-environment-context/v1',
+    name: 'environment',
+    generated_at: '2026-10-24T00:00:00.000Z',
+    data: { platform: 'win32' }
+  };
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/context/environment.json',
+    body: {
+      message: '[local bridge] environment context',
+      content: Buffer.from(JSON.stringify(contextPayload, null, 2)).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  const rawArtifact = Buffer.from([0, 1, 2, 127, 128, 255]).toString('base64');
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/artifacts/req-test/sample.bin',
+    body: {
+      message: '[local bridge] upload sample.bin',
+      content: rawArtifact,
+      branch: 'bridge-mailbox'
+    }
+  });
   const beforeRejectedCalls = calls.length;
   await assert.rejects(auth.requestApi({ method: 'GET', path: '/user' }), /outside the configured repository mailbox/i);
   await assert.rejects(auth.requestApi({
@@ -336,6 +362,27 @@ test('repository API allows only the configured mailbox contents routes', async 
     }
   }), /supported result protocol/i);
   assert.equal(calls.length, beforeRejectedCalls, 'invalid routes and payloads are rejected before network requests');
+});
+
+test('GitHub CLI token import validates the account before storing the token encrypted', async () => {
+  const calls = [];
+  const mockFetch = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith('/user')) {
+      assert.equal(options.headers.Authorization, 'Bearer gho-imported-test-token');
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected test URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  assert.deepEqual(await auth.importToken('gho-imported-test-token'), {
+    authenticated: true,
+    login: 'example-user'
+  });
+  assert.equal(settings.github.encryptedToken.includes('gho-imported-test-token'), false);
+  assert.equal((await auth.getState()).authenticated, true);
+  await assert.rejects(auth.importToken('short'), /valid access token/i);
+  assert.equal(calls.length, 2);
 });
 
 test('GitHub logout removes the encrypted credential', async () => {
