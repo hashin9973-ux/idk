@@ -9,7 +9,7 @@ const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
 const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
-const DEFAULT_INTERVAL_MS = 15000;
+const DEFAULT_INTERVAL_MS = 2000;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -933,7 +933,7 @@ function createRepositoryBridge(deps) {
     timer = setTimeout(async () => {
       await pollOnce();
       scheduleNextPoll();
-    }, Math.max(5000, intervalMs));
+    }, Math.max(2000, intervalMs));
   }
 
   async function start() {
