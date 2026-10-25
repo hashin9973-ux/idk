@@ -425,6 +425,7 @@ function createToolBridge(deps) {
                 ? 'Normally runs automatically for workspace-relative paths; secret-like paths still require native Windows approval.'
                 : 'No approval dialog is normally required; the app still validates paths and arguments.'
         }));
+        output.catalog_version = 1;
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
           catalog_version: 1,
