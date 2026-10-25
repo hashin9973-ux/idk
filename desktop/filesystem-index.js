@@ -145,6 +145,8 @@ class FilesystemIndexMonitor {
     this.fallbackPollMs = Number.isInteger(options.fallbackPollMs) ? options.fallbackPollMs : DEFAULT_FALLBACK_POLL_MS;
     this.entries = new Map();
     this.contentHash = '';
+    this.localContentHash = '';
+    this.localUpdatedAt = null;
     this.updatedAt = null;
     this.running = false;
     this.watcher = null;
@@ -318,19 +320,34 @@ class FilesystemIndexMonitor {
     const entries = [...this.entries.entries()]
       .map(([entryPath, type]) => ({ path: entryPath, type }))
       .sort((a, b) => a.path.localeCompare(b.path) || a.type.localeCompare(b.type));
-    const rendered = renderIndex(entries, {
+    const truncation = scanTruncated || this.entries.size >= this.maxEntries;
+    let rendered = renderIndex(entries, {
       updatedAt: new Date().toISOString(),
       maxBytes: this.maxBytes,
-      truncated: scanTruncated || this.entries.size >= this.maxEntries
+      truncated: truncation
     });
+    const localChanged = rendered.hash !== this.localContentHash;
+    if (!localChanged && this.localUpdatedAt) {
+      // "Updated" means the names/types changed, not merely that reconciliation ran.
+      rendered = renderIndex(entries, {
+        updatedAt: this.localUpdatedAt,
+        maxBytes: this.maxBytes,
+        truncated: truncation
+      });
+    } else {
+      await writeAtomicIfConfigured(this.outputPath, rendered.content);
+      this.localContentHash = rendered.hash;
+      this.localUpdatedAt = rendered.updatedAt;
+    }
+
+    // Retry failed/offline publishing even when the local names-only snapshot is unchanged.
     if (!force && rendered.hash === this.contentHash) return null;
-    await writeAtomicIfConfigured(this.outputPath, rendered.content);
     const snapshot = { ...rendered, content: rendered.content, localPath: this.outputPath || null };
     try {
-      await this.onUpdate(snapshot);
+      const delivered = await this.onUpdate(snapshot);
+      if (delivered === false) return snapshot;
     } catch (error) {
-      // Keep the last-successful hash unchanged. The next reconciliation must retry
-      // publication instead of treating a failed sync as a completed update.
+      // Keep the last-successful sync hash unchanged. Periodic reconciliation will retry.
       this.reportError(error);
       return snapshot;
     }
