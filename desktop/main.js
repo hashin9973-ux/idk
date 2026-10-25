@@ -18,7 +18,7 @@ const {
   Menu,
   nativeImage
 } = require('electron');
-const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
+const { clampRectToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -253,6 +253,12 @@ function saveWindowBounds() {
   persistSettings();
 }
 
+function saveWindowBoundsSoon() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveWindowBounds, 250);
+}
+
 function hideToTray() {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
 }
@@ -390,11 +396,7 @@ async function openInBrowserAndYield(raw) {
 }
 
 function bringMainWindowForward() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (collapsed) expandWindow();
-  mainWindow.setAlwaysOnTop(true);
-  mainWindow.show();
-  mainWindow.focus();
+  showMainWindow();
 }
 
 function assertLocalUi(event, filename) {
@@ -415,7 +417,7 @@ function getUiState() {
 
 function broadcastBridgeState(state) {
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('app:bridge-state', state);
+    mainWindow.webContents.send('app:bridge-state', enrichedBridgeState(state));
   }
 }
 
@@ -524,7 +526,7 @@ function createMainWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAlwaysOnTop(true);
-  mainWindow.on('move', saveWindowBounds);
+  mainWindow.on('move', saveWindowBoundsSoon);
   mainWindow.on('minimize', event => {
     event.preventDefault();
     hideToTray();
