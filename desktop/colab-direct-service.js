@@ -150,10 +150,6 @@ function createVisionService(deps) {
     }
     const url = new URL(req.url || '/', 'http://127.0.0.1');
     if (req.method === 'OPTIONS') return sendJson(res, 204, {}, true);
-    if (req.method === 'GET' && url.pathname === '/vision/handshake') {
-      pendingNonce = { value: crypto.randomBytes(32).toString('hex'), expiresAt: now() + CALLBACK_NONCE_TTL_MS };
-      return sendJson(res, 200, { protocol: DIRECT_VISION_PROTOCOL, nonce: pendingNonce.value }, true);
-    }
     if (req.method !== 'POST' || url.pathname !== '/vision/register') {
       return sendJson(res, 404, { ok: false, error: 'Unknown registration route.' }, true);
     }
@@ -291,7 +287,10 @@ function createVisionService(deps) {
     if (now() - lastColabOpenAt < 60000) return { opened: false, throttled: true };
     if (typeof openColabNotebook !== 'function') throw new Error('Opening the Colab notebook is unavailable in this app build.');
     await ensureReceiver();
-    const result = await openColabNotebook(COLAB_NOTEBOOK_URL);
+    pendingNonce = { value: crypto.randomBytes(32).toString('hex'), expiresAt: now() + CALLBACK_NONCE_TTL_MS };
+    const notebookUrl = new URL(COLAB_NOTEBOOK_URL);
+    notebookUrl.searchParams.set('bridge_registration_nonce', pendingNonce.value);
+    const result = await openColabNotebook(notebookUrl.toString());
     lastColabOpenAt = now();
     return { opened: true, result: result || null, callback_port: receiverPort };
   }
