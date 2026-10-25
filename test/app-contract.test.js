@@ -30,6 +30,10 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   }
   assert.match(renderer, /GitHub connected/);
   assert.match(renderer, /Sign in to GitHub/);
+  assert.match(renderer, /githubButton\.textContent = loginCode/);
+  assert.match(renderer, /Enter code at GitHub/);
+  assert.match(renderer, /copyGitHubDeviceCode/);
+  assert.match(renderer, /onGitHubDeviceCode/);
   assert.match(renderer, /githubButton\.addEventListener\('click', connectGitHub\)/);
   assert.match(renderer, /windowsBridge\.reconnectGitHub/);
   assert.match(renderer, /windowsBridge\.retryConnection/);
@@ -71,6 +75,10 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /stdio: \['pipe', 'pipe', 'pipe'\]/);
   assert.match(main, /login\.child\.stdin\.end/);
   assert.match(main, /openPromptReleased = true/);
+  assert.match(main, /webContents\.send\('app:github-device-code', login\.userCode\)/);
+  assert.match(main, /app:copy-device-code/);
+  assert.match(main, /clipboard\.writeText\(code\)/);
+  assert.match(main, /login\.child\.stdin\.end\('\\\\n'\)/);
   assert.match(main, /GH_CONFIG_DIR: path\.join\(app\.getPath\('userData'\), 'github-cli'\)/);
   assert.ok(main.includes("GH_BROWSER: path.join(windowsRoot, 'explorer.exe')"));
   assert.doesNotMatch(main, /clearGitHubCliCredentials|auth', 'logout/);
@@ -81,7 +89,7 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
