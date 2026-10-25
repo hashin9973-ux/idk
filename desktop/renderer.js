@@ -212,7 +212,7 @@
     } else {
       if (visionConnectWatchDeadline && Date.now() < visionConnectWatchDeadline) {
         visionColabDetail.textContent = 'Waiting for worker heartbeat';
-        visionColabDetail.title = 'In Colab, verify QDQWG_TOKEN is in Secrets, connect/reconnect the runtime, and run the worker cell. This app is checking for a fresh heartbeat.';
+        visionColabDetail.title = 'In Colab, run the direct vision server cell. It registers an authenticated HTTPS tunnel with the app automatically; no Colab Secret is needed.';
         visionColabDetail.dataset.state = 'action_required';
       } else {
         visionColabDetail.textContent = vision.runtime_status
@@ -286,13 +286,13 @@
         if (snapshot && snapshot.runtime_fresh === true) {
           stopVisionConnectionWatch();
           visionSetupDetail.textContent = 'Colab connected';
-          visionSetupDetail.title = 'The app received a fresh heartbeat from the Colab worker through the shared GitHub mailbox. Vision activation and model loading are controlled separately.';
+          visionSetupDetail.title = 'The app received a response from Colab over the authenticated direct HTTPS tunnel. Vision activation and model loading are controlled separately.';
           visionSetupDetail.dataset.state = 'passed';
           void runVisionSetupCheck();
           return;
         }
       } catch (error) {
-        visionColabDetail.title = 'The app could not refresh Colab status: ' + String(error && error.message || error);
+        visionColabDetail.title = 'The app could not refresh the direct Colab connection: ' + String(error && error.message || error);
       }
       scheduleVisionConnectionCheck();
     }, 5000);
