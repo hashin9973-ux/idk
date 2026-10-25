@@ -194,7 +194,11 @@
     visionLabel.textContent = labels[status] || 'Vision: ' + status.replace(/_/g, ' ');
     visionLabel.title = String(vision.message || vision.error || 'Live vision status');
     const danger = ['disconnected', 'needs_authentication', 'gpu_unavailable', 'error', 'unavailable'].includes(status);
-    setDot(visionDot, status === 'ready' && vision.model_loaded === true ? 'online' : danger ? 'error' : 'waiting');
+    setDot(visionDot,
+      (status === 'ready' && vision.model_loaded === true) ||
+      (status === 'inactive' && vision.runtime_fresh === true)
+        ? 'online'
+        : danger ? 'error' : 'waiting');
 
     if (vision.runtime_fresh === true) {
       const runtimeLabel = status === 'inactive'
@@ -223,11 +227,9 @@
       visionModelDetail.dataset.state = 'not_verified';
     }
 
-    if (!visionSetupSnapshot) {
-      visionSetupDetail.textContent = 'Not checked';
+    if (!visionSetupSnapshot && visionSetupDetail.textContent === 'Not checked') {
       visionSetupDetail.title = 'Click Setup check to test GitHub sign-in, mailbox reads, Colab heartbeat, and model readiness.';
       visionSetupDetail.dataset.state = 'not_verified';
-      visionMailboxDetail.textContent = 'Not checked';
       visionMailboxDetail.title = 'Mailbox read access is checked by Setup check.';
       visionMailboxDetail.dataset.state = 'not_verified';
     }
