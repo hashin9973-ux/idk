@@ -174,6 +174,23 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   batch: 'Returns ordered steps with IDs, tool names, statuses, errors/cancellation details, exit codes, and actual results even for failed commands.',
   get_agent_context: 'Returns a compact environment/project snapshot, project scripts, instruction file metadata, bounded tree and complete tool catalog.'
 });
+function inferProjectCommands(project, projectCommands) {
+  const entries = new Set((project && project.topLevelEntries || []).map(String));
+  const scripts = projectCommands && projectCommands.scripts && typeof projectCommands.scripts === 'object' ? projectCommands.scripts : {};
+  const commands = [];
+  if (typeof scripts.test === 'string') commands.push({ name: 'test', command: 'npm test', source: 'package.json scripts.test' });
+  if (typeof scripts.check === 'string') commands.push({ name: 'check', command: 'npm run check', source: 'package.json scripts.check' });
+  if (typeof scripts.lint === 'string') commands.push({ name: 'lint', command: 'npm run lint', source: 'package.json scripts.lint' });
+  if (entries.has('pyproject.toml') || entries.has('pytest.ini') || entries.has('tests')) commands.push({ name: 'test', command: 'python -m pytest', source: 'Python project marker; verify dependencies first' });
+  if (entries.has('Cargo.toml')) commands.push({ name: 'test', command: 'cargo test', source: 'Cargo.toml' });
+  if (entries.has('go.mod')) commands.push({ name: 'test', command: 'go test ./...', source: 'go.mod' });
+  if (entries.has('pom.xml')) commands.push({ name: 'test', command: 'mvn test', source: 'pom.xml' });
+  if (entries.has('gradlew.bat')) commands.push({ name: 'test', command: '.\\gradlew.bat test', source: 'gradlew.bat' });
+  else if (entries.has('build.gradle') || entries.has('build.gradle.kts')) commands.push({ name: 'test', command: 'gradle test', source: 'Gradle build file' });
+  if (entries.has('global.json') || [...entries].some(name => name.endsWith('.sln') || name.endsWith('.csproj'))) commands.push({ name: 'test', command: 'dotnet test', source: '.NET project marker' });
+  const seen = new Set();
+  return commands.filter(item => { const key = item.command.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
+}
 function parameterSchema(tool) {
   const names = (TOOL_ARGUMENT_KEYS[tool] || []).filter(name => name !== 'approved');
   const overrides = TOOL_PARAMETER_OVERRIDES[tool] || {};
@@ -496,6 +513,7 @@ function createToolBridge(deps) {
         };
       } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
     }
+    const suggestedCommands = inferProjectCommands(project, projectCommands);
     return {
       protocol: 'chatgpt-local-agent-context/v1',
       generated_at: new Date().toISOString(),
@@ -503,15 +521,17 @@ function createToolBridge(deps) {
       environment,
       project,
       project_commands: projectCommands,
+      suggested_commands: suggestedCommands,
       directory_overview: tree,
       instruction_files: instructionFiles,
       tool_catalog: {
         protocol: capabilities.protocol,
+        catalog_version: 1,
         tools: capabilities.tools,
         tool_calling: capabilities.tool_calling
       },
       retrieval_rules: [
-        'This snapshot is generated for the current selected workspace; request it again when freshness matters.',
+        'The shared snapshot is refreshed in the background by the Windows worker. Request a fresh live context when a just-made workspace change matters.',
         'Fetch full instruction contents and source files only when relevant to the current task.',
         'Use batch for multiple known operations; references may only point to earlier completed steps.',
         'Use workspace-relative paths. Each protected step requires local approval.',
