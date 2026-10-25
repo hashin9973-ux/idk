@@ -80,6 +80,8 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
   assert.match(main, /'app:vision-setup-check'/);
+  assert.match(main, /const mailboxCheck = await visionService\.setupCheck\(githubState\)/);
+  assert.match(main, /mailboxCheck\.checks\.mailbox\.status !== 'passed'/);
   assert.match(main, /visionService\.setupCheck\(githubState\)/);
   assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);
