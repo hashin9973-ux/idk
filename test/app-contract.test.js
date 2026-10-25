@@ -87,6 +87,23 @@ test('preload exposes only the minimal status, tray, and GitHub login actions', 
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
 });
 
+test('desktop shell, tray, and IPC controls initialize before workspace services', () => {
+  const main = read('desktop', 'main.js');
+  const startup = main.slice(main.indexOf('app.whenReady().then'));
+  assert.ok(startup.indexOf('registerIpc();') >= 0);
+  assert.ok(startup.indexOf('createTray();') >= 0);
+  assert.ok(startup.indexOf('createMainWindow();') >= 0);
+  assert.ok(startup.indexOf('registerIpc();') < startup.indexOf('ensureWorkspaceRoot();'));
+  assert.ok(startup.indexOf('createTray();') < startup.indexOf('ensureWorkspaceRoot();'));
+  assert.ok(startup.indexOf('createMainWindow();') < startup.indexOf('ensureWorkspaceRoot();'));
+  assert.match(main, /if \(icon\.isEmpty\(\)\)/);
+  assert.match(main, /trayInitializationError/);
+  assert.match(main, /skipTaskbar: Boolean\(tray\)/);
+  assert.match(main, /function createTray\(\)[\s\S]*?return false;/);
+  assert.match(main, /if \(!githubAuth\) throw new Error/);
+  assert.match(main, /ipcRegistered = true/);
+});
+
 test('repository mailbox has explicit request, result, claim and heartbeat paths', () => {
   const bridge = read('desktop', 'repository-bridge.js');
   assert.match(bridge, /chatgpt-local-repo-bridge\/v1/);

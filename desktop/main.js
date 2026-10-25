@@ -52,6 +52,10 @@ let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let pendingGitHubCliLogin = null;
+let ipcRegistered = false;
+let appInitializationError = '';
+let workspaceInitializationError = '';
+let trayInitializationError = '';
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), 'settings.json');
@@ -354,17 +358,33 @@ function toggleOverlay() {
 }
 
 function createTray() {
-  if (tray) return;
-  const icon = nativeImage.createFromBuffer(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAlklEQVR42mNgGAUkgtT7R//jw3SzWERVGwXTzCH4LMWFqeYQUi3G5ZABsZwiR1DLcrIcQW3LSXYELSxHdgTZvieU/wllU6JCAZ/vqeEAvKFAjEZqOQCrIygpbMjRR1HiI9XXREXDqAMGhQMGPBEOaDYc8IJoUBTFA14ZDYrqeMAbJIOiSTYoGqWDolk+KDomg6ZrNmwBAI2DwEFWr0GLAAAAAElFTkSuQmCC', 'base64'));
-  tray = new Tray(icon.resize({ width: 16, height: 16 }));
-  tray.setToolTip('Windows Repository Bridge');
-  tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open status', click: showMainWindow },
-    { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() }
-  ]));
-  tray.on('click', showMainWindow);
-  tray.on('double-click', showMainWindow);
+  if (tray) return true;
+  try {
+    const icon = nativeImage.createFromBuffer(Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAlklEQVR42mNgGAUkgtT7R//jw3SzWERVGwXTzCH4LMWFqeYQUi3G5ZABsZwiR1DLcrIcQW3LSXYELSxHdgTZvieU/wllU6JCAZ/vqeEAvKFAjEZqOQCrIygpbMjRR1HiI9XXREXDqAMGhQMGPBEOaDYc8IJoUBTFA14ZDYrqeMAbJIOiSTYoGqWDolk+KDomg6ZrNmwBAI2DwEFWr0GLAAAAAElFTkSuQmCC',
+      'base64'
+    ));
+    if (icon.isEmpty()) throw new Error('The built-in tray icon image could not be decoded.');
+    tray = new Tray(icon.resize({ width: 16, height: 16 }));
+    tray.setToolTip('Windows Repository Bridge');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open status', click: showMainWindow },
+      { type: 'separator' },
+      { label: 'Quit', click: () => app.quit() }
+    ]));
+    tray.on('click', showMainWindow);
+    tray.on('double-click', showMainWindow);
+    trayInitializationError = '';
+    console.info('System tray icon initialized.');
+    return true;
+  } catch (error) {
+    trayInitializationError = String(error && error.message || error);
+    console.error('Could not initialize system tray:', trayInitializationError);
+    try { if (tray) tray.destroy(); } catch {}
+    tray = null;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setSkipTaskbar(false);
+    return false;
+  }
 }
 
 function isNetworkError(message) {
@@ -516,12 +536,18 @@ function getUiState() {
     workspace: {
       root: getWorkspaceRoot(),
       index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
-      syncError: filesystemIndexSyncError || ''
+      syncError: workspaceInitializationError || filesystemIndexSyncError || ''
+    },
+    initialization: {
+      error: appInitializationError || workspaceInitializationError || '',
+      trayAvailable: Boolean(tray),
+      trayError: trayInitializationError
     }
   };
 }
 
 function registerIpc() {
+  if (ipcRegistered) return;
   ipcMain.handle('app:get-state', event => {
     assertLocalUi(event, 'index.html');
     return getUiState();
@@ -566,7 +592,9 @@ function registerIpc() {
   });
   ipcMain.handle('app:github-state', event => {
     assertLocalUi(event, 'index.html');
-    return githubAuth.getState();
+    return githubAuth
+      ? githubAuth.getState()
+      : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
   });
   ipcMain.handle('app:retry-connection', event => {
     assertLocalUi(event, 'index.html');
@@ -574,6 +602,7 @@ function registerIpc() {
   });
   ipcMain.handle('app:github-reconnect', async event => {
     assertLocalUi(event, 'index.html');
+    if (!githubAuth) throw new Error(appInitializationError || 'GitHub authentication service is not available.');
     const current = await githubAuth.getState();
     if (current.authenticated) {
       const choice = await dialog.showMessageBox(mainWindow, {
@@ -602,6 +631,7 @@ function registerIpc() {
   });
   ipcMain.handle('app:github-start-login', async event => {
     assertLocalUi(event, 'index.html');
+    if (!githubAuth) throw new Error(appInitializationError || 'GitHub authentication service is not available.');
     if (pendingGitHubCliLogin && ['pending', 'finishing'].includes(pendingGitHubCliLogin.status)) {
       return { mode: 'github-cli', userCode: pendingGitHubCliLogin.userCode, intervalSeconds: 3 };
     }
@@ -627,6 +657,7 @@ function registerIpc() {
   });
   ipcMain.handle('app:github-poll-login', async event => {
     assertLocalUi(event, 'index.html');
+    if (!githubAuth) return { status: 'error', message: appInitializationError || 'GitHub authentication service is not available.' };
     const login = pendingGitHubCliLogin;
     if (login) {
       if (login.status === 'pending' || login.status === 'finishing') {
@@ -652,6 +683,7 @@ function registerIpc() {
       ? { status: 'authenticated', login: state.login }
       : { status: 'error', message: state.error || 'No GitHub sign-in is in progress. Click GitHub status to try again.' };
   });
+  ipcRegistered = true;
 }
 
 function createMainWindow() {
@@ -673,7 +705,8 @@ function createMainWindow() {
     maximizable: false,
     movable: true,
     alwaysOnTop: true,
-    skipTaskbar: true,
+    // A visible taskbar entry is the fallback if Windows cannot create a tray icon.
+    skipTaskbar: Boolean(tray),
     show: false,
     title: 'Windows Repository Bridge',
     webPreferences: {
@@ -766,62 +799,97 @@ if (!hasInstanceLock) {
       branch: String(savedBridge.branch || DEFAULT_REPOSITORY_BRIDGE.branch),
       allowPublicMailbox: savedBridge.allowPublicMailbox === true
     };
-    ensureWorkspaceRoot();
     persistSettings();
 
-    githubAuth = createGitHubAuth({
-      safeStorage,
-      getSettings: () => settings,
-      persistSettings
-    });
-
-    toolBridge = createToolBridge({
-      dialog,
-      getMainWindow: () => mainWindow,
-      getWorkspaceRoot,
-      localTools,
-      githubAuth,
-      uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
-      getAutoAcceptAll: () => settings.autoAcceptAll === true
-    });
-
-    repositoryBridge = createRepositoryBridge({
-      githubAuth,
-      getSettings: () => settings,
-      persistSettings,
-      getWorkspaceRoot,
-      executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
-      onState: broadcastBridgeState,
-      publishContextOnStart: true
-    });
-
-    // Build the initial names-only index and keep it warm even while GitHub is offline.
-    // A local write does not include file contents and a repository update is skipped
-    // when the path/type manifest has not changed.
-    void restartFilesystemIndexMonitor().catch(error => {
-      filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
-      console.warn('Could not start filesystem index:', filesystemIndexSyncError);
-    });
-
+    // Build the desktop shell first: a workspace or mailbox problem must not
+    // prevent the window controls, IPC endpoints, or system tray from existing.
     registerIpc();
     createTray();
     createMainWindow();
     registerHotkey();
-    startAutoConnectLoop();
-
     app.on('activate', showMainWindow);
+
+    try {
+      ensureWorkspaceRoot();
+    } catch (error) {
+      workspaceInitializationError = String(error && error.message || error).slice(0, 1000);
+      filesystemIndexSyncError = workspaceInitializationError;
+      console.error('Could not initialize workspace folder:', workspaceInitializationError);
+    }
+
+    try {
+      githubAuth = createGitHubAuth({
+        safeStorage,
+        getSettings: () => settings,
+        persistSettings
+      });
+    } catch (error) {
+      appInitializationError = 'GitHub authentication could not initialize: ' + String(error && error.message || error);
+      console.error(appInitializationError);
+    }
+
+    if (githubAuth) {
+      try {
+        toolBridge = createToolBridge({
+          dialog,
+          getMainWindow: () => mainWindow,
+          getWorkspaceRoot,
+          localTools,
+          githubAuth,
+          uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
+          getAutoAcceptAll: () => settings.autoAcceptAll === true
+        });
+
+        repositoryBridge = createRepositoryBridge({
+          githubAuth,
+          getSettings: () => settings,
+          persistSettings,
+          getWorkspaceRoot,
+          executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
+          onState: broadcastBridgeState,
+          publishContextOnStart: true
+        });
+      } catch (error) {
+        appInitializationError = 'Local worker services could not initialize: ' + String(error && error.message || error);
+        console.error(appInitializationError);
+      }
+    }
+
+    if (repositoryBridge) {
+      void restartFilesystemIndexMonitor().catch(error => {
+        filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+        console.warn('Could not start filesystem index:', filesystemIndexSyncError);
+      });
+      startAutoConnectLoop();
+    } else if (appInitializationError) {
+      setAutoConnectionStatus('attention', appInitializationError);
+    }
+
+    if (!tray) {
+      // Avoid a completely hidden process if Windows refuses to register the tray icon.
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setSkipTaskbar(false);
+      dialog.showErrorBox(
+        'Windows Repository Bridge tray unavailable',
+        'The system tray icon could not be created: ' + (trayInitializationError || 'unknown error') +
+        '\n\nThe status window remains available in the taskbar.'
+      );
+    }
   }).catch(error => {
     const message = String(error && error.stack || error && error.message || error || 'Unknown startup error');
     console.error('Windows Repository Bridge startup failed:', message);
+    if (!settings || typeof settings !== 'object') settings = {};
+    try { if (!ipcRegistered) registerIpc(); } catch (ipcError) { console.error('Could not register desktop actions:', ipcError); }
+    try { if (!tray) createTray(); } catch (trayError) { console.error('Could not create system tray:', trayError); }
     try {
       if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
       else showMainWindow();
+      if (!tray && mainWindow && !mainWindow.isDestroyed()) mainWindow.setSkipTaskbar(false);
     } catch (windowError) {
       console.error('Could not create the status window after startup failure:', windowError);
     }
     dialog.showErrorBox(
       'Windows Repository Bridge startup failed',
-      message.slice(0, 1600) + '\n\nThe app could not finish initialization. Check the latest Windows build if this persists.'
+      message.slice(0, 1600) + '\n\nThe app shell remains available where possible, even if a workspace or service failed to initialize.'
     );
   });
 }
