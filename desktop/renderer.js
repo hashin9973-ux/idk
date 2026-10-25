@@ -210,11 +210,17 @@
       visionColabDetail.title = String(vision.message || '');
       visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error'].includes(status) ? 'action_required' : 'passed';
     } else {
-      visionColabDetail.textContent = vision.runtime_status
-        ? 'No fresh heartbeat (' + String(vision.runtime_status).replace(/_/g, ' ') + ')'
-        : 'No heartbeat yet';
-      visionColabDetail.title = String(vision.message || 'Colab sign-in/runtime has not been verified.');
-      visionColabDetail.dataset.state = status === 'error' || status === 'disconnected' ? 'failed' : 'not_verified';
+      if (visionConnectWatchDeadline && Date.now() < visionConnectWatchDeadline) {
+        visionColabDetail.textContent = 'Waiting for worker heartbeat';
+        visionColabDetail.title = 'In Colab, verify QDQWG_TOKEN is in Secrets, connect/reconnect the runtime, and run the worker cell. This app is checking for a fresh heartbeat.';
+        visionColabDetail.dataset.state = 'action_required';
+      } else {
+        visionColabDetail.textContent = vision.runtime_status
+          ? 'No fresh heartbeat (' + String(vision.runtime_status).replace(/_/g, ' ') + ')'
+          : 'No heartbeat yet';
+        visionColabDetail.title = String(vision.message || 'Colab sign-in/runtime has not been verified.');
+        visionColabDetail.dataset.state = status === 'error' || status === 'disconnected' ? 'failed' : 'not_verified';
+      }
     }
 
     if (vision.model_loaded === true && vision.runtime_fresh === true) {
@@ -349,36 +355,9 @@
       visionBusy = false;
       visionSignInButton.disabled = false;
       visionSignInButton.textContent = 'Connect Colab';
-      void refreshVisionStatus();
     }
   }
 
-
-    visionBusy = true;
-    visionSignInButton.disabled = true;
-    const previousLabel = visionSignInButton.textContent;
-    visionSignInButton.textContent = 'Opening…';
-    try {
-      const result = await window.windowsBridge.openColabSignIn();
-      visionSetupDetail.textContent = result && result.opened ? 'Colab opened' : 'Open requested';
-      visionSetupDetail.title = result && result.message || 'Colab was opened; Google sign-in and runtime status still need verification.';
-      visionSetupDetail.dataset.state = 'in_progress';
-      if (result && result.opened) {
-        visionColabDetail.textContent = 'Sign in, connect runtime, run cell';
-        visionColabDetail.title = result.message || 'The notebook is open. Run its worker cell to publish a heartbeat.';
-        visionColabDetail.dataset.state = 'action_required';
-      }
-    } catch (error) {
-      visionSetupDetail.textContent = 'Could not open Colab';
-      visionSetupDetail.title = String(error && error.message || error);
-      visionSetupDetail.dataset.state = 'failed';
-    } finally {
-      visionBusy = false;
-      visionSignInButton.disabled = false;
-      visionSignInButton.textContent = previousLabel;
-      void refreshVisionStatus();
-    }
-  }
 
   async function runVisionSetupCheck() {
     if (visionBusy) return;
