@@ -44,7 +44,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
   assert.match(renderer, /windowsBridge\.selectWorkspace/);
   assert.match(renderer, /windowsBridge\.getVisionStatus/);
-  assert.match(renderer, /windowsBridge\.openColabSignIn/);
+  assert.match(renderer, /windowsBridge\.connectColab/);
   assert.match(renderer, /windowsBridge\.checkVisionSetup/);
   assert.match(renderer, /runVisionSetupCheck/);
   assert.match(renderer, /Vision: ready/);
@@ -78,8 +78,10 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /function selectWorkspace\(\)/);
   assert.match(main, /height: 266/);
   assert.match(main, /'app:vision-status'/);
-  assert.match(main, /'app:vision-open-sign-in'/);
+  assert.match(main, /'app:vision-connect-colab'/);
   assert.match(main, /'app:vision-setup-check'/);
+  assert.match(main, /const mailboxCheck = await visionService\.setupCheck\(githubState\)/);
+  assert.match(main, /mailboxCheck\.checks\.mailbox\.status !== 'passed'/);
   assert.match(main, /visionService\.setupCheck\(githubState\)/);
   assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);
@@ -101,7 +103,7 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'openColabSignIn', 'checkVisionSetup', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);

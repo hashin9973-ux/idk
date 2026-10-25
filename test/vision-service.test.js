@@ -100,6 +100,30 @@ test('activation when inactive explicitly opens Colab but honestly returns start
   assert.notEqual(result.status, 'ready');
 });
 
+test('Connect Colab opens the notebook and waits for a heartbeat without activating vision', async () => {
+  const f = fixture();
+  const result = await f.service.connectColab();
+  assert.equal(result.status, 'waiting_for_runtime');
+  assert.equal(result.connected, false);
+  assert.equal(result.opened, true);
+  assert.equal(result.vision_activated, false);
+  assert.equal(f.screenshots.open, 1);
+  assert.equal(f.readLocalJson('bridge/vision/control.json'), null);
+});
+
+test('Connect Colab recognizes a live runtime and does not reopen the notebook', async () => {
+  const f = fixture();
+  f.control(false);
+  f.runtime('inactive', false);
+  const result = await f.service.connectColab();
+  assert.equal(result.connected, true);
+  assert.equal(result.opened, false);
+  assert.equal(result.vision_activated, false);
+  assert.equal(result.runtime_fresh, true);
+  assert.equal(f.screenshots.open, 0);
+  assert.equal(f.readLocalJson('bridge/vision/control.json').enabled, false);
+});
+
 test('activation reuses a live loaded model without reopening Colab or reloading weights', async () => {
   const f = fixture();
   f.control(true);
