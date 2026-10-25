@@ -234,3 +234,22 @@ test('run_tests honors an explicit project-native PowerShell command and timeout
     assert.match(result.stdout, /explicit test command/);
   } finally { cleanup(root); }
 });
+
+test('PowerShell reports when stdout is truncated at the output limit', async t => {
+  if (process.platform !== 'win32') {
+    t.skip('PowerShell execution is only available on Windows.');
+    return;
+  }
+  const root = fixture();
+  try {
+    const result = await tools.executeTool(root, 'shell', {
+      command: "[Console]::Out.Write('x' * 200000)",
+      timeoutMs: 5000
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout_truncated, true);
+    assert.equal(result.stderr_truncated, false);
+    assert.match(result.stdout, /\\[stdout truncated\\]$/);
+  } finally { cleanup(root); }
+});
+
