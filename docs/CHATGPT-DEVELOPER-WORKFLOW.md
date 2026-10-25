@@ -7,7 +7,7 @@ This guide is for a fresh ChatGPT conversation that has only its custom instruct
 Replace the old project-specific instructions with this compact version, adapting the repository name only if the mailbox changes:
 
 ```text
-Use Windows Repository Bridge to work in the selected Windows workspace. Keep ChatGPT human-facing; send requests, results, context, and artifacts through the private qdqwg repository on branch bridge-mailbox. At task start, read bridge/context/latest.json and use get_agent_context once; consult applicable AGENTS.md files. Follow the exact tool schemas in bridge/context/capabilities.json. Create a fresh immutable request ID for each operation/batch and read the matching result. If it is missing, inspect that ID's claim and worker state, then re-read the result; do not assume it was blocked or duplicate an uncertain side effect. Batch related calls (1–50 per batch; maxConcurrency up to 8; references only to earlier steps). Wait for shell/test completion and inspect status, exitCode, timedOut, stdout, stderr, and truncation before proceeding. For substantial work, define acceptance criteria, inspect the existing code, choose a scope-appropriate modular architecture (no single-file shortcut unless requested), implement incrementally, and run project-native checks/tests/build plus end-to-end smoke tests when available. Fix failures and rerun verification. Report only verified results and explicitly state what's unverified. Keep reads targeted. Never edit/delete bridge control, request, claim, or result files; never send secrets to the mailbox.
+Use Windows Repository Bridge against my actual Windows workspace; GitHub is only the mailbox, not the project environment. Keep ChatGPT human-facing; use qdqwg:bridge-mailbox for requests/results. Start with bridge/context/latest.json, then call get_agent_context once; inspect applicable AGENTS.md and targeted source/manifests. Follow bridge/context/capabilities.json. Use fresh immutable request IDs and read matching results. If missing, inspect that ID's claim and worker state, then re-read; don't assume blocked or duplicate uncertain side effects. Batch related operations (1–50 steps, concurrency up to 8). Check shell/test exitCode, timedOut, stdout/stderr and truncation; fix failures and rerun. For substantial work, define acceptance criteria, build scope-appropriate modular architecture incrementally, and run tests/build plus UI smoke tests when available. Use Colab vision only when visual evidence matters: check vision_status, activate if needed, confirm actual readiness, capture a targeted screenshot, and use vision_wait with the same ID if pending. Vision can be slow; deactivate when done, knowing this disables new requests but does not stop Colab. Avoid screenshots of sensitive content because they enter repository history. Report verified results and unknowns. Keep reads targeted. Never edit bridge control/request/claim/result files or send secrets.
 ```
 
 This is intentionally workflow-focused. Keep the task's actual feature requirements in the user's prompt rather than trying to place every future project detail in custom instructions.
@@ -62,10 +62,22 @@ After implementation:
 4. On failure, inspect the complete available error output, fix the root cause, and rerun the relevant tests. Recheck the final diff for accidental changes, broken imports, stale references, or unfinished placeholders.
 5. Do not claim full-game, full-workflow, performance, or compatibility coverage unless it was actually tested.
 
-### 6. Finish with an evidence-backed report
+### 6. Optional Colab vision
+
+The bridge exposes `vision_status`, `vision_activate`, `vision_analyze_screenshot`, `vision_wait`, and `vision_deactivate`. Vision is optional: use it when a visible UI, layout, rendered scene, dialog, or screenshot materially helps diagnose or verify the task. Prefer code, logs, tests, and structured evidence when they answer the question already.
+
+1. Check `vision_status` before analysis. If visual inspection is warranted and vision is disabled, call `vision_activate`; opening Colab is not proof of readiness. The user may need to sign in, start a GPU runtime, and run the notebook's worker cell. Verify the model/runtime is ready before submitting a screenshot.
+2. Submit one targeted `vision_analyze_screenshot` request, with a narrow question. Use the desktop source for the current screen or a workspace-relative image path for a known screenshot. If the result is pending, retain its exact request ID and use `vision_wait` rather than sending duplicate screenshots. Inference may take a long time, so continue nonvisual work while waiting where practical.
+3. If the service is unavailable, the GPU is missing, the heartbeat is stale, or analysis fails, report that accurately and continue with other methods. Do not claim visual verification occurred unless a real report was returned.
+4. Use screenshots carefully: the compressed image is uploaded to the configured GitHub mailbox, and deletion does not erase earlier Git history. Avoid credentials, private messages, and unrelated sensitive information.
+5. When finished, call `vision_deactivate` to disable new screenshot jobs. It does not stop Colab, close the browser, or unload the model. Do not claim otherwise.
+
+For a graphical game or app, use automated tests for exact state and vision for visible outcomes. When both matter, combine a deterministic test with one targeted screenshot rather than repeatedly sampling the screen.
+
+### 7. Finish with an evidence-backed report
 
 State what changed, which tests/builds/smoke tests actually passed, and any remaining unverified areas. Distinguish a verified result from an inference. Do not claim a request executed until its matching result confirms it, and do not claim the requested task is complete solely because files were created.
 
-## Suggested benchmark criteria
+## 8. Suggested benchmark criteria
 
 Use the same task before and after workflow changes. Score architecture and file organization, requirement coverage, incremental integration, request/result correctness, recovery from delayed or failed commands, automated test quality, runtime smoke-test results, and factuality of the final report. Save the actual request/result IDs and test outputs as evidence; do not rely only on the model's final summary.
