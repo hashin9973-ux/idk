@@ -291,6 +291,28 @@ test('batch runs multiple tools in one bridge request and can pass a prior resul
   }
 });
 
+
+test('batch accepts task-sized workflows beyond twenty steps in one bridge request', async () => {
+  const root = fixture();
+  try {
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { throw new Error('read-only project status should not prompt'); } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const steps = Array.from({ length: 25 }, (_, i) => ({ id: 'status' + i, tool: 'project_status', args: {} }));
+    const result = await bridge.runTool('batch', { steps }, 'req-batch-25-step');
+    assert.equal(result.ok, true, result.error || 'larger batch failed');
+    assert.equal(result.result.completed_steps, 25);
+    assert.equal(result.result.requested_steps, 25);
+    assert.equal(result.result.steps.length, 25);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('batch applies native approval per protected step and stops after a declined operation', async () => {
   const root = fixture();
   try {
@@ -339,7 +361,7 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     assert.equal(result.status, 'success');
     assert.equal(result.result.tool_calling.catalog_version, 1);
     assert.equal(batch.parameters.properties.steps.type, 'array');
-    assert.equal(batch.parameters.properties.steps.maxItems, 20);
+    assert.equal(batch.parameters.properties.steps.maxItems, 50);
     assert.ok(batch.parameters.properties.steps.items.properties.tool.enum.includes('read_file'));
     assert.equal(batch.parameters.properties.steps.items.properties.tool.enum.includes('batch'), false);
     assert.deepEqual(write.parameters.required, ['path', 'content']);

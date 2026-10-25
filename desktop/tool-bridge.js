@@ -85,7 +85,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
-  batch: 'Execute 1–20 local tool calls sequentially inside one mailbox request. Each step gets its own result and its own required local approval. Stop on first failure by default. Use {"$ref":"stepId.result.content"} to pass an earlier step output into a later argument.'
+  batch: 'Execute 1–50 local tool calls sequentially inside one mailbox request. Use this for task-sized workflows to avoid a separate GitHub request/result round trip for every small operation. Each step gets its own result and follows the current local approval setting. Stop on first failure by default. Use {"$ref":"stepId.result.content"} to pass an earlier step output into a later argument.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
@@ -129,7 +129,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
     { type: 'string', maxLength: 1000 },
     { type: 'object', properties: { step: { type: 'string', maxLength: 1000 }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['step'], additionalProperties: false }
   ] } },
-  steps: { type: 'array', description: 'Ordered local tool calls. Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 20 },
+  steps: { type: 'array', description: 'Ordered local tool calls (up to 50). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 50 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).', default: '.' } },
@@ -155,8 +155,8 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
-      description: '1–20 ordered calls. Reference earlier results by placing {"$ref":"stepId.result.content"} as an argument value. Each step has its own local permission check.',
-      minItems: 1, maxItems: 20,
+      description: '1–50 ordered calls. Reference earlier results by placing {"$ref":"stepId.result.content"} as an argument value. Each step follows the current local approval setting.',
+      minItems: 1, maxItems: 50,
       items: {
         type: 'object',
         properties: {
@@ -246,8 +246,8 @@ function createToolBridge(deps) {
   }
 
   function validateBatchArgs(args) {
-    if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > 20) {
-      throw new Error('batch.steps must contain between 1 and 20 tool steps.');
+    if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > 50) {
+      throw new Error('batch.steps must contain between 1 and 50 tool steps.');
     }
     if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') {
       throw new Error('batch.stopOnError must be a boolean.');
@@ -586,8 +586,8 @@ function createToolBridge(deps) {
       retrieval_rules: [
         'The shared snapshot is refreshed in the background by the Windows worker. Request a fresh live context when a just-made workspace change matters.',
         'Fetch full instruction contents and source files only when relevant to the current task.',
-        'Use batch for multiple known operations; references may only point to earlier completed steps.',
-        'Use workspace-relative paths. Each protected step requires local approval.',
+        'Use batch for up to 50 known operations to minimize GitHub request/result round trips; references may only point to earlier completed steps.',
+        'Use workspace-relative paths. Protected steps follow the current local approval setting.',
         'The shell runs as the signed-in Windows user and is not sandboxed.'
       ],
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
