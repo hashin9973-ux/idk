@@ -417,6 +417,7 @@ test('large textual tool output is shortened inline without requiring a third fe
     assert.equal(record.artifacts.length, 0, 'ordinary tool output must not require a third fetch');
     const inline = record.result.result.content;
     assert.match(inline, /OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED/);
+    assert.match(inline, /Do not infer a safety block/);
     assert.ok(Buffer.byteLength(inline, 'utf8') <= 32 * 1024 + 256);
     assert.equal([...fake.files.keys()].some(path => path.startsWith('bridge/artifacts/req-large-output/')), false);
   } finally {
