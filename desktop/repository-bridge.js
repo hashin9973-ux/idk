@@ -897,8 +897,8 @@ function createRepositoryBridge(deps) {
         tool_wall_time: Math.max(0, toolFinishedAt - toolStartedAt),
         result_preparation: Math.max(0, Date.now() - toolFinishedAt),
         worker_before_result_publish: Math.max(0, Date.now() - workerStartedAt),
-        github_api_calls_before_result_publish: telemetry.githubApiCalls,
-        github_api_ms_before_result_publish: telemetry.githubApiMs
+        bridge_api_calls_before_result_publish: telemetry.githubApiCalls,
+        bridge_api_ms_before_result_publish: telemetry.githubApiMs
       },
       result: safeReport,
       artifacts: artifactManifest,
