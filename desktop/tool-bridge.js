@@ -123,7 +123,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   source: { type: 'string', description: 'Screenshot source: desktop captures the current primary Windows display; workspace_file reads an image within the selected workspace.', enum: ['desktop', 'workspace_file'], default: 'desktop' },
   prompt: { type: 'string', description: 'Optional visual observation prompt. The vision model should describe visible evidence only.', maxLength: 2000 },
   waitMs: { type: 'integer', description: 'How long to wait for completion before returning a pending request ID (0–120,000 ms).', minimum: 0, maximum: 120000, default: 5000 },
-  request_id: { type: 'string', description: 'Existing vision request ID, returned by vision_analyze_screenshot. Format: vision- followed by 24 lowercase hexadecimal characters.', pattern: '^vision-[a-f0-9]{24}
+  request_id: { type: 'string', description: 'Existing vision request ID, returned by vision_analyze_screenshot. Format: vision- followed by 24 lowercase hexadecimal characters.', pattern: '^vision-[a-f0-9]{24}$' },
   command: { type: 'string', description: 'PowerShell command to execute from the workspace. Arbitrary commands run with the signed-in user permissions and require local approval.', minLength: 1, maxLength: 20000 },
   maxDepth: { type: 'integer', description: 'Maximum directory depth (1–12). Defaults to 4.', minimum: 1, maximum: 12, default: 4 },
   maxEntries: { type: 'integer', description: 'Maximum tree entries (1–2,000). Defaults to 500.', minimum: 1, maximum: 2000, default: 500 },
