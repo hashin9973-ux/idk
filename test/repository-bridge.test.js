@@ -411,15 +411,13 @@ test('large textual tool output is stored as a retrievable artifact and previewe
   try {
     await bridge.start();
     const record = decode(fake.files.get('bridge/results/req-large-output.json'));
-    assert.equal(record.status, 'completed');
-    assert.equal(record.artifacts.length, 1);
-    const artifact = record.artifacts[0];
-    assert.ok(artifact.path.startsWith('bridge/artifacts/req-large-output/'));
-    const stored = fake.files.get(artifact.path);
-    assert.ok(stored, 'full output must be retrievable by the artifact path');
-    assert.equal(Buffer.from(stored.content, 'base64').toString('utf8'), longText);
-    assert.match(record.result.result.content, /Retrieve the artifact file/);
-    assert.equal(artifact.bytes, Buffer.byteLength(longText, 'utf8'));
+    assert.equal(record.status, 'partial');
+    assert.equal(record.output_truncated, true);
+    assert.equal(record.artifacts.length, 0, 'ordinary tool output must not require a third fetch');
+    const inline = record.result.result.content;
+    assert.match(inline, /OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED/);
+    assert.ok(Buffer.byteLength(inline, 'utf8') <= 32 * 1024 + 256);
+    assert.equal([...fake.files.keys()].some(path => path.startsWith('bridge/artifacts/req-large-output/')), false);
   } finally {
     await bridge.stop();
   }
@@ -497,7 +495,7 @@ test('environment refresh publishes a compact context index and keeps instructio
 });
 
 
-test('oversized structured results are split into retrievable artifact parts', async () => {
+test('oversized structured results are compacted into one partial result instead of requiring artifact fetches', async () => {
   const entries = Array.from({ length: 600 }, (_, index) => ({
     id: index,
     detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
@@ -521,29 +519,15 @@ test('oversized structured results are split into retrievable artifact parts', a
   try {
     await bridge.start();
     const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
-    assert.equal(result.status, 'completed');
-    assert.ok(result.artifacts.length > 1);
-    assert.ok(result.artifacts.every(item => item.kind === 'structured_result_part'));
-    assert.deepEqual(
-      result.artifacts.map(item => item.part).sort((a, b) => a - b),
-      Array.from({ length: result.artifacts.length }, (_, index) => index + 1)
-    );
-    const fullText = result.artifacts
-      .slice()
-      .sort((a, b) => a.part - b.part)
-      .map(item => {
-        const stored = fake.files.get(item.path);
-        assert.ok(stored, 'every result part must be retrievable');
-        assert.equal(Buffer.byteLength(Buffer.from(stored.content, 'base64')), item.bytes);
-        return Buffer.from(stored.content, 'base64').toString('utf8');
-      })
-      .join('');
-    const full = JSON.parse(fullText);
-    assert.equal(full.result.result.entries.length, entries.length);
-    assert.equal(full.result.result.entries[599].detail, entries[599].detail);
-    assert.equal(Buffer.byteLength(fullText, 'utf8'), result.result.bytes);
-    assert.equal(require('node:crypto').createHash('sha256').update(fullText, 'utf8').digest('hex'), result.result.sha256);
-    assert.ok(result.artifacts.every(item => item.bytes <= 256 * 1024));
+    assert.equal(result.status, 'partial');
+    assert.equal(result.output_truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 90 * 1024);
+    assert.equal(result.artifacts.length, 0, 'normal results must remain self-contained');
+    const compactEntries = result.result.result.entries;
+    assert.equal(compactEntries.length, entries.length);
+    assert.match(compactEntries[0].detail, /shortened to fit the two-operation result limit/);
+    assert.match(compactEntries[599].detail, /shortened to fit the two-operation result limit/);
+    assert.equal([...fake.files.keys()].some(path => path.startsWith('bridge/artifacts/req-structured-result/')), false);
   } finally {
     await bridge.stop();
   }
