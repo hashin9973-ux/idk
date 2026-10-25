@@ -420,7 +420,7 @@ function createRepositoryBridge(deps) {
       const chunks = splitUtf8Text(value, Math.floor(MAX_INLINE_TEXT_BYTES / 2));
       const first = chunks[0] || '';
       const last = chunks.length > 1 ? chunks[chunks.length - 1] : '';
-      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. Request a narrower line range, search, or smaller batch for the omitted content.]\n\n' + last;
+      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. This is incomplete output, not proof of a safety block. Check exitCode/status/stderr; for listings, retry in stable pages using Sort-Object plus Select-Object -Skip/-First until all entries are retrieved.]\n\n' + last;
     }
     if (Array.isArray(value)) {
       const output = [];
@@ -498,7 +498,7 @@ function createRepositoryBridge(deps) {
       };
     }
     output.output_truncated = true;
-    output.output_note = 'Some result fields were shortened to preserve the two-operation workflow. Request the relevant file range, search result, or smaller batch for omitted detail.';
+    output.output_note = 'Some output fields were shortened to preserve the two-operation workflow. Truncation alone does not mean a safety check blocked execution; inspect status, ok, exitCode, stderr and explicit cancellation/rejection errors. For large listings, rerun bounded, stably sorted pages and continue until complete.';
     if (output.status === 'completed') output.status = 'partial';
     return output;
   }
