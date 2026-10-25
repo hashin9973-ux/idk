@@ -721,6 +721,7 @@ function createRepositoryBridge(deps) {
     if (['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
       const resultIsKnown = Boolean(knownResultFiles && knownResultFiles.has(requestId + '.json'));
       const existingResult = resultIsKnown ? true : await readRemoteFile('bridge/results/' + requestId + '.json');
+      if (existingResult && knownResultFiles) knownResultFiles.add(requestId + '.json');
       if (!existingResult) {
         await publishResult(requestId, {
           protocol: RESULT_PROTOCOL,
