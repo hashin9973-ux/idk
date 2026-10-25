@@ -76,19 +76,6 @@ function renderIndex(entries, options = {}) {
     ? Math.max(1024, options.maxBytes)
     : DEFAULT_MAX_BYTES;
   const scanTruncated = options.truncated === true;
-  const header = [
-    '# Windows Repository Bridge — Filesystem Index',
-    '',
-    '- Updated: ' + updatedAt,
-    '- Entries scanned: ' + entries.length,
-    '- Complete scan: ' + (scanTruncated ? 'no (limit reached or unreadable paths)' : 'yes'),
-    '',
-    'Paths are relative to the selected workspace. This index contains names and item types only, never file contents or absolute local paths.',
-    'Directory paths end in /. Symbolic links are listed but never followed.',
-    '',
-    '~~~~text',
-    '<workspace>/'
-  ];
   const lines = entries.map(entry => {
     const suffix = entry.type === 'directory' ? '/' : entry.type === 'symlink' ? ' [symlink]' :
       entry.type === 'unreadable' ? ' [unreadable]' : entry.type === 'other' ? ' [other]' : '';
@@ -99,14 +86,27 @@ function renderIndex(entries, options = {}) {
   let content = '';
   while (true) {
     const incomplete = scanTruncated || emitted < lines.length;
+    const header = [
+      '# Windows Repository Bridge — Filesystem Index',
+      '',
+      '- Updated: ' + updatedAt,
+      '- Entries scanned: ' + entries.length,
+      '- Complete scan: ' + (incomplete ? 'no (scan/output limit or unreadable paths)' : 'yes'),
+      '',
+      'Paths are relative to the selected workspace. This index contains names and item types only, never file contents or absolute local paths.',
+      'Directory paths end in /. Symbolic links are listed but never followed.',
+      '',
+      '~~~~text',
+      '<workspace>/'
+    ];
     const warning = incomplete ? ['', 'WARNING: Index is incomplete; entries may be missing.'] : [];
     const footer = ['~~~~', ...warning, ''];
     content = [...header, ...lines.slice(0, emitted), ...footer].join('\n');
     if (Buffer.byteLength(content, 'utf8') <= maxBytes || emitted === 0) break;
     emitted = Math.max(0, Math.floor(emitted * 0.8));
   }
-  // Hash the actual published view, not hidden entries omitted by the byte cap.
-  // Normalize only the "Updated" line so unchanged indexes do not produce commits every poll.
+  // Hash only the view actually published, and normalize the timestamp to prevent
+  // repeated commits on reconciliation when the names/types are unchanged.
   const canonicalView = content.replace(/^- Updated: .*$/m, '- Updated: <timestamp>');
   return {
     content,
@@ -252,8 +252,8 @@ class FilesystemIndexMonitor {
     if (!isInside(this.root, absoluteParent)) return;
     let children;
     try {
-      const stat = await fsp.stat(absoluteParent);
-      if (!stat.isDirectory()) throw new Error('Parent is not a directory.');
+      const stat = await fsp.lstat(absoluteParent);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Parent is not a real directory inside the workspace.');
       children = await fsp.readdir(absoluteParent, { withFileTypes: true });
     } catch {
       this.fullRebuildRequested = true;
