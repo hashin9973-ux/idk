@@ -846,7 +846,7 @@ function createToolBridge(deps) {
           'Vision is optional: use it only when a visible UI, rendering, dialog, or screenshot materially helps answer the task. Prefer source, logs, tests, and structured evidence when sufficient.',
           'Before visual inspection, call vision_status; if needed, call vision_activate and confirm actual Colab runtime/model readiness. Opening Colab is not readiness, and setup may require user sign-in, GPU startup, and running the notebook worker.',
           'Capture one targeted screenshot with a narrow question. If vision_analyze_screenshot returns a pending request ID, call vision_wait with that same ID instead of uploading duplicate screenshots. Vision can be slow; continue other useful work while waiting when possible.',
-          'Screenshots are uploaded through the GitHub mailbox and remain in Git history even if the artifact file is later deleted; avoid sensitive desktop content. After visual work, call vision_deactivate to disable new requests, but never claim this shuts down the Colab runtime or unloads its model.'
+          'Screenshots are uploaded through the GitHub mailbox and remain in Git history even if the artifact file is later deleted; avoid sensitive desktop content. vision_deactivate disables new requests but does not shut down the Colab runtime or unload its model.'
         ]
       },
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
