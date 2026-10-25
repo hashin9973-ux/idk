@@ -503,6 +503,10 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.match(workflowRules, /matching result/i);
     assert.match(workflowRules, /exitCode/i);
     assert.match(workflowRules, /unverified behavior/i);
+    assert.match(workflowRules, /Vision is optional/i);
+    assert.match(workflowRules, /vision_status/i);
+    assert.match(workflowRules, /vision_wait with that same ID/i);
+    assert.match(workflowRules, /does not shut down the Colab runtime/i);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
