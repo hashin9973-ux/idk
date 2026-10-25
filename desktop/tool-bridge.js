@@ -145,6 +145,12 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   git_commit: { paths: { description: 'Optional paths to stage before committing. If omitted, only changes already staged are committed.', items: { type: 'string' }, minItems: 1, maxItems: 100 } },
   discover_instructions: { paths: { description: 'Optional relative files/directories whose ancestor AGENTS.md files should be found. Maximum 50 paths.', items: { type: 'string' }, maxItems: 50 } },
   run_tests: { command: { description: 'Optional override PowerShell command. If omitted, detect and run the project-native test command. Requires local approval.', minLength: 1, maxLength: 20000 } },
+  git_fetch: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
+  git_pull: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
+  git_push: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
+  git_clone: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
+  shell: { timeoutMs: { description: 'PowerShell timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
+  run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
       description: '1–20 ordered calls. Reference earlier results by placing {"$ref":"stepId.result.content"} as an argument value. Each step has its own local permission check.',
@@ -414,6 +420,7 @@ function createToolBridge(deps) {
         }));
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
+          catalog_version: 1,
           rule: 'Submit multiple steps in one batch request; each step is independently validated and approval-gated.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
@@ -583,6 +590,7 @@ function createToolBridge(deps) {
     }
     return boundedResult({
       protocol: 'chatgpt-local-tool-result-v2',
+      status: result.ok ? 'success' : result.cancelled ? 'cancelled' : 'failed',
       call_id: id,
       tool,
       workspace: root,
