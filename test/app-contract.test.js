@@ -222,37 +222,38 @@ test('manual smoke-test documentation covers local execution, truncated-output r
 });
 
 
-test('optional Colab vision bridge is wired to the existing mailbox without autostart or runtime shutdown', () => {
+test('optional Colab vision uses direct authenticated HTTPS without a Colab GitHub token', () => {
   const main = read('desktop', 'main.js');
   const bridge = read('desktop', 'tool-bridge.js');
-  const vision = read('desktop', 'vision-service.js');
-  const auth = read('desktop', 'github-auth.js');
+  const vision = read('desktop', 'colab-direct-service.js');
+  const compatibility = read('desktop', 'vision-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
   for (const name of ['vision_activate', 'vision_deactivate', 'vision_status', 'vision_analyze_screenshot', 'vision_wait']) {
     assert.ok(bridge.includes(name), 'missing vision tool ' + name);
   }
-  assert.ok(main.includes('createVisionService'));
+  assert.ok(main.includes("require('./colab-direct-service')"));
   assert.ok(main.includes('captureDesktopScreenshot'));
   assert.ok(main.includes('encodeVisionJpeg'));
   assert.ok(main.includes('colab.research.google.com'));
+  assert.ok(vision.includes("const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1'"));
   assert.ok(vision.includes('runtime_kept_alive: true'));
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
   assert.ok(vision.includes('input_sha256'));
-  assert.ok(vision.includes('VISION_RESULT_PROTOCOL'));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
-  assert.ok(vision.includes('does not test write permission'));
-  assert.ok(vision.includes('Google account sign-in cannot be read from browser cookies'));
-  assert.ok(auth.includes("'control.json', 'runtime.json'"));
-  assert.ok(auth.includes('chatgpt-colab-vision-control/v1'));
-  assert.ok(python.includes('userdata.get("QDQWG_TOKEN")'));
+  assert.ok(vision.includes('Access-Control-Allow-Private-Network'));
+  assert.ok(vision.includes('safeTunnelUrl'));
+  assert.ok(compatibility.includes("require('./colab-direct-service')"));
+  assert.ok(python.includes('cloudflared'));
   assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
   assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
   assert.ok(python.includes('llama-server'));
-  assert.ok(python.includes('bridge/vision/control.json'));
-  assert.ok(python.includes('bridge/vision/results/'));
-  assert.ok(python.includes('def cleanup_screenshot'));
+  assert.ok(python.includes('class DirectVisionHandler'));
+  assert.ok(python.includes('register_tunnel_with_desktop'));
+  assert.ok(!python.includes('QDQWG_TOKEN'));
+  assert.ok(!python.includes('userdata.get'));
+  assert.ok(!python.includes('api.github.com/repos/hashin9973-ux/qdqwg'));
   assert.equal(main.slice(main.indexOf('app.whenReady().then')).includes('visionService.activate('), false);
   assert.equal(/process\.kill|kill\(\)|shutdown.*Colab/i.test(vision), false);
-});
+});;
 
