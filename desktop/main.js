@@ -147,7 +147,7 @@ function captureDeviceCode(login, chunk) {
       }
     });
     try {
-      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\\n');
+      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\n');
     } catch {}
   }
 }
