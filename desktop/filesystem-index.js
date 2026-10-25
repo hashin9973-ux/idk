@@ -412,7 +412,7 @@ class FilesystemIndexMonitor {
     }
     const task = (async () => {
       try {
-        const scan = await scanWorkspace(this.root, { maxEntries: this.maxEntries });
+        const scan = await scanWorkspace(this.root, { maxEntries: this.maxEntries, outputPath: this.outputPath });
         this.entries = new Map(scan.entries.map(entry => [entry.path, entry.type]));
         return await this.emitIfChanged(false, scan.truncated || scan.unreadableDirectories > 0);
       } catch (error) {
