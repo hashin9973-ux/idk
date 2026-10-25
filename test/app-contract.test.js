@@ -76,7 +76,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
-  assert.match(main, /height: 262/);
+  assert.match(main, /height: 266/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-open-sign-in'/);
   assert.match(main, /'app:vision-setup-check'/);
