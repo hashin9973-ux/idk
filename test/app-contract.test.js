@@ -25,10 +25,14 @@ test('packaging includes the native Windows worker and mailbox implementation', 
 test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
-  for (const id of ['github-row', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'minimize', 'quit']) {
+  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(renderer, /GitHub connected/);
+  assert.match(renderer, /Sign in to GitHub/);
+  assert.match(renderer, /githubButton\.addEventListener\('click', connectGitHub\)/);
+  assert.match(renderer, /windowsBridge\.reconnectGitHub/);
+  assert.match(renderer, /windowsBridge\.retryConnection/);
   assert.match(renderer, /Worker online/);
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
   assert.match(renderer, /windowsBridge\.startGitHubLogin/);
@@ -51,6 +55,11 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /bringMainWindowForward/);
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
+  assert.match(main, /'app:retry-connection'/);
+  assert.match(main, /AUTO_CONNECT_INTERVAL_MS = 5000/);
+  assert.match(main, /ready-to-show/);
+  assert.match(main, /did-fail-load/);
+  assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
   assert.match(main, /height: 164/);
@@ -69,7 +78,7 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);

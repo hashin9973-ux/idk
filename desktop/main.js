@@ -27,7 +27,7 @@ const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 318, height: 164 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
-const AUTO_CONNECT_INTERVAL_MS = 10000;
+const AUTO_CONNECT_INTERVAL_MS = 5000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
   owner: 'hashin9973-ux',
   repo: 'qdqwg',
@@ -372,6 +372,12 @@ async function attemptAutoConnect() {
     setAutoConnectionStatus(initial.lastError
       ? (isNetworkError(initial.lastError) ? 'offline' : 'attention')
       : 'online', initial.lastError || '');
+    // Force a retry as the connection returns, even if the worker was already
+    // running when the network disappeared. pollOnce prevents overlapping polls.
+    void repositoryBridge.pollOnce().catch(error => {
+      const message = String(error && error.message || error);
+      setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+    });
     return;
   }
   if (!initial.configured) {
@@ -405,6 +411,22 @@ async function attemptAutoConnect() {
   } finally {
     autoConnectInFlight = false;
   }
+}
+
+function retryConnectionNow() {
+  if (!repositoryBridge || !githubAuth) return { scheduled: false };
+  const state = repositoryBridge.getState();
+  if (state.running) {
+    void repositoryBridge.pollOnce().catch(error => {
+      const message = String(error && error.message || error);
+      setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+    });
+  } else {
+    // Do not gate on a connectivity probe. Attempts continue during outages and
+    // the periodic loop retries until GitHub becomes reachable.
+    void attemptAutoConnect();
+  }
+  return { scheduled: true };
 }
 
 function startAutoConnectLoop() {
@@ -514,6 +536,38 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     return githubAuth.getState();
   });
+  ipcMain.handle('app:retry-connection', event => {
+    assertLocalUi(event, 'index.html');
+    return retryConnectionNow();
+  });
+  ipcMain.handle('app:github-reconnect', async event => {
+    assertLocalUi(event, 'index.html');
+    const current = await githubAuth.getState();
+    if (current.authenticated) {
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        title: 'Reconnect GitHub',
+        message: 'Sign in to GitHub again?',
+        detail: 'This disconnects the saved GitHub account from this app and starts a fresh sign-in. Your GitHub account and repositories are not changed.',
+        buttons: ['Cancel', 'Sign in again'],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true
+      });
+      if (choice.response !== 1) return { cancelled: true };
+    }
+    if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) {
+      try { pendingGitHubCliLogin.child.kill(); } catch {}
+    }
+    pendingGitHubCliLogin = null;
+    githubAuth.logout();
+    const flow = startGitHubCliLogin();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.blur();
+    }
+    return flow;
+  });
   ipcMain.handle('app:github-start-login', async event => {
     assertLocalUi(event, 'index.html');
     if (pendingGitHubCliLogin && ['pending', 'finishing'].includes(pendingGitHubCliLogin.status)) {
@@ -613,15 +667,46 @@ function createMainWindow() {
     }
     saveWindowBounds();
   });
+  let loadErrorReported = false;
+  let showFallbackTimer = null;
+  const revealWindow = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (showFallbackTimer) clearTimeout(showFallbackTimer);
+    showFallbackTimer = null;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.setAlwaysOnTop(true);
+    mainWindow.focus();
+  };
+  const reportLoadFailure = error => {
+    const message = String(error && error.message || error || 'Unknown window loading error').slice(0, 1200);
+    console.error('Could not load the status window:', message);
+    revealWindow();
+    if (!loadErrorReported) {
+      loadErrorReported = true;
+      dialog.showErrorBox(
+        'Windows Repository Bridge could not load its window',
+        message + '\n\nThe app process is still running. Reinstall the latest Windows build if this keeps happening.'
+      );
+    }
+  };
   mainWindow.on('closed', () => {
+    if (showFallbackTimer) clearTimeout(showFallbackTimer);
     mainWindow = null;
   });
-  mainWindow.webContents.once('did-finish-load', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.show();
-    mainWindow.focus();
+  mainWindow.once('ready-to-show', revealWindow);
+  mainWindow.webContents.once('did-finish-load', revealWindow);
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return;
+    reportLoadFailure(errorDescription + ' (' + errorCode + ') while loading ' + validatedURL);
   });
-  mainWindow.loadFile(path.join(__dirname, 'index.html'));
+  showFallbackTimer = setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      console.warn('Status window did not report ready-to-show before the fallback timeout.');
+      revealWindow();
+    }
+  }, 5000);
+  mainWindow.loadFile(path.join(__dirname, 'index.html')).catch(reportLoadFailure);
 }
 
 function registerHotkey() {
@@ -693,6 +778,19 @@ if (!hasInstanceLock) {
     startAutoConnectLoop();
 
     app.on('activate', showMainWindow);
+  }).catch(error => {
+    const message = String(error && error.stack || error && error.message || error || 'Unknown startup error');
+    console.error('Windows Repository Bridge startup failed:', message);
+    try {
+      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+      else showMainWindow();
+    } catch (windowError) {
+      console.error('Could not create the status window after startup failure:', windowError);
+    }
+    dialog.showErrorBox(
+      'Windows Repository Bridge startup failed',
+      message.slice(0, 1600) + '\n\nThe app could not finish initialization. Check the latest Windows build if this persists.'
+    );
   });
 }
 
