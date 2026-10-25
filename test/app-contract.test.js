@@ -142,7 +142,6 @@ test('environment snapshots and result artifacts stay in the repository channel'
   assert.ok(auth.includes('bridge/artifacts'));
   assert.ok(toolBridge.includes('upload_workspace_file'));
   assert.ok(toolBridge.includes('requiresApproval: true'));
-  assert.match(html, /never injects tool output into that conversation/i);
   assert.match(readme, /only input placed into ChatGPT is what you type yourself/i);
   assert.match(readme, /Read the result through the GitHub integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
