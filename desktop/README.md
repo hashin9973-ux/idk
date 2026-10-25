@@ -4,10 +4,11 @@ This app is a local Windows worker for your existing ChatGPT conversation. ChatG
 
 ## First-time setup
 
-1. Start the app. The default mailbox is `hashin9973-ux/qdqwg` on branch `bridge-mailbox`; the settings panel lets you change it.
-2. Click **Sign in with GitHub**. The app launches the official GitHub CLI browser authorization flow. Approve the permissions on GitHub; the app imports the validated token into Windows-backed Electron `safeStorage`. No custom OAuth App registration, client ID, client secret, personal access token, or pasted credential is required.
-3. Choose the local workspace folder.
-4. Click **Start worker**. Keep using your existing ChatGPT conversation and its GitHub integration to create mailbox requests and read results.
+1. Start the app. The default mailbox is `hashin9973-ux/qdqwg` on branch `bridge-mailbox`; the worker automatically connects when the saved GitHub sign-in and mailbox configuration are valid.
+2. Click **Sign in with GitHub** if the app is not authenticated. The app launches the official GitHub CLI browser authorization flow. Approve the permissions on GitHub; the app imports the validated token into Windows-backed Electron `safeStorage`. No custom OAuth App registration, client ID, client secret, personal access token, or pasted credential is required.
+3. Continue using your existing ChatGPT conversation and its GitHub integration to create mailbox requests and read results. There is no separate ChatGPT chat interface in this worker.
+
+The app maintains a names-only index for the currently selected workspace. A local Markdown copy is refreshed after directory/file creation, rename and deletion events, and reconciled periodically in case Windows drops watcher notifications. The current snapshot is synchronized to `bridge/context/filesystem-index.md`; `bridge/context/latest.json` points ChatGPT to it. The index contains relative paths and item types only—not file contents or absolute local paths. Large snapshots are explicitly marked incomplete rather than silently treated as complete. It covers the selected workspace, not every drive on the PC.
 
 The installer bundles GitHub CLI v2.103.2 and verifies the archive SHA-256 before packaging it, so you do not need to install the CLI separately. GitHub's authorization consent screen determines the scopes granted to the GitHub CLI OAuth application; review it before approving. The app's own GitHub API routes are restricted to the configured mailbox repository and supported `bridge/` paths. **Disconnect app** clears the app's encrypted token; it does not sign you out of the separate GitHub CLI profile.
 
