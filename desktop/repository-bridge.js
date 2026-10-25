@@ -1,5 +1,7 @@
 'use strict';
 
+const { AsyncLocalStorage } = require('node:async_hooks');
+
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS } = require('./tool-bridge');
@@ -10,6 +12,7 @@ const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 2000;
+const MAX_CONCURRENT_REQUESTS = 3;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -151,7 +154,11 @@ function createRepositoryBridge(deps) {
   let timer = null;
   let pollInFlight = false;
   let pollPromise = null;
-  let activeRequestId = null;
+  let refillRequested = false;
+  const activeRequestIds = new Set();
+  const inFlightRequestIds = new Set();
+  const requestTasks = new Map();
+  const requestTelemetry = new AsyncLocalStorage();
   let lastPollAt = null;
   let lastError = '';
   let publicRepository = null;
@@ -159,7 +166,6 @@ function createRepositoryBridge(deps) {
   let lastStatePublishAt = 0;
   const inMemoryClaims = new Set();
   let knownResultFiles = null;
-  let activeRequestTelemetry = null;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
 
@@ -194,7 +200,9 @@ function createRepositoryBridge(deps) {
       workerId,
       lastPollAt,
       lastError,
-      activeRequestId,
+      activeRequestId: activeRequestIds.size === 1 ? activeRequestIds.values().next().value : null,
+      activeRequestIds: [...activeRequestIds],
+      activeCount: activeRequestIds.size,
       pendingCount
     };
   }
@@ -204,7 +212,7 @@ function createRepositoryBridge(deps) {
   }
 
   async function api(method, path, body, query) {
-    const telemetry = activeRequestTelemetry;
+    const telemetry = requestTelemetry.getStore() || null;
     const startedAt = Date.now();
     try {
       return await githubAuth.requestApi({ method, path, ...(body ? { body } : {}), ...(query ? { query } : {}) });
@@ -278,8 +286,10 @@ function createRepositoryBridge(deps) {
       protocol: 'chatgpt-local-repo-state/v1',
       worker_id: workerId,
       updated_at: new Date(now).toISOString(),
-      status: running ? (activeRequestId ? 'processing' : 'idle') : 'stopped',
-      active_request_id: activeRequestId,
+      status: running ? (activeRequestIds.size ? 'processing' : 'idle') : 'stopped',
+      active_request_id: activeRequestIds.size === 1 ? activeRequestIds.values().next().value : null,
+      active_request_ids: [...activeRequestIds],
+      active_count: activeRequestIds.size,
       pending_count: pendingCount,
       last_poll_at: lastPollAt,
       last_error: lastError || null,
@@ -881,13 +891,7 @@ function createRepositoryBridge(deps) {
 
   async function processRequest(filename) {
     const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0 };
-    const previousTelemetry = activeRequestTelemetry;
-    activeRequestTelemetry = telemetry;
-    try {
-      return await processRequestInner(filename, telemetry);
-    } finally {
-      activeRequestTelemetry = previousTelemetry;
-    }
+    return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry));
   }
 
   async function processRequestInner(filename, telemetry) {
@@ -937,7 +941,7 @@ function createRepositoryBridge(deps) {
     claimAcquiredAt = Date.now();
     if (!claim.acquired) return;
     inMemoryClaims.add(requestId);
-    activeRequestId = requestId;
+    activeRequestIds.add(requestId);
     announce();
     toolStartedAt = Date.now();
 
@@ -1026,7 +1030,7 @@ function createRepositoryBridge(deps) {
         lastError += '; retry failed: ' + cleanError(retryError.message);
       }
     } finally {
-      activeRequestId = null;
+      activeRequestIds.delete(requestId);
       inMemoryClaims.delete(requestId);
       announce();
     }
@@ -1074,21 +1078,36 @@ function createRepositoryBridge(deps) {
           }
         }
         await publishState(firstPoll);
+        // Dispatch independent mailbox requests concurrently. The in-flight set is
+        // populated before any async work starts, preventing duplicate local claims
+        // if another poll runs while a request is still loading from GitHub.
         for (const filename of pending) {
-          if (!running) break;
-          try {
-            await processRequest(filename);
-          } catch (error) {
-            lastError = 'Could not process request ' + filename.slice(0, -5) + ': ' + cleanError(error.message);
-            announce();
-          }
+          if (!running || requestTasks.size >= MAX_CONCURRENT_REQUESTS) break;
+          const requestId = filename.slice(0, -'.json'.length);
+          if (inFlightRequestIds.has(requestId) || knownResultFiles.has(filename)) continue;
+          inFlightRequestIds.add(requestId);
+          const task = processRequest(filename)
+            .catch(error => {
+              lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
+              announce();
+            })
+            .finally(() => {
+              inFlightRequestIds.delete(requestId);
+              requestTasks.delete(requestId);
+              pendingCount = sorted.filter(name => !knownResultFiles.has(name)).length;
+              announce();
+              // Refill a freed execution slot immediately rather than waiting for
+              // the next periodic mailbox poll when other requests are already queued.
+              if (running) {
+                if (pollInFlight) refillRequested = true;
+                else void pollOnce();
+              }
+            });
+          requestTasks.set(requestId, task);
         }
-        if (pending.length) {
-          pendingCount = sorted.filter(filename => !knownResultFiles.has(filename)).length;
-          announce();
-          // Shared state is a throttled heartbeat, not a per-operation commit.
-          await publishState();
-        }
+        pendingCount = sorted.filter(filename => !knownResultFiles.has(filename)).length;
+        announce();
+        if (pending.length) await publishState();
       } catch (error) {
         lastError = cleanError(error.message);
         announce();
@@ -1096,6 +1115,10 @@ function createRepositoryBridge(deps) {
         pollInFlight = false;
         pollPromise = null;
         announce();
+        if (running && refillRequested) {
+          refillRequested = false;
+          void pollOnce();
+        }
       }
     })();
     pollPromise = task;
@@ -1146,6 +1169,11 @@ function createRepositoryBridge(deps) {
     const activePoll = pollPromise;
     if (activePoll) {
       try { await activePoll; } catch {}
+    }
+    // Stop accepting new work first, then wait for already-claimed requests so
+    // the app is not torn down while a command is running or its result is publishing.
+    if (requestTasks.size) {
+      await Promise.allSettled([...requestTasks.values()]);
     }
     announce();
     try { await publishState(true); } catch {}
