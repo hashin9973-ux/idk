@@ -711,6 +711,8 @@ function createRepositoryBridge(deps) {
     const safeReport = await externalizeLargeText(requestId, sanitizedReport, artifactManifest, artifactErrors);
     const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
       safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
+    const outputWasShortened = JSON.stringify(safeReport).includes('[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED.') ||
+      JSON.stringify(safeReport).includes('shortened to fit the two-operation result limit');
     if (uploadedArtifact) {
       artifactManifest.unshift({
         kind: 'uploaded_workspace_file',
@@ -726,7 +728,8 @@ function createRepositoryBridge(deps) {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
-      status: safeReport && safeReport.ok ? (artifactErrors.length ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      status: safeReport && safeReport.ok ? (artifactErrors.length || outputWasShortened ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      output_truncated: outputWasShortened,
       created_at: remote.value.created_at,
       completed_at: new Date().toISOString(),
       result: safeReport,
