@@ -12,6 +12,7 @@ const {
 } = require('../desktop/colab-direct-service');
 
 const ORIGIN = 'https://colab.research.google.com';
+const serviceTestCalls = new WeakMap();
 const TUNNEL = 'https://direct-vision-test.trycloudflare.com';
 const API_KEY = 'a'.repeat(43);
 
@@ -53,7 +54,7 @@ function fixture(options = {}) {
     getWorkspaceRoot: () => '',
     captureScreenshot: async () => ({ bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png' }),
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
-    openColabNotebook: async () => { calls.push({ type: 'opened_colab' }); return { opened: true }; },
+    openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     pollIntervalMs: 10,
     callbackPortStart: options.callbackPortStart || (22000 + Math.floor(Math.random() * 10000)),
     callbackPortCount: 8,
@@ -86,6 +87,7 @@ function fixture(options = {}) {
       return response(404, { error: 'not found' });
     }
   });
+  serviceTestCalls.set(service, calls);
   return { service, calls, getState: () => state, setState: patch => { state = { ...state, ...patch }; } };
 }
 
@@ -101,15 +103,16 @@ async function waitForPort(service) {
 async function registerColab(service, port, options = {}) {
   const origin = options.origin || ORIGIN;
   const base = 'http://127.0.0.1:' + port;
-  const challengeResponse = await fetch(base + '/vision/handshake', { headers: { Origin: origin } });
-  if (!challengeResponse.ok) return challengeResponse;
-  const challenge = await challengeResponse.json();
+  const opened = [...serviceTestCalls.get(service) || []];
+  const openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
+  if (!openedUrl) throw new Error('The app did not open Colab with a registration nonce.');
+  const nonce = new URL(openedUrl).searchParams.get('bridge_registration_nonce');
   return fetch(base + '/vision/register', {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       protocol: DIRECT_VISION_PROTOCOL,
-      nonce: challenge.nonce,
+      nonce,
       tunnel_url: options.url || TUNNEL,
       api_key: options.apiKey || API_KEY
     })
