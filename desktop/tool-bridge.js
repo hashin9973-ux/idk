@@ -324,7 +324,7 @@ function createToolBridge(deps) {
         break;
       case 'apply_patch': {
         const paths = typeof args.patch === 'string'
-          ? [...args.patch.matchAll(/^\\*\\*\\* (?:Add File|Update File|Delete File):\\s*(.+)$/gm)].map(match => match[1].trim())
+          ? [...args.patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File):\s*(.+)$/gm)].map(match => match[1].trim())
           : [];
         for (const item of paths) add(writes, item);
         if (!writes.length) barrier = true;
