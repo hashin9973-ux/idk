@@ -434,7 +434,7 @@ test('graceful stop waits for the active operation and publishes its result', as
   assert.equal(stopResolved, false, 'stop should wait while the tool is still running');
   releaseExecution({ ok: true, result: 'finished before shutdown' });
   const [startState, stopState] = await Promise.all([startPromise, stopPromise]);
-  assert.equal(startState.running, false);
+  assert.equal(startState.running, true, 'start returns after dispatching queued requests rather than waiting for them');
   assert.equal(stopState.running, false);
   assert.equal(decode(fake.files.get('bridge/results/req-graceful-stop.json')).status, 'completed');
   assert.equal(decode(fake.files.get('bridge/state/windows-app.json')).status, 'stopped');
