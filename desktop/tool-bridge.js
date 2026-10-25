@@ -170,34 +170,35 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   }
 });
 const TOOL_RESULT_SUMMARIES = Object.freeze({
-  read_file: 'Returns path, full-file bytes/hash/line count, selected start/end lines, and content.',
-  search: 'Returns query, filesScanned, count, truncation flag, and matches with path, line, column, and text.',
-  shell: 'Returns command, cwd, exitCode, timeout state, stdout, stderr, and timeoutMs.',
-  run_tests: 'Returns command result with exitCode, timeout state, stdout, and stderr.',
-  apply_patch: 'Returns changed-file count, relative changed paths, and per-file actions.',
-  write_file: 'Returns relative path, byte count, and before/after SHA-256 hashes.',
-  git_status: 'Returns branch/working-tree status and Git exit information.',
-  git_diff: 'Returns command, exitCode, stdout/stderr, and whether output was truncated.',
-  batch: 'Returns ordered steps with IDs, tool names, statuses, errors/cancellation details, exit codes, and actual results even for failed commands.',
-  get_agent_context: 'Returns a compact environment/project snapshot, project scripts, instruction file metadata, bounded tree and complete tool catalog.'
+  get_capabilities: 'Returns catalog_version, tool protocol, callable tools with schemas/permission notes/result summaries, and the batch/reference contract.',
+  project_status: 'Returns isGitRepository, detectedTechnologies, topLevelEntries, and Git status when applicable.',
+  environment_info: 'Returns platform, architecture, OS/runtime version, CPU and memory metadata. Identity-sensitive fields are redacted before repository publication.',
+  list_dir: 'Returns the relative directory path, sorted entries (name/type/size), and a truncated flag.',
+  directory_tree: 'Returns relative start path, applied maxDepth, entry count, truncation flag, and relative path/type/size entries.',
+  glob_file_search: 'Returns the original glob pattern, match count, truncation flag, and relative file paths.',
+  file_info: 'Returns relative path, file type, byte size, timestamps, permissions, and SHA-256 for regular files.',
+  git_log: 'Returns Git command metadata and commits with SHA, short SHA, author, ISO date, and subject.',
+  git_show: 'Returns Git command, exitCode, stdout/stderr, and output-truncation flag.',
+  git_branches: 'Returns local branches with name, current-branch flag, short SHA, and upstream when configured.',
+  git_changed_files: 'Returns change count, per-file index/worktree status and path, plus truncation and Git exit information.',
+  discover_instructions: 'Returns applicable AGENTS.md paths and contents for the root and ancestor directories of supplied paths.',
+  init: 'Returns initialized flag, AGENTS.md path, and either bytes written or reason it was left untouched.',
+  create_directory: 'Returns created flag, relative path, and recursive mode.',
+  move_path: 'Returns moved flag and relative source/destination paths.',
+  delete_path: 'Returns deleted flag, relative path, and deleted entry type.',
+  git_create_branch: 'Returns created flag and branch name.',
+  git_switch_branch: 'Returns switched flag, branch name, and Git output/exit status.',
+  git_commit: 'Returns committed flag and Git output/exit status, including the resulting commit hash in stdout when successful.',
+  git_fetch: 'Returns exitCode, stdout/stderr and timeout status for the fetch operation.',
+  git_pull: 'Returns exitCode, stdout/stderr and timeout status for the pull operation.',
+  git_push: 'Returns exitCode, stdout/stderr and timeout status for the push operation.',
+  git_clone: 'Returns exitCode, stdout/stderr and timeout status for the clone operation.',
+  update_plan: 'Returns the current ordered plan with IDs, step text and pending/in_progress/completed status.',
+  upload_workspace_file: 'Returns the repository artifact path/URL, media type, byte size, SHA-256, visibility and retrieval note.',
+  refresh_environment_context: 'Returns the compact context index, including current agent_context, project-native command hints and tool catalog.',
+  batch: 'Returns ordered steps with IDs, tool names, success/failed/cancelled status, errors/cancellation details, exit codes, and actual results even for failed commands.',
+  get_agent_context: 'Returns a compact environment/project snapshot, project scripts, suggested native commands, instruction file paths/hashes/sizes, bounded tree and complete tool catalog.'
 });
-function inferProjectCommands(project, projectCommands) {
-  const entries = new Set((project && project.topLevelEntries || []).map(String));
-  const scripts = projectCommands && projectCommands.scripts && typeof projectCommands.scripts === 'object' ? projectCommands.scripts : {};
-  const commands = [];
-  if (typeof scripts.test === 'string') commands.push({ name: 'test', command: 'npm test', source: 'package.json scripts.test' });
-  if (typeof scripts.check === 'string') commands.push({ name: 'check', command: 'npm run check', source: 'package.json scripts.check' });
-  if (typeof scripts.lint === 'string') commands.push({ name: 'lint', command: 'npm run lint', source: 'package.json scripts.lint' });
-  if (entries.has('pyproject.toml') || entries.has('pytest.ini') || entries.has('tests')) commands.push({ name: 'test', command: 'python -m pytest', source: 'Python project marker; verify dependencies first' });
-  if (entries.has('Cargo.toml')) commands.push({ name: 'test', command: 'cargo test', source: 'Cargo.toml' });
-  if (entries.has('go.mod')) commands.push({ name: 'test', command: 'go test ./...', source: 'go.mod' });
-  if (entries.has('pom.xml')) commands.push({ name: 'test', command: 'mvn test', source: 'pom.xml' });
-  if (entries.has('gradlew.bat')) commands.push({ name: 'test', command: '.\\gradlew.bat test', source: 'gradlew.bat' });
-  else if (entries.has('build.gradle') || entries.has('build.gradle.kts')) commands.push({ name: 'test', command: 'gradle test', source: 'Gradle build file' });
-  if (entries.has('global.json') || [...entries].some(name => name.endsWith('.sln') || name.endsWith('.csproj'))) commands.push({ name: 'test', command: 'dotnet test', source: '.NET project marker' });
-  const seen = new Set();
-  return commands.filter(item => { const key = item.command.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
-}
 function parameterSchema(tool) {
   const names = (TOOL_ARGUMENT_KEYS[tool] || []).filter(name => name !== 'approved');
   const overrides = TOOL_PARAMETER_OVERRIDES[tool] || {};
