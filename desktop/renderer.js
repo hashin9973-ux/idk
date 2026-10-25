@@ -7,6 +7,9 @@
   const githubLabel = byId('github-status');
   const workerDot = byId('worker-dot');
   const workerLabel = byId('worker-status');
+  const workspaceRow = byId('workspace-row');
+  const workspaceDot = byId('workspace-dot');
+  const workspaceLabel = byId('workspace-status');
   const autoAcceptRow = byId('auto-accept-row');
   const autoAcceptDot = byId('auto-accept-dot');
   const autoAcceptLabel = byId('auto-accept-status');
@@ -19,6 +22,7 @@
   let authTimer = null;
   let loginCode = '';
   let autoAcceptAll = false;
+  let workspaceBusy = false;
 
   function setDot(dot, status) {
     dot.className = 'status-dot ' + status;
@@ -66,6 +70,41 @@
     renderAutoAccept(currentBridgeState.autoAcceptAll === true);
   }
 
+  function renderWorkspace(state) {
+    const workspace = state || {};
+    const root = typeof workspace.root === 'string' ? workspace.root : '';
+    const leaf = root.split(/[\\\\/]/).filter(Boolean).pop() || root;
+    const index = workspace.index || {};
+    workspaceLabel.textContent = root ? 'Workspace: ' + leaf : 'Choose workspace folder';
+    const details = [];
+    if (root) details.push('Current folder: ' + root);
+    if (Number.isInteger(index.entryCount)) details.push('Indexed entries: ' + index.entryCount);
+    if (index.updatedAt) details.push('Last local index update: ' + index.updatedAt);
+    if (index.truncated) details.push('Warning: index is incomplete due to size or entry limits.');
+    if (workspace.syncError) details.push('Index sync error: ' + workspace.syncError);
+    workspaceRow.title = 'Click to choose a different workspace folder. ' +
+      (details.length ? details.join(' | ') : 'No workspace selected yet.');
+    setDot(workspaceDot, workspace.syncError ? 'error' : index.running ? 'online' : 'waiting');
+  }
+
+  async function chooseWorkspace() {
+    if (workspaceBusy) return;
+    workspaceBusy = true;
+    workspaceRow.disabled = true;
+    workspaceLabel.textContent = 'Choose workspace folder…';
+    try {
+      const result = await window.windowsBridge.selectWorkspace();
+      if (result && result.workspace) renderWorkspace(result.workspace);
+      if (!result || result.canceled) return;
+      await refreshState();
+    } catch (error) {
+      workspaceRow.title = 'Could not select workspace: ' + String(error && error.message || error);
+    } finally {
+      workspaceBusy = false;
+      workspaceRow.disabled = false;
+    }
+  }
+
   function renderAutoAccept(enabled) {
     autoAcceptAll = enabled === true;
     autoAcceptLabel.textContent = autoAcceptAll ? 'Auto-accept everything: ON' : 'Auto-accept everything: OFF';
@@ -92,6 +131,7 @@
     try {
       const snapshot = await window.windowsBridge.getState();
       renderWorker(snapshot.bridge || {});
+      renderWorkspace(snapshot.workspace || {});
     } catch (error) {
       workerLabel.textContent = 'Worker status unavailable';
       workerLabel.title = String(error && error.message || error);
@@ -161,6 +201,7 @@
   }
 
   githubRow.addEventListener('click', connectGitHub);
+  workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
