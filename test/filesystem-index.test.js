@@ -56,6 +56,18 @@ test('scan marks a bounded listing as incomplete rather than claiming it is comp
   }
 });
 
+test('index warns in its header when output byte limits omit entries', () => {
+  const entries = Array.from({ length: 300 }, (_, index) => ({
+    path: 'deep-folder/' + String(index).padStart(4, '0') + '/' + 'long-filename-'.repeat(5) + '.txt',
+    type: 'file'
+  }));
+  const rendered = renderIndex(entries, { maxBytes: 1024 });
+  assert.equal(rendered.truncated, true);
+  assert.match(rendered.content, /Complete scan: no/);
+  assert.match(rendered.content, /WARNING: Index is incomplete/);
+  assert.ok(Buffer.byteLength(rendered.content, 'utf8') <= 1024);
+});
+
 test('monitor writes a local index, then reflects added and removed names', async () => {
   const root = await fixture();
   const output = path.join(os.tmpdir(), 'filesystem-index-' + Date.now() + '.md');
