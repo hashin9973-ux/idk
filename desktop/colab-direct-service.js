@@ -195,7 +195,7 @@ function createVisionService(deps) {
           });
         });
         server.on('error', error => {
-          server.close();
+          try { server.close(); } catch {}
           if (error && error.code === 'EADDRINUSE') return tryPort();
           receiverPromise = null;
           reject(error);
