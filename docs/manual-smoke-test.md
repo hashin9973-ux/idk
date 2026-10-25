@@ -52,9 +52,10 @@ Expected outcome: the request is executed locally and its result is returned as 
 1. Create a second request using tool `refresh_environment_context` and `args: {}`, with a unique request ID.
 2. Read its result and confirm `bridge/context/latest.json` has a newer `generated_at` timestamp.
 3. Create a harmless text file larger than 12 KiB in the disposable workspace and request a bounded `read_file` on it.
-4. Read the matching result. If the routine tool output was shortened, verify the result marks it as `partial` and includes a clear marker. Do not expect ordinary oversized output to be saved as an artifact or spend a third repository operation trying to fetch one; ask for a narrower range or targeted search instead.
+4. Read the matching result. If it is `partial` or has `output_truncated: true`, verify the nested tool result's `ok`, `exitCode`, `stdout_truncated`, `stderr_truncated`, and `stderr`. Treat this as incomplete output, not a safety denial unless the result explicitly says rejected/cancelled or reports an approval/policy error.
+5. For a large listing, issue fresh requests for stable-sorted pages of 50 entries using `Select-Object -Skip <offset> -First 50`, keeping the total count and offsets. Continue until all pages are recovered; reduce page size if any page is still truncated. Do not tell the user to run PowerShell manually when the bridge can recover the output. Ordinary oversized output is shortened inline, not saved as an artifact.
 
-Expected outcome: the same result file contains the actual status and any bounded output, with shortening clearly indicated when applicable.
+Expected outcome: large output is marked incomplete honestly, the real execution result is checked, and paginated requests recover all entries without duplicates or omissions.
 
 ## 4. Test automatic sandbox writes, approval-gated execution, and file upload
 
