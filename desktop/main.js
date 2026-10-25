@@ -658,6 +658,20 @@ function registerIpc() {
         message: appInitializationError || 'Vision service is not available in this app session.'
       };
     }
+    const githubState = githubAuth ? await githubAuth.getState() : { authenticated: false };
+    if (!githubState.authenticated) {
+      return {
+        status: 'inactive',
+        enabled: false,
+        runtime_fresh: false,
+        runtime_alive: false,
+        runtime_status: null,
+        model_loaded: false,
+        message: githubState.error
+          ? 'Vision status is unavailable until GitHub connectivity is restored: ' + String(githubState.error).slice(0, 500)
+          : 'Sign in to GitHub before the app can read Colab vision status.'
+      };
+    }
     return visionService.status();
   });
   ipcMain.handle('app:vision-open-sign-in', async event => {

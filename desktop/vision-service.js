@@ -369,12 +369,23 @@ function createVisionService(deps) {
     }
 
     let snapshot = null;
-    try {
-      snapshot = await readControlAndRuntime();
-    } catch (error) {
-      const message = 'Could not read Colab vision records: ' + messageOf(error);
-      checks.colab = { status: 'failed', message };
-      checks.model = { status: 'not_verified', message: 'Model readiness could not be checked because the runtime records were not readable.' };
+    if (githubConnected) {
+      try {
+        snapshot = await readControlAndRuntime();
+      } catch (error) {
+        const message = 'Could not read Colab vision records: ' + messageOf(error);
+        checks.colab = { status: 'failed', message };
+        checks.model = { status: 'not_verified', message: 'Model readiness could not be checked because the runtime records were not readable.' };
+      }
+    } else {
+      checks.colab = {
+        status: 'not_verified',
+        message: 'Sign in to GitHub first so the app can read Colab runtime status. Google sign-in cannot be inferred from the GitHub sign-in state.'
+      };
+      checks.model = {
+        status: 'not_verified',
+        message: 'Model readiness cannot be checked until the mailbox is readable.'
+      };
     }
 
     if (snapshot) {
@@ -436,7 +447,8 @@ function createVisionService(deps) {
     const passed = checks.github.status === 'passed' &&
       checks.mailbox.status === 'passed' &&
       checks.colab.status === 'passed' &&
-      checks.model.status === 'passed';
+      checks.model.status === 'passed' &&
+      checks.vision.status === 'enabled';
     const nextSteps = [];
     if (checks.github.status !== 'passed') nextSteps.push('Use the existing Sign in to GitHub button and finish the device sign-in.');
     if (checks.mailbox.status !== 'passed') nextSteps.push('Verify GitHub access to hashin9973-ux/qdqwg on the bridge-mailbox branch; the app needs Contents read/write permission for vision requests.');
