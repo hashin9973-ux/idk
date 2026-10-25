@@ -697,6 +697,18 @@ function registerIpc() {
         message: 'The app must be signed in to GitHub before it can read the shared mailbox and verify a Colab connection. Use Sign in to GitHub first.'
       };
     }
+    const mailboxCheck = await visionService.setupCheck(githubState);
+    if (!mailboxCheck.checks || !mailboxCheck.checks.mailbox || mailboxCheck.checks.mailbox.status !== 'passed') {
+      const detail = mailboxCheck.checks && mailboxCheck.checks.mailbox && mailboxCheck.checks.mailbox.message;
+      return {
+        status: 'error',
+        connected: false,
+        opened: false,
+        vision_activated: false,
+        message: 'The app could not verify access to hashin9973-ux/qdqwg on branch bridge-mailbox, so it did not open Colab. ' +
+          String(detail || 'Run Setup check and resolve the mailbox access error first.')
+      };
+    }
     return visionService.connectColab();
   });
   ipcMain.handle('app:vision-setup-check', async event => {
