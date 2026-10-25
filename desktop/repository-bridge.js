@@ -154,6 +154,7 @@ function createRepositoryBridge(deps) {
   let timer = null;
   let pollInFlight = false;
   let pollPromise = null;
+  let refillRequested = false;
   const activeRequestIds = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
@@ -1097,7 +1098,10 @@ function createRepositoryBridge(deps) {
               announce();
               // Refill a freed execution slot immediately rather than waiting for
               // the next periodic mailbox poll when other requests are already queued.
-              if (running && !pollInFlight) void pollOnce();
+              if (running) {
+                if (pollInFlight) refillRequested = true;
+                else void pollOnce();
+              }
             });
           requestTasks.set(requestId, task);
         }
@@ -1111,6 +1115,10 @@ function createRepositoryBridge(deps) {
         pollInFlight = false;
         pollPromise = null;
         announce();
+        if (running && refillRequested) {
+          refillRequested = false;
+          void pollOnce();
+        }
       }
     })();
     pollPromise = task;
