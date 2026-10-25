@@ -16,7 +16,8 @@ const {
   safeStorage,
   Tray,
   Menu,
-  nativeImage
+  nativeImage,
+  clipboard
 } = require('electron');
 const { clampRectToWorkArea } = require('./geometry');
 const { resolveWorkspaceRoot } = require('./workspace-path');
@@ -128,6 +129,9 @@ function captureDeviceCode(login, chunk) {
   if (!match) return;
 
   login.userCode = match[1].toUpperCase();
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('app:github-device-code', login.userCode);
+  }
   if (!login.openPromptReleased) {
     login.openPromptReleased = true;
     // With piped stdin/stdout, GitHub CLI takes its non-interactive path and
@@ -143,7 +147,7 @@ function captureDeviceCode(login, chunk) {
       }
     });
     try {
-      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\\n');
+      if (login.child.stdin && !login.child.stdin.destroyed) login.child.stdin.end('\n');
     } catch {}
   }
 }
@@ -595,6 +599,15 @@ function registerIpc() {
     return githubAuth
       ? githubAuth.getState()
       : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+  });
+  ipcMain.handle('app:copy-device-code', (event, rawCode) => {
+    assertLocalUi(event, 'index.html');
+    const code = String(rawCode || '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(code)) {
+      throw new Error('Invalid GitHub device code.');
+    }
+    clipboard.writeText(code);
+    return { copied: true };
   });
   ipcMain.handle('app:retry-connection', event => {
     assertLocalUi(event, 'index.html');

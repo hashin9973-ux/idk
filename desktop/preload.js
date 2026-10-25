@@ -13,6 +13,13 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   startGitHubLogin: () => ipcRenderer.invoke('app:github-start-login'),
   reconnectGitHub: () => ipcRenderer.invoke('app:github-reconnect'),
   pollGitHubLogin: () => ipcRenderer.invoke('app:github-poll-login'),
+  copyDeviceCode: code => ipcRenderer.invoke('app:copy-device-code', code),
+  onGitHubDeviceCode(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, code) => callback(typeof code === 'string' ? code : '');
+    ipcRenderer.on('app:github-device-code', listener);
+    return () => ipcRenderer.removeListener('app:github-device-code', listener);
+  },
   onBridgeState(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, state) => callback(state && typeof state === 'object' ? state : {});

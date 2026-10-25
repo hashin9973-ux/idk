@@ -31,8 +31,9 @@
 
   function renderGitHub(state) {
     githubState = state || {};
-    githubButton.disabled = authBusy;
     if (githubState.authenticated) {
+      githubButton.disabled = false;
+      githubButton.setAttribute('aria-label', 'Sign in again to GitHub');
       githubLabel.textContent = 'GitHub connected';
       githubLabel.title = githubState.login ? 'Connected as @' + githubState.login : 'Connected to GitHub';
       githubButton.textContent = 'Sign in again';
@@ -42,15 +43,28 @@
     }
 
     if (authBusy) {
-      githubLabel.textContent = 'GitHub waiting for approval';
-      githubLabel.title = loginCode ? 'Enter the device code ' + loginCode + ' in the browser' : 'Approve the GitHub request in your browser';
-      githubButton.textContent = 'Waiting…';
-      githubButton.title = 'Finish GitHub authorization in your browser';
+      if (loginCode) {
+        githubLabel.textContent = 'Enter code at GitHub';
+        githubLabel.title = 'Use this one-time code on the GitHub device verification page. Click the code to copy it.';
+        githubButton.disabled = false;
+        githubButton.textContent = loginCode;
+        githubButton.title = 'Click to copy the GitHub device code';
+        githubButton.setAttribute('aria-label', 'Copy GitHub device code ' + loginCode);
+      } else {
+        githubLabel.textContent = 'Waiting for device code…';
+        githubLabel.title = 'Waiting for GitHub CLI to provide the one-time device code.';
+        githubButton.disabled = true;
+        githubButton.textContent = 'Waiting…';
+        githubButton.title = 'Waiting for the GitHub device code';
+        githubButton.setAttribute('aria-label', 'Waiting for GitHub device code');
+      }
       setDot(githubDot, 'waiting');
       return;
     }
 
     const networkUnavailable = /network|offline|fetch failed|failed to fetch|enotfound|eai_again|econn|timed out|unable to connect|socket|dns/i.test(String(githubState.error || ''));
+    githubButton.disabled = false;
+    githubButton.setAttribute('aria-label', 'Sign in to GitHub');
     githubLabel.textContent = networkUnavailable ? 'GitHub unavailable' : 'GitHub not connected';
     githubLabel.title = githubState.error || 'Sign in to connect this app to GitHub';
     githubButton.textContent = 'Sign in to GitHub';
@@ -182,6 +196,17 @@
     }, Math.max(3, seconds) * 1000);
   }
 
+  async function copyGitHubDeviceCode() {
+    if (!loginCode) return;
+    try {
+      await window.windowsBridge.copyDeviceCode(loginCode);
+      githubLabel.textContent = 'Code copied — paste into GitHub';
+      githubLabel.title = 'The one-time device code was copied to the clipboard. Return to the GitHub device page and paste it.';
+    } catch (error) {
+      githubLabel.title = 'Could not copy device code: ' + String(error && error.message || error);
+    }
+  }
+
   async function connectGitHub() {
     if (authBusy) return;
     authBusy = true;
@@ -201,7 +226,7 @@
         await refreshState();
         return;
       }
-      loginCode = flow && flow.userCode || '';
+      loginCode = flow && flow.userCode || loginCode || '';
       renderGitHub({ authenticated: false });
       scheduleAuthPoll(flow && flow.intervalSeconds || 3);
     } catch (error) {
@@ -211,7 +236,19 @@
     }
   }
 
-  githubButton.addEventListener('click', connectGitHub);
+  githubButton.addEventListener('click', () => {
+    if (authBusy && loginCode) {
+      void copyGitHubDeviceCode();
+      return;
+    }
+    void connectGitHub();
+  });
+  window.windowsBridge.onGitHubDeviceCode(code => {
+    const value = String(code || '').toUpperCase();
+    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(value) || !authBusy) return;
+    loginCode = value;
+    renderGitHub({ authenticated: false });
+  });
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
