@@ -36,6 +36,11 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   git_push: ['remote', 'branch', 'timeoutMs'],
   git_clone: ['repository', 'path', 'branch', 'timeoutMs'],
   upload_workspace_file: ['path', 'artifactName'],
+  vision_activate: [],
+  vision_deactivate: [],
+  vision_status: [],
+  vision_analyze_screenshot: ['source', 'path', 'prompt', 'waitMs'],
+  vision_wait: ['request_id', 'waitMs'],
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
@@ -84,6 +89,11 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
+  vision_activate: 'Explicitly enable the optional Colab screenshot-understanding service, open the Colab notebook only when needed, and report actual runtime/model readiness. Opening a browser page alone is not readiness.',
+  vision_deactivate: 'Disable new screenshot-analysis requests without closing the browser or stopping the Colab runtime/model.',
+  vision_status: 'Read the published Colab vision control and runtime heartbeat; stale heartbeats are reported as disconnected.',
+  vision_analyze_screenshot: 'After activation and native approval, capture the current Windows desktop or accept a workspace screenshot, compress it below 600 KiB, queue one request, and return a verified report or pending request ID.',
+  vision_wait: 'Wait/poll the existing vision request by request_id. Reuses its result and never submits another screenshot.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
   batch: 'Execute 1–50 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for their source step. Each step gets its own result and follows the current local approval setting. Stop launching later steps after a failure by default.'
 });
@@ -92,7 +102,8 @@ const REQUIRED_ARGUMENTS = Object.freeze({
   apply_patch: ['patch'], create_directory: ['path'], move_path: ['source', 'destination'],
   delete_path: ['path'], git_create_branch: ['name'], git_switch_branch: ['name'],
   git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
-  upload_workspace_file: ['path'], batch: ['steps']
+  upload_workspace_file: ['path'], batch: ['steps'],
+  vision_wait: ['request_id']
 });
 const BASE_FIELD_SCHEMAS = Object.freeze({
   path: { type: 'string', description: 'Path relative to the selected workspace. Use forward slashes; absolute paths, parent traversal (..), and symlink escapes are rejected.' },
@@ -109,6 +120,10 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   branch: { type: 'string', description: 'Optional branch/ref for the remote operation; omitted to use the remote/default behavior.' },
   repository: { type: 'string', description: 'Repository URL or owner/name accepted by git clone.' },
   artifactName: { type: 'string', description: 'Optional output filename for the explicitly shared artifact. Path separators are replaced.', maxLength: 120 },
+  source: { type: 'string', description: 'Screenshot source: desktop captures the current primary Windows display; workspace_file reads an image within the selected workspace.', enum: ['desktop', 'workspace_file'], default: 'desktop' },
+  prompt: { type: 'string', description: 'Optional visual observation prompt. The vision model should describe visible evidence only.', maxLength: 2000 },
+  waitMs: { type: 'integer', description: 'How long to wait for completion before returning a pending request ID (0–120,000 ms).', minimum: 0, maximum: 120000, default: 5000 },
+  request_id: { type: 'string', description: 'Existing vision request ID, returned by vision_analyze_screenshot. Format: vision- followed by 24 lowercase hexadecimal characters.', pattern: '^vision-[a-f0-9]{24}$' },
   command: { type: 'string', description: 'PowerShell command to execute from the workspace. Arbitrary commands run with the signed-in user permissions and require local approval.', minLength: 1, maxLength: 20000 },
   maxDepth: { type: 'integer', description: 'Maximum directory depth (1–12). Defaults to 4.', minimum: 1, maximum: 12, default: 4 },
   maxEntries: { type: 'integer', description: 'Maximum tree entries (1–2,000). Defaults to 500.', minimum: 1, maximum: 2000, default: 500 },
@@ -133,6 +148,11 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   steps: { type: 'array', description: 'Ordered local tool calls (up to 50). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 50 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
+  vision_analyze_screenshot: {
+    source: { enum: ['desktop', 'workspace_file'], default: 'desktop' },
+    waitMs: { default: 5000 }
+  },
+  vision_wait: { waitMs: { default: 5000 } },
   list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).', default: '.' } },
   directory_tree: {
     path: { description: 'Subdirectory to walk, relative to the selected workspace. Defaults to . (workspace root).', default: '.' },
@@ -205,6 +225,11 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   git_clone: 'Returns exitCode, stdout/stderr and timeout status for the clone operation.',
   update_plan: 'Returns the current ordered plan with IDs, step text and pending/in_progress/completed status.',
   upload_workspace_file: 'Returns the repository artifact path/URL, media type, byte size, SHA-256, visibility and retrieval note.',
+  vision_activate: 'Returns Colab control state and observed runtime/model readiness; starting is not ready.',
+  vision_deactivate: 'Returns disabled state and confirms runtime shutdown was not requested.',
+  vision_status: 'Returns enablement, fresh/stale runtime heartbeat, GPU/VRAM, model-loaded state and current job.',
+  vision_analyze_screenshot: 'Returns a verified report or pending job ID. Inactive/unavailable/malformed/failed inference is never success.',
+  vision_wait: 'Returns the existing request status/report or a recoverable timeout/disconnected state without resubmission.',
   refresh_environment_context: 'Returns the compact context index, including current agent_context, project-native command hints and tool catalog.',
   batch: 'Returns ordered steps with IDs, tool names, success/failed/cancelled status, errors/cancellation details, exit codes, and actual results even for failed commands.',
   get_agent_context: 'Returns a compact environment/project snapshot, project scripts, suggested native commands, instruction file paths/hashes/sizes, bounded tree and complete tool catalog.'
@@ -231,8 +256,27 @@ function isPlainObject(value) {
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
+function visionServiceCall(service, tool, args, requestId) {
+  switch (tool) {
+    case 'vision_activate': return service.activate(args, requestId);
+    case 'vision_deactivate': return service.deactivate(args, requestId);
+    case 'vision_status': return service.status(args, requestId);
+    case 'vision_analyze_screenshot': return service.analyzeScreenshot(args, requestId);
+    case 'vision_wait': return service.wait(args, requestId);
+    default: throw new Error('Unknown vision tool: ' + tool);
+  }
+}
+
+function visionOutputFailed(tool, output) {
+  if (!output || output.status === 'error' || output.status === 'inference_failed') return true;
+  if (tool === 'vision_analyze_screenshot') return !['report_available', 'inference_in_progress'].includes(output.status);
+  if (tool === 'vision_wait') return ['inactive', 'needs_authentication', 'gpu_unavailable', 'disconnected'].includes(output.status);
+  return false;
+}
+
 function createToolBridge(deps) {
-  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll } = deps;
+  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService } = deps;
+  const VISION_TOOLS = new Set(['vision_activate', 'vision_deactivate', 'vision_status', 'vision_analyze_screenshot', 'vision_wait']);
 
   function validateArgs(tool, args) {
     if (BLOCKED_TOOLS_FOR_MAILBOX.has(tool)) {
@@ -345,6 +389,11 @@ function createToolBridge(deps) {
       case 'get_agent_context':
         reads.push('*');
         break;
+      case 'vision_activate':
+      case 'vision_deactivate':
+      case 'vision_status':
+      case 'vision_analyze_screenshot':
+      case 'vision_wait':
       case 'shell':
       case 'run_tests':
       case 'git_fetch':
@@ -432,6 +481,14 @@ function createToolBridge(deps) {
         '\nThe full file bytes will be committed to GitHub and can be read by repository collaborators. ' +
         (sensitive ? '\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
         '\nMaximum upload size: 8 MiB.';
+    }
+    if (tool === 'vision_activate') {
+      return header + resultWarning + 'Enable optional screenshot understanding through Google Colab. This may open Colab in your normal browser and may require visible Google sign-in, a GPU runtime and model initialization. It will never terminate an existing runtime.';
+    }
+    if (tool === 'vision_analyze_screenshot') {
+      const source = args.source === 'workspace_file' ? 'workspace file: ' + displayApprovalValue(args.path || '(missing path)', 1200) : 'current primary display';
+      return header + resultWarning + 'Capture and upload one screenshot for vision inference. Source: ' + source +
+        '\nThe screenshot may contain private desktop content. A compressed JPEG (maximum 600 KiB) is temporarily committed to the configured mailbox. Deleting the file later does not erase it from the earlier Git commits. Only proceed if repository access and history retention are acceptable.';
     }
     if (GITHUB_GIT_TOOLS.has(tool)) {
       const repository = tool === 'git_clone' ? String(args.repository || '(missing repository)') : String(args.remote || 'origin');
@@ -533,6 +590,11 @@ function createToolBridge(deps) {
           { name: 'batch', mode: 'local-batch' },
           { name: 'get_agent_context', mode: 'read' },
           { name: 'upload_workspace_file', mode: 'approval-required' },
+          { name: 'vision_activate', mode: 'approval-required' },
+          { name: 'vision_deactivate', mode: 'repository-bridge-control' },
+          { name: 'vision_status', mode: 'read' },
+          { name: 'vision_analyze_screenshot', mode: 'approval-required' },
+          { name: 'vision_wait', mode: 'read' },
           { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
@@ -785,9 +847,13 @@ function createToolBridge(deps) {
       } else if (tool === 'get_agent_context') {
         result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
+        const isVisionTool = VISION_TOOLS.has(tool);
+        if (isVisionTool && !visionService) throw new Error('Vision tools are unavailable in this app build.');
         const policy = tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
-          : localTools.getToolPolicy(tool, args);
+          : isVisionTool
+            ? { tool, requiresApproval: ['vision_activate', 'vision_analyze_screenshot'].includes(tool), automatic: false }
+            : localTools.getToolPolicy(tool, args);
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
             ? true
@@ -796,17 +862,33 @@ function createToolBridge(deps) {
             result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
           } else {
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
-            const output = await executeLocalTool(root, tool, args, id);
-            if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
-              result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
+            const output = isVisionTool
+              ? await visionServiceCall(visionService, tool, args, id)
+              : await executeLocalTool(root, tool, args, id);
+            if ((isVisionTool && visionOutputFailed(tool, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+              result = {
+                ok: false,
+                error: isVisionTool
+                  ? (output && (output.error || output.message) || 'Vision operation did not complete successfully.')
+                  : tool + ' exited with code ' + output.exitCode + '.',
+                result: output
+              };
             } else {
               result = { ok: true, result: output };
             }
           }
         } else {
-          const output = await executeLocalTool(root, tool, args, id);
-          if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
-            result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
+          const output = isVisionTool
+            ? await visionServiceCall(visionService, tool, args, id)
+            : await executeLocalTool(root, tool, args, id);
+          if ((isVisionTool && visionOutputFailed(tool, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+            result = {
+              ok: false,
+              error: isVisionTool
+                ? (output && (output.error || output.message) || 'Vision operation did not complete successfully.')
+                : tool + ' exited with code ' + output.exitCode + '.',
+              result: output
+            };
           } else {
             result = { ok: true, result: output };
           }

@@ -17,7 +17,8 @@ const {
   Tray,
   Menu,
   nativeImage,
-  clipboard
+  clipboard,
+  desktopCapturer
 } = require('electron');
 const { clampRectToWorkArea } = require('./geometry');
 const { resolveWorkspaceRoot } = require('./workspace-path');
@@ -25,6 +26,7 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
+const { createVisionService, MAX_SCREENSHOT_BYTES } = require('./vision-service');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 318, height: 164 };
@@ -47,6 +49,7 @@ let settings = {};
 let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
+let visionService = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
 let latestFilesystemIndexSnapshot = null;
@@ -391,6 +394,50 @@ function createTray() {
   }
 }
 
+
+async function captureDesktopScreenshot() {
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const sources = await desktopCapturer.getSources({
+    types: ['screen'],
+    thumbnailSize: { width: 1920, height: 1080 },
+    fetchWindowIcons: false
+  });
+  const source = sources.find(item => String(item.display_id) === String(primaryDisplay.id)) || sources[0];
+  if (!source || !source.thumbnail || source.thumbnail.isEmpty()) {
+    throw new Error('Windows did not provide a usable desktop screenshot. Check desktop capture permissions and retry.');
+  }
+  const size = source.thumbnail.getSize();
+  return {
+    bytes: source.thumbnail.toPNG(),
+    filename: 'desktop-' + new Date().toISOString().replace(/[:.]/g, '-') + '.png',
+    width: size.width,
+    height: size.height,
+    display_id: source.display_id || null
+  };
+}
+
+function encodeVisionJpeg(input) {
+  if (!Buffer.isBuffer(input) || input.length === 0) throw new Error('Image conversion requires non-empty bytes.');
+  const original = nativeImage.createFromBuffer(input);
+  if (!original || original.isEmpty()) throw new Error('The selected file is not a supported readable image.');
+  const originalSize = original.getSize();
+  if (!originalSize.width || !originalSize.height) throw new Error('Image has invalid dimensions.');
+  let best = null;
+  for (const scale of [1, 0.85, 0.7, 0.58, 0.46, 0.36, 0.28, 0.2]) {
+    const width = Math.max(1, Math.round(originalSize.width * scale));
+    const height = Math.max(1, Math.round(originalSize.height * scale));
+    const image = scale === 1 ? original : original.resize({ width, height, quality: 'good' });
+    for (const quality of [82, 72, 62, 52, 42, 34]) {
+      const bytes = image.toJPEG(quality);
+      if (!best || bytes.length < best.bytes.length) best = { bytes, width, height, quality };
+      if (bytes.length <= MAX_SCREENSHOT_BYTES) return { bytes, width, height, quality };
+    }
+  }
+  if (!best) throw new Error('Could not convert the image to JPEG.');
+  throw new Error('Screenshot compression could not meet the 600 KiB mailbox transfer limit (smallest attempt: ' +
+    best.bytes.length + ' bytes). Use a smaller screenshot.');
+}
+
 function isNetworkError(message) {
   return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused/i.test(String(message || ''));
 }
@@ -495,7 +542,7 @@ function getSafeExternalUrl(raw) {
   try {
     const url = new URL(raw);
     if (url.protocol !== 'https:') return null;
-    if (!['github.com', 'docs.github.com', 'chatgpt.com'].includes(url.hostname)) return null;
+    if (!['github.com', 'docs.github.com', 'chatgpt.com', 'colab.research.google.com'].includes(url.hostname)) return null;
     return url;
   } catch {
     return null;
@@ -843,6 +890,15 @@ if (!hasInstanceLock) {
 
     if (githubAuth) {
       try {
+        visionService = createVisionService({
+          githubAuth,
+          getSettings: () => settings,
+          getWorkspaceRoot,
+          captureScreenshot: captureDesktopScreenshot,
+          encodeJpeg: encodeVisionJpeg,
+          openColabNotebook: url => openInBrowserAndYield(url),
+          publishWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
+        });
         toolBridge = createToolBridge({
           dialog,
           getMainWindow: () => mainWindow,
@@ -850,7 +906,8 @@ if (!hasInstanceLock) {
           localTools,
           githubAuth,
           uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
-          getAutoAcceptAll: () => settings.autoAcceptAll === true
+          getAutoAcceptAll: () => settings.autoAcceptAll === true,
+          visionService
         });
 
         repositoryBridge = createRepositoryBridge({
