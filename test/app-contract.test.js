@@ -227,7 +227,7 @@ test('optional Colab vision bridge is wired to the existing mailbox without auto
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
   assert.ok(vision.includes('input_sha256'));
   assert.ok(vision.includes('VISION_RESULT_PROTOCOL'));
-  assert.ok(auth.includes('bridge/vision/runtime.json'));
+  assert.ok(auth.includes("'control.json', 'runtime.json'"));
   assert.ok(auth.includes('chatgpt-colab-vision-control/v1'));
   assert.ok(python.includes('userdata.get("QDQWG_TOKEN")'));
   assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
