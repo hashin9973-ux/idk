@@ -192,8 +192,8 @@ test('worker executes a request once, writes the actual result, claim and heartb
     assert.equal(result.result.ok, true);
     assert.equal(JSON.stringify(result).includes(process.cwd()), false, 'local absolute path is redacted');
     assert.ok(result.timing_ms, 'worker latency diagnostics should be published with each result');
-    assert.equal(Number.isInteger(result.timing_ms.github_api_calls_before_result_publish), true);
-    assert.equal(Number.isInteger(result.timing_ms.github_api_ms_before_result_publish), true);
+    assert.equal(Number.isInteger(result.timing_ms.bridge_api_calls_before_result_publish), true);
+    assert.equal(Number.isInteger(result.timing_ms.bridge_api_ms_before_result_publish), true);
     assert.equal(Number.isInteger(result.timing_ms.tool_wall_time), true);
     assert.equal(fake.calls.filter(call => call.method === 'GET' && call.path.endsWith('/contents/bridge/claims/' + request.request_id + '.json')).length, 0, 'new claims should use create-only fast path');
     assert.equal(fake.calls.filter(call => call.method === 'GET' && call.path.endsWith('/contents/bridge/results/' + request.request_id + '.json')).length, 0, 'result publication should use create-only fast path');
