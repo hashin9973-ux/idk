@@ -29,7 +29,7 @@ The ChatGPT GitHub integration and the app's GitHub authorization are separate. 
 - **Mailbox branch:** `bridge-mailbox`
 - **Default polling interval:** 2 seconds (faster result pickup; GitHub still transports requests/results asynchronously)
 
-Use the same repository and branch in the app dashboard and in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
+The app defaults to `hashin9973-ux/qdqwg`, branch `bridge-mailbox`, and reuses any previously saved mailbox configuration. There is no configuration screen in the minimal status UI. Use the same repository and branch in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
 
 ## Sandbox and approval boundary
 
@@ -135,10 +135,10 @@ npm install
 npm start
 ```
 
-1. Click **Sign in with GitHub**. The app opens GitHub's authorization page in your default browser; approve access there and the app returns to the foreground automatically. No custom OAuth client ID is needed.
-2. Choose the local workspace folder.
-3. Confirm the configured mailbox: `hashin9973-ux/qdqwg`, branch `bridge-mailbox` (or change these in **Connection settings**), then save.
-4. Start the worker. It publishes an environment snapshot to `bridge/context/` and starts polling requests.
+1. Launch the app. It uses the previously saved workspace, or `Documents/ChatGPTWorkspace` on first launch.
+2. If the first status says **GitHub not connected**, click that row to start GitHub's official browser authorization flow. Approve access in the browser; no custom OAuth client ID is needed.
+3. Once GitHub authorization and internet access are available, the worker starts automatically, publishes context to `bridge/context/`, and keeps retrying if the connection drops. There is no Start Worker button.
+4. The compact window shows only GitHub and worker status. Minimize it with the `−` control or `Ctrl+Shift+Space`; it remains running in the system tray. Reopen it by clicking the tray icon. Use the `×` control or tray menu to quit.
 5. In your existing ChatGPT conversation, use the GitHub integration to read the context index, create requests, and retrieve result and artifact files.
 
 ## Privacy and visibility
@@ -151,7 +151,7 @@ If a worker loses a claim after a potentially side-effecting operation, it does 
 
 ## Manual end-to-end smoke test
 
-After CI builds the Windows installer, follow [the manual smoke-test checklist](docs/manual-smoke-test.md) using a disposable workspace and the private mailbox. This verifies local execution, context refresh, artifact retrieval, approval cancellation, file upload, and clean shutdown. A green CI build does not replace this machine-level test.
+After CI builds the Windows installer, follow [the manual smoke-test checklist](docs/manual-smoke-test.md) using a disposable workspace and the private mailbox. This verifies automatic startup/reconnect, the tray lifecycle, local execution, approval cancellation, and file upload. A green CI build does not replace this machine-level test.
 
 ## Validation and packaging
 

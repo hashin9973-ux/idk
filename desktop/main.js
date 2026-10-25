@@ -13,21 +13,33 @@ const {
   globalShortcut,
   shell,
   dialog,
-  safeStorage
+  safeStorage,
+  Tray,
+  Menu,
+  nativeImage
 } = require('electron');
-const { clampRectToWorkArea, clampBubbleToWorkArea } = require('./geometry');
+const { clampRectToWorkArea } = require('./geometry');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 
-const HEADER_HEIGHT = 58;
-const COLLAPSED_SIZE = 76;
-const EXPANDED_SIZE = { width: 720, height: 780 };
+const STATUS_SIZE = { width: 318, height: 100 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
+const AUTO_CONNECT_INTERVAL_MS = 10000;
+const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
+  owner: 'hashin9973-ux',
+  repo: 'qdqwg',
+  branch: 'bridge-mailbox',
+  allowPublicMailbox: false
+});
 
 let mainWindow = null;
-let collapsed = false;
+let tray = null;
+let autoConnectTimer = null;
+let autoConnectInFlight = false;
+let autoConnectionStatus = 'connecting';
+let autoConnectionError = '';
 let settings = {};
 let saveTimer = null;
 let githubAuth = null;
@@ -135,6 +147,9 @@ async function completeGitHubCliLogin(login) {
   // independently encrypted token in Electron safeStorage.
   login.login = state.login;
   login.status = 'authenticated';
+  // A successful sign-in should bring the mailbox online without a separate
+  // Start Worker action.
+  void attemptAutoConnect();
 }
 
 function startGitHubCliLogin() {
@@ -215,89 +230,141 @@ function clampBounds(bounds) {
   const safe = {
     x: Number.isFinite(Number(bounds && bounds.x)) ? Number(bounds.x) : 0,
     y: Number.isFinite(Number(bounds && bounds.y)) ? Number(bounds.y) : 0,
-    width: Number.isFinite(Number(bounds && bounds.width)) && Number(bounds.width) > 0 ? Number(bounds.width) : EXPANDED_SIZE.width,
-    height: Number.isFinite(Number(bounds && bounds.height)) && Number(bounds.height) > 0 ? Number(bounds.height) : EXPANDED_SIZE.height
+    width: STATUS_SIZE.width,
+    height: STATUS_SIZE.height
   };
   const display = screen.getDisplayMatching(safe);
-  return clampRectToWorkArea(safe, display.workArea, 560, 600);
+  return clampRectToWorkArea(safe, display.workArea, 280, 84);
 }
 
 function defaultBounds() {
   const work = screen.getPrimaryDisplay().workArea;
   return clampBounds({
-    x: work.x + Math.max(0, work.width - EXPANDED_SIZE.width - 30),
-    y: work.y + Math.max(0, work.height - EXPANDED_SIZE.height - 30),
-    ...EXPANDED_SIZE
+    x: work.x + Math.max(0, work.width - STATUS_SIZE.width - 24),
+    y: work.y + Math.max(0, work.height - STATUS_SIZE.height - 24),
+    ...STATUS_SIZE
   });
 }
 
-function clampBubble(bounds) {
-  const display = screen.getDisplayMatching({ x: bounds.x, y: bounds.y, width: COLLAPSED_SIZE, height: COLLAPSED_SIZE });
-  return clampBubbleToWorkArea(bounds, display.workArea, COLLAPSED_SIZE);
-}
-
 function saveWindowBounds() {
-  if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
-  const [width, height] = mainWindow.getSize();
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   const [x, y] = mainWindow.getPosition();
-  settings.bounds = { x, y, width, height };
+  settings.bounds = { x, y, width: STATUS_SIZE.width, height: STATUS_SIZE.height };
   persistSettings();
 }
 
 function saveWindowBoundsSoon() {
-  if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(saveWindowBounds, 250);
 }
 
-function collapseWindow() {
-  if (!mainWindow || mainWindow.isDestroyed() || collapsed) return;
-  saveWindowBounds();
-  const [width, height] = mainWindow.getSize();
-  const [x, y] = mainWindow.getPosition();
-  collapsed = true;
-  mainWindow.setMinimumSize(1, 1);
-  mainWindow.setResizable(false);
-  mainWindow.setSkipTaskbar(true);
-  mainWindow.setSize(COLLAPSED_SIZE, COLLAPSED_SIZE, true);
-  const bounds = clampBubble({ x: x + width - COLLAPSED_SIZE, y: y + height - COLLAPSED_SIZE });
-  mainWindow.setPosition(bounds.x, bounds.y, true);
-  mainWindow.webContents.send('app:collapsed-changed', true);
-  if (mainWindow.isFocused()) mainWindow.blur();
+function hideToTray() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
 }
 
-function expandWindow() {
-  if (!mainWindow || mainWindow.isDestroyed() || !collapsed) return;
-  const bubble = mainWindow.getBounds();
-  const preferred = settings.bounds || defaultBounds();
-  const target = clampBounds({
-    x: bubble.x + COLLAPSED_SIZE - (preferred.width || EXPANDED_SIZE.width),
-    y: bubble.y + COLLAPSED_SIZE - (preferred.height || EXPANDED_SIZE.height),
-    width: preferred.width || EXPANDED_SIZE.width,
-    height: preferred.height || EXPANDED_SIZE.height
-  });
-  collapsed = false;
+function minimizeToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) hideToTray();
+  else mainWindow.minimize();
+}
+
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
   mainWindow.setAlwaysOnTop(true);
-  mainWindow.setSkipTaskbar(false);
-  mainWindow.setMinimumSize(560, 600);
-  mainWindow.setResizable(true);
-  mainWindow.setBounds(target, true);
-  mainWindow.webContents.send('app:collapsed-changed', false);
+  mainWindow.focus();
 }
 
 function toggleOverlay() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow();
+  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
+    showMainWindow();
     return;
   }
-  if (collapsed) {
-    expandWindow();
-    mainWindow.show();
-    mainWindow.focus();
-  } else {
-    collapseWindow();
-    mainWindow.show();
+  hideToTray();
+}
+
+function createTray() {
+  if (tray) return;
+  const icon = nativeImage.createFromBuffer(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAlklEQVR42mNgGAUkgtT7R//jw3SzWERVGwXTzCH4LMWFqeYQUi3G5ZABsZwiR1DLcrIcQW3LSXYELSxHdgTZvieU/wllU6JCAZ/vqeEAvKFAjEZqOQCrIygpbMjRR1HiI9XXREXDqAMGhQMGPBEOaDYc8IJoUBTFA14ZDYrqeMAbJIOiSTYoGqWDolk+KDomg6ZrNmwBAI2DwEFWr0GLAAAAAElFTkSuQmCC', 'base64'));
+  tray = new Tray(icon.resize({ width: 16, height: 16 }));
+  tray.setToolTip('Windows Repository Bridge');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open status', click: showMainWindow },
+    { type: 'separator' },
+    { label: 'Quit', click: () => app.quit() }
+  ]));
+  tray.on('click', showMainWindow);
+  tray.on('double-click', showMainWindow);
+}
+
+function isNetworkError(message) {
+  return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused/i.test(String(message || ''));
+}
+
+function resolveWorkerStatus(state) {
+  const current = state || (repositoryBridge ? repositoryBridge.getState() : {});
+  if (!current.configured) return 'setup';
+  if (current.running) {
+    if (current.lastError) return isNetworkError(current.lastError) ? 'offline' : 'attention';
+    return 'online';
   }
+  return autoConnectionStatus;
+}
+
+function enrichedBridgeState(state) {
+  return { ...(state || {}), workerStatus: resolveWorkerStatus(state), connectionError: autoConnectionError || (state && state.lastError) || '' };
+}
+
+function broadcastBridgeState(state) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('app:bridge-state', enrichedBridgeState(state));
+  }
+}
+
+function setAutoConnectionStatus(status, error = '') {
+  autoConnectionStatus = status;
+  autoConnectionError = String(error || '');
+  if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
+}
+
+async function attemptAutoConnect() {
+  if (!repositoryBridge || !githubAuth || autoConnectInFlight) return;
+  const initial = repositoryBridge.getState();
+  if (initial.running) {
+    setAutoConnectionStatus(initial.lastError
+      ? (isNetworkError(initial.lastError) ? 'offline' : 'attention')
+      : 'online', initial.lastError || '');
+    return;
+  }
+  if (!initial.configured) {
+    setAutoConnectionStatus('setup', 'The shared GitHub mailbox is not configured.');
+    return;
+  }
+
+  autoConnectInFlight = true;
+  try {
+    const auth = await githubAuth.getState();
+    if (!auth.authenticated) {
+      setAutoConnectionStatus(auth.error ? 'offline' : 'github', auth.error || 'Sign in to GitHub to connect the mailbox.');
+      return;
+    }
+    setAutoConnectionStatus('connecting');
+    const started = await repositoryBridge.start();
+    setAutoConnectionStatus(started.running ? 'online' : 'connecting', started.lastError || '');
+  } catch (error) {
+    const message = String(error && error.message || error);
+    setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+  } finally {
+    autoConnectInFlight = false;
+  }
+}
+
+function startAutoConnectLoop() {
+  if (autoConnectTimer) clearInterval(autoConnectTimer);
+  void attemptAutoConnect();
+  autoConnectTimer = setInterval(() => { void attemptAutoConnect(); }, AUTO_CONNECT_INTERVAL_MS);
 }
 
 function getSafeExternalUrl(raw) {
@@ -328,11 +395,7 @@ async function openInBrowserAndYield(raw) {
 }
 
 function bringMainWindowForward() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (collapsed) expandWindow();
-  mainWindow.setAlwaysOnTop(true);
-  mainWindow.show();
-  mainWindow.focus();
+  showMainWindow();
 }
 
 function assertLocalUi(event, filename) {
@@ -347,16 +410,8 @@ function assertLocalUi(event, filename) {
 
 function getUiState() {
   return {
-    workspaceRoot: getWorkspaceRoot(),
-    bridge: repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false },
-    github: githubAuth ? null : null
+    bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false })
   };
-}
-
-function broadcastBridgeState(state) {
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('app:bridge-state', state);
-  }
 }
 
 function registerIpc() {
@@ -364,42 +419,16 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     return getUiState();
   });
-  ipcMain.handle('app:save-bridge-config', (event, config) => {
+  ipcMain.handle('app:minimize-to-tray', event => {
     assertLocalUi(event, 'index.html');
-    return repositoryBridge.setConfig(config);
-  });
-  ipcMain.handle('app:start-bridge', async event => {
-    assertLocalUi(event, 'index.html');
-    const state = await repositoryBridge.start();
-    broadcastBridgeState(state);
-    return state;
-  });
-  ipcMain.handle('app:stop-bridge', async event => {
-    assertLocalUi(event, 'index.html');
-    const state = await repositoryBridge.stop();
-    broadcastBridgeState(state);
-    return state;
-  });
-  ipcMain.handle('app:select-workspace', async event => {
-    assertLocalUi(event, 'index.html');
-    return selectWorkspace();
-  });
-  ipcMain.handle('app:collapse', event => {
-    assertLocalUi(event, 'index.html');
-    collapseWindow();
-    return { collapsed };
-  });
-  ipcMain.handle('app:expand', event => {
-    assertLocalUi(event, 'index.html');
-    expandWindow();
-    return { collapsed };
+    minimizeToTray();
+    return { hidden: true };
   });
   ipcMain.handle('app:quit', event => {
     assertLocalUi(event, 'index.html');
     app.quit();
     return true;
   });
-
   ipcMain.handle('app:github-state', event => {
     assertLocalUi(event, 'index.html');
     return githubAuth.getState();
@@ -413,12 +442,15 @@ function registerIpc() {
       const result = { status: 'authenticated', login: pendingGitHubCliLogin.login, mode: 'github-cli' };
       pendingGitHubCliLogin = null;
       bringMainWindowForward();
+      void attemptAutoConnect();
       return result;
     }
     pendingGitHubCliLogin = null;
     const current = await githubAuth.getState();
-    if (current.authenticated) return { status: 'authenticated', login: current.login, mode: 'github-cli' };
-    // Explicitly launch the browser flow instead of silently adopting a CLI login.
+    if (current.authenticated) {
+      void attemptAutoConnect();
+      return { status: 'authenticated', login: current.login, mode: 'github-cli' };
+    }
     const flow = startGitHubCliLogin();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.setAlwaysOnTop(false);
@@ -431,58 +463,50 @@ function registerIpc() {
     const login = pendingGitHubCliLogin;
     if (login) {
       if (login.status === 'pending' || login.status === 'finishing') {
-        return { status: 'pending', intervalSeconds: 3, ...(login.userCode ? { userCode: login.userCode } : {}), ...(login.browserOpenError ? { message: login.message, browserOpenError: login.browserOpenError } : {}) };
+        return {
+          status: 'pending',
+          intervalSeconds: 3,
+          ...(login.userCode ? { userCode: login.userCode } : {}),
+          ...(login.browserOpenError ? { message: login.message, browserOpenError: login.browserOpenError } : {})
+        };
       }
       pendingGitHubCliLogin = null;
       if (login.status === 'authenticated') {
         bringMainWindowForward();
+        void attemptAutoConnect();
         return { status: 'authenticated', login: login.login };
       }
       bringMainWindowForward();
       return { status: 'error', message: login.message || 'GitHub sign-in failed. Try again.' };
     }
     const state = await githubAuth.getState();
+    if (state.authenticated) void attemptAutoConnect();
     return state.authenticated
       ? { status: 'authenticated', login: state.login }
-      : { status: 'error', message: state.error || 'No GitHub sign-in is in progress. Click Sign in with GitHub to try again.' };
-  });
-  ipcMain.handle('app:github-logout', event => {
-    assertLocalUi(event, 'index.html');
-    const result = githubAuth.logout();
-    if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
-    pendingGitHubCliLogin = null;
-    if (repositoryBridge) repositoryBridge.stop().catch(() => {});
-    return result;
-  });
-  ipcMain.handle('app:open-chatgpt', async event => {
-    assertLocalUi(event, 'index.html');
-    return openInBrowserAndYield('https://chatgpt.com/auth/login/');
+      : { status: 'error', message: state.error || 'No GitHub sign-in is in progress. Click GitHub status to try again.' };
   });
 }
 
 function createMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
     return;
   }
   const bounds = clampBounds(settings.bounds || defaultBounds());
   mainWindow = new BrowserWindow({
     ...bounds,
-    width: bounds.width,
-    height: bounds.height,
+    width: STATUS_SIZE.width,
+    height: STATUS_SIZE.height,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
     hasShadow: true,
-    resizable: true,
-    minWidth: 560,
-    minHeight: 600,
+    resizable: false,
     minimizable: true,
     maximizable: false,
     movable: true,
     alwaysOnTop: true,
-    skipTaskbar: false,
+    skipTaskbar: true,
     show: false,
     title: 'Windows Repository Bridge',
     webPreferences: {
@@ -495,14 +519,24 @@ function createMainWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.setAlwaysOnTop(true);
-  mainWindow.on('resize', saveWindowBoundsSoon);
   mainWindow.on('move', saveWindowBoundsSoon);
-  mainWindow.on('close', saveWindowBounds);
+  mainWindow.on('minimize', event => {
+    event.preventDefault();
+    hideToTray();
+  });
+  mainWindow.on('close', event => {
+    if (!finishingQuit) {
+      event.preventDefault();
+      hideToTray();
+      return;
+    }
+    saveWindowBounds();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
   mainWindow.webContents.once('did-finish-load', () => {
-    mainWindow.webContents.send('app:collapsed-changed', collapsed);
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.show();
     mainWindow.focus();
   });
@@ -519,17 +553,23 @@ const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-    if (collapsed) expandWindow();
-    mainWindow.show();
-    mainWindow.focus();
-  });
+  app.on('second-instance', showMainWindow);
 
   app.whenReady().then(() => {
     app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
     settings = loadSettings();
+    const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
+      ? settings.repositoryBridge : {};
+    settings.repositoryBridge = {
+      ...DEFAULT_REPOSITORY_BRIDGE,
+      ...savedBridge,
+      owner: String(savedBridge.owner || DEFAULT_REPOSITORY_BRIDGE.owner),
+      repo: String(savedBridge.repo || DEFAULT_REPOSITORY_BRIDGE.repo),
+      branch: String(savedBridge.branch || DEFAULT_REPOSITORY_BRIDGE.branch),
+      allowPublicMailbox: savedBridge.allowPublicMailbox === true
+    };
     ensureWorkspaceRoot();
+    persistSettings();
 
     githubAuth = createGitHubAuth({
       safeStorage,
@@ -557,31 +597,33 @@ if (!hasInstanceLock) {
     });
 
     registerIpc();
+    createTray();
     createMainWindow();
     registerHotkey();
+    startAutoConnectLoop();
 
-    app.on('activate', () => {
-      if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-      else {
-        if (collapsed) expandWindow();
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
+    app.on('activate', showMainWindow);
   });
 }
 
 app.on('before-quit', event => {
   clearTimeout(saveTimer);
+  if (autoConnectTimer) clearInterval(autoConnectTimer);
+  autoConnectTimer = null;
   globalShortcut.unregisterAll();
   if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;
     repositoryBridge.stop().catch(() => {}).finally(() => app.quit());
+    return;
+  }
+  if (tray) {
+    tray.destroy();
+    tray = null;
   }
 });
 
 app.on('window-all-closed', () => {
-  app.quit();
+  // Keep the worker and tray icon alive while the status window is hidden.
 });

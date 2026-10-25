@@ -1,212 +1,144 @@
 (() => {
   'use strict';
-  const byId = id => document.getElementById(id);
-  const body = document.body;
-  const form = byId('bridge-config-form');
-  const ownerInput = byId('repo-owner'), repoInput = byId('repo-name'), branchInput = byId('repo-branch');
-  const publicWarning = byId('public-warning');
-  const settingsPanel = byId('settings-panel'), statusPill = byId('status-pill'), statusDot = byId('status-dot'), statusLabel = byId('status-label');
-  const workerTitle = byId('worker-title'), requestCount = byId('request-count'), activeRequest = byId('active-request');
-  const lastPoll = byId('last-poll'), lastErrorRow = byId('last-error-row'), lastError = byId('last-error');
-  const workspaceName = byId('workspace-name'), workspacePath = byId('workspace-path'), appMessage = byId('app-message');
-  const saveButton = byId('save-config'), workerToggle = byId('worker-toggle'), selectWorkspaceButton = byId('select-workspace');
-  const githubStatus = byId('github-status'), githubLogin = byId('github-login'), githubLogout = byId('github-logout');
-  const githubCodePanel = byId('github-code-panel'), githubUserCode = byId('github-user-code');
-  const collapseButton = byId('collapse'), quitButton = byId('quit'), ballButton = byId('assistant-ball'), openChatGPTButton = byId('open-chatgpt');
-  let busy = false, authBusy = false, currentState = null, githubState = null, authTimer = null;
 
-  function setMessage(message, kind = '') {
-    appMessage.textContent = String(message || '');
-    appMessage.classList.remove('error', 'success');
-    if (kind) appMessage.classList.add(kind);
+  const byId = id => document.getElementById(id);
+  const githubRow = byId('github-row');
+  const githubDot = byId('github-dot');
+  const githubLabel = byId('github-status');
+  const workerDot = byId('worker-dot');
+  const workerLabel = byId('worker-status');
+  const minimizeButton = byId('minimize');
+  const quitButton = byId('quit');
+
+  let githubState = null;
+  let currentBridgeState = null;
+  let authBusy = false;
+  let authTimer = null;
+  let loginCode = '';
+
+  function setDot(dot, status) {
+    dot.className = 'status-dot ' + status;
   }
-  function formatTime(value) {
-    if (!value) return 'Never';
-    const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
-  }
-  function shorten(value, max = 36) {
-    const text = String(value || '');
-    return text.length > max ? text.slice(0, max - 1) + '…' : text;
-  }
-  function renderWorkspace(root) {
-    const value = String(root || ''), parts = value.replace(/[\\/]+$/, '').split(/[\\/]/);
-    workspaceName.textContent = parts[parts.length - 1] || 'No workspace selected';
-    workspacePath.textContent = value;
-    workspacePath.title = value;
-  }
-  function renderState(state) {
-    currentState = state || {};
-    const running = Boolean(currentState.running);
-    body.classList.toggle('worker-running', running);
-    statusPill.classList.toggle('is-running', running);
-    statusDot.classList.toggle('is-running', running);
-    statusLabel.textContent = running ? 'Worker running' : 'Worker stopped';
-    workerTitle.textContent = running ? (currentState.activeRequestId ? 'Worker is processing a request' : 'Worker is running') : 'Worker is stopped';
-    workerToggle.textContent = running ? 'Stop worker' : 'Start worker';
-    workerToggle.classList.toggle('danger-button', running);
-    requestCount.textContent = String(Number(currentState.pendingCount) || 0);
-    activeRequest.textContent = currentState.activeRequestId ? shorten(currentState.activeRequestId, 28) : 'None';
-    activeRequest.title = currentState.activeRequestId || '';
-    lastPoll.textContent = formatTime(currentState.lastPollAt);
-    lastErrorRow.hidden = !currentState.lastError;
-    lastError.textContent = String(currentState.lastError || '');
-    workerToggle.disabled = busy;
-    selectWorkspaceButton.disabled = busy;
-  }
+
   function renderGitHub(state) {
     githubState = state || {};
     if (githubState.authenticated) {
-      githubStatus.textContent = 'Connected as @' + (githubState.login || 'GitHub user');
-      githubStatus.classList.add('success-text');
-      githubLogin.textContent = 'Connected';
-      githubLogin.disabled = true;
-      githubLogout.hidden = false;
-      githubLogout.disabled = busy || authBusy;
-    } else {
-      githubStatus.textContent = 'Not connected. Sign in to authorize the app to access your configured GitHub mailbox repository.';
-      githubStatus.classList.remove('success-text');
-      githubLogin.textContent = authBusy ? 'Waiting for GitHub…' : 'Sign in with GitHub';
-      githubLogin.disabled = authBusy || busy;
-      githubLogout.hidden = true;
+      githubLabel.textContent = 'GitHub connected';
+      githubLabel.title = githubState.login ? 'Connected as @' + githubState.login : 'Connected to GitHub';
+      setDot(githubDot, 'online');
+      githubRow.disabled = false;
+      return;
     }
+
+    if (authBusy) {
+      githubLabel.textContent = 'GitHub waiting for approval';
+      githubLabel.title = loginCode ? 'Enter the device code ' + loginCode + ' in the browser' : 'Approve the GitHub request in your browser';
+      setDot(githubDot, 'waiting');
+      githubRow.disabled = true;
+      return;
+    }
+
+    const networkUnavailable = /network|offline|fetch failed|enotfound|econn|timed out|unable to connect/i.test(String(githubState.error || ''));
+    githubLabel.textContent = networkUnavailable ? 'GitHub unavailable' : 'GitHub not connected';
+    githubLabel.title = githubState.error || 'Click to connect this app to GitHub';
+    setDot(githubDot, networkUnavailable ? 'error' : 'waiting');
+    githubRow.disabled = false;
   }
-  async function refreshGitHubState() {
-    const state = await window.windowsBridge.getGitHubState();
-    renderGitHub(state);
-    return state;
+
+  function renderWorker(state) {
+    currentBridgeState = state || {};
+    const status = String(currentBridgeState.workerStatus || (currentBridgeState.running ? 'online' : 'connecting'));
+    const labels = {
+      online: 'Worker online',
+      connecting: 'Worker connecting…',
+      offline: 'Worker waiting for internet',
+      github: 'Worker waiting for GitHub sign-in',
+      setup: 'Worker needs configuration',
+      attention: 'Worker needs attention'
+    };
+    workerLabel.textContent = labels[status] || 'Worker ' + status;
+    workerLabel.title = String(currentBridgeState.connectionError || currentBridgeState.lastError || workerLabel.textContent);
+    setDot(workerDot, status === 'online' ? 'online' : status === 'offline' || status === 'attention' || status === 'setup' ? 'error' : 'waiting');
   }
-  async function loadState() {
+
+  async function refreshState() {
     try {
       const snapshot = await window.windowsBridge.getState();
-      renderWorkspace(snapshot.workspaceRoot);
-      const config = snapshot.bridge || {};
-      ownerInput.value = config.owner || 'hashin9973-ux';
-      repoInput.value = config.repo || 'qdqwg';
-      branchInput.value = config.branch || 'bridge-mailbox';
-      publicWarning.checked = Boolean(config.allowPublicMailbox);
-      renderState(config);
-      const github = await refreshGitHubState();
-      settingsPanel.open = !config.configured;
-    } catch (error) { setMessage(error.message || error, 'error'); }
-  }
-  function readBridgeConfig() {
-    return { owner: ownerInput.value.trim(), repo: repoInput.value.trim(), branch: branchInput.value.trim(), allowPublicMailbox: publicWarning.checked };
-  }
-  async function saveSettings() {
-    const state = await window.windowsBridge.saveBridgeConfig(readBridgeConfig());
-    renderState(state);
-    await refreshGitHubState();
-    return state;
-  }
-  async function runWorkerAction() {
-    if (busy) return;
-    busy = true; workerToggle.disabled = true; setMessage('');
+      renderWorker(snapshot.bridge || {});
+    } catch (error) {
+      workerLabel.textContent = 'Worker status unavailable';
+      workerLabel.title = String(error && error.message || error);
+      setDot(workerDot, 'error');
+    }
     try {
-      if (currentState && currentState.running) {
-        const state = await window.windowsBridge.stopBridge();
-        renderState(state); setMessage('Worker stopped.', 'success');
-      } else {
-        await saveSettings();
-        const auth = await refreshGitHubState();
-        if (!auth.authenticated) { settingsPanel.open = true; throw new Error('Sign in with GitHub before starting the worker.'); }
-        const state = await window.windowsBridge.startBridge();
-        renderState(state); settingsPanel.open = false; setMessage('Worker started. It is checking the configured mailbox.', 'success');
-      }
-    } catch (error) { setMessage(error.message || error, 'error'); }
-    finally { busy = false; if (currentState) renderState(currentState); renderGitHub(githubState); }
+      renderGitHub(await window.windowsBridge.getGitHubState());
+    } catch (error) {
+      renderGitHub({ authenticated: false, error: String(error && error.message || error) });
+    }
   }
-  form.addEventListener('submit', async event => {
-    event.preventDefault();
-    if (busy) return;
-    busy = true; saveButton.disabled = true; setMessage('Saving connection settings…');
-    try {
-      await saveSettings(); setMessage('Settings saved.', 'success');
-      if (githubState && githubState.configured) settingsPanel.open = false;
-    } catch (error) { setMessage(error.message || error, 'error'); }
-    finally { busy = false; saveButton.disabled = false; if (currentState) renderState(currentState); renderGitHub(githubState); }
-  });
+
   function stopAuthPolling() {
     if (authTimer !== null) window.clearTimeout(authTimer);
-    authTimer = null; authBusy = false;
+    authTimer = null;
+    authBusy = false;
+    loginCode = '';
   }
-  function scheduleAuthPoll(seconds = 5) {
+
+  function scheduleAuthPoll(seconds = 3) {
     if (authTimer !== null) window.clearTimeout(authTimer);
     authTimer = window.setTimeout(async () => {
       try {
         const result = await window.windowsBridge.pollGitHubLogin();
         if (result.status === 'authenticated') {
-          stopAuthPolling(); githubCodePanel.hidden = true; await refreshGitHubState();
-          setMessage('GitHub connected. Returning to the app.', 'success'); return;
+          stopAuthPolling();
+          await refreshState();
+          return;
         }
         if (result.status === 'pending') {
-          githubStatus.textContent = 'Waiting for approval in your browser…';
-          if (result.userCode) {
-            githubUserCode.textContent = result.userCode;
-            githubCodePanel.hidden = false;
-          }
-          scheduleAuthPoll(Math.max(3, result.intervalSeconds || seconds)); return;
+          if (result.userCode) loginCode = result.userCode;
+          renderGitHub({ authenticated: false });
+          scheduleAuthPoll(Math.max(3, result.intervalSeconds || seconds));
+          return;
         }
-        stopAuthPolling(); githubCodePanel.hidden = true; await refreshGitHubState();
-        setMessage(result.message || 'GitHub authorization was not completed.', ['denied', 'error'].includes(result.status) ? 'error' : '');
+        stopAuthPolling();
+        renderGitHub({ authenticated: false, error: result.message || '' });
+        if (result.message) githubLabel.title = result.message;
       } catch (error) {
-        stopAuthPolling(); setMessage(error.message || error, 'error'); await refreshGitHubState().catch(() => {});
+        stopAuthPolling();
+        renderGitHub({ authenticated: false, error: String(error && error.message || error) });
       }
-    }, Math.max(5, seconds) * 1000);
+    }, Math.max(3, seconds) * 1000);
   }
-  githubLogin.addEventListener('click', async () => {
-    if (authBusy || busy) return;
+
+  async function connectGitHub() {
+    if (authBusy) return;
     try {
-      const existing = await refreshGitHubState();
-      if (existing.authenticated) { setMessage('Already connected to GitHub.', 'success'); return; }
-      const flow = await window.windowsBridge.startGitHubLogin();
-      if (flow.status === 'authenticated') {
-        await refreshGitHubState();
-        githubCodePanel.hidden = true;
-        setMessage('GitHub connected as @' + (flow.login || 'your account') + '.', 'success');
+      const existing = await window.windowsBridge.getGitHubState();
+      if (existing.authenticated) {
+        renderGitHub(existing);
         return;
       }
-      authBusy = true; renderGitHub(githubState);
-      githubUserCode.textContent = flow.userCode || '';
-      githubCodePanel.hidden = !flow.userCode;
-      setMessage('GitHub opened in your default browser. Approve access there; the app will reconnect automatically. If GitHub asks for a device code, paste it from your clipboard.');
+      const flow = await window.windowsBridge.startGitHubLogin();
+      if (flow.status === 'authenticated') {
+        await refreshState();
+        return;
+      }
+      authBusy = true;
+      loginCode = flow.userCode || '';
+      renderGitHub({ authenticated: false });
       scheduleAuthPoll(flow.intervalSeconds || 3);
     } catch (error) {
-      stopAuthPolling(); setMessage(error.message || error, 'error'); await refreshGitHubState().catch(() => {});
+      stopAuthPolling();
+      renderGitHub({ authenticated: false, error: String(error && error.message || error) });
     }
-  });
-  githubLogout.addEventListener('click', async () => {
-    if (busy || authBusy) return;
-    busy = true; githubLogout.disabled = true;
-    try {
-      stopAuthPolling(); await window.windowsBridge.logoutGitHub(); await refreshGitHubState();
-      const state = await window.windowsBridge.getState(); renderState(state.bridge || {});
-      setMessage('App disconnected from GitHub. The GitHub CLI browser session remains signed in.', 'success');
-    } catch (error) { setMessage(error.message || error, 'error'); }
-    finally { busy = false; if (currentState) renderState(currentState); renderGitHub(githubState); }
-  });
-  selectWorkspaceButton.addEventListener('click', async () => {
-    if (busy) return;
-    busy = true; selectWorkspaceButton.disabled = true;
-    try {
-      const result = await window.windowsBridge.selectWorkspace();
-      if (!result.canceled) { renderWorkspace(result.workspaceRoot); setMessage('Workspace selected.', 'success'); }
-    } catch (error) { setMessage(error.message || error, 'error'); }
-    finally { busy = false; if (currentState) renderState(currentState); }
-  });
-  openChatGPTButton.addEventListener('click', async () => {
-    try {
-      await window.windowsBridge.openChatGPT();
-      setMessage('ChatGPT login page opened in your default browser. After signing in, use Alt+Tab to return to this app.', 'success');
-    } catch (error) { setMessage(error.message || error, 'error'); }
-  });
-  workerToggle.addEventListener('click', runWorkerAction);
-  collapseButton.addEventListener('click', () => window.windowsBridge.collapse().catch(error => setMessage(error.message || error, 'error')));
-  ballButton.addEventListener('click', () => window.windowsBridge.expand().catch(error => setMessage(error.message || error, 'error')));
-  quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(error => setMessage(error.message || error, 'error')));
-  window.windowsBridge.onBridgeState(renderState);
-  window.windowsBridge.onWorkspaceChanged(renderWorkspace);
-  window.windowsBridge.onCollapsedChanged(value => { body.classList.toggle('is-collapsed', value); ballButton.setAttribute('aria-expanded', String(!value)); });
+  }
+
+  githubRow.addEventListener('click', connectGitHub);
+  minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
+  quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
+  window.windowsBridge.onBridgeState(renderWorker);
   window.addEventListener('beforeunload', stopAuthPolling);
-  loadState();
+
+  refreshState();
+  window.setInterval(refreshState, 15000);
 })();

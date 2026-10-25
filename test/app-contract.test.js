@@ -22,27 +22,18 @@ test('packaging includes the native Windows worker and mailbox implementation', 
   assert.doesNotMatch(pkg.scripts.check, /accounts\.js/);
 });
 
-test('dashboard consolidates GitHub, workspace, worker and settings into one window', () => {
+test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
-  for (const id of [
-    'collapse', 'quit', 'github-status', 'github-login', 'github-logout',
-    'repo-owner', 'repo-name', 'repo-branch', 'public-warning', 'bridge-config-form',
-    'save-config', 'select-workspace', 'worker-toggle', 'open-chatgpt',
-    'request-count', 'active-request', 'last-poll', 'last-error'
-  ]) assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
-  for (const action of ['saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'getState', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'openChatGPT', 'onBridgeState']) {
-    assert.ok(renderer.includes('windowsBridge.' + action), 'renderer does not invoke ' + action);
+  for (const id of ['github-row', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'minimize', 'quit']) {
+    assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
-  assert.doesNotMatch(html, /open-accounts|poll-now|accounts\.html/);
-  assert.match(html, /existing ChatGPT conversation/i);
-  assert.match(html, /publicly readable/i);
-  assert.match(html, /PowerShell.*not sandboxed/i);
-  assert.match(html, /default browser/i);
-  assert.match(html, /official GitHub CLI browser authorization flow/i);
-  assert.doesNotMatch(html, /github-client-id|open-github-oauth-settings|Create an OAuth App/);
-  assert.match(html, /sign in to ChatGPT/i);
-  assert.doesNotMatch(renderer, /githubLogin\.disabled = authBusy \|\| busy \|\| !githubState\.configured/);
+  assert.match(renderer, /GitHub connected/);
+  assert.match(renderer, /Worker online/);
+  assert.match(renderer, /windowsBridge\.minimizeToTray/);
+  assert.match(renderer, /windowsBridge\.startGitHubLogin/);
+  assert.doesNotMatch(html, /titlebar|brand-copy|settings-panel|worker-toggle|Start worker|open-chatgpt|workspace-heading|details-panel/);
+  assert.doesNotMatch(renderer, /windowsBridge\.(startBridge|stopBridge|saveBridgeConfig|openChatGPT)/);
 });
 
 test('main process opens login in the system browser and returns focus after GitHub approval', () => {
@@ -54,8 +45,6 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /bringMainWindowForward/);
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
-  assert.match(main, /'app:open-chatgpt'/);
-  assert.match(main, /chatgpt\.com\/auth\/login\//);
   assert.match(main, /startGitHubCliLogin/);
   assert.match(main, /githubAuth\.importToken/);
   assert.match(main, /stdio: \['pipe', 'pipe', 'pipe'\]/);
@@ -69,12 +58,12 @@ test('main process opens login in the system browser and returns focus after Git
   assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|WebContentsView|conversation-mirror|installChatToolBridge/);
 });
 
-test('preload exposes specific mailbox and login actions without generic Node access', () => {
+test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'saveBridgeConfig', 'startBridge', 'stopBridge', 'selectWorkspace', 'openChatGPT', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'logoutGitHub', 'onBridgeState']) {
+  for (const action of ['getState', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
-  assert.doesNotMatch(preload, /openAccounts|pollNow|node:fs|process\.env|ipcRenderer\.send\(/);
+  assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|selectWorkspace|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
 });
 
 test('repository mailbox has explicit request, result, claim and heartbeat paths', () => {
@@ -112,20 +101,31 @@ test('inline GitHub auth stores an encrypted app-side credential and does not re
   assert.match(auth, /safeStorage\.decryptString/);
   assert.match(auth, /runGitOperation/);
   assert.doesNotMatch(html, /github-client-id/);
-  assert.match(html, /separate login inside this app/i);
-  assert.match(html, /open-chatgpt/);
+  assert.match(html, /github-row/);
   assert.match(js, /windowsBridge\.startGitHubLogin/);
   assert.match(js, /scheduleAuthPoll/);
   assert.match(main, /setAlwaysOnTop\(false\)/);
   assert.doesNotMatch(auth, /localStorage|github_api/);
 });
 
-test('collapsing the overlay preserves focus on the previously active Windows app', () => {
+test('the status window minimizes to the system tray and the worker starts automatically', () => {
   const main = read('desktop', 'main.js');
-  const toggle = main.slice(main.indexOf('function toggleOverlay()'), main.indexOf('function getSafeExternalUrl'));
-  assert.match(main, /if \(mainWindow\.isFocused\(\)\) mainWindow\.blur\(\)/);
-  assert.doesNotMatch(toggle.slice(toggle.indexOf('collapseWindow();')), /mainWindow\.focus\(\)/);
-  assert.match(toggle, /mainWindow\.focus\(\)/);
+  const html = read('desktop', 'index.html');
+  assert.match(main, /new Tray\(/);
+  assert.match(main, /tray\.setContextMenu/);
+  assert.match(main, /label: 'Open status'/);
+  assert.match(main, /label: 'Quit'/);
+  assert.match(main, /mainWindow\.on\('minimize', event => \{\s*event\.preventDefault\(\);\s*hideToTray\(\);/);
+  assert.match(main, /mainWindow\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*hideToTray\(\);/);
+  assert.match(main, /function startAutoConnectLoop\(\)/);
+  assert.match(main, /setInterval\(\(\) => \{ void attemptAutoConnect\(\); \}, AUTO_CONNECT_INTERVAL_MS\)/);
+  assert.match(main, /owner: 'hashin9973-ux'/);
+  assert.match(main, /repo: 'qdqwg'/);
+  assert.match(main, /branch: 'bridge-mailbox'/);
+  assert.match(main, /startAutoConnectLoop\(\)/);
+  assert.doesNotMatch(main, /app:start-bridge|app:stop-bridge/);
+  assert.doesNotMatch(html, /Start worker|worker-toggle|titlebar|settings-panel/);
+  assert.match(main, /Keep the worker and tray icon alive while the status window is hidden/);
 });
 
 test('environment snapshots and result artifacts stay in the repository channel', () => {
@@ -143,7 +143,6 @@ test('environment snapshots and result artifacts stay in the repository channel'
   assert.ok(auth.includes('bridge/artifacts'));
   assert.ok(toolBridge.includes('upload_workspace_file'));
   assert.ok(toolBridge.includes('requiresApproval: true'));
-  assert.match(html, /never injects tool output into that conversation/i);
   assert.match(readme, /only input placed into ChatGPT is what you type yourself/i);
   assert.match(readme, /Read the result through the GitHub integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);

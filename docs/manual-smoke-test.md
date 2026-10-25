@@ -7,20 +7,19 @@ This is a manual test because GitHub Actions cannot prove the app can connect to
 ## Before starting
 
 - Use a **private** copy of `hashin9973-ux/qdqwg` and the dedicated `bridge-mailbox` branch.
-- Create a disposable local workspace containing only harmless test files. Do not use the real Cyberpunk modding workspace for the first run.
-- No custom GitHub OAuth App or client ID should be needed for this build. From the main screen click **Sign in with GitHub**; the bundled GitHub CLI should open the official device-authorization page in your default browser. Complete the code/approval flow and confirm the app returns to the foreground.
+- Ensure the configured workspace contains only harmless test files. On first launch this is `Documents/ChatGPTWorkspace`; an existing `workspaceRoot` setting is preserved. Do not use the real Cyberpunk modding workspace for the first run.
+- No custom GitHub OAuth App or client ID should be needed. If GitHub is not connected, click the **GitHub not connected** status row; the bundled GitHub CLI opens the official device-authorization page in your default browser. Complete the device flow.
 - Keep secrets, tokens, credentials, private keys, and confidential source material out of the workspace files you intend to upload.
 
 ## 1. Start and verify environment publication
 
-1. Launch the Windows Repository Bridge.
-2. Choose the disposable workspace folder.
-3. Expand **Connection settings**, set owner `hashin9973-ux`, repository `qdqwg`, and branch `bridge-mailbox`, then save.
-4. Click **Sign in with GitHub** on the main screen. Complete the official GitHub CLI device flow in your browser and verify the app returns to the foreground. Do not register a separate OAuth App or enter a client ID.
-5. Start the worker.
-6. In GitHub, open `bridge/context/latest.json` on the `bridge-mailbox` branch.
-7. Confirm the index points to the five snapshots: environment, project, capabilities, directory tree, and instruction inventory.
-8. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
+1. Launch the Windows Repository Bridge and wait for the two status rows to appear.
+2. If needed, click **GitHub not connected** and complete the official GitHub CLI device flow in your browser. Do not register a separate OAuth App or enter a client ID.
+3. Verify **Worker online** appears after authorization and internet connectivity are available; no Start Worker action should be required. If offline, verify the app continues retrying and updates status after connectivity returns.
+4. In GitHub, open `bridge/context/latest.json` on the `bridge-mailbox` branch.
+5. Confirm the index points to the environment, project, capabilities, directory tree, and instruction inventory snapshots.
+6. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
+7. Click `−` to minimize. Verify the window disappears but the system-tray icon remains and the worker keeps polling. Click the tray icon to reopen the status window.
 
 Expected outcome: the worker reports running, the mailbox has a heartbeat, and the context index and snapshot files are committed to the private branch.
 
@@ -71,11 +70,11 @@ Use only harmless disposable files.
 
 Expected outcome: ordinary path-checked file operations are confined to the selected workspace; a declined shell command remains unexecuted; file upload still requires explicit approval.
 
-## 5. Stop and confirm recovery state
+## 5. Quit and verify lifecycle
 
-1. Stop the worker in the desktop app.
-2. Verify the shared state file reports `stopped`.
-3. Confirm the app did not send output into the ChatGPT conversation.
+1. Quit using the `×` control or the tray menu. Confirm the tray icon disappears and the worker publishes its stopped state.
+2. Relaunch the app and confirm it automatically reconnects without a Start Worker button.
+3. Confirm no output is injected into the ChatGPT conversation.
 4. If any request is `needs_manual_recovery`, inspect the disposable workspace and claim/result files before attempting another request. Never replay an uncertain side-effecting request with the same ID.
 
 ## Acceptance criteria
@@ -88,6 +87,8 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 - [ ] Workspace file edits run automatically without escaping the selected folder.
 - [ ] A declined shell command remains unexecuted and returns `cancelled`.
 - [ ] File upload requires a local approval and returns the exact bytes.
-- [ ] Stop state is published; no output is inserted into the ChatGPT conversation.
+- [ ] Worker auto-starts and retries when internet/GitHub is unavailable.
+- [ ] Minimizing hides the status window to the tray without stopping the worker; tray click restores it.
+- [ ] Quit stops the worker and removes the tray icon; no output is inserted into the ChatGPT conversation.
 
 Automated tests and a successful installer build are necessary but not substitutes for this smoke test.
