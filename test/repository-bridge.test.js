@@ -528,7 +528,6 @@ test('environment refresh publishes one compact agent entry and refreshes after 
       }
       if (tool === 'project_status') return { ok: true, result: { detectedTechnologies: ['Node.js'], topLevelEntries: ['package.json', 'src', '.git'], isGitRepository: true } };
       if (tool === 'environment_info') return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: workspaceRoot, homeDirectory: 'C:/Users/Private', hostname: 'private-host' } };
-      if (tool === 'directory_tree') return { ok: true, result: { path: '.', entries: [{ path: 'src', type: 'directory' }], count: 1, truncated: false } };
       return { ok: true, result: { tool, summary: 'captured' } };
     },
     intervalMs: 5000,
@@ -562,7 +561,13 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     }]);
     assert.equal(JSON.stringify(instructions).includes('do not publish this instruction body'), false);
     assert.ok(calls.some(call => call.tool === 'environment_info'));
-    assert.ok(calls.some(call => call.tool === 'directory_tree'));
+    assert.equal(calls.some(call => call.tool === 'directory_tree'), false,
+      'context refresh must use the maintained index instead of rescanning the workspace');
+    assert.equal(index.files.filesystem_index, 'bridge/context/filesystem-index.md');
+    assert.equal(index.agent_context.filesystem_index.contents_included, false);
+    assert.equal(index.agent_context.filesystem_index.mode, 'names-only');
+    const directoryReference = decode(fake.files.get('bridge/context/directory_tree.json'));
+    assert.equal(directoryReference.data.result.path, 'bridge/context/filesystem-index.md');
     assert.ok(calls.some(call => call.tool === 'read_file' && call.args.path === 'package.json'));
     const result = decode(fake.files.get('bridge/results/req-refresh-context.json'));
     assert.equal(result.status, 'completed');
