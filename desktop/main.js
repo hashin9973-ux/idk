@@ -415,12 +415,6 @@ function getUiState() {
   };
 }
 
-function broadcastBridgeState(state) {
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('app:bridge-state', enrichedBridgeState(state));
-  }
-}
-
 function registerIpc() {
   ipcMain.handle('app:get-state', event => {
     assertLocalUi(event, 'index.html');
