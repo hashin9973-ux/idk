@@ -1,6 +1,6 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
+const { randomUUID, createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -511,6 +511,7 @@ function createToolBridge(deps) {
     const instructionFiles = found.map(item => ({
       path: item.path,
       bytes: Buffer.byteLength(String(item.content || ''), 'utf8'),
+      sha256: createHash('sha256').update(String(item.content || ''), 'utf8').digest('hex'),
       contents_included: false
     }));
     let projectCommands = null;
