@@ -85,7 +85,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
-  batch: 'Execute 1–50 local tool calls sequentially inside one mailbox request. Use this for task-sized workflows to avoid a separate GitHub request/result round trip for every small operation. Each step gets its own result and follows the current local approval setting. Stop on first failure by default. Use {"$ref":"stepId.result.content"} to pass an earlier step output into a later argument.'
+  batch: 'Execute 1–50 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for their source step. Each step gets its own result and follows the current local approval setting. Stop launching later steps after a failure by default.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
@@ -289,6 +289,96 @@ function createToolBridge(deps) {
     }
     for (const item of Object.values(value)) collectBatchRefIds(item, refs, depth + 1);
     return refs;
+  }
+
+  function normalizeBatchPath(value) {
+    return String(value || '').replace(/\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
+  }
+
+  function batchFootprint(step) {
+    const args = step.args || {};
+    const reads = [];
+    const writes = [];
+    let barrier = false;
+    const add = (set, value) => {
+      const normalized = normalizeBatchPath(value);
+      if (normalized) set.push(normalized);
+    };
+    switch (step.tool) {
+      case 'read_file':
+      case 'file_info':
+      case 'upload_workspace_file':
+        add(reads, args.path);
+        break;
+      case 'write_file':
+      case 'create_directory':
+      case 'delete_path':
+        add(writes, args.path);
+        break;
+      case 'move_path':
+        add(writes, args.source);
+        add(writes, args.destination);
+        break;
+      case 'init':
+        add(writes, 'AGENTS.md');
+        break;
+      case 'apply_patch': {
+        const paths = typeof args.patch === 'string'
+          ? [...args.patch.matchAll(/^\\*\\*\\* (?:Add File|Update File|Delete File):\\s*(.+)$/gm)].map(match => match[1].trim())
+          : [];
+        for (const item of paths) add(writes, item);
+        if (!writes.length) barrier = true;
+        break;
+      }
+      case 'project_status':
+      case 'list_dir':
+      case 'directory_tree':
+      case 'glob_file_search':
+      case 'search':
+      case 'git_status':
+      case 'git_diff':
+      case 'git_log':
+      case 'git_show':
+      case 'git_branches':
+      case 'git_changed_files':
+      case 'discover_instructions':
+      case 'get_agent_context':
+        reads.push('*');
+        break;
+      case 'shell':
+      case 'run_tests':
+      case 'git_fetch':
+      case 'git_pull':
+      case 'git_push':
+      case 'git_clone':
+      case 'git_create_branch':
+      case 'git_switch_branch':
+      case 'git_commit':
+      case 'refresh_environment_context':
+        barrier = true;
+        break;
+      default:
+        break;
+    }
+    return { reads, writes, barrier };
+  }
+
+  function batchFootprintsConflict(left, right) {
+    if (left.barrier || right.barrier) return true;
+    const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+    return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
+      right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+  }
+
+  function inferBatchDependencies(steps, index) {
+    const current = steps[index];
+    const dependencies = new Set(collectBatchRefIds(current.args));
+    const currentFootprint = batchFootprint(current);
+    for (let priorIndex = 0; priorIndex < index; priorIndex++) {
+      const prior = steps[priorIndex];
+      if (batchFootprintsConflict(batchFootprint(prior), currentFootprint)) dependencies.add(prior.id);
+    }
+    return [...dependencies];
   }
 
   function resolveBatchRefs(value, completed, depth = 0) {
@@ -535,7 +625,7 @@ function createToolBridge(deps) {
     }
 
     for (const [index, step] of steps.entries()) {
-      const dependencies = [...collectBatchRefIds(step.args)];
+      const dependencies = inferBatchDependencies(steps, index);
       const task = (async () => {
         await Promise.all(dependencies.map(id => taskById.get(id)));
         const failedDependency = dependencies.find(id => !outcomeById.get(id) || outcomeById.get(id).ok !== true);
