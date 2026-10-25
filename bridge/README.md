@@ -32,7 +32,7 @@ Change / execution tools include `write_file`, `apply_patch`, `create_directory`
 
 ## Result / state files
 
-Results use protocol `chatgpt-local-repo-result/v1` and include the request ID, tool, status, completion time, and sanitized result. Status can be `completed`, `failed`, `cancelled`, `rejected`, or `needs_manual_recovery`.
+Results use protocol `chatgpt-local-repo-result/v1` and include the request ID, tool, status, completion time, and sanitized result. Status can be `completed`, `partial`, `failed`, `cancelled`, `rejected`, or `needs_manual_recovery`. `partial` means some output was shortened; it does not by itself mean a safety check denied execution. Inspect the nested tool result's `ok`, `exitCode`, timeout/truncation flags, `stderr`, and explicit rejection/cancellation errors before claiming failure. Automatically retry oversized listings in stable, sorted pages (for example, `Select-Object -Skip <offset> -First 50`) under fresh request IDs until the reported total is covered.
 
 The state file `bridge/state/windows-app.json` includes the last heartbeat, worker status, pending request count, active request ID, and last error. Claim files are stored at `bridge/claims/<request_id>.json`. A request remains in history after completion; its result file is the completion record.
 
