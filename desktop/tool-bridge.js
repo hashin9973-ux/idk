@@ -140,7 +140,7 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   glob_file_search: { pattern: { default: '**/*', description: 'Glob pattern, for example **/*.js or src/**/*.ts. Maximum 300 characters.' } },
   git_diff: { contextLines: { default: 3 } },
   create_directory: { recursive: { description: 'Create missing parent directories as needed. Defaults to true.', default: true } },
-  delete_path: { recursive: { description: 'For a directory, recursively delete its contents. Defaults to true.', default: true } },
+  delete_path: { recursive: { description: 'Set true to delete a non-empty directory tree. Defaults to false; without it, only files and empty directories can be deleted.', default: false } },
   git_log: { path: { description: 'Optional workspace-relative path to limit the history.' } },
   git_show: { ref: { default: 'HEAD' } },
   git_commit: { paths: { description: 'Optional paths to stage before committing. If omitted, only changes already staged are committed.', items: { type: 'string' }, minItems: 1, maxItems: 100 } },
