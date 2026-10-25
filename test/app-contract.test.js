@@ -51,6 +51,9 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /require\('\.\/repository-bridge'\)/);
   assert.match(main, /createRepositoryBridge/);
   assert.match(main, /createGitHubAuth/);
+  assert.match(main, /resolveWorkspaceRoot/);
+  assert.match(main, /getDefaultWorkspaceRoot/);
+  assert.match(main, /userData', 'ChatGPTWorkspace/);
   assert.match(main, /openInBrowserAndYield/);
   assert.match(main, /bringMainWindowForward/);
   assert.match(main, /'app:github-start-login'/);
