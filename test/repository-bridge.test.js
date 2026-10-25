@@ -610,6 +610,8 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.agent_context.operating_rules.some(rule => /complex game.*one file/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /measurable acceptance criteria/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /final report must distinguish.*unverified behavior/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /Vision is optional.*vision_status/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /vision_deactivate disables new requests only/i.test(rule)));
     assert.equal(index.agent_context.tool_catalog.tools[0].parameters.properties.path.description, 'Workspace-relative path');
     assert.equal(JSON.stringify(index.agent_context).includes('do not publish this instruction body'), false);
     assert.equal(JSON.stringify(index.agent_context).includes('private-host'), false);
