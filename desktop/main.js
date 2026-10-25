@@ -19,6 +19,7 @@ const {
   nativeImage
 } = require('electron');
 const { clampRectToWorkArea } = require('./geometry');
+const { resolveWorkspaceRoot } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -193,19 +194,50 @@ function startGitHubCliLogin() {
   return { mode: 'github-cli', userCode: '', verificationUrl: 'https://github.com/login/device', intervalSeconds: 3 };
 }
 
+function getDefaultWorkspaceRoot() {
+  return path.join(app.getPath('documents'), 'ChatGPTWorkspace');
+}
+
 function getWorkspaceRoot() {
-  if (!settings.workspaceRoot || typeof settings.workspaceRoot !== 'string') {
-    settings.workspaceRoot = path.join(app.getPath('documents'), 'ChatGPTWorkspace');
+  // A prior bad value such as "C:\\" resolves to the drive root. Never use a
+  // drive/filesystem root as the workspace; normalize it back to a safe folder.
+  const root = resolveWorkspaceRoot(settings.workspaceRoot, getDefaultWorkspaceRoot());
+  if (settings.workspaceRoot !== root) {
+    settings.workspaceRoot = root;
+    persistSettings();
   }
-  return path.resolve(settings.workspaceRoot);
+  return root;
 }
 
 function ensureWorkspaceRoot() {
-  const root = getWorkspaceRoot();
-  fs.mkdirSync(root, { recursive: true });
-  settings.workspaceRoot = root;
-  persistSettings();
-  return root;
+  const fallbackRoot = path.join(app.getPath('userData'), 'ChatGPTWorkspace');
+  const candidates = [...new Set([
+    getWorkspaceRoot(),
+    getDefaultWorkspaceRoot(),
+    fallbackRoot
+  ].map(candidate => path.resolve(candidate)))];
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const root = resolveWorkspaceRoot(candidate, fallbackRoot);
+      fs.mkdirSync(root, { recursive: true });
+      if (!fs.statSync(root).isDirectory()) {
+        throw new Error('The configured workspace path exists but is not a directory: ' + root);
+      }
+      settings.workspaceRoot = root;
+      persistSettings();
+      return root;
+    } catch (error) {
+      lastError = error;
+      console.warn('Could not use workspace folder "' + candidate + '":', error.message);
+    }
+  }
+
+  throw new Error(
+    'Could not create a writable workspace folder in Documents or app data. ' +
+    String(lastError && lastError.message || 'No suitable fallback directory was available.')
+  );
 }
 
 async function restartFilesystemIndexMonitor() {
