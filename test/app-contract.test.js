@@ -30,9 +30,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   }
   assert.match(renderer, /GitHub connected/);
   assert.match(renderer, /Sign in to GitHub/);
-  assert.match(renderer, /githubButton\\.addEventListener\\('click', connectGitHub\\)/);
-  assert.match(renderer, /windowsBridge\\.reconnectGitHub/);
-  assert.match(renderer, /windowsBridge\\.retryConnection/);
+  assert.match(renderer, /githubButton\.addEventListener\('click', connectGitHub\)/);
+  assert.match(renderer, /windowsBridge\.reconnectGitHub/);
+  assert.match(renderer, /windowsBridge\.retryConnection/);
   assert.match(renderer, /Worker online/);
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
   assert.match(renderer, /windowsBridge\.startGitHubLogin/);
