@@ -35,7 +35,9 @@ The app defaults to `hashin9973-ux/qdqwg`, branch `bridge-mailbox`, and reuses a
 
 The shared mailbox repository uses `sandbox/` for ordinary ChatGPT-authored work files. Keep normal files, drafts, project notes, and deliverables there. The `bridge/` directory is the transport layer: create new immutable requests only in `bridge/requests/<id>.json`, read results from `bridge/results/`, and retrieve context from `bridge/context/`. Do not edit or delete other bridge files.
 
-On Windows, the **selected local workspace folder is the file-operation sandbox**. Path-based file tools reject absolute paths, parent traversal, and symlink escapes. Ordinary workspace file edits and directory operations run automatically so routine coding work does not need repeated prompts. The app still requires native approval for PowerShell commands, tests, Git writes, file uploads, workspace initialization, and sensitive-file operations. PowerShell itself is not sandboxed: an approved command can access files outside the selected workspace.
+On Windows, the **selected local workspace folder is the file-operation sandbox**. Path-based file tools reject absolute paths, parent traversal, and symlink escapes. Ordinary workspace file edits and directory operations run automatically so routine coding work does not need repeated prompts. By default, the app still requires native approval for PowerShell commands, tests, Git writes, file uploads, workspace initialization, and sensitive-file operations.
+
+The status window includes **Auto-accept everything**, off by default. Turning it on requires one explicit confirmation, then skips per-operation approval dialogs for protected tool calls, including PowerShell, Git operations, uploads, and secret-like file reads. This is intentionally broad: PowerShell runs as your signed-in Windows user, can access files outside the workspace, and can change or delete data. Use the mode only while you trust the instructions arriving through your private mailbox. Path validation, supported-tool checks, and mailbox restrictions still apply. Turn it off from the same status row at any time.
 
 Important distinction: `sandbox/` is an operating convention for ChatGPT's GitHub work area, not a GitHub-enforced path permission. GitHub repository access is granted at repository level. Keep the mailbox private and protect the app source in its separate repository. Local path validation is enforced by the desktop app; it does not constrain actions performed directly through the GitHub integration.
 
@@ -61,7 +63,7 @@ The worker validates the request, claims it, runs the requested local tool accor
 
 ### Batch local operations
 
-Use `tool: "batch"` when several local operations can be planned in advance. One request produces one consolidated result, while the worker still validates each step and shows a separate native approval for every protected operation. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted.
+Use `tool: "get_agent_context"` once at the start to get the workspace overview and tool schemas; it is a single compact request. For a compact file listing, call `directory_tree` with `format: "paths"`; use `format: "entries"` when file types and sizes are needed. Use `tool: "batch"` when several local operations can be planned in advance. One request produces one consolidated result, avoiding separate mailbox round trips for every small operation. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted. With Auto-accept everything enabled, the worker skips native approval prompts but continues enforcing tool validation and workspace path restrictions.
 
 ```json
 {

@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   getState: () => ipcRenderer.invoke('app:get-state'),
+  setAutoAcceptAll: enabled => ipcRenderer.invoke('app:set-auto-accept-all', enabled),
   minimizeToTray: () => ipcRenderer.invoke('app:minimize-to-tray'),
   quit: () => ipcRenderer.invoke('app:quit'),
   getGitHubState: () => ipcRenderer.invoke('app:github-state'),

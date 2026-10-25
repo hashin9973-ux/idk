@@ -107,6 +107,36 @@ test('shell commands remain approval-gated and are not executed when declined', 
   }
 });
 
+
+test('auto-accept-all skips local approval dialogs, including sensitive-file approval, while preserving workspace path limits', async () => {
+  const root = fixture();
+  try {
+    fs.writeFileSync(path.join(root, 'access_token.txt'), 'local test secret', 'utf8');
+    let approvalCalls = 0;
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvalCalls++; throw new Error('auto-accept must skip approval'); } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {},
+      getAutoAcceptAll: () => true,
+      uploadWorkspaceFile: async (requestId, file) => ({ requestId, path: file.path, bytes: file.bytes.length })
+    });
+    const read = await bridge.runTool('read_file', { path: 'access_token.txt' }, 'req-auto-sensitive');
+    assert.equal(read.ok, true, read.error || 'sensitive read was not auto-accepted');
+    assert.equal(read.result.content, 'local test secret');
+    const upload = await bridge.runTool('upload_workspace_file', { path: 'artifact.txt' }, 'req-auto-upload');
+    assert.equal(upload.ok, true, upload.error || 'upload was not auto-accepted');
+    assert.equal(upload.result.path, 'artifact.txt');
+    const escaped = await bridge.runTool('write_file', { path: '../outside.txt', content: 'still blocked' }, 'req-auto-escape');
+    assert.equal(escaped.ok, false);
+    assert.match(escaped.error, /parent traversal/);
+    assert.equal(approvalCalls, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('declining the local artifact-upload approval performs no file publication', async () => {
   const root = fixture();
   try {
@@ -390,7 +420,9 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.equal(result.result.protocol, 'chatgpt-local-agent-context/v1');
     assert.equal(result.result.project_commands.name, 'context-fixture');
     assert.equal(result.result.project_commands.scripts.test, 'node --test');
-    assert.ok(Array.isArray(result.result.directory_overview.entries));
+    assert.ok(Array.isArray(result.result.directory_overview.paths));
+    assert.equal(result.result.directory_overview.format, 'paths');
+    assert.equal(result.result.execution_policy.auto_accept_all, false);
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
     assert.ok(Array.isArray(result.result.instruction_files));
