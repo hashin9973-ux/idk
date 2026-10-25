@@ -78,7 +78,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /webContents\.send\('app:github-device-code', login\.userCode\)/);
   assert.match(main, /app:copy-device-code/);
   assert.match(main, /clipboard\.writeText\(code\)/);
-  assert.match(main, /login\.child\.stdin\.end\('\\\\n'\)/);
+  assert.ok(main.includes("login.child.stdin.end('\\n')"));
   assert.match(main, /GH_CONFIG_DIR: path\.join\(app\.getPath\('userData'\), 'github-cli'\)/);
   assert.ok(main.includes("GH_BROWSER: path.join(windowsRoot, 'explorer.exe')"));
   assert.doesNotMatch(main, /clearGitHubCliCredentials|auth', 'logout/);
