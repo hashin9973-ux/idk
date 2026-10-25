@@ -281,7 +281,7 @@ test('batch runs multiple tools in one bridge request and can pass a prior resul
       { id: 'copy', tool: 'write_file', args: { path: 'copy.txt', content: { '$ref': 'read.result.content' } } },
       { id: 'verify', tool: 'read_file', args: { path: 'copy.txt' } }
     ] }, 'req-batch-reference');
-    assert.equal(result.ok, true);
+    assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.result.completed_steps, 3);
     assert.equal(result.result.steps[1].ok, true);
     assert.equal(result.result.steps[2].result.content, 'hello from batch\n');
@@ -452,7 +452,7 @@ test('batch keeps failure output and exit codes inline for the next agent decisi
     const result = await bridge.runTool('batch', { steps: [
       { id: 'compile', tool: 'shell', args: { command: 'Write-Output compile' } },
       { id: 'should-not-run', tool: 'project_status', args: {} }
-    ] }, 'req-batch-failure-result');
+    ], maxConcurrency: 1 }, 'req-batch-failure-result');
     assert.equal(result.ok, false);
     const step = result.result.steps[0];
     assert.equal(step.status, 'failed');
