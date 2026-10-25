@@ -287,6 +287,12 @@ class FilesystemIndexMonitor {
 
   async flushChanges() {
     if (!this.running || this.flushing) return;
+    // Never apply incremental changes over a full scan that has not finished.
+    // The scan's finally block schedules us again after it releases the lock.
+    if (this.rebuildPromise) {
+      this.fullRebuildRequested = true;
+      return;
+    }
     this.flushing = true;
     clearTimeout(this.debounceTimer);
     try {
@@ -294,7 +300,7 @@ class FilesystemIndexMonitor {
         if (this.fullRebuildRequested) {
           this.fullRebuildRequested = false;
           this.dirtyParents.clear();
-          await this.fullRebuild();
+          await this.fullRebuild(true);
           continue;
         }
         const parents = [...this.dirtyParents];
@@ -357,11 +363,15 @@ class FilesystemIndexMonitor {
     return snapshot;
   }
 
-  async fullRebuild() {
+  async fullRebuild(fromFlush = false) {
     if (!this.running) return null;
     if (this.rebuildPromise) {
       this.fullRebuildRequested = true;
       return this.rebuildPromise;
+    }
+    if (this.flushing && !fromFlush) {
+      this.fullRebuildRequested = true;
+      return null;
     }
     const task = (async () => {
       try {
