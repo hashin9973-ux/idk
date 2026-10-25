@@ -323,6 +323,7 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     assert.equal(tools.some(item => item.name === 'github_api'), false);
     assert.equal(tools.some(item => item.name === 'github_status'), false);
     for (const tool of tools) {
+      assert.ok(typeof tool.returns === 'string' && tool.returns.length > 10, tool.name + ' result contract');
       assert.equal(tool.parameters.additionalProperties, false, tool.name);
       for (const [name, schema] of Object.entries(tool.parameters.properties)) {
         assert.ok(typeof schema.description === 'string' && schema.description.length > 10, tool.name + '.' + name);
@@ -376,6 +377,7 @@ test('agent context packs Windows environment, project commands, instruction met
       name: 'context-fixture',
       scripts: { test: 'node --test', lint: 'eslint .' }
     }), 'utf8');
+    fs.writeFileSync(path.join(root, 'AGENTS.md'), '# Fixture instructions\\nUse focused edits.\\n', 'utf8');
     const bridge = createToolBridge({
       dialog: { showMessageBox: async () => ({ response: 1 }) },
       getMainWindow: () => null,
@@ -392,7 +394,9 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
     assert.ok(Array.isArray(result.result.instruction_files));
+    assert.ok(result.result.instruction_files.some(item => item.path === 'AGENTS.md' && /^[a-f0-9]{64}$/.test(item.sha256)));
     assert.equal(result.result.instruction_files.some(item => Object.hasOwn(item, 'content')), false);
+    assert.ok(result.result.suggested_commands.some(item => item.command === 'npm test'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
