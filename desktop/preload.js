@@ -10,7 +10,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   quit: () => ipcRenderer.invoke('app:quit'),
   getGitHubState: () => ipcRenderer.invoke('app:github-state'),
   getVisionStatus: () => ipcRenderer.invoke('app:vision-status'),
-  openColabSignIn: () => ipcRenderer.invoke('app:vision-open-sign-in'),
+  connectColab: () => ipcRenderer.invoke('app:vision-connect-colab'),
   checkVisionSetup: () => ipcRenderer.invoke('app:vision-setup-check'),
   retryConnection: () => ipcRenderer.invoke('app:retry-connection'),
   startGitHubLogin: () => ipcRenderer.invoke('app:github-start-login'),
