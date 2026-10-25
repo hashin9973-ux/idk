@@ -24,7 +24,7 @@ const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 
-const STATUS_SIZE = { width: 318, height: 100 };
+const STATUS_SIZE = { width: 318, height: 131 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 10000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
@@ -314,7 +314,7 @@ function resolveWorkerStatus(state) {
 }
 
 function enrichedBridgeState(state) {
-  return { ...(state || {}), workerStatus: resolveWorkerStatus(state), connectionError: autoConnectionError || (state && state.lastError) || '' };
+  return { ...(state || {}), workerStatus: resolveWorkerStatus(state), connectionError: autoConnectionError || (state && state.lastError) || '', autoAcceptAll: settings.autoAcceptAll === true };
 }
 
 function broadcastBridgeState(state) {
@@ -418,6 +418,29 @@ function registerIpc() {
   ipcMain.handle('app:get-state', event => {
     assertLocalUi(event, 'index.html');
     return getUiState();
+  });
+  ipcMain.handle('app:set-auto-accept-all', async (event, enabled) => {
+    assertLocalUi(event, 'index.html');
+    if (typeof enabled !== 'boolean') throw new Error('auto-accept setting must be a boolean.');
+    if (enabled && settings.autoAcceptAll !== true) {
+      const options = {
+        type: 'warning',
+        title: 'Enable Auto-accept Everything?',
+        message: 'Allow the worker to run all requested local operations without per-operation approval?',
+        detail: 'This includes PowerShell commands, tests, Git operations, uploads, and access to secret-like files. PowerShell runs as your Windows user and is not confined to the workspace. Use this only with a trusted ChatGPT conversation and your private mailbox repository.',
+        buttons: ['Enable auto-accept', 'Keep disabled'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true
+      };
+      const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+      const answer = win ? await dialog.showMessageBox(win, options) : await dialog.showMessageBox(options);
+      if (answer.response !== 0) return { autoAcceptAll: settings.autoAcceptAll === true, cancelled: true };
+    }
+    settings.autoAcceptAll = enabled;
+    persistSettings();
+    if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
+    return { autoAcceptAll: settings.autoAcceptAll };
   });
   ipcMain.handle('app:minimize-to-tray', event => {
     assertLocalUi(event, 'index.html');
@@ -583,7 +606,8 @@ if (!hasInstanceLock) {
       getWorkspaceRoot,
       localTools,
       githubAuth,
-      uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
+      uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
+      getAutoAcceptAll: () => settings.autoAcceptAll === true
     });
 
     repositoryBridge = createRepositoryBridge({
