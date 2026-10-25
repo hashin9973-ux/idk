@@ -17,6 +17,7 @@ const MAX_RESULT_BYTES = 90 * 1024;
 const MAX_INLINE_TEXT_BYTES = 32 * 1024;
 const MAX_ARTIFACT_PART_BYTES = 256 * 1024;
 const MAX_WORKSPACE_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_FILESYSTEM_INDEX_BYTES = 4 * 1024 * 1024;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 const BLOCKED_TOOLS = new Set(['github_api', 'github_status']);
@@ -370,6 +371,64 @@ function createRepositoryBridge(deps) {
     return value;
   }
 
+  async function publishFilesystemIndex(snapshot) {
+    if (!snapshot || typeof snapshot.content !== 'string') {
+      throw new TypeError('Filesystem index publication requires rendered text content.');
+    }
+    const bytes = Buffer.from(snapshot.content, 'utf8');
+    if (bytes.length > MAX_FILESYSTEM_INDEX_BYTES) {
+      throw new Error('Filesystem index exceeds the 4 MiB repository publishing limit.');
+    }
+    const relativePath = 'bridge/context/filesystem-index.md';
+    const contentHash = createHash('sha256').update(bytes).digest('hex');
+    const gitBlobSha = createHash('sha1')
+      .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+      .update(bytes)
+      .digest('hex');
+    const config = currentConfig();
+
+    // This is a mutable, stable path (unlike request artifacts). Compare first
+    // to avoid a GitHub commit for a watcher burst that did not change names.
+    // On a Contents API conflict, reread the current SHA and retry a few times.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = await readRemoteContent(relativePath);
+      if (existing && (
+        (existing.content && existing.content.equals(bytes)) ||
+        existing.sha === gitBlobSha
+      )) {
+        return {
+          ok: true,
+          unchanged: true,
+          path: relativePath,
+          bytes: bytes.length,
+          sha256: contentHash,
+          github_blob_sha: existing.sha || gitBlobSha
+        };
+      }
+      const body = {
+        message: '[local bridge] update names-only filesystem index',
+        content: bytes.toString('base64'),
+        branch: config.branch,
+        ...(existing && existing.sha ? { sha: existing.sha } : {})
+      };
+      try {
+        const response = await api('PUT', apiPath(relativePath), body);
+        return {
+          ok: true,
+          unchanged: false,
+          path: relativePath,
+          bytes: bytes.length,
+          sha256: contentHash,
+          github_blob_sha: response.result && response.result.content && response.result.content.sha || null
+        };
+      } catch (error) {
+        if (attempt < 2 && isConflict(error)) continue;
+        throw error;
+      }
+    }
+    throw new Error('Could not publish filesystem index after resolving repository update conflicts.');
+  }
+
   async function publishWorkspaceFile(requestId, file) {
     if (typeof requestId !== 'string' || !SAFE_ID.test(requestId)) throw new Error('Invalid request ID for file upload.');
     if (!file || typeof file !== 'object' || !Buffer.isBuffer(file.bytes)) {
@@ -542,7 +601,6 @@ function createRepositoryBridge(deps) {
       ['project', 'project_status', {}],
       ['capabilities', 'get_capabilities', {}],
       ['project_commands', 'read_file', { path: 'package.json' }],
-      ['directory_tree', 'directory_tree', { path: '.', maxDepth: 3, maxEntries: 250 }],
       ['instructions', 'discover_instructions', {}]
     ];
     for (const [name, tool, args] of collectors) {
@@ -594,6 +652,30 @@ function createRepositoryBridge(deps) {
       await upsertContextJson(relativePath, record);
       files[name] = relativePath;
     }
+
+    // The full file-name index is maintained separately by the filesystem watcher.
+    // Do not recursively scan the workspace while creating the compact context.
+    const directoryIndexReference = {
+      ok: true,
+      result: {
+        path: 'bridge/context/filesystem-index.md',
+        mode: 'names-only',
+        scope: 'selected workspace',
+        updates: 'debounced filesystem notifications with periodic full reconciliation',
+        note: 'The maintained index lists relative paths and item types only; it never contains file contents.'
+      }
+    };
+    contextReports.directory_tree = directoryIndexReference;
+    await upsertContextJson('bridge/context/directory_tree.json', {
+      protocol: CONTEXT_PROTOCOL,
+      name: 'directory_tree',
+      tool: 'filesystem-index-reference',
+      generated_at: generatedAt,
+      data: directoryIndexReference
+    });
+    files.directory_tree = 'bridge/context/directory_tree.json';
+    files.filesystem_index = 'bridge/context/filesystem-index.md';
+
     const capabilityData = contextReports.capabilities && contextReports.capabilities.result || {};
     const instructionData = contextReports.instructions && contextReports.instructions.result || {};
     const projectCommandData = contextReports.project_commands && contextReports.project_commands.result || { available: false };
@@ -615,7 +697,7 @@ function createRepositoryBridge(deps) {
       generated_at: generatedAt,
       worker_id: workerId,
       workspace_selected: Boolean(root),
-      retrieval_policy: 'Use agent_context as the compact workspace and tool entry point. Detailed snapshots are available via files only when needed. Context is refreshed at startup, every few minutes, and when the selected workspace changes; request an explicit refresh if freshness matters.',
+      retrieval_policy: 'Use agent_context as the compact workspace and tool entry point. The names-only filesystem index is maintained separately at bridge/context/filesystem-index.md and updated after filesystem changes, with periodic reconciliation. Other detailed snapshots are available via files only when needed.',
       agent_context: {
         protocol: 'chatgpt-local-agent-context/v1',
         generated_at: generatedAt,
@@ -623,6 +705,13 @@ function createRepositoryBridge(deps) {
         project: contextReports.project && contextReports.project.result || null,
         project_commands: { ...projectCommandData, suggested: projectCommandList },
         directory_overview: contextReports.directory_tree && contextReports.directory_tree.result || null,
+        filesystem_index: {
+          path: 'bridge/context/filesystem-index.md',
+          mode: 'names-only',
+          scope: 'selected workspace',
+          contents_included: false,
+          updates: 'filesystem events plus periodic reconciliation'
+        },
         instruction_files: Array.isArray(instructionData.instructions) ? instructionData.instructions.map(item => ({ ...item, contents_included: false })) : [],
         tool_catalog: {
           protocol: capabilityData.protocol || null,
@@ -632,9 +721,10 @@ function createRepositoryBridge(deps) {
         },
         operating_rules: [
           'Use workspace-relative paths for file operations.',
+          'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
           'Inspect relevant project instructions and source before editing.',
           'Batch known operations into one request; every step returns its own status and output.',
-          'Protected operations still require native Windows approval.',
+          'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
           'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.'
         ]
@@ -1071,7 +1161,7 @@ function createRepositoryBridge(deps) {
     return stateSnapshot();
   }
 
-  return { start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext, publishWorkspaceFile };
+  return { start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext, publishWorkspaceFile, publishFilesystemIndex };
 }
 
 module.exports = {
