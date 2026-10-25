@@ -70,7 +70,7 @@ test('index warns in its header when output byte limits omit entries', () => {
 
 test('monitor writes a local index, then reflects added and removed names', async () => {
   const root = await fixture();
-  const output = path.join(os.tmpdir(), 'filesystem-index-' + Date.now() + '.md');
+  const output = path.join(root, 'filesystem-index.md');
   const monitor = new FilesystemIndexMonitor({
     root,
     outputPath: output,
