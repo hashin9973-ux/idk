@@ -47,6 +47,10 @@ A GitHub request is never approval to execute a command. The local app's policy 
 
 Each worker result includes a `timing_ms` object. It separates the time from request creation to worker start, request fetch, claim acquisition, tool wall time, result preparation, and mailbox API time/calls before the final result publication. `tool_wall_time` includes any native approval wait. These numbers describe the local worker segment only; they do not measure time ChatGPT spends planning or calling its GitHub integration before/after the worker. If worker timings are small while the user's total wait is large, investigate the ChatGPT/GitHub request-and-read sequence rather than optimizing the local file operation alone.
 
+## Development workflow for minimal-context ChatGPT sessions
+
+For a compact set of paste-ready ChatGPT custom instructions and the full development/recovery procedure, see [`docs/CHATGPT-DEVELOPER-WORKFLOW.md`](docs/CHATGPT-DEVELOPER-WORKFLOW.md). The Windows worker also returns core development rules inside `get_agent_context`; these rules emphasize modular implementation when the task warrants it, exact result matching, terminal-output verification, recovery from delayed results, and evidence-backed completion reports.
+
 ## Request → tool result → next action
 
 Create one uniquely named JSON file on the configured branch at `bridge/requests/<request_id>.json`.
@@ -118,7 +122,7 @@ For a local file that you explicitly want to share, request the `upload_workspac
 
 ## Local tool catalogue
 
-**Batch workflow:** `batch` (1–20 sequential calls, earlier-result references, per-operation approval).
+**Batch workflow:** `batch` (1–50 calls per request; independent steps run concurrently up to 8, default 4; explicit earlier-result references; each protected step follows the local approval policy).
 
 **Agent context:** `get_agent_context` (one-call workspace, project commands, instructions metadata, directory overview and tool schemas).
 
