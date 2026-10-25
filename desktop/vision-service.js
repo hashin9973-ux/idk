@@ -292,9 +292,9 @@ function createVisionService(deps) {
 
   function manualSteps(status) {
     const common = [
-      'In Google Colab, select Connect or reconnect a runtime, then run the notebook worker cell.',
-      'In Colab Secrets, add QDQWG_TOKEN and enable notebook access. Use a fine-grained GitHub token restricted to hashin9973-ux/qdqwg with Contents read/write permission; never paste it into the mailbox or notebook source.',
-      'Wait for the notebook to publish a fresh runtime heartbeat, then call vision_status again.'
+      'In Colab Secrets, create QDQWG_TOKEN using a fine-grained token restricted to hashin9973-ux/qdqwg with Contents read/write permission, then enable notebook access for the secret. Never paste the token into notebook code or the mailbox.',
+      'In Colab, sign in to Google if prompted, connect or reconnect the runtime, and run the worker cell. Opening the notebook alone does not connect the runtime.',
+      'Wait for the app to observe a fresh bridge/vision/runtime.json heartbeat. Only call vision_activate when you actually want model setup/loading; connecting alone does not enable vision.'
     ];
     if (status === 'needs_authentication') return ['Complete Google sign-in if Colab asks for it.', ...common];
     if (status === 'gpu_unavailable') return ['Select a Colab GPU runtime if one is offered. GPU access is not guaranteed on free Colab.', ...common];
@@ -452,8 +452,11 @@ function createVisionService(deps) {
     const nextSteps = [];
     if (checks.github.status !== 'passed') nextSteps.push('Use the existing Sign in to GitHub button and finish the device sign-in.');
     if (checks.mailbox.status !== 'passed') nextSteps.push('Verify GitHub access to hashin9973-ux/qdqwg on the bridge-mailbox branch; the app needs Contents read/write permission for vision requests.');
-    if (checks.colab.status !== 'passed') nextSteps.push('Use Sign in to open the Colab notebook, complete Google sign-in if asked, connect a runtime, and run its worker cell.');
-    if (checks.model.status !== 'passed') nextSteps.push('Once the mailbox is verified, call vision_activate from the ChatGPT bridge tools to enable setup/model loading; the setup check itself never starts downloads.');
+    if (checks.colab.status !== 'passed') {
+      nextSteps.push('In Colab Secrets, add QDQWG_TOKEN (fine-grained token restricted to hashin9973-ux/qdqwg, Contents read/write) and enable notebook access for it.');
+      nextSteps.push('In Colab, sign in if prompted, connect/reconnect the runtime, and run the worker cell. The app only reports a connection after it sees a fresh protocol-valid heartbeat.');
+    }
+    if (checks.model.status !== 'passed') nextSteps.push('The connection button and setup check do not activate vision or load the model. Call vision_activate from the ChatGPT bridge tools only when you explicitly want model setup/loading.');
     if (checks.vision.status === 'disabled') nextSteps.push('Vision remains disabled until vision_activate is explicitly called.');
 
     return {
@@ -464,6 +467,68 @@ function createVisionService(deps) {
       next_steps: nextSteps,
       note: 'Google account sign-in cannot be read from browser cookies. Colab is considered connected only when its notebook worker publishes a fresh, protocol-valid heartbeat.'
     };
+  }
+
+  async function connectColab() {
+    try {
+      const snapshot = await readControlAndRuntime();
+      const visionActivated = Boolean(snapshot.control && snapshot.control.enabled === true);
+      if (snapshot.state.runtime_fresh) {
+        return {
+          ...snapshot.state,
+          connected: true,
+          opened: false,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          vision_activated: visionActivated,
+          message: snapshot.state.message ||
+            (snapshot.state.model_loaded
+              ? 'Colab is connected through the shared GitHub mailbox and reports the vision model loaded.'
+              : 'Colab is connected through the shared GitHub mailbox. Vision is ' +
+                (visionActivated ? 'enabled.' : 'still disabled; the connection button did not start model loading.'))
+        };
+      }
+
+      let browser;
+      try {
+        browser = await openColabIfNeeded();
+      } catch (error) {
+        return {
+          ...snapshot.state,
+          status: 'error',
+          connected: false,
+          opened: false,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          vision_activated: visionActivated,
+          error: 'Could not open the Colab notebook: ' + messageOf(error),
+          message: 'The app could not open the Colab notebook.'
+        };
+      }
+
+      const throttled = Boolean(browser && browser.throttled);
+      return {
+        ...snapshot.state,
+        status: 'waiting_for_runtime',
+        connected: false,
+        opened: Boolean(browser && browser.opened),
+        open_throttled: throttled,
+        notebook_url: COLAB_NOTEBOOK_URL,
+        vision_activated: visionActivated,
+        message: throttled
+          ? 'No fresh Colab heartbeat is visible yet. The notebook was opened recently; switch to that tab, add/verify QDQWG_TOKEN in Colab Secrets, connect a runtime, and run the worker cell. The app will keep checking for the heartbeat.'
+          : 'Colab was opened, but the app is not connected to its runtime yet. In Colab, add/verify QDQWG_TOKEN in Secrets, connect a runtime, and run the worker cell. The app will keep checking for a fresh heartbeat. Vision has not been activated by this button.',
+        next_steps: manualSteps('starting')
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        connected: false,
+        opened: false,
+        vision_activated: false,
+        notebook_url: COLAB_NOTEBOOK_URL,
+        error: messageOf(error),
+        message: 'Could not check the Colab mailbox connection: ' + messageOf(error)
+      };
+    }
   }
 
   async function status() {
@@ -703,6 +768,7 @@ function createVisionService(deps) {
     deactivate,
     status,
     setupCheck,
+    connectColab,
     analyzeScreenshot,
     wait,
     constants: {
