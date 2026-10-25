@@ -23,6 +23,7 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
+const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 318, height: 131 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
@@ -45,6 +46,9 @@ let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let repositoryBridge = null;
+let filesystemIndexMonitor = null;
+let latestFilesystemIndexSnapshot = null;
+let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let pendingGitHubCliLogin = null;
 
@@ -204,6 +208,34 @@ function ensureWorkspaceRoot() {
   return root;
 }
 
+async function restartFilesystemIndexMonitor() {
+  if (filesystemIndexMonitor) {
+    await filesystemIndexMonitor.stop().catch(() => {});
+  }
+  latestFilesystemIndexSnapshot = null;
+  filesystemIndexSyncError = '';
+  filesystemIndexMonitor = new FilesystemIndexMonitor({
+    root: getWorkspaceRoot(),
+    outputPath: path.join(app.getPath('userData'), 'filesystem-index.md'),
+    onUpdate: async snapshot => {
+      latestFilesystemIndexSnapshot = snapshot;
+      if (!repositoryBridge || !repositoryBridge.getState().running) return;
+      try {
+        await repositoryBridge.publishFilesystemIndex(snapshot);
+        filesystemIndexSyncError = '';
+      } catch (error) {
+        filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+        throw error;
+      }
+    },
+    onError: message => {
+      filesystemIndexSyncError = String(message || '').slice(0, 500);
+      console.warn('Filesystem index:', filesystemIndexSyncError);
+    }
+  });
+  await filesystemIndexMonitor.start();
+}
+
 function selectWorkspace() {
   return dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
     title: 'Choose the sandbox folder ChatGPT may modify and delete files inside',
@@ -219,6 +251,10 @@ function selectWorkspace() {
     }
     settings.workspaceRoot = selected;
     persistSettings();
+    void restartFilesystemIndexMonitor().catch(error => {
+      filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+      console.warn('Could not restart filesystem index:', filesystemIndexSyncError);
+    });
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('app:workspace-changed', selected);
     }
@@ -353,6 +389,16 @@ async function attemptAutoConnect() {
     setAutoConnectionStatus('connecting');
     const started = await repositoryBridge.start();
     setAutoConnectionStatus(started.running ? 'online' : 'connecting', started.lastError || '');
+    if (started.running && latestFilesystemIndexSnapshot) {
+      // Initial index creation is asynchronous and may finish while the worker is offline.
+      // Publish the latest snapshot after reconnect without blocking the online status update.
+      void repositoryBridge.publishFilesystemIndex(latestFilesystemIndexSnapshot).then(() => {
+        filesystemIndexSyncError = '';
+      }).catch(error => {
+        filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+        console.warn('Could not publish filesystem index:', filesystemIndexSyncError);
+      });
+    }
   } catch (error) {
     const message = String(error && error.message || error);
     setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
@@ -620,6 +666,14 @@ if (!hasInstanceLock) {
       publishContextOnStart: true
     });
 
+    // Build the initial names-only index and keep it warm even while GitHub is offline.
+    // A local write does not include file contents and a repository update is skipped
+    // when the path/type manifest has not changed.
+    void restartFilesystemIndexMonitor().catch(error => {
+      filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+      console.warn('Could not start filesystem index:', filesystemIndexSyncError);
+    });
+
     registerIpc();
     createTray();
     createMainWindow();
@@ -639,7 +693,12 @@ app.on('before-quit', event => {
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;
-    repositoryBridge.stop().catch(() => {}).finally(() => app.quit());
+    const stopIndex = filesystemIndexMonitor
+      ? filesystemIndexMonitor.stop().catch(() => {})
+      : Promise.resolve();
+    stopIndex.finally(() => {
+      repositoryBridge.stop().catch(() => {}).finally(() => app.quit());
+    });
     return;
   }
   if (tray) {
