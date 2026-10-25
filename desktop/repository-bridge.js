@@ -516,6 +516,7 @@ function createRepositoryBridge(deps) {
       ['environment', 'environment_info', {}],
       ['project', 'project_status', {}],
       ['capabilities', 'get_capabilities', {}],
+      ['project_commands', 'read_file', { path: 'package.json' }],
       ['directory_tree', 'directory_tree', { path: '.', maxDepth: 3, maxEntries: 250 }],
       ['instructions', 'discover_instructions', {}]
     ];
@@ -525,6 +526,24 @@ function createRepositoryBridge(deps) {
       try {
         report = await executeTool(tool, args, 'context-' + randomUUID());
         report = sanitizeForRepository(report, root);
+        if (name === 'project_commands') {
+          const content = report && report.ok && report.result && report.result.content;
+          if (typeof content === 'string') {
+            try {
+              const manifest = JSON.parse(content);
+              report = { ok: true, result: {
+                available: true,
+                manifest: 'package.json',
+                name: typeof manifest.name === 'string' ? manifest.name : null,
+                packageManager: typeof manifest.packageManager === 'string' ? manifest.packageManager : null,
+                engines: manifest.engines && typeof manifest.engines === 'object' ? manifest.engines : null,
+                scripts: manifest.scripts && typeof manifest.scripts === 'object' ? manifest.scripts : {}
+              } };
+            } catch { report = { ok: true, result: { available: false, parse_error: true, manifest: 'package.json' } }; }
+          } else {
+            report = { ok: true, result: { available: false, manifest: 'package.json' } };
+          }
+        }
         if (name === 'instructions' && report && report.result && Array.isArray(report.result.instructions)) {
           report.result.instructions = report.result.instructions.map(item => ({
             path: item.path,
@@ -549,6 +568,20 @@ function createRepositoryBridge(deps) {
     }
     const capabilityData = contextReports.capabilities && contextReports.capabilities.result || {};
     const instructionData = contextReports.instructions && contextReports.instructions.result || {};
+    const projectCommandData = contextReports.project_commands && contextReports.project_commands.result || { available: false };
+    const projectCommandList = [];
+    const projectEntries = new Set((contextReports.project && contextReports.project.result && contextReports.project.result.topLevelEntries || []).map(String));
+    const scripts = projectCommandData.scripts && typeof projectCommandData.scripts === 'object' ? projectCommandData.scripts : {};
+    if (typeof scripts.test === 'string') projectCommandList.push({ name: 'test', command: 'npm test', source: 'package.json scripts.test' });
+    if (typeof scripts.check === 'string') projectCommandList.push({ name: 'check', command: 'npm run check', source: 'package.json scripts.check' });
+    if (typeof scripts.lint === 'string') projectCommandList.push({ name: 'lint', command: 'npm run lint', source: 'package.json scripts.lint' });
+    if (projectEntries.has('pyproject.toml') || projectEntries.has('pytest.ini') || projectEntries.has('tests')) projectCommandList.push({ name: 'test', command: 'python -m pytest', source: 'Python project marker; verify dependencies first' });
+    if (projectEntries.has('Cargo.toml')) projectCommandList.push({ name: 'test', command: 'cargo test', source: 'Cargo.toml' });
+    if (projectEntries.has('go.mod')) projectCommandList.push({ name: 'test', command: 'go test ./...', source: 'go.mod' });
+    if (projectEntries.has('pom.xml')) projectCommandList.push({ name: 'test', command: 'mvn test', source: 'pom.xml' });
+    if (projectEntries.has('gradlew.bat')) projectCommandList.push({ name: 'test', command: '.\\gradlew.bat test', source: 'gradlew.bat' });
+    else if (projectEntries.has('build.gradle') || projectEntries.has('build.gradle.kts')) projectCommandList.push({ name: 'test', command: 'gradle test', source: 'Gradle build file' });
+    if (projectEntries.has('global.json') || [...projectEntries].some(name => name.endsWith('.sln') || name.endsWith('.csproj'))) projectCommandList.push({ name: 'test', command: 'dotnet test', source: '.NET project marker' });
     const index = {
       protocol: CONTEXT_PROTOCOL,
       generated_at: generatedAt,
@@ -560,6 +593,7 @@ function createRepositoryBridge(deps) {
         generated_at: generatedAt,
         environment: contextReports.environment && contextReports.environment.result || null,
         project: contextReports.project && contextReports.project.result || null,
+        project_commands: { ...projectCommandData, suggested: projectCommandList },
         directory_overview: contextReports.directory_tree && contextReports.directory_tree.result || null,
         instruction_files: Array.isArray(instructionData.instructions) ? instructionData.instructions.map(item => ({ ...item, contents_included: false })) : [],
         tool_catalog: {
