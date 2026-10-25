@@ -497,6 +497,12 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(result.result.instruction_files.some(item => item.path === 'AGENTS.md' && /^[a-f0-9]{64}$/.test(item.sha256)));
     assert.equal(result.result.instruction_files.some(item => Object.hasOwn(item, 'content')), false);
     assert.ok(result.result.suggested_commands.some(item => item.command === 'npm test'));
+    assert.ok(Array.isArray(result.result.development_workflow.rules));
+    const workflowRules = result.result.development_workflow.rules.join(' ');
+    assert.match(workflowRules, /complex game.*one HTML\/Python\/source file/i);
+    assert.match(workflowRules, /matching result/i);
+    assert.match(workflowRules, /exitCode/i);
+    assert.match(workflowRules, /unverified behavior/i);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
