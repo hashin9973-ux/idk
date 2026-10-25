@@ -437,6 +437,43 @@ test('large textual tool output is shortened inline without requiring a third fe
   }
 });
 
+test('filesystem index publishes to a stable path and skips unchanged snapshots', async () => {
+  const fake = fakeGitHub();
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true })
+  });
+  const path = 'bridge/context/filesystem-index.md';
+  const firstText = '# Filesystem index\n\n"src/"\n"src/app.js"\n';
+  const first = await bridge.publishFilesystemIndex({ content: firstText });
+  assert.equal(first.path, path);
+  assert.equal(first.unchanged, false);
+  assert.equal(first.bytes, Buffer.byteLength(firstText, 'utf8'));
+  assert.equal(fake.files.has(path), true);
+
+  const putCountAfterFirst = fake.calls.filter(call =>
+    call.method === 'PUT' && call.path.endsWith('/contents/' + path)
+  ).length;
+  const repeated = await bridge.publishFilesystemIndex({ content: firstText });
+  assert.equal(repeated.unchanged, true);
+  const putCountAfterRepeat = fake.calls.filter(call =>
+    call.method === 'PUT' && call.path.endsWith('/contents/' + path)
+  ).length;
+  assert.equal(putCountAfterRepeat, putCountAfterFirst, 'unchanged filesystem names must not create another commit');
+
+  const secondText = firstText + '"src/new-file.js"\n';
+  const second = await bridge.publishFilesystemIndex({ content: secondText });
+  assert.equal(second.unchanged, false);
+  const indexPuts = fake.calls.filter(call =>
+    call.method === 'PUT' && call.path.endsWith('/contents/' + path)
+  );
+  assert.equal(indexPuts.length, putCountAfterFirst + 1);
+  assert.equal(typeof indexPuts.at(-1).body.sha, 'string', 'updates must use the current content SHA');
+  assert.equal(Buffer.from(fake.files.get(path).content, 'base64').toString('utf8'), secondText);
+});
+
 test('workspace file upload stores raw bytes and returns a repository locator', async () => {
   const fake = fakeGitHub();
   const fixture = settingsFixture();
