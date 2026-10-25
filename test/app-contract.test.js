@@ -255,5 +255,5 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(!python.includes('api.github.com/repos/hashin9973-ux/qdqwg'));
   assert.equal(main.slice(main.indexOf('app.whenReady().then')).includes('visionService.activate('), false);
   assert.equal(/process\.kill|kill\(\)|shutdown.*Colab/i.test(vision), false);
-});;
+});
 
