@@ -75,7 +75,7 @@ function runPowerShell(root,args){
  return new Promise((resolve,reject)=>{
   const child=spawn(exe,['-NoLogo','-NoProfile','-NonInteractive','-Command',args.command],{cwd:root,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});
   const out=[],err=[];
-  let outBytes=0,errBytes=0,timedOut=false,finished=false,timer=null;
+  let outBytes=0,errBytes=0,timedOut=false,finished=false,timer=null,hardTimer=null;
   function keep(arr,chunk,stream){
    const current=stream==='stdout'?outBytes:errBytes;
    const room=Math.max(0,MAX_OUTPUT-current);
@@ -101,43 +101,53 @@ function runPowerShell(root,args){
    if(finished)return;
    finished=true;
    if(timer)clearTimeout(timer);
+   if(hardTimer)clearTimeout(hardTimer);
    if(error)reject(error);else resolve(value);
   }
+  function resolveTimeout(){
+   const result=formatResult(1,'TIMEOUT');
+   result.timeoutMessage='PowerShell did not exit within '+timeoutMs+' ms. The process tree was asked to terminate; partial stdout/stderr are included.';
+   finish(null,result);
+   try{if(child.stdout)child.stdout.destroy();}catch{}
+   try{if(child.stderr)child.stderr.destroy();}catch{}
+  }
   function terminateProcessTree(){
-   // child.kill() alone may not terminate descendants on Windows. A descendant
-   // may keep inherited pipe handles open, preventing the child's 'close' event.
-   if(Number.isInteger(child.pid)&&child.pid>0){
-    try{
-     const taskkill=process.env.SystemRoot
-      ?path.join(process.env.SystemRoot,'System32','taskkill.exe')
-      :'taskkill.exe';
-     const killer=spawn(taskkill,['/PID',String(child.pid),'/T','/F'],{
-      windowsHide:true,shell:false,stdio:'ignore'
-     });
-     killer.once('error',()=>{});
-     killer.unref();
-    }catch{}
-   }
-   try{child.kill();}catch{}
+   return new Promise(done=>{
+    let settled=false;
+    const settle=()=>{if(settled)return;settled=true;done();};
+    // The kill command itself might hang; bound that wait separately from the
+    // command timeout so every terminal request still gets a result.
+    hardTimer=setTimeout(settle,1500);
+    if(Number.isInteger(child.pid)&&child.pid>0){
+     try{
+      const taskkill=process.env.SystemRoot
+       ?path.join(process.env.SystemRoot,'System32','taskkill.exe')
+       :'taskkill.exe';
+      const killer=spawn(taskkill,['/PID',String(child.pid),'/T','/F'],{
+       windowsHide:true,shell:false,stdio:'ignore'
+      });
+      killer.once('error',settle);
+      killer.once('close',settle);
+     }catch{settle();}
+    }else settle();
+    // Fallback in case taskkill cannot be launched; the tree-kill and timeout
+    // watchdog above still run independently.
+    try{child.kill();}catch{}
+   });
   }
   child.stdout.on('data',chunk=>keep(out,chunk,'stdout'));
   child.stderr.on('data',chunk=>keep(err,chunk,'stderr'));
   child.once('error',error=>finish(new Error('PowerShell failed to start: '+error.message)));
   child.once('close',(code,signal)=>{
    if(finished)return;
+   if(timedOut)return; // timeout handler waits for tree termination or hard deadline
    finish(null,formatResult(code,signal));
   });
-  timer=setTimeout(()=>{
+  timer=setTimeout(async()=>{
    if(finished)return;
    timedOut=true;
-   terminateProcessTree();
-   const result=formatResult(1,'TIMEOUT');
-   result.timeoutMessage='PowerShell did not exit within '+timeoutMs+' ms. The process tree was asked to terminate; partial stdout/stderr are included.';
-   // Resolve the operation at the deadline even if inherited pipe handles keep
-   // Node from receiving 'close'. This guarantees a terminal result is published.
-   finish(null,result);
-   try{if(child.stdout)child.stdout.destroy();}catch{}
-   try{if(child.stderr)child.stderr.destroy();}catch{}
+   await terminateProcessTree();
+   if(!finished)resolveTimeout();
   },timeoutMs);
  });
 }
