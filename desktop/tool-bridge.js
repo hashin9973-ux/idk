@@ -182,8 +182,8 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   apply_patch: 'Returns changed-file count, relative changed paths, and per-file actions.',
   git_status: 'Returns current branch/working-tree status, Git output, exit code, and stderr.',
   git_diff: 'Returns Git diff command, exitCode, stdout/stderr, and whether output was truncated.',
-  shell: 'Returns PowerShell command, working directory, exitCode, timeout state, stdout/stderr, and timeoutMs.',
-  run_tests: 'Returns test command result with exitCode, timeout state, stdout, stderr, and timeoutMs.',
+  shell: 'Returns PowerShell command, working directory, exitCode, timeout state, stdout/stderr, timeoutMs, and explicit stdout_truncated/stderr_truncated flags when output exceeds the capture limit.',
+  run_tests: 'Returns test command result with exitCode, timeout state, stdout, stderr, timeoutMs, and explicit stdout_truncated/stderr_truncated flags when output exceeds the capture limit.',
   file_info: 'Returns relative path, file type, byte size, timestamps, permissions, and SHA-256 for regular files.',
   git_log: 'Returns Git command metadata and commits with SHA, short SHA, author, ISO date, and subject.',
   git_show: 'Returns Git command, exitCode, stdout/stderr, and output-truncation flag.',
@@ -382,7 +382,7 @@ function createToolBridge(deps) {
       const trimmed = { ...value, truncatedForMailbox: true };
       for (const key of ['content', 'stdout', 'stderr', 'text', 'patch', 'diff']) {
         if (typeof trimmed[key] === 'string' && trimmed[key].length > 10000) {
-          trimmed[key] = trimmed[key].slice(0, 10000) + '\n[truncated before returning to the shared repository; narrow the read/search or command output]';
+          trimmed[key] = trimmed[key].slice(0, 10000) + '\n[OUTPUT TRUNCATED before mailbox publication. This is not a safety denial; inspect status/exitCode/stderr. For listings, request smaller stable-sorted pages using Select-Object -Skip/-First.]';
         }
       }
       serialized = JSON.stringify(trimmed);
@@ -390,7 +390,7 @@ function createToolBridge(deps) {
     }
     return {
       truncatedForMailbox: true,
-      message: 'Tool output exceeded the repository return limit. Repeat with a narrower query or file section.',
+      message: 'Tool output exceeded the repository return limit. This is incomplete output, not evidence of a safety block. Retry with smaller stable-sorted pages, a narrower query, or a file section.',
       preview: serialized.slice(0, MAX_RESULT_CHARS - 300)
     };
   }
