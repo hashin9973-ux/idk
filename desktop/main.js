@@ -525,6 +525,14 @@ function createMainWindow() {
     event.preventDefault();
     hideToTray();
   });
+  mainWindow.on('close', event => {
+    if (!finishingQuit) {
+      event.preventDefault();
+      hideToTray();
+      return;
+    }
+    saveWindowBounds();
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
