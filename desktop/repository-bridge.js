@@ -420,7 +420,7 @@ function createRepositoryBridge(deps) {
       const chunks = splitUtf8Text(value, Math.floor(MAX_INLINE_TEXT_BYTES / 2));
       const first = chunks[0] || '';
       const last = chunks.length > 1 ? chunks[chunks.length - 1] : '';
-      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. This is incomplete output, not proof of a safety block. Check exitCode/status/stderr; for listings, retry in stable pages using Sort-Object plus Select-Object -Skip/-First until all entries are retrieved.]\n\n' + last;
+      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. Do not infer a safety block from truncation. Check exitCode/status/stderr; for listings, retry in stable pages using Sort-Object plus Select-Object -Skip/-First until all entries are retrieved.]\n\n' + last;
     }
     if (Array.isArray(value)) {
       const output = [];
