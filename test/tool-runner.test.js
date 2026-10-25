@@ -229,6 +229,8 @@ test('run_tests honors an explicit project-native PowerShell command and timeout
     });
     assert.equal(result.exitCode, 0);
     assert.equal(result.timeoutMs, 5000);
+    assert.equal(result.stdout_truncated, false);
+    assert.equal(result.stderr_truncated, false);
     assert.match(result.stdout, /explicit test command/);
   } finally { cleanup(root); }
 });
