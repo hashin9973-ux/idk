@@ -79,7 +79,7 @@ Use `tool: "batch"` when several local operations can be planned in advance. One
 }
 ```
 
-A reference must point to an earlier step, using `{"$ref":"stepId.result.content"}` to substitute that value into the next step's arguments. Each tool definition exposes its exact parameter schema, limits, defaults, permission behavior, and common result fields. Batch results include each step's ID, tool, status, exit code when available, errors, and actual output even when a command fails. Large outputs are shortened in the same result and marked `partial` rather than requiring a third fetch.
+A reference must point to an earlier step, using `{"$ref":"stepId.result.content"}` to substitute that value into the next step's arguments. Each tool definition exposes its exact parameter schema, limits, defaults, permission behavior, and common result fields. Batch results include each step's ID, tool, status, exit code when available, errors, and actual output even when a command fails. Large outputs are shortened in the same result and marked `partial`; this means incomplete output, not a safety denial. Inspect the actual status and tool error, then automatically paginate large listings instead of claiming the request was blocked.
 
 Use unique IDs containing letters, digits, underscores, or hyphens; the first character must be alphanumeric and the length must be 1–80 characters. Maximum request size is 1 MiB. Requests are immutable after publication.
 
