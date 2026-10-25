@@ -103,8 +103,13 @@ async function waitForPort(service) {
 async function registerColab(service, port, options = {}) {
   const origin = options.origin || ORIGIN;
   const base = 'http://127.0.0.1:' + port;
-  const opened = [...serviceTestCalls.get(service) || []];
-  const openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
+  let opened = [...(serviceTestCalls.get(service) || [])];
+  let openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
+  if (!openedUrl) {
+    await service.connectColab();
+    opened = [...(serviceTestCalls.get(service) || [])];
+    openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
+  }
   if (!openedUrl) throw new Error('The app did not open Colab with a registration nonce.');
   const nonce = new URL(openedUrl).searchParams.get('bridge_registration_nonce');
   return fetch(base + '/vision/register', {
@@ -129,7 +134,7 @@ test('tunnel validation rejects non-HTTPS, non-Cloudflare, and credential-bearin
   assert.equal(safeApiKey('short'), false);
 });
 
-test('Colab can register a direct tunnel via one-time browser handshake; health checks bypass GitHub', async t => {
+test('Colab can register a direct tunnel using the app-generated challenge; health checks bypass GitHub', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
   const port = await waitForPort(f.service);
