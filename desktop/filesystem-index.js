@@ -20,6 +20,23 @@ function isInside(root, target) {
   return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
 }
 
+function isGeneratedIndexPath(candidateInput, outputInput) {
+  if (!candidateInput || !outputInput) return false;
+  const candidate = path.resolve(candidateInput);
+  const output = path.resolve(outputInput);
+  const fold = value => process.platform === 'win32' ? value.toLowerCase() : value;
+  if (fold(candidate) === fold(output)) return true;
+  // The atomic writer's hidden temporary file must not recursively enter the index
+  // when the selected workspace happens to contain the app's user-data directory.
+  const candidateDirectory = fold(path.dirname(candidate));
+  const outputDirectory = fold(path.dirname(output));
+  const candidateName = path.basename(candidate);
+  const outputName = path.basename(output);
+  return candidateDirectory === outputDirectory &&
+    candidateName.startsWith('.' + outputName + '.') &&
+    candidateName.endsWith('.tmp');
+}
+
 function entryType(entry) {
   if (entry.isDirectory()) return 'directory';
   if (entry.isFile()) return 'file';
@@ -52,10 +69,12 @@ async function scanWorkspace(rootInput, options = {}) {
     children.sort((a, b) => a.name.localeCompare(b.name));
     const subdirectories = [];
     for (const child of children) {
+      const absolute = path.join(current.absolute, child.name);
+      if (isGeneratedIndexPath(absolute, options.outputPath)) continue;
       const relative = current.relative ? current.relative + '/' + child.name : child.name;
       const type = entryType(child);
       entries.push({ path: relative, type });
-      if (type === 'directory') subdirectories.push({ absolute: path.join(current.absolute, child.name), relative });
+      if (type === 'directory') subdirectories.push({ absolute, relative });
       if (entries.length >= maxEntries) {
         truncated = true;
         break;
@@ -121,7 +140,7 @@ function renderIndex(entries, options = {}) {
 async function writeAtomic(filePath, content) {
   const target = path.resolve(filePath);
   await fsp.mkdir(path.dirname(target), { recursive: true });
-  const temporary = target + '.' + randomUUID() + '.tmp';
+  const temporary = path.join(path.dirname(target), '.' + path.basename(target) + '.' + randomUUID() + '.tmp');
   try {
     await fsp.writeFile(temporary, content, { encoding: 'utf8', flag: 'wx' });
     await fsp.rename(temporary, target);
@@ -230,6 +249,7 @@ class FilesystemIndexMonitor {
   }
 
   async addSubtree(absolute, relative) {
+    if (isGeneratedIndexPath(absolute, this.outputPath)) return;
     let stat;
     try { stat = await fsp.lstat(absolute); } catch { return; }
     const type = stat.isSymbolicLink() ? 'symlink' : stat.isDirectory() ? 'directory' : stat.isFile() ? 'file' : 'other';
@@ -259,7 +279,8 @@ class FilesystemIndexMonitor {
     try {
       const stat = await fsp.lstat(absoluteParent);
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Parent is not a real directory inside the workspace.');
-      children = await fsp.readdir(absoluteParent, { withFileTypes: true });
+      children = (await fsp.readdir(absoluteParent, { withFileTypes: true }))
+        .filter(item => !isGeneratedIndexPath(path.join(absoluteParent, item.name), this.outputPath));
     } catch {
       this.fullRebuildRequested = true;
       return;
@@ -449,6 +470,7 @@ async function writeAtomicIfConfigured(filePath, content) {
 module.exports = {
   DEFAULT_MAX_ENTRIES,
   DEFAULT_MAX_BYTES,
+  isGeneratedIndexPath,
   scanWorkspace,
   renderIndex,
   FilesystemIndexMonitor
