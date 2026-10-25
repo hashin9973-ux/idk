@@ -105,3 +105,6 @@ Automated tests and a successful installer build are necessary but not substitut
 7. Test recoverable statuses by intentionally disconnecting Colab and verify that the app says disconnected, not report-available. Restore the runtime and re-run the worker cell.
 
 These manual integration checks require a real Google account, a permitted Colab runtime/GPU and a repository-scoped token. Unit tests use a fake mailbox/API and are not a live Colab test.
+
+
+Vision privacy note: the screenshot is committed to `qdqwg` as a temporary artifact. The worker attempts to delete its current branch path after processing, but that deletion does not erase older Git commits. Only use vision when repository access and retained history are acceptable.
