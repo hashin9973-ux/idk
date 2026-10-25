@@ -3,6 +3,7 @@
 
   const byId = id => document.getElementById(id);
   const githubRow = byId('github-row');
+  const githubButton = byId('github-signin');
   const githubDot = byId('github-dot');
   const githubLabel = byId('github-status');
   const workerDot = byId('worker-dot');
@@ -30,27 +31,31 @@
 
   function renderGitHub(state) {
     githubState = state || {};
+    githubButton.disabled = authBusy;
     if (githubState.authenticated) {
-      githubLabel.textContent = 'GitHub connected · click to reconnect';
-      githubLabel.title = (githubState.login ? 'Connected as @' + githubState.login + '. ' : 'Connected to GitHub. ') + 'Click to sign in again or switch accounts.';
+      githubLabel.textContent = 'GitHub connected';
+      githubLabel.title = githubState.login ? 'Connected as @' + githubState.login : 'Connected to GitHub';
+      githubButton.textContent = 'Sign in again';
+      githubButton.title = 'Sign in again or switch GitHub accounts';
       setDot(githubDot, 'online');
-      githubRow.disabled = false;
       return;
     }
 
     if (authBusy) {
       githubLabel.textContent = 'GitHub waiting for approval';
       githubLabel.title = loginCode ? 'Enter the device code ' + loginCode + ' in the browser' : 'Approve the GitHub request in your browser';
+      githubButton.textContent = 'Waiting…';
+      githubButton.title = 'Finish GitHub authorization in your browser';
       setDot(githubDot, 'waiting');
-      githubRow.disabled = true;
       return;
     }
 
-    const networkUnavailable = /network|offline|fetch failed|enotfound|econn|timed out|unable to connect/i.test(String(githubState.error || ''));
+    const networkUnavailable = /network|offline|fetch failed|failed to fetch|enotfound|eai_again|econn|timed out|unable to connect|socket|dns/i.test(String(githubState.error || ''));
     githubLabel.textContent = networkUnavailable ? 'GitHub unavailable' : 'GitHub not connected';
-    githubLabel.title = githubState.error || 'Click to connect this app to GitHub';
+    githubLabel.title = githubState.error || 'Sign in to connect this app to GitHub';
+    githubButton.textContent = 'Sign in to GitHub';
+    githubButton.title = 'Start GitHub sign-in; this button stays available while offline';
     setDot(githubDot, networkUnavailable ? 'error' : 'waiting');
-    githubRow.disabled = false;
   }
 
   function renderWorker(state) {
@@ -179,36 +184,46 @@
 
   async function connectGitHub() {
     if (authBusy) return;
+    authBusy = true;
+    renderGitHub(githubState || { authenticated: false });
     try {
       const existing = await window.windowsBridge.getGitHubState();
-      if (existing.authenticated) {
-        renderGitHub(existing);
-        return;
-      }
       const flow = existing.authenticated
         ? await window.windowsBridge.reconnectGitHub()
         : await window.windowsBridge.startGitHubLogin();
-      if (flow.cancelled) return;
-      if (flow.status === 'authenticated') {
+      if (flow && flow.cancelled) {
+        stopAuthPolling();
+        renderGitHub(existing);
+        return;
+      }
+      if (flow && flow.status === 'authenticated') {
+        stopAuthPolling();
         await refreshState();
         return;
       }
-      authBusy = true;
-      loginCode = flow.userCode || '';
+      loginCode = flow && flow.userCode || '';
       renderGitHub({ authenticated: false });
-      scheduleAuthPoll(flow.intervalSeconds || 3);
+      scheduleAuthPoll(flow && flow.intervalSeconds || 3);
     } catch (error) {
       stopAuthPolling();
       renderGitHub({ authenticated: false, error: String(error && error.message || error) });
+      githubLabel.title = String(error && error.message || error);
     }
   }
 
-  githubRow.addEventListener('click', connectGitHub);
+  githubButton.addEventListener('click', connectGitHub);
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
   window.windowsBridge.onBridgeState(renderWorker);
+  window.addEventListener('online', () => {
+    window.windowsBridge.retryConnection().catch(() => {});
+    void refreshState();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) window.windowsBridge.retryConnection().catch(() => {});
+  });
   window.addEventListener('beforeunload', stopAuthPolling);
 
   refreshState();
