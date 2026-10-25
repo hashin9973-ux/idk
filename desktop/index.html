@@ -12,10 +12,11 @@
     <button id="minimize" class="window-control minimize-control" type="button" title="Minimize to system tray" aria-label="Minimize to system tray">−</button>
     <button id="quit" class="window-control quit-control" type="button" title="Quit application" aria-label="Quit application">×</button>
 
-    <button id="github-row" class="status-row" type="button" aria-label="Sign in to GitHub or reconnect the current account" title="Click to sign in or reconnect GitHub">
+    <div id="github-row" class="status-row github-status-row" role="group" aria-label="GitHub connection status">
       <span id="github-dot" class="status-dot waiting" aria-hidden="true"></span>
       <span id="github-status" class="status-label">GitHub checking…</span>
-    </button>
+      <button id="github-signin" class="status-action" type="button" aria-label="Sign in to GitHub">Sign in to GitHub</button>
+    </div>
 
     <div class="status-row worker-row" role="status" aria-live="polite">
       <span id="worker-dot" class="status-dot waiting" aria-hidden="true"></span>
