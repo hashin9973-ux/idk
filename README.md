@@ -27,7 +27,7 @@ The ChatGPT GitHub integration and the app's GitHub authorization are separate. 
 
 - **Repository:** `hashin9973-ux/qdqwg` (private)
 - **Mailbox branch:** `bridge-mailbox`
-- **Default polling interval:** 15 seconds
+- **Default polling interval:** 2 seconds (faster result pickup; GitHub still transports requests/results asynchronously)
 
 Use the same repository and branch in the app dashboard and in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
 
