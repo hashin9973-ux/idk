@@ -25,7 +25,7 @@ const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
-const STATUS_SIZE = { width: 318, height: 131 };
+const STATUS_SIZE = { width: 318, height: 164 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 10000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
@@ -456,7 +456,14 @@ function assertLocalUi(event, filename) {
 
 function getUiState() {
   return {
-    bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false })
+    bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false }),
+    // This state is returned only to the local desktop UI. Absolute local paths
+    // are not added to the GitHub mailbox context or shared worker state.
+    workspace: {
+      root: getWorkspaceRoot(),
+      index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
+      syncError: filesystemIndexSyncError || ''
+    }
   };
 }
 
@@ -464,6 +471,11 @@ function registerIpc() {
   ipcMain.handle('app:get-state', event => {
     assertLocalUi(event, 'index.html');
     return getUiState();
+  });
+  ipcMain.handle('app:select-workspace', async event => {
+    assertLocalUi(event, 'index.html');
+    const result = await selectWorkspace();
+    return { ...result, workspace: getUiState().workspace };
   });
   ipcMain.handle('app:set-auto-accept-all', async (event, enabled) => {
     assertLocalUi(event, 'index.html');
