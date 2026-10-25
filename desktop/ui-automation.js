@@ -140,7 +140,7 @@ try {
 function validateArgs(action, args) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw new TypeError('Windows UI automation arguments must be an object.');
   const hasWindow = Boolean(args.windowTitle || args.processName || Number.isInteger(args.processId) || Number.isInteger(args.windowHandle));
-  if (['inspect_window', 'invoke_control', 'set_value', 'send_keys'].includes(action) && !hasWindow) throw new Error('Specify windowTitle, processName, processId, or windowHandle.');
+  if (['inspect_window', 'invoke_control', 'set_value', 'send_keys', 'wait_for_window'].includes(action) && !hasWindow) throw new Error('Specify windowTitle, processName, processId, or windowHandle.');
   if (['invoke_control', 'set_value'].includes(action) && !(args.controlName || args.automationId || args.controlType)) throw new Error('Specify controlName, automationId, or controlType.');
   if (action === 'send_keys' && !(typeof args.keys === 'string' && args.keys.length > 0)) throw new Error('keys must be a non-empty SendKeys expression.');
   if (action === 'set_value' && typeof args.value !== 'string') throw new Error('value must be a string.');
@@ -170,7 +170,7 @@ function runWindowsUiAutomation(action, args = {}) {
   };
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
   if (encoded.length > MAX_ARGUMENTS) return Promise.reject(new Error('Windows UI automation arguments exceed the supported size.'));
-  const command = '$A = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(\'' + encoded + '\')) | ConvertFrom-Json\n' + SCRIPT;
+  const command = "$A = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + encoded + "')) | ConvertFrom-Json\n" + SCRIPT;
   const exe = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe';
   const timeoutMs = payload.timeoutMs + 5000;
   return new Promise((resolve, reject) => {
