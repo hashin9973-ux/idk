@@ -31,8 +31,8 @@
   function renderGitHub(state) {
     githubState = state || {};
     if (githubState.authenticated) {
-      githubLabel.textContent = 'GitHub connected';
-      githubLabel.title = githubState.login ? 'Connected as @' + githubState.login : 'Connected to GitHub';
+      githubLabel.textContent = 'GitHub connected · click to reconnect';
+      githubLabel.title = (githubState.login ? 'Connected as @' + githubState.login + '. ' : 'Connected to GitHub. ') + 'Click to sign in again or switch accounts.';
       setDot(githubDot, 'online');
       githubRow.disabled = false;
       return;
@@ -185,7 +185,10 @@
         renderGitHub(existing);
         return;
       }
-      const flow = await window.windowsBridge.startGitHubLogin();
+      const flow = existing.authenticated
+        ? await window.windowsBridge.reconnectGitHub()
+        : await window.windowsBridge.startGitHubLogin();
+      if (flow.cancelled) return;
       if (flow.status === 'authenticated') {
         await refreshState();
         return;
