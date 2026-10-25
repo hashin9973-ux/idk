@@ -422,6 +422,7 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.equal(result.result.project_commands.scripts.test, 'node --test');
     assert.ok(Array.isArray(result.result.directory_overview.paths));
     assert.equal(result.result.directory_overview.format, 'paths');
+    assert.equal(result.result.execution_policy.auto_accept_all, false);
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
     assert.ok(Array.isArray(result.result.instruction_files));
