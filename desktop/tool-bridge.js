@@ -428,9 +428,13 @@ function createToolBridge(deps) {
           parameters: parameterSchema(item.name),
           ...(TOOL_RESULT_SUMMARIES[item.name] ? { returns: TOOL_RESULT_SUMMARIES[item.name] } : {}),
           permission_note: item.name === 'batch'
-            ? 'The batch call itself is not approval; each contained operation is checked separately and protected steps show their own native Windows dialog.'
+            ? (typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
+            ? 'Auto-accept everything is enabled; protected steps run without per-operation approval dialogs.'
+            : 'The batch call itself is not approval; protected steps show their own native Windows dialog.')
             : item.mode === 'approval' || item.mode === 'approval-required' || item.mode === 'read-or-approval-for-secret-like-paths'
-              ? 'This call may display a native Windows approval dialog before execution.'
+              ? (typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
+                ? 'Auto-accept everything is enabled; this protected call runs without a per-operation dialog.'
+                : 'This call may display a native Windows approval dialog before execution.')
               : item.mode === 'automatic-workspace-write'
                 ? 'Normally runs automatically for workspace-relative paths; secret-like paths still require native Windows approval.'
                 : 'No approval dialog is normally required; the app still validates paths and arguments.'
@@ -565,6 +569,12 @@ function createToolBridge(deps) {
       project,
       project_commands: projectCommands,
       suggested_commands: suggestedCommands,
+      execution_policy: {
+        auto_accept_all: typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true,
+        note: typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
+          ? 'The user explicitly enabled app-wide auto-accept. Do not try to override or infer approval for anything outside the registered tool/policy boundary.'
+          : 'Auto-accept is disabled; protected operations may require native approval.'
+      },
       directory_overview: tree,
       instruction_files: instructionFiles,
       tool_catalog: {
