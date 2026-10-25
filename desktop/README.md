@@ -14,6 +14,10 @@ The installer bundles GitHub CLI v2.103.2 and verifies the archive SHA-256 befor
 
 ChatGPT does not need a separate login inside this worker. **Sign in to ChatGPT** opens `https://chatgpt.com/auth/login/` in the default browser. This app does not access ChatGPT cookies or credentials and does not inject results into ChatGPT messages.
 
+## Diagnose a failed request
+
+Use the request ID to inspect `bridge/requests/<request-id>.json`, `bridge/claims/<request-id>.json`, and `bridge/results/<request-id>.json` on the configured mailbox branch. A request file means ChatGPT/its GitHub integration committed the request; a matching claim means the local worker claimed it; the result records validation, execution, and any tool error. If no request file exists, the Windows worker never received that request through this mailbox, so investigate the upstream request creation or ChatGPT/GitHub integration rather than describing it as a local execution block.
+
 ## Trust boundaries
 
 - The worker checks the mailbox every 2 seconds by default to minimize request/result latency. GitHub remains asynchronous, so a slow command or an unapproved operation may still take longer.
