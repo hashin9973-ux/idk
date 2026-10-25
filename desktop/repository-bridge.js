@@ -598,6 +598,7 @@ function createRepositoryBridge(deps) {
         instruction_files: Array.isArray(instructionData.instructions) ? instructionData.instructions.map(item => ({ ...item, contents_included: false })) : [],
         tool_catalog: {
           protocol: capabilityData.protocol || null,
+          catalog_version: capabilityData.catalog_version || 1,
           tools: Array.isArray(capabilityData.tools) ? capabilityData.tools : [],
           tool_calling: capabilityData.tool_calling || null
         },
