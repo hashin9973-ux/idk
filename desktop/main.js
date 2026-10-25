@@ -287,8 +287,7 @@ function toggleOverlay() {
 
 function createTray() {
   if (tray) return;
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#14252b" stroke="#65dfc5" stroke-width="2"/><path d="M8 12h16M8 20h16" stroke="#65dfc5" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="16" r="3" fill="#65dfc5"/></svg>';
-  const icon = nativeImage.createFromDataURL('data:image/svg+xml;base64,' + Buffer.from(svg, 'utf8').toString('base64'));
+  const icon = nativeImage.createFromBuffer(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAlklEQVR42mNgGAUkgtT7R//jw3SzWERVGwXTzCH4LMWFqeYQUi3G5ZABsZwiR1DLcrIcQW3LSXYELSxHdgTZvieU/wllU6JCAZ/vqeEAvKFAjEZqOQCrIygpbMjRR1HiI9XXREXDqAMGhQMGPBEOaDYc8IJoUBTFA14ZDYrqeMAbJIOiSTYoGqWDolk+KDomg6ZrNmwBAI2DwEFWr0GLAAAAAElFTkSuQmCC', 'base64'));
   tray = new Tray(icon.resize({ width: 16, height: 16 }));
   tray.setToolTip('Windows Repository Bridge');
   tray.setContextMenu(Menu.buildFromTemplate([
