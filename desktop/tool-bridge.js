@@ -382,7 +382,7 @@ function createToolBridge(deps) {
       const trimmed = { ...value, truncatedForMailbox: true };
       for (const key of ['content', 'stdout', 'stderr', 'text', 'patch', 'diff']) {
         if (typeof trimmed[key] === 'string' && trimmed[key].length > 10000) {
-          trimmed[key] = trimmed[key].slice(0, 10000) + '\n[truncated before returning to the shared repository; narrow the read/search or command output]';
+          trimmed[key] = trimmed[key].slice(0, 10000) + '\n[OUTPUT TRUNCATED before mailbox publication. This is not a safety denial; inspect status/exitCode/stderr. For listings, request smaller stable-sorted pages using Select-Object -Skip/-First.]';
         }
       }
       serialized = JSON.stringify(trimmed);
@@ -390,7 +390,7 @@ function createToolBridge(deps) {
     }
     return {
       truncatedForMailbox: true,
-      message: 'Tool output exceeded the repository return limit. Repeat with a narrower query or file section.',
+      message: 'Tool output exceeded the repository return limit. This is incomplete output, not evidence of a safety block. Retry with smaller stable-sorted pages, a narrower query, or a file section.',
       preview: serialized.slice(0, MAX_RESULT_CHARS - 300)
     };
   }
