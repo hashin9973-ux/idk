@@ -50,42 +50,42 @@ const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clon
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
 const TOOL_DESCRIPTIONS = Object.freeze({
-  get_capabilities: 'Return the local tool catalog, parameter schemas, permission modes and workspace capabilities.',
-  get_agent_context: 'Return one compact snapshot of the selected Windows workspace, project, instructions, directory overview and callable tool catalog.',
-  project_status: 'Summarize project type, repository status and top-level files.',
-  environment_info: 'Describe the Windows runtime, shell and relevant development environment.',
-  list_dir: 'List entries in a workspace-relative directory.',
-  directory_tree: 'Return a bounded directory tree for the selected workspace.',
-  glob_file_search: 'Find workspace files by glob pattern.',
-  read_file: 'Read a UTF-8 text file or a bounded line range.',
-  file_info: 'Return metadata and hashes for a workspace file.',
-  search: 'Search workspace text files for a literal string or regular expression.',
-  git_status: 'Return the current Git branch and working-tree status.',
-  git_diff: 'Return a Git diff, optionally restricted to relative paths.',
-  git_log: 'Inspect recent Git history.',
-  git_show: 'Inspect a Git commit or object.',
-  git_branches: 'List local Git branches.',
-  git_changed_files: 'List changed workspace files.',
-  discover_instructions: 'Find applicable project instruction files without assuming their contents.',
-  init: 'Create a starter AGENTS.md if none exists; requires approval.',
-  write_file: 'Create or replace a UTF-8 file inside the selected workspace.',
-  apply_patch: 'Apply a focused patch to workspace files.',
-  create_directory: 'Create a workspace-relative directory.',
-  move_path: 'Move or rename a workspace-relative path.',
-  delete_path: 'Delete a workspace-relative file or directory.',
-  git_create_branch: 'Create a Git branch; requires approval.',
-  git_switch_branch: 'Switch Git branches; requires approval.',
-  git_commit: 'Create a Git commit; requires approval.',
-  git_fetch: 'Fetch a Git remote using the app GitHub credential; requires approval.',
-  git_pull: 'Pull from a Git remote using the app GitHub credential; requires approval.',
-  git_push: 'Push to a Git remote using the app GitHub credential; requires approval.',
-  git_clone: 'Clone a repository into the selected workspace; requires approval.',
-  shell: 'Run a PowerShell command as the signed-in Windows user; requires approval and is not sandboxed.',
-  run_tests: 'Run a project-native test command; requires approval.',
-  update_plan: 'Maintain a short local task plan.',
-  upload_workspace_file: 'Publish an explicitly approved workspace file as a retrievable repository artifact.',
-  refresh_environment_context: 'Refresh the shared compact environment context and detailed snapshots.',
-  batch: 'Execute 1–20 local tool calls sequentially in one mailbox request. Supports references to earlier step results.'
+  get_capabilities: 'List every callable local tool with exact arguments, constraints, permission mode, and result summary. This catalog is stable for the running app build.',
+  get_agent_context: 'Return one compact snapshot of the selected Windows workspace, runtime, Git state, project commands, instruction-file locations, directory overview, and callable tool catalog. Full source and instruction contents stay on demand.',
+  project_status: 'Summarize detected project technologies, whether the selected workspace is a Git repository, current branch/status, and top-level entries.',
+  environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
+  list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
+  directory_tree: 'Return a bounded workspace-relative tree. Common generated/dependency directories and symlinks are skipped.',
+  glob_file_search: 'Find workspace files using a glob such as **/*.js. Skips common generated/dependency directories.',
+  read_file: 'Read UTF-8 text from a workspace-relative file. Use startLine/endLine for a 1-based inclusive range of at most 5,000 lines. Secret-like paths require local approval.',
+  file_info: 'Return type, byte size, timestamps, permissions, and a SHA-256 digest for regular files.',
+  search: 'Search workspace text files for a literal string by default or a regular expression when regex=true. Secret-like files and binary/oversized files are skipped.',
+  git_status: 'Return current branch and working-tree status without changing the repository.',
+  git_diff: 'Return the current diff; optionally restrict to relative paths, staged changes, or 0–20 context lines.',
+  git_log: 'Read recent Git commits, optionally limited to a workspace-relative file path.',
+  git_show: 'Show a Git revision (default HEAD), optionally restricted to workspace-relative paths.',
+  git_branches: 'List local branches and identify the current branch.',
+  git_changed_files: 'List tracked and untracked changes from Git status.',
+  discover_instructions: 'Find applicable AGENTS.md files at the workspace root and in ancestor directories for supplied relative paths. Returns instruction contents; read only relevant instruction files.',
+  init: 'Create a starter AGENTS.md at the workspace root if none exists. Requires local approval.',
+  write_file: 'Create or replace a UTF-8 text file inside the selected workspace. Parent directory must exist; secret-like paths require local approval.',
+  apply_patch: 'Apply a focused patch using Begin Patch/Add File/Update File/Delete File sections. Requires matching current context; secret-like paths require local approval.',
+  create_directory: 'Create a workspace-relative directory; recursive creation is on by default.',
+  move_path: 'Move or rename a workspace-relative file or directory.',
+  delete_path: 'Delete a workspace-relative file or directory; deletion is limited to the selected workspace.',
+  git_create_branch: 'Create a local branch. Requires local approval.',
+  git_switch_branch: 'Switch to an existing local branch. Requires local approval and may be blocked by a dirty working tree.',
+  git_commit: 'Commit already-staged changes, or stage only the supplied paths and then commit. Requires local approval.',
+  git_fetch: 'Fetch a remote using the app GitHub credential; defaults to origin. Requires local approval.',
+  git_pull: 'Pull from a remote using the app GitHub credential; defaults to origin. Requires local approval.',
+  git_push: 'Push to a remote using the app GitHub credential; defaults to origin. Requires local approval.',
+  git_clone: 'Clone a repository into a relative destination inside the selected workspace. Requires local approval.',
+  shell: 'Run PowerShell as the signed-in Windows user from the selected workspace. Requires local approval; it is not OS-sandboxed and can access paths outside the workspace.',
+  run_tests: 'Run the detected project-native test command, or run the supplied PowerShell command. Requires local approval.',
+  update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
+  upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
+  refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
+  batch: 'Execute 1–20 local tool calls sequentially inside one mailbox request. Each step gets its own result and its own required local approval. Stop on first failure by default. Use {"$ref":"stepId.result.content"} to pass an earlier step output into a later argument.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
@@ -94,35 +94,103 @@ const REQUIRED_ARGUMENTS = Object.freeze({
   git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
   upload_workspace_file: ['path'], batch: ['steps']
 });
-const STRING_ARGUMENTS = new Set(['path','pattern','query','ref','message','content','patch','name','source','destination','remote','branch','repository','artifactName','command']);
-const INTEGER_ARGUMENTS = new Set(['maxDepth','maxEntries','startLine','endLine','maxResults','contextLines','maxCount','timeoutMs']);
-const BOOLEAN_ARGUMENTS = new Set(['recursive','staged','regex','caseSensitive','stopOnError']);
-const ARRAY_ARGUMENTS = new Set(['paths','items','steps']);
-function argumentType(tool, name) {
-  if (name === 'args' || name === 'body' || (name === 'query' && tool === 'github_api')) return 'object';
-  if (ARRAY_ARGUMENTS.has(name)) return 'array';
-  if (INTEGER_ARGUMENTS.has(name)) return 'integer';
-  if (BOOLEAN_ARGUMENTS.has(name)) return 'boolean';
-  if (STRING_ARGUMENTS.has(name)) return 'string';
-  return 'object';
-}
+const BASE_FIELD_SCHEMAS = Object.freeze({
+  path: { type: 'string', description: 'Path relative to the selected workspace. Use forward slashes; absolute paths, parent traversal (..), and symlink escapes are rejected.' },
+  pattern: { type: 'string', description: 'Glob pattern relative to the workspace, for example **/*.js.', maxLength: 300, default: '**/*' },
+  query: { type: 'string', description: 'Non-empty text to search for; interpreted literally unless regex=true.', minLength: 1, maxLength: 500 },
+  ref: { type: 'string', description: 'Simple Git revision such as HEAD, a branch name, or a commit hash. Complex revision expressions and option-like values are rejected.', maxLength: 120, default: 'HEAD' },
+  message: { type: 'string', description: 'Commit message.', minLength: 1, maxLength: 500 },
+  content: { type: 'string', description: 'Complete UTF-8 file contents. Maximum 1 MiB; replaces the target file when it exists.', maxLength: 1048576 },
+  patch: { type: 'string', description: 'Focused patch beginning with *** Begin Patch and ending with *** End Patch. Maximum 2 MiB.', maxLength: 2097152 },
+  name: { type: 'string', description: 'Local Git branch name; must pass git check-ref-format.', minLength: 1, maxLength: 100 },
+  source: { type: 'string', description: 'Existing workspace-relative path to move.' },
+  destination: { type: 'string', description: 'Workspace-relative destination path that must not already exist.' },
+  remote: { type: 'string', description: 'Configured Git remote name. Defaults to origin.', default: 'origin' },
+  branch: { type: 'string', description: 'Optional branch/ref for the remote operation; omitted to use the remote/default behavior.' },
+  repository: { type: 'string', description: 'Repository URL or owner/name accepted by git clone.' },
+  artifactName: { type: 'string', description: 'Optional output filename for the explicitly shared artifact. Path separators are replaced.', maxLength: 120 },
+  command: { type: 'string', description: 'PowerShell command to execute from the workspace. Arbitrary commands run with the signed-in user permissions and require local approval.', minLength: 1, maxLength: 20000 },
+  maxDepth: { type: 'integer', description: 'Maximum directory depth (1–12). Defaults to 4.', minimum: 1, maximum: 12, default: 4 },
+  maxEntries: { type: 'integer', description: 'Maximum tree entries (1–2,000). Defaults to 500.', minimum: 1, maximum: 2000, default: 500 },
+  startLine: { type: 'integer', description: 'First line to return, 1-based and inclusive. Defaults to line 1.', minimum: 1 },
+  endLine: { type: 'integer', description: 'Last line to return, 1-based and inclusive. At most 5,000 lines can be read in one call.' , minimum: 1 },
+  maxResults: { type: 'integer', description: 'Maximum matching lines to return (1–150). Defaults to 100.', minimum: 1, maximum: 150, default: 100 },
+  contextLines: { type: 'integer', description: 'Number of diff context lines (0–20).', minimum: 0, maximum: 20, default: 3 },
+  maxCount: { type: 'integer', description: 'Maximum Git log entries (1–100). Defaults to 20.', minimum: 1, maximum: 100, default: 20 },
+  timeoutMs: { type: 'integer', description: 'Operation timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 },
+  recursive: { type: 'boolean', description: 'Recursively create a directory and its parents. Defaults to true.', default: true },
+  staged: { type: 'boolean', description: 'When true, show the staged diff instead of the unstaged diff.', default: false },
+  regex: { type: 'boolean', description: 'Interpret query as a regular expression. Defaults to false.', default: false },
+  caseSensitive: { type: 'boolean', description: 'Use case-sensitive matching. Defaults to false.', default: false },
+  stopOnError: { type: 'boolean', description: 'Stop a batch after the first failed/cancelled step. Defaults to true.', default: true },
+  paths: { type: 'array', description: 'Optional list of workspace-relative paths. When set, limits the operation to those paths.', items: { type: 'string' }, maxItems: 100 },
+  items: { type: 'array', description: 'Plan steps as strings or objects containing step and optional status.', maxItems: 30, items: { anyOf: [
+    { type: 'string', maxLength: 1000 },
+    { type: 'object', properties: { step: { type: 'string', maxLength: 1000 }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['step'], additionalProperties: false }
+  ] } },
+  steps: { type: 'array', description: 'Ordered local tool calls. Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 20 },
+});
+const TOOL_PARAMETER_OVERRIDES = Object.freeze({
+  list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).' } },
+  directory_tree: {
+    path: { description: 'Subdirectory to walk, relative to the selected workspace. Defaults to . (workspace root).' },
+    maxDepth: { default: 4 },
+    maxEntries: { default: 500 }
+  },
+  glob_file_search: { pattern: { default: '**/*', description: 'Glob pattern, for example **/*.js or src/**/*.ts. Maximum 300 characters.' } },
+  git_diff: { contextLines: { default: 3 } },
+  create_directory: { recursive: { default: true } },
+  git_log: { path: { description: 'Optional workspace-relative path to limit the history.' } },
+  git_show: { ref: { default: 'HEAD' } },
+  git_commit: { paths: { description: 'Optional paths to stage before committing. If omitted, only changes already staged are committed.', items: { type: 'string' }, minItems: 1, maxItems: 100 } },
+  discover_instructions: { paths: { description: 'Optional relative files/directories whose ancestor AGENTS.md files should be found. Maximum 50 paths.', items: { type: 'string' }, maxItems: 50 } },
+  run_tests: { command: { description: 'Optional override PowerShell command. If omitted, detect and run the project-native test command. Requires local approval.', minLength: 1, maxLength: 20000 } },
+  batch: {
+    steps: {
+      description: '1–20 ordered calls. Reference earlier results by placing {"$ref":"stepId.result.content"} as an argument value. Each step has its own local permission check.',
+      minItems: 1, maxItems: 20,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Unique step ID used by result references.', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$' },
+          tool: { type: 'string', description: 'Callable local tool for this step.', enum: Object.keys(TOOL_ARGUMENT_KEYS).filter(name => name !== 'batch' && name !== 'refresh_environment_context' && !BLOCKED_TOOLS_FOR_MAILBOX.has(name)) },
+          args: { type: 'object', description: 'Arguments matching the named tool schema. A value can be {"$ref":"earlierStep.result.someField"} to insert that prior result.', additionalProperties: true }
+        },
+        required: ['id', 'tool', 'args'],
+        additionalProperties: false
+      }
+    }
+  }
+});
+const TOOL_RESULT_SUMMARIES = Object.freeze({
+  read_file: 'Returns path, full-file bytes/hash/line count, selected start/end lines, and content.',
+  search: 'Returns query, filesScanned, count, truncation flag, and matches with path, line, column, and text.',
+  shell: 'Returns command, cwd, exitCode, timeout state, stdout, stderr, and timeoutMs.',
+  run_tests: 'Returns command result with exitCode, timeout state, stdout, and stderr.',
+  apply_patch: 'Returns changed-file count, relative changed paths, and per-file actions.',
+  write_file: 'Returns relative path, byte count, and before/after SHA-256 hashes.',
+  git_status: 'Returns branch/working-tree status and Git exit information.',
+  git_diff: 'Returns command, exitCode, stdout/stderr, and whether output was truncated.',
+  batch: 'Returns ordered steps with IDs, tool names, statuses, errors/cancellation details, exit codes, and actual results even for failed commands.',
+  get_agent_context: 'Returns a compact environment/project snapshot, project scripts, instruction file metadata, bounded tree and complete tool catalog.'
+});
 function parameterSchema(tool) {
   const names = (TOOL_ARGUMENT_KEYS[tool] || []).filter(name => name !== 'approved');
+  const overrides = TOOL_PARAMETER_OVERRIDES[tool] || {};
   const properties = {};
   for (const name of names) {
-    const type = argumentType(tool, name);
-    properties[name] = { type, description: name + ' parameter for ' + tool + '.' };
-    if (type === 'array') properties[name].items = name === 'steps' ? { type: 'object' } : { type: 'string' };
+    const base = BASE_FIELD_SCHEMAS[name] || { type: 'string', description: 'Argument ' + name + ' for ' + tool + '.' };
+    const override = overrides[name] || {};
+    properties[name] = { ...base, ...override };
+    if (tool === 'git_fetch' || tool === 'git_pull' || tool === 'git_push' || tool === 'git_clone') {
+      if (name === 'timeoutMs' && !override.default) properties[name] = { ...properties[name], default: 60000 };
+    }
   }
   if (tool === 'batch') {
-    properties.steps = { type: 'array', minItems: 1, maxItems: 20, description: 'Ordered tool steps. Use {"$ref":"stepId.result.content"} to insert an earlier step output into an argument.', items: {
-      type: 'object', properties: { id: { type: 'string' }, tool: { type: 'string' }, args: { type: 'object', additionalProperties: true } },
-      required: ['id','tool','args'], additionalProperties: false
-    }};
+    properties.steps = { ...BASE_FIELD_SCHEMAS.steps, ...overrides.steps };
   }
   return { type: 'object', properties, required: REQUIRED_ARGUMENTS[tool] || [], additionalProperties: false };
 }
-
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value) &&
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
@@ -321,7 +389,11 @@ function createToolBridge(deps) {
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
           ...item,
           description: TOOL_DESCRIPTIONS[item.name] || ('Run the ' + item.name + ' workspace tool.'),
-          parameters: parameterSchema(item.name)
+          parameters: parameterSchema(item.name),
+          ...(TOOL_RESULT_SUMMARIES[item.name] ? { returns: TOOL_RESULT_SUMMARIES[item.name] } : {}),
+          permission_note: item.mode === 'approval' || item.mode === 'approval-required' || item.mode === 'read-or-approval-for-secret-like-paths'
+            ? 'This call may display a native Windows approval dialog before execution.'
+            : 'No approval dialog is normally required; the app still validates paths and arguments.'
         }));
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
