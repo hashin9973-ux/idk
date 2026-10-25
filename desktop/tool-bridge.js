@@ -488,7 +488,7 @@ function createToolBridge(deps) {
     if (tool === 'vision_analyze_screenshot') {
       const source = args.source === 'workspace_file' ? 'workspace file: ' + displayApprovalValue(args.path || '(missing path)', 1200) : 'current primary display';
       return header + resultWarning + 'Capture and upload one screenshot for vision inference. Source: ' + source +
-        '\nThe screenshot may contain private desktop content. A compressed JPEG (maximum 600 KiB) is temporarily committed to the configured mailbox. Deleting the file later does not erase it from the repository's earlier commits. Only proceed if repository access and history retention are acceptable.';
+        '\nThe screenshot may contain private desktop content. A compressed JPEG (maximum 600 KiB) is temporarily committed to the configured mailbox. Deleting the file later does not erase it from the earlier Git commits. Only proceed if repository access and history retention are acceptable.';
     }
     if (GITHUB_GIT_TOOLS.has(tool)) {
       const repository = tool === 'git_clone' ? String(args.repository || '(missing repository)') : String(args.remote || 'origin');
