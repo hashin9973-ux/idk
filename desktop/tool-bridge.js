@@ -556,7 +556,7 @@ function createToolBridge(deps) {
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
           catalog_version: 1,
-          rule: 'Submit multiple steps in one batch request; each step is independently validated and approval-gated.',
+          rule: 'Submit multiple steps in one request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and unknown-side-effect operations preserve request order. $ref arguments wait for their source step.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
       }
