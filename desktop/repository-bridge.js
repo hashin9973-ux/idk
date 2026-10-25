@@ -736,7 +736,9 @@ function createRepositoryBridge(deps) {
           'Batch known operations into one request; every step returns its own status and output.',
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
-          'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.'
+          'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.',
+          'After creating a request, wait for bridge/results/<same-request-id>.json before treating it as finished or starting dependent work. A request or processing claim is not a result; if the result is missing, inspect windows-app state and the matching claim, then poll again rather than creating duplicates.',
+          'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, and stderr. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.'
         ]
       },
       files

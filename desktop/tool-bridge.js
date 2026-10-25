@@ -80,8 +80,8 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   git_pull: 'Pull from a remote using the app GitHub credential; defaults to origin. Requires local approval.',
   git_push: 'Push to a remote using the app GitHub credential; defaults to origin. Requires local approval.',
   git_clone: 'Clone a repository into a relative destination inside the selected workspace. Requires local approval.',
-  shell: 'Run PowerShell as the signed-in Windows user from the selected workspace. Requires local approval; it is not OS-sandboxed and can access paths outside the workspace.',
-  run_tests: 'Run the detected project-native test command, or run the supplied PowerShell command. Requires local approval.',
+  shell: 'Run PowerShell as the signed-in Windows user from the selected workspace. Waits for the foreground process to exit or the configured timeout, then returns exitCode, timedOut, stdout, stderr, and durationMs. At timeout it attempts to kill the whole process tree and still returns a timeout result. For long-running servers, start them deliberately in the background with logs redirected to files, poll a bounded readiness check, and do not confuse server startup with command completion. Requires local approval unless Auto-accept everything is enabled; PowerShell is not OS-sandboxed.',
+  run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
@@ -556,7 +556,7 @@ function createToolBridge(deps) {
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
           catalog_version: 1,
-          rule: 'Submit multiple steps in one request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and unknown-side-effect operations preserve request order. $ref arguments wait for their source step.',
+          rule: 'Submit multiple steps in one request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and unknown-side-effect operations preserve request order. $ref arguments wait for their source step. For shell/run_tests, each step returns only after the foreground process exits or a timeout result is created; inspect exitCode, timedOut, stdout, and stderr before any dependent action.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
       }
