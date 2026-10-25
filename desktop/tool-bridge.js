@@ -39,7 +39,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
-  batch: ['steps', 'stopOnError'],
+  batch: ['steps', 'stopOnError', 'maxConcurrency'],
   github_status: [],
   github_api: ['method', 'path', 'body', 'query']
 });
@@ -123,7 +123,8 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   staged: { type: 'boolean', description: 'When true, show the staged diff instead of the unstaged diff.', default: false },
   regex: { type: 'boolean', description: 'Interpret query as a regular expression. Defaults to false.', default: false },
   caseSensitive: { type: 'boolean', description: 'Use case-sensitive matching. Defaults to false.', default: false },
-  stopOnError: { type: 'boolean', description: 'Stop a batch after the first failed/cancelled step. Defaults to true.', default: true },
+  stopOnError: { type: 'boolean', description: 'Stop launching queued batch steps after a failure; already-running independent steps may finish. Defaults to true.', default: true },
+  maxConcurrency: { type: 'integer', description: 'Maximum independent steps to execute at once (1–8). Defaults to 4. Steps using $ref wait for the referenced earlier step.', minimum: 1, maximum: 8, default: 4 },
   paths: { type: 'array', description: 'Optional list of workspace-relative paths. When set, limits the operation to those paths.', items: { type: 'string' }, maxItems: 100 },
   items: { type: 'array', description: 'Plan steps as strings or objects containing step and optional status.', maxItems: 30, items: { anyOf: [
     { type: 'string', maxLength: 1000 },
@@ -155,7 +156,7 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
-      description: '1–50 ordered calls. Reference earlier results by placing {"$ref":"stepId.result.content"} as an argument value. Each step follows the current local approval setting.',
+      description: '1–50 calls. Independent calls run concurrently (default limit 4); a {"$ref":"stepId.result.content"} value makes a step wait for that earlier step. Each step follows the current local approval setting.',
       minItems: 1, maxItems: 50,
       items: {
         type: 'object',
@@ -252,20 +253,42 @@ function createToolBridge(deps) {
     if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') {
       throw new Error('batch.stopOnError must be a boolean.');
     }
+    if (args.maxConcurrency !== undefined && (!Number.isInteger(args.maxConcurrency) || args.maxConcurrency < 1 || args.maxConcurrency > 8)) {
+      throw new Error('batch.maxConcurrency must be an integer from 1 to 8.');
+    }
     const ids = new Set();
     for (const [index, step] of args.steps.entries()) {
       if (!isPlainObject(step)) throw new Error('batch step ' + (index + 1) + ' must be an object.');
       if (Object.keys(step).some(key => !['id','tool','args'].includes(key))) throw new Error('batch step contains unsupported fields.');
       if (typeof step.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$/.test(step.id)) throw new Error('batch step IDs must be 1–20 simple characters.');
       if (ids.has(step.id)) throw new Error('duplicate batch step ID: ' + step.id);
-      ids.add(step.id);
       if (typeof step.tool !== 'string' || step.tool === 'batch' || step.tool === 'refresh_environment_context' || BLOCKED_TOOLS_FOR_MAILBOX.has(step.tool)) {
         throw new Error('batch step ' + step.id + ' uses an unsupported or non-nestable tool.');
       }
       if (!isPlainObject(step.args)) throw new Error('batch step ' + step.id + ' args must be an object.');
       if (Object.hasOwn(step.args, 'approved')) throw new Error('batch steps cannot bypass local approval with an approved argument.');
       validateArgs(step.tool, step.args);
+      for (const referencedId of collectBatchRefIds(step.args)) {
+        if (!ids.has(referencedId)) throw new Error('batch reference must point to an earlier step: ' + referencedId);
+      }
+      ids.add(step.id);
     }
+  }
+
+  function collectBatchRefIds(value, refs = new Set(), depth = 0) {
+    if (depth > 30) throw new Error('batch reference nesting is too deep.');
+    if (Array.isArray(value)) { for (const item of value) collectBatchRefIds(item, refs, depth + 1); return refs; }
+    if (!isPlainObject(value)) return refs;
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === '$ref') {
+      if (typeof value.$ref !== 'string' || !value.$ref.length || value.$ref.length > 500) throw new Error('batch $ref must be a non-empty path string.');
+      const parts = value.$ref.split('.');
+      if (!parts[0] || parts.some(part => !part || ['__proto__', 'prototype', 'constructor'].includes(part))) throw new Error('unsafe batch reference path.');
+      refs.add(parts[0]);
+      return refs;
+    }
+    for (const item of Object.values(value)) collectBatchRefIds(item, refs, depth + 1);
+    return refs;
   }
 
   function resolveBatchRefs(value, completed, depth = 0) {
@@ -474,41 +497,100 @@ function createToolBridge(deps) {
 
   async function executeBatch(args, parentId) {
     const completed = new Map();
-    const steps = [];
-    let failed = false;
+    const taskById = new Map();
+    const outcomeById = new Map();
+    const steps = args.steps;
+    const concurrency = Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : 4;
+    const stopOnError = args.stopOnError !== false;
+    let active = 0;
+    const waiters = [];
+    let firstFailureIndex = Number.POSITIVE_INFINITY;
     let stoppedAt = null;
-    for (const step of args.steps) {
-      let outcome;
-      try {
-        const resolvedArgs = resolveBatchRefs(step.args, completed);
-        const childId = (String(parentId).slice(0, 55) || 'batch') + '-' + step.id;
-        outcome = await runTool(step.tool, resolvedArgs, childId);
-      } catch (error) {
-        outcome = { ok: false, error: String(error && error.message || error) };
-      }
-      completed.set(step.id, outcome);
+
+    async function acquireSlot() {
+      if (active < concurrency) { active++; return; }
+      await new Promise(resolve => waiters.push(resolve));
+    }
+    function releaseSlot() {
+      const next = waiters.shift();
+      if (next) next();
+      else active--;
+    }
+    function itemFor(step, outcome, skipped = false) {
       const item = {
         id: step.id,
         tool: step.tool,
         call_id: outcome.call_id || (String(parentId).slice(0, 55) + '-' + step.id),
         ok: outcome.ok === true,
-        status: outcome.ok === true ? 'success' : outcome.cancelled ? 'cancelled' : 'failed'
+        status: skipped ? 'skipped' : outcome.ok === true ? 'success' : outcome.cancelled ? 'cancelled' : 'failed'
       };
+      if (skipped) item.skipped = true;
       if (outcome.cancelled) item.cancelled = true;
       if (outcome.error) item.error = outcome.error;
       if (outcome.message && !outcome.ok) item.message = outcome.message;
       if (outcome.result !== undefined) item.result = outcome.result;
       if (outcome.result && Number.isInteger(outcome.result.exitCode)) item.exit_code = outcome.result.exitCode;
       if (outcome.result && outcome.result.timedOut === true) item.timed_out = true;
-      steps.push(item);
-      if (!outcome.ok) {
-        failed = true;
-        if (args.stopOnError !== false) { stoppedAt = step.id; break; }
-      }
+      return item;
     }
+
+    for (const [index, step] of steps.entries()) {
+      const dependencies = [...collectBatchRefIds(step.args)];
+      const task = (async () => {
+        await Promise.all(dependencies.map(id => taskById.get(id)));
+        if (stopOnError && index > firstFailureIndex) {
+          const skipped = { ok: false, skipped: true, error: 'Not started because an earlier batch step failed or was cancelled.' };
+          completed.set(step.id, skipped);
+          outcomeById.set(step.id, skipped);
+          return skipped;
+        }
+        await acquireSlot();
+        try {
+          if (stopOnError && index > firstFailureIndex) {
+            const skipped = { ok: false, skipped: true, error: 'Not started because an earlier batch step failed or was cancelled.' };
+            completed.set(step.id, skipped);
+            outcomeById.set(step.id, skipped);
+            return skipped;
+          }
+          let outcome;
+          try {
+            const resolvedArgs = resolveBatchRefs(step.args, completed);
+            const childId = (String(parentId).slice(0, 55) || 'batch') + '-' + step.id;
+            outcome = await runTool(step.tool, resolvedArgs, childId);
+          } catch (error) {
+            outcome = { ok: false, error: String(error && error.message || error) };
+          }
+          completed.set(step.id, outcome);
+          outcomeById.set(step.id, outcome);
+          if (!outcome.ok && stopOnError && index < firstFailureIndex) {
+            firstFailureIndex = index;
+            stoppedAt = step.id;
+          }
+          return outcome;
+        } finally {
+          releaseSlot();
+        }
+      })();
+      taskById.set(step.id, task);
+    }
+
+    await Promise.all(taskById.values());
+    const resultSteps = steps.map(step => {
+      const outcome = outcomeById.get(step.id) || { ok: false, skipped: true, error: 'Step did not run.' };
+      return itemFor(step, outcome, outcome.skipped === true);
+    });
+    const failed = resultSteps.some(item => !item.ok);
+    const completedSteps = resultSteps.filter(item => !item.skipped).length;
     return {
       ok: !failed,
-      result: { steps, completed_steps: steps.length, requested_steps: args.steps.length, stopped_at: stoppedAt }
+      result: {
+        steps: resultSteps,
+        completed_steps: completedSteps,
+        skipped_steps: resultSteps.filter(item => item.skipped).length,
+        requested_steps: steps.length,
+        max_concurrency: concurrency,
+        stopped_at: stoppedAt
+      }
     };
   }
 
