@@ -157,6 +157,8 @@ function createRepositoryBridge(deps) {
   let pendingCount = 0;
   let lastStatePublishAt = 0;
   const inMemoryClaims = new Set();
+  let knownResultFiles = null;
+  let activeRequestTelemetry = null;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
 
@@ -201,7 +203,16 @@ function createRepositoryBridge(deps) {
   }
 
   async function api(method, path, body, query) {
-    return githubAuth.requestApi({ method, path, ...(body ? { body } : {}), ...(query ? { query } : {}) });
+    const telemetry = activeRequestTelemetry;
+    const startedAt = Date.now();
+    try {
+      return await githubAuth.requestApi({ method, path, ...(body ? { body } : {}), ...(query ? { query } : {}) });
+    } finally {
+      if (telemetry) {
+        telemetry.githubApiCalls++;
+        telemetry.githubApiMs += Date.now() - startedAt;
+      }
+    }
   }
 
   async function readRemoteFile(relativePath) {
@@ -639,6 +650,22 @@ function createRepositoryBridge(deps) {
   async function acquireClaim(requestId) {
     const claimPath = 'bridge/claims/' + requestId + '.json';
     const now = Date.now();
+    const claim = {
+      protocol: 'chatgpt-local-repo-claim/v1',
+      request_id: requestId,
+      worker_id: workerId,
+      tool: null,
+      status: 'processing',
+      claimed_at: new Date(now).toISOString(),
+      lease_expires_at_ms: now + CLAIM_LEASE_MS
+    };
+
+    // Fast path: creating an immutable claim is one API request. Only read the
+    // existing claim when the create conflicts, which is the exceptional path.
+    const created = await writeRemoteJson(claimPath, claim, null, true);
+    if (created.ok) return { acquired: true, sha: created.sha, value: claim };
+    if (!created.conflict) return { acquired: false };
+
     let prior;
     try {
       prior = await readRemoteFile(claimPath);
@@ -653,10 +680,12 @@ function createRepositoryBridge(deps) {
       });
       return { acquired: false, recovered: true };
     }
-    if (prior && (!isPlainObject(prior.value) ||
+    if (!prior) return { acquired: false };
+
+    if (!isPlainObject(prior.value) ||
         prior.value.protocol !== 'chatgpt-local-repo-claim/v1' ||
         prior.value.request_id !== requestId ||
-        !['processing', 'result_pending', 'completed', 'needs_manual_recovery'].includes(prior.value.status))) {
+        !['processing', 'result_pending', 'completed', 'needs_manual_recovery'].includes(prior.value.status)) {
       await publishResult(requestId, {
         protocol: RESULT_PROTOCOL,
         request_id: requestId,
@@ -666,9 +695,33 @@ function createRepositoryBridge(deps) {
       });
       return { acquired: false, recovered: true };
     }
-    if (prior && ['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
-      const missingResult = await readRemoteFile('bridge/results/' + requestId + '.json');
-      if (!missingResult) {
+
+    // A completed claim now stores its result as a recovery journal. If result
+    // publication was interrupted, republish that exact result, never rerun work.
+    if (prior.value.status === 'completed' && prior.value.result) {
+      const published = await publishResult(requestId, prior.value.result);
+      return { acquired: false, recovered: published.published, terminal: published.published };
+    }
+
+    if (prior.value.status === 'result_pending' && prior.value.result) {
+      const published = await publishResult(requestId, prior.value.result);
+      if (published.published) {
+        await writeRemoteJson(claimPath, {
+          protocol: 'chatgpt-local-repo-claim/v1',
+          request_id: requestId,
+          worker_id: workerId,
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          result: prior.value.result
+        }, prior.sha, false);
+      }
+      return { acquired: false, recovered: published.published };
+    }
+
+    if (['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
+      const resultIsKnown = Boolean(knownResultFiles && knownResultFiles.has(requestId + '.json'));
+      const existingResult = resultIsKnown ? true : await readRemoteFile('bridge/results/' + requestId + '.json');
+      if (!existingResult) {
         await publishResult(requestId, {
           protocol: RESULT_PROTOCOL,
           request_id: requestId,
@@ -676,24 +729,32 @@ function createRepositoryBridge(deps) {
           completed_at: new Date().toISOString(),
           error: 'The claim is terminal but its result file is missing. The local operation was not replayed; inspect the workspace before retrying with a new request ID.'
         });
+        if (prior.value.status === 'completed') {
+          await writeRemoteJson(claimPath, {
+            protocol: 'chatgpt-local-repo-claim/v1',
+            request_id: requestId,
+            worker_id: workerId,
+            status: 'needs_manual_recovery',
+            completed_at: new Date().toISOString()
+          }, prior.sha, false).catch(() => {});
+        }
       }
       return { acquired: false, terminal: true };
     }
-    if (prior && prior.value.status === 'result_pending' && prior.value.result) {
-      const publish = await writeRemoteJson('bridge/results/' + requestId + '.json', prior.value.result, null, true);
-      if (publish.ok) {
-        await writeRemoteJson(claimPath, {
-          protocol: 'chatgpt-local-repo-claim/v1',
-          request_id: requestId,
-          worker_id: workerId,
-          status: 'completed',
-          completed_at: new Date().toISOString()
-        }, prior.sha, false);
-      }
-      return { acquired: false, recovered: true };
+
+    if (prior.value.status === 'result_pending') {
+      await publishResult(requestId, {
+        protocol: RESULT_PROTOCOL,
+        request_id: requestId,
+        status: 'needs_manual_recovery',
+        completed_at: new Date().toISOString(),
+        error: 'The previous worker finished without a recoverable result payload. The local operation was not replayed; inspect the workspace before retrying with a new request ID.'
+      });
+      return { acquired: false, recovered: true, terminal: true };
     }
-    if (prior && Number(prior.value.lease_expires_at_ms) > now) return { acquired: false };
-    if (prior && prior.value.status === 'processing') {
+
+    if (Number(prior.value.lease_expires_at_ms) > now) return { acquired: false };
+    if (prior.value.status === 'processing') {
       const recovery = {
         protocol: RESULT_PROTOCOL,
         request_id: requestId,
@@ -702,46 +763,56 @@ function createRepositoryBridge(deps) {
         error: 'A previous worker claim expired. This request was not replayed automatically because the local operation may already have had side effects. Check the workspace before creating a new request ID.'
       };
       const result = await publishResult(requestId, recovery);
-      const latestClaim = await readRemoteFile(claimPath);
-      if (latestClaim) {
-        await writeRemoteJson(claimPath, {
-          protocol: 'chatgpt-local-repo-claim/v1',
-          request_id: requestId,
-          worker_id: workerId,
-          status: 'needs_manual_recovery',
-          completed_at: new Date().toISOString()
-        }, latestClaim.sha, false);
-      }
+      await writeRemoteJson(claimPath, {
+        protocol: 'chatgpt-local-repo-claim/v1',
+        request_id: requestId,
+        worker_id: workerId,
+        status: 'needs_manual_recovery',
+        completed_at: new Date().toISOString()
+      }, prior.sha, false).catch(() => {});
       return { acquired: false, recovered: result.published };
     }
-    const claim = {
-      protocol: 'chatgpt-local-repo-claim/v1',
-      request_id: requestId,
-      worker_id: workerId,
-      tool: null,
-      status: 'processing',
-      claimed_at: new Date(now).toISOString(),
-      lease_expires_at_ms: now + CLAIM_LEASE_MS
-    };
-    const written = await writeRemoteJson(claimPath, claim, prior && prior.sha, !prior);
-    return written.ok ? { acquired: true, sha: written.sha, value: claim } : { acquired: false };
+
+    return { acquired: false };
   }
 
   async function publishResult(requestId, result) {
-    const path = 'bridge/results/' + requestId + '.json';
-    const existing = await readRemoteFile(path);
-    if (existing) return { published: true, alreadyExists: true };
-    const written = await writeRemoteJson(path, result, null, true);
-    return { published: written.ok, conflict: written.conflict === true };
+    const resultPath = 'bridge/results/' + requestId + '.json';
+    // Result files are immutable. Try create-only directly rather than making a
+    // separate GET to check existence first.
+    const written = await writeRemoteJson(resultPath, result, null, true);
+    if (written.ok || written.conflict) {
+      if (knownResultFiles) knownResultFiles.add(requestId + '.json');
+      return { published: true, alreadyExists: written.conflict === true };
+    }
+    return { published: false, conflict: false };
   }
 
   async function processRequest(filename) {
+    const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0 };
+    const previousTelemetry = activeRequestTelemetry;
+    activeRequestTelemetry = telemetry;
+    try {
+      return await processRequestInner(filename, telemetry);
+    } finally {
+      activeRequestTelemetry = previousTelemetry;
+    }
+  }
+
+  async function processRequestInner(filename, telemetry) {
+    const workerStartedAt = telemetry.startedAt;
+    let requestLoadedAt = workerStartedAt;
+    let claimStartedAt = workerStartedAt;
+    let claimAcquiredAt = workerStartedAt;
+    let toolStartedAt = workerStartedAt;
+    let toolFinishedAt = workerStartedAt;
     const requestId = filename.slice(0, -'.json'.length);
     if (!SAFE_ID.test(requestId) || inMemoryClaims.has(requestId)) return;
     const requestPath = 'bridge/requests/' + filename;
     let remote;
     try {
       remote = await readRemoteFile(requestPath);
+      requestLoadedAt = Date.now();
     } catch (error) {
       if (!isCorruptMailboxFile(error)) throw error;
       await publishResult(requestId, {
@@ -770,12 +841,14 @@ function createRepositoryBridge(deps) {
       return;
     }
 
+    claimStartedAt = Date.now();
     const claim = await acquireClaim(requestId);
+    claimAcquiredAt = Date.now();
     if (!claim.acquired) return;
     inMemoryClaims.add(requestId);
     activeRequestId = requestId;
     announce();
-    await publishState(true);
+    toolStartedAt = Date.now();
 
     let report;
     try {
@@ -788,6 +861,7 @@ function createRepositoryBridge(deps) {
       report = { ok: false, error: cleanError(error.message), tool: request.tool, call_id: requestId };
     }
 
+    toolFinishedAt = Date.now();
     const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
     const artifactManifest = [];
     const artifactErrors = [];
@@ -815,6 +889,16 @@ function createRepositoryBridge(deps) {
       output_truncated: outputWasShortened,
       created_at: remote.value.created_at,
       completed_at: new Date().toISOString(),
+      timing_ms: {
+        created_to_worker_start: Number.isFinite(Date.parse(remote.value.created_at)) ? Math.max(0, workerStartedAt - Date.parse(remote.value.created_at)) : null,
+        request_fetch: Math.max(0, requestLoadedAt - workerStartedAt),
+        claim_acquisition: Math.max(0, claimAcquiredAt - claimStartedAt),
+        tool_wall_time: Math.max(0, toolFinishedAt - toolStartedAt),
+        result_preparation: Math.max(0, Date.now() - toolFinishedAt),
+        worker_before_result_publish: Math.max(0, Date.now() - workerStartedAt),
+        github_api_calls_before_result_publish: telemetry.githubApiCalls,
+        github_api_ms_before_result_publish: telemetry.githubApiMs
+      },
       result: safeReport,
       artifacts: artifactManifest,
       artifact_errors: artifactErrors
@@ -823,29 +907,23 @@ function createRepositoryBridge(deps) {
       resultRecord = compactRecordForInlineResult(resultRecord);
     }
 
-    const pendingClaim = {
+    // Store the completed result in the claim journal before publishing the
+    // result file. This preserves crash recovery while eliminating the old
+    // result-pending PUT + claim reread + final claim PUT sequence.
+    const completedClaim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
       worker_id: workerId,
       tool: request.tool,
-      status: 'result_pending',
+      status: 'completed',
       claimed_at: claim.value.claimed_at,
-      lease_expires_at_ms: Date.now() + 24 * 60 * 60 * 1000,
+      completed_at: new Date().toISOString(),
       result: resultRecord
     };
     try {
-      await writeRemoteJson('bridge/claims/' + requestId + '.json', pendingClaim, claim.sha, false);
+      await writeRemoteJson('bridge/claims/' + requestId + '.json', completedClaim, claim.sha, false);
       const published = await publishResult(requestId, resultRecord);
-      if (published.published) {
-        const file = await readRemoteFile('bridge/claims/' + requestId + '.json');
-        if (file) await writeRemoteJson('bridge/claims/' + requestId + '.json', {
-          protocol: 'chatgpt-local-repo-claim/v1',
-          request_id: requestId,
-          worker_id: workerId,
-          status: 'completed',
-          completed_at: new Date().toISOString()
-        }, file.sha, false);
-      } else {
+      if (!published.published) {
         lastError = 'Result for ' + requestId + ' is waiting to be published; the claim preserves it for retry.';
       }
     } catch (error) {
@@ -860,7 +938,6 @@ function createRepositoryBridge(deps) {
       activeRequestId = null;
       inMemoryClaims.delete(requestId);
       announce();
-      await publishState(true);
     }
   }
 
@@ -869,18 +946,26 @@ function createRepositoryBridge(deps) {
     pollInFlight = true;
     const task = (async () => {
       try {
-        const [files, resultFiles] = await Promise.all([
-          listFolder('bridge/requests'),
-          listFolder('bridge/results')
-        ]);
+        let files;
+        if (knownResultFiles === null) {
+          // Load the historical result index only once at startup. Re-fetching
+          // the growing results folder every poll doubles request traffic.
+          const [requestFiles, resultFiles] = await Promise.all([
+            listFolder('bridge/requests'),
+            listFolder('bridge/results')
+          ]);
+          files = requestFiles;
+          knownResultFiles = new Set(resultFiles
+            .map(file => file.name)
+            .filter(name => name.endsWith('.json')));
+        } else {
+          files = await listFolder('bridge/requests');
+        }
         const sorted = files
           .map(file => file.name)
           .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
           .sort();
-        const completedIds = new Set(resultFiles
-          .map(file => file.name)
-          .filter(name => name.endsWith('.json')));
-        const pending = sorted.filter(filename => !completedIds.has(filename));
+        const pending = sorted.filter(filename => !knownResultFiles.has(filename));
         pendingCount = pending.length;
         const firstPoll = !lastPollAt;
         lastPollAt = new Date().toISOString();
@@ -908,11 +993,10 @@ function createRepositoryBridge(deps) {
           }
         }
         if (pending.length) {
-          const finalResults = await listFolder('bridge/results');
-          const finalCompletedIds = new Set(finalResults.map(file => file.name));
-          pendingCount = sorted.filter(filename => !finalCompletedIds.has(filename)).length;
+          pendingCount = sorted.filter(filename => !knownResultFiles.has(filename)).length;
           announce();
-          await publishState(true);
+          // Shared state is a throttled heartbeat, not a per-operation commit.
+          await publishState();
         }
       } catch (error) {
         lastError = cleanError(error.message);
@@ -958,7 +1042,7 @@ function createRepositoryBridge(deps) {
       }
     }
     announce();
-    await publishState(true);
+    // The first poll publishes the initial heartbeat; avoid a duplicate GET+PUT.
     await pollOnce();
     scheduleNextPoll();
     return stateSnapshot();
