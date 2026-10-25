@@ -502,8 +502,22 @@ function createRepositoryBridge(deps) {
     if (output.status === 'completed') output.status = 'partial';
     return output;
   }
+  function contextComparable(value) {
+    if (Array.isArray(value)) return value.map(contextComparable);
+    if (!isPlainObject(value)) return value;
+    const output = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'generated_at' || key === 'freeMemoryBytes') continue;
+      output[key] = contextComparable(item);
+    }
+    return output;
+  }
+
   async function upsertContextJson(relativePath, value) {
     const existing = await readRemoteFile(relativePath);
+    if (existing && JSON.stringify(contextComparable(existing.value)) === JSON.stringify(contextComparable(value))) {
+      return { ok: true, unchanged: true, sha: existing.sha };
+    }
     return writeRemoteJson(relativePath, value, existing && existing.sha, false);
   }
 
@@ -526,6 +540,9 @@ function createRepositoryBridge(deps) {
       try {
         report = await executeTool(tool, args, 'context-' + randomUUID());
         report = sanitizeForRepository(report, root);
+        if (name === 'environment' && report && report.result && typeof report.result === 'object') {
+          delete report.result.freeMemoryBytes;
+        }
         if (name === 'project_commands') {
           const content = report && report.ok && report.result && report.result.content;
           if (typeof content === 'string') {
