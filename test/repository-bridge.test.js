@@ -522,7 +522,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     await new Promise(resolve => setTimeout(resolve, 5));
     await bridge.pollOnce();
     const refreshed = decode(fake.files.get('bridge/context/latest.json'));
-    assert.notEqual(refreshed.generated_at, firstGeneratedAt);
+    assert.equal(refreshed.generated_at, firstGeneratedAt, 'unchanged context must not generate pointless repository commits');
     assert.equal(calls.filter(call => call.tool === 'environment_info').length, beforeRefreshes + 1);
   } finally {
     await bridge.stop();
