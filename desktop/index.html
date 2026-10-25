@@ -32,6 +32,20 @@
       <span id="auto-accept-dot" class="status-dot waiting" aria-hidden="true"></span>
       <span id="auto-accept-status" class="status-label">Auto-accept everything: OFF</span>
     </button>
+
+    <div id="vision-row" class="status-row vision-row" role="group" aria-label="Colab vision controls">
+      <span id="vision-dot" class="status-dot waiting" aria-hidden="true"></span>
+      <span id="vision-status" class="status-label" title="Live Colab vision status">Vision: checking…</span>
+      <button id="vision-signin" class="status-action vision-action" type="button" aria-label="Open Google Colab sign-in">Sign in</button>
+      <button id="vision-setup-check" class="status-action vision-action" type="button" aria-label="Check vision setup">Setup check</button>
+    </div>
+
+    <section id="vision-details" class="vision-details" aria-label="Vision setup details" aria-live="polite">
+      <div class="vision-detail"><span class="vision-detail-label">Setup</span><span id="vision-setup-detail" class="vision-detail-value">Not checked</span></div>
+      <div class="vision-detail"><span class="vision-detail-label">Mailbox</span><span id="vision-mailbox-detail" class="vision-detail-value">Not checked</span></div>
+      <div class="vision-detail"><span class="vision-detail-label">Colab</span><span id="vision-colab-detail" class="vision-detail-value">No heartbeat yet</span></div>
+      <div class="vision-detail"><span class="vision-detail-label">Model</span><span id="vision-model-detail" class="vision-detail-value">Not verified</span></div>
+    </section>
   </main>
   <script src="renderer.js"></script>
 </body>

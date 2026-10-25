@@ -25,7 +25,7 @@ test('packaging includes the native Windows worker and mailbox implementation', 
 test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
-  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'minimize', 'quit']) {
+  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(renderer, /GitHub connected/);
@@ -43,6 +43,12 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.startGitHubLogin/);
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
   assert.match(renderer, /windowsBridge\.selectWorkspace/);
+  assert.match(renderer, /windowsBridge\.getVisionStatus/);
+  assert.match(renderer, /windowsBridge\.openColabSignIn/);
+  assert.match(renderer, /windowsBridge\.checkVisionSetup/);
+  assert.match(renderer, /runVisionSetupCheck/);
+  assert.match(renderer, /Vision: ready/);
+  assert.match(renderer, /Setup check/);
   assert.match(renderer, /Workspace: /);
   assert.match(renderer, /Current folder: /);
   assert.match(renderer, /Auto-accept everything: ON/);
@@ -70,7 +76,12 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
-  assert.match(main, /height: 164/);
+  assert.match(main, /height: 262/);
+  assert.match(main, /'app:vision-status'/);
+  assert.match(main, /'app:vision-open-sign-in'/);
+  assert.match(main, /'app:vision-setup-check'/);
+  assert.match(main, /visionService\.setupCheck\(githubState\)/);
+  assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);
   assert.match(main, /githubAuth\.importToken/);
   assert.match(main, /stdio: \['pipe', 'pipe', 'pipe'\]/);
@@ -90,7 +101,7 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'openColabSignIn', 'checkVisionSetup', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
@@ -227,6 +238,9 @@ test('optional Colab vision bridge is wired to the existing mailbox without auto
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
   assert.ok(vision.includes('input_sha256'));
   assert.ok(vision.includes('VISION_RESULT_PROTOCOL'));
+  assert.ok(vision.includes('async function setupCheck(githubState = {})'));
+  assert.ok(vision.includes('does not test write permission'));
+  assert.ok(vision.includes('Google account sign-in cannot be read from browser cookies'));
   assert.ok(auth.includes("'control.json', 'runtime.json'"));
   assert.ok(auth.includes('chatgpt-colab-vision-control/v1'));
   assert.ok(python.includes('userdata.get("QDQWG_TOKEN")'));

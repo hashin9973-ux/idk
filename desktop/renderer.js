@@ -14,6 +14,14 @@
   const autoAcceptRow = byId('auto-accept-row');
   const autoAcceptDot = byId('auto-accept-dot');
   const autoAcceptLabel = byId('auto-accept-status');
+  const visionDot = byId('vision-dot');
+  const visionLabel = byId('vision-status');
+  const visionSignInButton = byId('vision-signin');
+  const visionSetupButton = byId('vision-setup-check');
+  const visionSetupDetail = byId('vision-setup-detail');
+  const visionMailboxDetail = byId('vision-mailbox-detail');
+  const visionColabDetail = byId('vision-colab-detail');
+  const visionModelDetail = byId('vision-model-detail');
   const minimizeButton = byId('minimize');
   const quitButton = byId('quit');
 
@@ -24,6 +32,8 @@
   let loginCode = '';
   let autoAcceptAll = false;
   let workspaceBusy = false;
+  let visionBusy = false;
+  let visionSetupSnapshot = null;
 
   function setDot(dot, status) {
     dot.className = 'status-dot ' + status;
@@ -146,6 +156,157 @@
     }
   }
 
+  function setCheckDetail(element, check) {
+    const value = check || {};
+    const status = String(value.status || 'not_verified');
+    const labels = {
+      passed: 'OK',
+      failed: 'Failed',
+      action_required: 'Action needed',
+      not_verified: 'Not verified',
+      in_progress: 'In progress',
+      enabled: 'Enabled',
+      disabled: 'Disabled'
+    };
+    element.textContent = labels[status] || status.replace(/_/g, ' ');
+    element.title = String(value.message || '');
+    element.dataset.state = status;
+  }
+
+  function renderVisionStatus(state) {
+    const vision = state || {};
+    const status = String(vision.status || 'unavailable');
+    const labels = {
+      ready: 'Vision: ready',
+      inactive: 'Vision: inactive',
+      starting: 'Vision: starting',
+      inference_in_progress: 'Vision: analyzing',
+      report_available: 'Vision: report available',
+      disconnected: 'Vision: disconnected',
+      needs_authentication: 'Vision: Colab sign-in needed',
+      gpu_unavailable: 'Vision: GPU unavailable',
+      error: 'Vision: error',
+      unavailable: 'Vision: unavailable'
+    };
+    visionLabel.textContent = labels[status] || 'Vision: ' + status.replace(/_/g, ' ');
+    visionLabel.title = String(vision.message || vision.error || 'Live vision status');
+    const danger = ['disconnected', 'needs_authentication', 'gpu_unavailable', 'error', 'unavailable'].includes(status);
+    setDot(visionDot, status === 'ready' && vision.model_loaded === true ? 'online' : danger ? 'error' : 'waiting');
+
+    if (vision.runtime_fresh === true) {
+      const runtimeLabel = status === 'inactive'
+        ? 'Heartbeat live; vision disabled'
+        : status === 'needs_authentication' ? 'Google/Drive authentication required'
+          : status === 'gpu_unavailable' ? 'GPU unavailable'
+            : 'Heartbeat live (' + String(vision.runtime_status || status).replace(/_/g, ' ') + ')';
+      visionColabDetail.textContent = runtimeLabel;
+      visionColabDetail.title = String(vision.message || '');
+      visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error'].includes(status) ? 'action_required' : 'passed';
+    } else {
+      visionColabDetail.textContent = vision.runtime_status
+        ? 'No fresh heartbeat (' + String(vision.runtime_status).replace(/_/g, ' ') + ')'
+        : 'No heartbeat yet';
+      visionColabDetail.title = String(vision.message || 'Colab sign-in/runtime has not been verified.');
+      visionColabDetail.dataset.state = status === 'error' || status === 'disconnected' ? 'failed' : 'not_verified';
+    }
+
+    if (vision.model_loaded === true && vision.runtime_fresh === true) {
+      visionModelDetail.textContent = 'Loaded';
+      visionModelDetail.title = String(vision.model || '') + (vision.gpu ? ' on ' + vision.gpu : '');
+      visionModelDetail.dataset.state = 'passed';
+    } else {
+      visionModelDetail.textContent = 'Not verified / not loaded';
+      visionModelDetail.title = String(vision.model || 'Vision model') + ' is not confirmed loaded in a live Colab runtime.';
+      visionModelDetail.dataset.state = 'not_verified';
+    }
+
+    if (!visionSetupSnapshot) {
+      visionSetupDetail.textContent = 'Not checked';
+      visionSetupDetail.title = 'Click Setup check to test GitHub sign-in, mailbox reads, Colab heartbeat, and model readiness.';
+      visionSetupDetail.dataset.state = 'not_verified';
+      visionMailboxDetail.textContent = 'Not checked';
+      visionMailboxDetail.title = 'Mailbox read access is checked by Setup check.';
+      visionMailboxDetail.dataset.state = 'not_verified';
+    }
+  }
+
+  function renderVisionSetup(snapshot) {
+    visionSetupSnapshot = snapshot || {};
+    const value = visionSetupSnapshot;
+    const summaryStatus = value.status === 'ready' ? 'passed' : value.status === 'failed' ? 'failed' : 'action_required';
+    setCheckDetail(visionSetupDetail, {
+      status: summaryStatus,
+      message: (value.status || 'unknown') + (value.next_steps && value.next_steps.length ? '\n' + value.next_steps.join('\n') : '')
+    });
+    const checks = value.checks || {};
+    setCheckDetail(visionMailboxDetail, checks.mailbox);
+    if (checks.colab) setCheckDetail(visionColabDetail, checks.colab);
+    if (checks.model) setCheckDetail(visionModelDetail, checks.model);
+    visionSetupButton.title = value.note || 'Setup check checks readiness without enabling vision.';
+  }
+
+  async function refreshVisionStatus() {
+    try {
+      renderVisionStatus(await window.windowsBridge.getVisionStatus());
+    } catch (error) {
+      renderVisionStatus({ status: 'error', message: String(error && error.message || error) });
+    }
+  }
+
+  async function openColabSignIn() {
+    if (visionBusy) return;
+    visionBusy = true;
+    visionSignInButton.disabled = true;
+    const previousLabel = visionSignInButton.textContent;
+    visionSignInButton.textContent = 'Opening…';
+    try {
+      const result = await window.windowsBridge.openColabSignIn();
+      visionSetupDetail.textContent = result && result.opened ? 'Colab opened' : 'Open requested';
+      visionSetupDetail.title = result && result.message || 'Colab was opened; Google sign-in and runtime status still need verification.';
+      visionSetupDetail.dataset.state = 'in_progress';
+      if (result && result.opened) {
+        visionColabDetail.textContent = 'Sign in, connect runtime, run cell';
+        visionColabDetail.title = result.message || 'The notebook is open. Run its worker cell to publish a heartbeat.';
+        visionColabDetail.dataset.state = 'action_required';
+      }
+    } catch (error) {
+      visionSetupDetail.textContent = 'Could not open Colab';
+      visionSetupDetail.title = String(error && error.message || error);
+      visionSetupDetail.dataset.state = 'failed';
+    } finally {
+      visionBusy = false;
+      visionSignInButton.disabled = false;
+      visionSignInButton.textContent = previousLabel;
+      void refreshVisionStatus();
+    }
+  }
+
+  async function runVisionSetupCheck() {
+    if (visionBusy) return;
+    visionBusy = true;
+    visionSetupButton.disabled = true;
+    visionSetupButton.textContent = 'Checking…';
+    try {
+      const result = await window.windowsBridge.checkVisionSetup();
+      renderVisionSetup(result);
+      await refreshVisionStatus();
+    } catch (error) {
+      renderVisionSetup({
+        status: 'failed',
+        checks: {
+          mailbox: { status: 'failed', message: String(error && error.message || error) },
+          colab: { status: 'not_verified', message: 'Setup check failed before Colab could be verified.' },
+          model: { status: 'not_verified', message: 'Setup check failed before model readiness could be verified.' }
+        },
+        next_steps: ['Check that the app is connected to GitHub, then run Setup check again.']
+      });
+    } finally {
+      visionBusy = false;
+      visionSetupButton.disabled = false;
+      visionSetupButton.textContent = 'Setup check';
+    }
+  }
+
   async function refreshState() {
     try {
       const snapshot = await window.windowsBridge.getState();
@@ -161,6 +322,7 @@
     } catch (error) {
       renderGitHub({ authenticated: false, error: String(error && error.message || error) });
     }
+    await refreshVisionStatus();
   }
 
   function stopAuthPolling() {
@@ -251,6 +413,8 @@
   });
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
+  visionSignInButton.addEventListener('click', () => { void openColabSignIn(); });
+  visionSetupButton.addEventListener('click', () => { void runVisionSetupCheck(); });
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
   window.windowsBridge.onBridgeState(renderWorker);

@@ -17,7 +17,7 @@ button { font: inherit; cursor: pointer; }
 .status-window {
   position: relative;
   width: 100%; height: 100%;
-  padding: 22px 12px 10px;
+  padding: 22px 12px 9px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -45,6 +45,47 @@ button.status-row:disabled { cursor: default; }
 .worker-row { cursor: default; color: #d6e0eb; }
 .github-status-row { gap: 8px; }
 .github-status-row .status-label { flex: 1; min-width: 0; }
+.vision-row { gap: 7px; }
+.vision-row .status-label { flex: 1; min-width: 0; }
+.vision-action {
+  min-width: 53px;
+  height: 23px;
+  margin-left: 0;
+  padding: 0 6px;
+  font-size: 9px;
+}
+.vision-action:last-child { min-width: 67px; }
+.vision-details {
+  display: grid;
+  gap: 3px;
+  margin: 4px 5px 0;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 14px;
+  -webkit-app-region: no-drag;
+}
+.vision-detail {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.vision-detail-label { flex: 0 0 52px; }
+.vision-detail-value {
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vision-detail-value[data-state="passed"] { color: var(--accent); }
+.vision-detail-value[data-state="failed"] { color: var(--danger); }
+.vision-detail-value[data-state="action_required"],
+.vision-detail-value[data-state="not_verified"],
+.vision-detail-value[data-state="in_progress"] { color: #d2b16b; }
 .status-action {
   flex: 0 0 auto;
   min-width: 88px;

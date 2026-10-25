@@ -323,6 +323,137 @@ function createVisionService(deps) {
     }
   }
 
+  async function setupCheck(githubState = {}) {
+    const checkedAt = currentTimeIso();
+    const githubConnected = githubState && githubState.authenticated === true;
+    const checks = {
+      github: {
+        status: githubConnected ? 'passed' : 'action_required',
+        message: githubConnected
+          ? (githubState.login ? 'Signed in to GitHub as @' + String(githubState.login).slice(0, 80) + '.' : 'The app has a saved GitHub sign-in.')
+          : (githubState && githubState.error
+            ? 'GitHub sign-in is not verified: ' + messageOf(githubState.error)
+            : 'Sign in with GitHub in the app to verify mailbox access.')
+      },
+      mailbox: {
+        status: githubConnected ? 'not_verified' : 'action_required',
+        message: githubConnected
+          ? 'Checking read access to the configured private mailbox.'
+          : 'Mailbox access cannot be checked until the app is signed in to GitHub.'
+      },
+      colab: { status: 'not_verified', message: 'Google/Colab sign-in is not inferable from this app; a live notebook heartbeat is required to verify the runtime.' },
+      model: { status: 'not_verified', message: 'Model readiness has not been confirmed by a live Colab runtime.' },
+      vision: { status: 'disabled', message: 'Setup check does not enable vision or trigger model downloads.' }
+    };
+
+    if (githubConnected) {
+      try {
+        const mailbox = await readJson('bridge/state/windows-app.json');
+        if (mailbox && mailbox.value && mailbox.value.protocol === 'chatgpt-local-repo-state/v1') {
+          checks.mailbox = {
+            status: 'passed',
+            message: 'The configured mailbox branch is readable and contains a valid Windows worker state record. This read-only check does not test write permission.'
+          };
+        } else {
+          checks.mailbox = {
+            status: 'failed',
+            message: 'The mailbox state record is missing or its protocol is invalid on the configured branch.'
+          };
+        }
+      } catch (error) {
+        checks.mailbox = {
+          status: 'failed',
+          message: 'Could not read the configured GitHub mailbox: ' + messageOf(error)
+        };
+      }
+    }
+
+    let snapshot = null;
+    try {
+      snapshot = await readControlAndRuntime();
+    } catch (error) {
+      const message = 'Could not read Colab vision records: ' + messageOf(error);
+      checks.colab = { status: 'failed', message };
+      checks.model = { status: 'not_verified', message: 'Model readiness could not be checked because the runtime records were not readable.' };
+    }
+
+    if (snapshot) {
+      const runtime = snapshot.runtime;
+      const state = snapshot.state;
+      const fresh = state.runtime_fresh === true;
+      const runtimeStatus = runtime && String(runtime.status || 'unknown');
+      checks.vision = {
+        status: snapshot.control && snapshot.control.enabled === true ? 'enabled' : 'disabled',
+        message: snapshot.control && snapshot.control.enabled === true
+          ? 'Vision requests are enabled in the mailbox.'
+          : 'Vision requests are disabled. Setup check has not enabled them.'
+      };
+
+      if (fresh && runtimeStatus === 'needs_authentication') {
+        checks.colab = { status: 'action_required', message: 'Colab is publishing a heartbeat but reports that Google/Drive authentication is required.' };
+      } else if (fresh && runtimeStatus === 'gpu_unavailable') {
+        checks.colab = { status: 'action_required', message: 'Colab is connected, but this runtime has no suitable GPU.' };
+      } else if (fresh && runtimeStatus === 'error') {
+        checks.colab = { status: 'failed', message: state.message || 'The Colab worker reported an error.' };
+      } else if (fresh && ['starting', 'inference_in_progress', 'processing'].includes(runtimeStatus)) {
+        checks.colab = { status: 'in_progress', message: 'The Colab worker heartbeat is fresh; current stage: ' + String(runtime.stage || runtimeStatus) + '.' };
+      } else if (fresh) {
+        checks.colab = {
+          status: 'passed',
+          message: 'A recent Colab worker heartbeat is present (' + runtimeStatus + '). Google sign-in/runtime presence is verified by the worker, not by browser-cookie inspection.'
+        };
+      } else if (runtime) {
+        checks.colab = {
+          status: 'action_required',
+          message: 'The last Colab heartbeat is stale (' + String(runtime.heartbeat_at || runtime.updated_at || 'timestamp unavailable') + '). Reconnect the runtime and rerun the notebook worker cell.'
+        };
+      } else {
+        checks.colab = {
+          status: 'not_verified',
+          message: 'No Colab runtime heartbeat has been published yet. This does not prove Google is signed out; open the notebook, sign in if prompted, connect a runtime, and run the worker cell.'
+        };
+      }
+
+      if (fresh && state.model_loaded === true) {
+        checks.model = {
+          status: 'passed',
+          message: 'The runtime reports that ' + String(state.model || MODEL_FILE) + ' is loaded.'
+        };
+      } else if (fresh) {
+        checks.model = {
+          status: 'action_required',
+          message: 'The Colab worker is alive, but the vision model is not loaded. Model loading starts only after vision is explicitly enabled.'
+        };
+      } else {
+        checks.model = {
+          status: 'not_verified',
+          message: 'Model readiness cannot be confirmed without a fresh Colab heartbeat.'
+        };
+      }
+    }
+
+    const failed = checks.mailbox.status === 'failed' || checks.colab.status === 'failed';
+    const passed = checks.github.status === 'passed' &&
+      checks.mailbox.status === 'passed' &&
+      checks.colab.status === 'passed' &&
+      checks.model.status === 'passed';
+    const nextSteps = [];
+    if (checks.github.status !== 'passed') nextSteps.push('Use the existing Sign in to GitHub button and finish the device sign-in.');
+    if (checks.mailbox.status !== 'passed') nextSteps.push('Verify GitHub access to hashin9973-ux/qdqwg on the bridge-mailbox branch; the app needs Contents read/write permission for vision requests.');
+    if (checks.colab.status !== 'passed') nextSteps.push('Use Sign in to open the Colab notebook, complete Google sign-in if asked, connect a runtime, and run its worker cell.');
+    if (checks.model.status !== 'passed') nextSteps.push('Once the mailbox is verified, call vision_activate from the ChatGPT bridge tools to enable setup/model loading; the setup check itself never starts downloads.');
+    if (checks.vision.status === 'disabled') nextSteps.push('Vision remains disabled until vision_activate is explicitly called.');
+
+    return {
+      status: passed ? 'ready' : failed ? 'failed' : 'action_required',
+      checked_at: checkedAt,
+      notebook_url: COLAB_NOTEBOOK_URL,
+      checks,
+      next_steps: nextSteps,
+      note: 'Google account sign-in cannot be read from browser cookies. Colab is considered connected only when its notebook worker publishes a fresh, protocol-valid heartbeat.'
+    };
+  }
+
   async function status() {
     try {
       const snapshot = await readControlAndRuntime();
@@ -559,6 +690,7 @@ function createVisionService(deps) {
     activate,
     deactivate,
     status,
+    setupCheck,
     analyzeScreenshot,
     wait,
     constants: {
