@@ -721,6 +721,7 @@ function createRepositoryBridge(deps) {
         },
         operating_rules: [
           'Use workspace-relative paths for file operations.',
+          'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
           'Inspect relevant project instructions and source before editing.',
           'Batch known operations into one request; every step returns its own status and output.',
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
