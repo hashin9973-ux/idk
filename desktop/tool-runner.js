@@ -86,7 +86,7 @@ function gitCommit(root,args={}){if(typeof args.message!=='string'||!args.messag
 
 
 const READ=new Set(['project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search','git_status','git_diff','git_log','git_show','git_branches','git_changed_files','get_capabilities','discover_instructions','update_plan']);
-const WRITE=new Set(['init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch','git_commit','shell','run_tests']);
+const WRITE=new Set(['init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone','shell','run_tests']);
 function getToolPolicy(tool,args={}){if(!READ.has(tool)&&!WRITE.has(tool))throw new Error('unknown local tool: '+tool);const secret=tool==='read_file'&&looksSensitiveFile(String(args.path||''));return{tool,requiresApproval:WRITE.has(tool)||secret,automatic:!(WRITE.has(tool)||secret)};}
 function getCapabilities(root){return{workspaceRoot:root,protocol:'chatgpt-local-tools-v2',tools:[
 {name:'get_capabilities',mode:'read'},{name:'project_status',mode:'read'},{name:'environment_info',mode:'read'},
@@ -94,6 +94,7 @@ function getCapabilities(root){return{workspaceRoot:root,protocol:'chatgpt-local
 {name:'read_file',mode:'read-or-approval-for-secret-like-paths'},{name:'file_info',mode:'read'},{name:'search',mode:'read'},
 {name:'git_status',mode:'read'},{name:'git_diff',mode:'read'},{name:'git_log',mode:'read'},{name:'git_show',mode:'read'},
 {name:'git_branches',mode:'read'},{name:'git_changed_files',mode:'read'},{name:'discover_instructions',mode:'read'},
+{name:'git_fetch',mode:'approval'},{name:'git_pull',mode:'approval'},{name:'git_push',mode:'approval'},{name:'git_clone',mode:'approval'},
 {name:'init',mode:'approval'},{name:'write_file',mode:'approval'},{name:'apply_patch',mode:'approval'},
 {name:'create_directory',mode:'approval'},{name:'move_path',mode:'approval'},{name:'delete_path',mode:'approval'},
 {name:'git_create_branch',mode:'approval'},{name:'git_switch_branch',mode:'approval'},{name:'git_commit',mode:'approval'},
@@ -120,6 +121,7 @@ async function executeTool(rootInput,tool,args={}){
  case'git_create_branch':return gitCreateBranch(root,args);
  case'git_switch_branch':return gitSwitchBranch(root,args);
  case'git_commit':return gitCommit(root,args);
+ case'git_fetch':case'git_pull':case'git_push':case'git_clone':throw new Error('This operation requires the desktop app GitHub credential and must run through the native tool bridge.');
  case'discover_instructions':return discoverInstructions(root,args);
  case'init':return initWorkspace(root);
  case'write_file':return writeFile(root,args);

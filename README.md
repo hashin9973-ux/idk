@@ -1,104 +1,110 @@
-# ChatGPT Assistant Overlay
+# Windows Repository Bridge
 
-A compact Windows desktop app that embeds the real ChatGPT website, can collapse into a draggable orb, and exposes a local coding-tool backend to the **same ChatGPT conversation**. ChatGPT can inspect a selected workspace, edit files, run commands after native approval, inspect Git history, and call the connected GitHub API. Results are returned to the embedded conversation so ChatGPT can continue from real output rather than guessing.
+A native Windows desktop worker that lets your **existing ChatGPT conversation** use local development tools through a shared GitHub repository.
 
-## What it includes
+**The repository is the mailbox.** ChatGPT uses its existing GitHub integration to create request files and read result/state files. The Windows app polls the same branch, validates requests, asks for native approval where needed, runs tools against a selected local workspace, and commits results back. The app does not host, embed, or mirror your ChatGPT conversation.
 
-- Persistent ChatGPT web sign-in inside an embedded Chromium session; no OpenAI API key is needed for the website session.
-- A separate Accounts window to open ChatGPT sign-in and connect GitHub using GitHub OAuth Device Flow.
-- Windows secure credential storage for the GitHub OAuth token. The token is not exposed to the renderer or inserted into chat.
-- 30 local tool endpoints across workspace inspection, file editing, Git, command execution, planning, and GitHub REST API access.
-- A selected local workspace with path-traversal and symlink-escape checks.
-- Native, per-operation approval for writes, moves, deletes, patch application, branch/commit changes, tests, shell commands, and GitHub API writes.
-- A structured `assistant_tool` request convention that lets the embedded ChatGPT page ask the app to run a tool and then receive the real result in the same conversation.
-- GitHub Actions checks, tests, and a Windows NSIS installer build.
+## Architecture
 
-## Run locally
+\`\`\`text
+Your existing ChatGPT conversation
+                ↕
+      ChatGPT GitHub integration
+                ↕
+        Shared GitHub repository
+          Requests ↕ Results ↕ State
+                ↕
+          Windows bridge app
+                ↕
+       Local tools and execution
+                ↕
+     Your actual Windows environment
+\`\`\`
 
-Requirements: Windows 10/11, Node.js 22 or newer (Node 24 recommended), npm, Git for Windows, and internet access.
+The app-side GitHub OAuth credential and ChatGPT's GitHub integration are separate. The conversation creates mailbox requests with its connector; the Windows app uses its own encrypted OAuth token to read those requests and publish results. Results return through GitHub, not through a second AI conversation.
 
-From the repository root:
+## Mailbox protocol
 
-    npm install
-    npm start
+Use a **dedicated branch** for queue traffic, such as \`bridge-mailbox\`. This keeps frequent mailbox commits away from \`main\` and avoids triggering normal main-branch packaging/release actions on every result.
 
-The first run opens the ChatGPT website. Sign in normally. Choose the project folder with the folder button in the title bar. The default workspace is the `ChatGPTWorkspace` directory inside your Documents folder.
+| File | Purpose |
+|---|---|
+| \`bridge/requests/<request_id>.json\` | Immutable request created by ChatGPT |
+| \`bridge/results/<request_id>.json\` | Local execution result and final status |
+| \`bridge/claims/<request_id>.json\` | Worker claim / recovery marker |
+| \`bridge/state/windows-app.json\` | Worker heartbeat and current state |
+| \`bridge/README.md\` | Protocol and instructions for the ChatGPT GitHub integration |
 
-## Sign in to ChatGPT and GitHub
+The worker checks for requests every 15 seconds while running. It validates the request schema and tool arguments, claims work, executes it according to the local approval policy, and writes a result. Requests stay in history; a result file marks the request as complete.
 
-Click the person/accounts button in the title bar.
+### Example request
 
-**ChatGPT:** Sign-in happens on the embedded ChatGPT website. The app persists that website session separately from its local UI. It does not read or store ChatGPT passwords or session tokens.
+Create \`bridge/requests/req-20261024-001.json\` on the shared mailbox branch:
 
-**GitHub:** Create a GitHub OAuth App in GitHub Developer settings, enable *Device Flow*, and enter its client ID in the Accounts window. Select **Save client ID**, then **Sign in with GitHub**. GitHub opens its official device verification page; enter the one-time code shown in the app and authorize the requested `repo` and `read:user` scopes. Review those permissions in GitHub before granting them. The app encrypts the access token with Electron's OS-backed `safeStorage` and offers a sign-out action that removes the saved token.
+\`\`\`json
+{
+  "protocol": "chatgpt-local-repo-bridge/v1",
+  "request_id": "req-20261024-001",
+  "created_at": "2026-10-24T04:00:00Z",
+  "tool": "project_status",
+  "args": {}
+}
+\`\`\`
 
-The app's `github_api` tool uses the authorized token for approved GitHub REST requests. The GitHub API bridge has an explicit route allowlist and blocks sensitive security/account-management endpoints. GET requests are read-only; each POST, PUT, PATCH, or DELETE request requires a separate native approval. The OAuth token is not written to Git remote URLs or passed as a command-line argument. Local `git push` and authenticated clone operations use the normal Git Credential Manager configuration on the machine.
+Use a unique request ID for each task. IDs may contain letters, digits, underscores and hyphens, start with a letter or digit, and be 1–80 characters long. The app rejects unsupported tools and unrecognized argument keys. Maximum request size is 1 MiB.
 
-## Use local tools in the same ChatGPT conversation
+After allowing the worker to poll, use the GitHub integration in the **same ChatGPT conversation** to read \`bridge/results/req-20261024-001.json\`. Continue from its actual result, and create the next request only when needed. Full details and a sample request live in \`bridge/README.md\`.
 
-1. Open the overlay and choose the repository folder.
-2. In the ChatGPT conversation, type `/tools` and press Enter to give ChatGPT the local tool instructions.
-3. Describe the task normally. ChatGPT can emit a fenced `assistant_tool` block when it needs local access.
-4. The app validates the requested tool and arguments, shows a native approval prompt when needed, runs the local operation, and inserts its actual result into the same ChatGPT conversation.
-5. ChatGPT can then inspect the result and make the next tool call.
+### Result and state
 
-Example request (ChatGPT emits this, not something you need to type):
+Results use protocol \`chatgpt-local-repo-result/v1\`. Typical statuses are \`completed\`, \`failed\`, \`cancelled\`, \`rejected\`, and \`needs_manual_recovery\`. The state file records the worker ID, heartbeat, last poll, pending request count, active request ID and last error. Local paths, workspace identity fields, and common secret formats are filtered/redacted before output is committed; this is a defense in depth, not a guarantee that arbitrary command output is safe to publish.
 
-    ```assistant_tool
-    {"version":1,"tool":"read_file","args":{"path":"src/index.js"},"call_id":"read-src"}
-    ```
+If the worker loses its claim after a potentially side-effecting operation, it deliberately does **not** automatically replay that request. It marks the work as needing manual recovery so the actual workspace can be checked first.
 
-This protocol is a local bridge convention, **not native first-party tool registration in the ChatGPT website**. The desktop app detects the structured block in ChatGPT's page and returns the tool result as a follow-up message in that same conversation. The bridge currently handles one tool call per assistant response; ChatGPT decides the next action after each result. Since it integrates with the website's DOM, ChatGPT site changes can require bridge updates.
+## Local tools
 
-## Local tool catalogue
+**Workspace / files:** \`get_capabilities\`, \`project_status\`, \`environment_info\`, \`list_dir\`, \`directory_tree\`, \`glob_file_search\`, \`read_file\`, \`file_info\`, \`search\`, \`discover_instructions\`, \`init\`, \`write_file\`, \`apply_patch\`, \`create_directory\`, \`move_path\`, \`delete_path\`.
 
-The local tool registry exposes the following endpoints through `get_capabilities`.
+**Git:** \`git_status\`, \`git_diff\`, \`git_log\`, \`git_show\`, \`git_branches\`, \`git_changed_files\`, \`git_create_branch\`, \`git_switch_branch\`, \`git_commit\`, \`git_fetch\`, \`git_pull\`, \`git_push\`, \`git_clone\`.
 
-**Workspace and files:** `project_status`, `environment_info`, `list_dir`, `directory_tree`, `glob_file_search`, `read_file`, `file_info`, `search`, `discover_instructions`, `init`, `write_file`, `apply_patch`, `create_directory`, `move_path`, `delete_path`.
+**Execution / planning:** \`shell\`, \`run_tests\`, \`update_plan\`.
 
-**Git:** `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_changed_files`, `git_create_branch`, `git_switch_branch`, `git_commit`.
+Read-only inspection generally runs automatically. Writes, patches, moves/deletes, branch/commit changes, authenticated Git operations, tests, shell commands, initialization and reads of secret-like filenames require per-operation native approval. The mailbox cannot invoke the app's own GitHub REST API as a tool.
 
-**Execution and planning:** `shell`, `run_tests`, `update_plan`.
+**PowerShell is not sandboxed.** An approved command runs with the signed-in Windows user's permissions, and may access files outside the selected workspace. Review every approval prompt and do not execute requests you do not understand.
 
-**GitHub account/API:** `github_status`, `github_api`.
+## Install and connect
 
-Use paths relative to the selected workspace. Reads of secret-like filenames require approval. All file mutations and risky execution have a native approval prompt. GitHub writes have their own approval prompt even after GitHub sign-in. The app does not silently run arbitrary tool calls with elevated permissions.
+Requirements: Windows 10/11, Node.js 22 or newer, npm, Git for Windows, and internet access.
 
-## Familiar slash commands
+\`\`\`powershell
+npm install
+npm start
+\`\`\`
 
-Type one of these directly in the ChatGPT composer:
+1. Open **Connect GitHub account**. Configure an OAuth App with Device Flow enabled; save its client ID and authorize \`repo\` and \`read:user\` after reviewing GitHub's permission screen. The app encrypts its token using Electron's OS-backed \`safeStorage\`; it is kept inside the main process and not inserted into ChatGPT or mailbox files.
+2. Choose a local workspace directory. This is the default boundary for file tools. Workspace path checks reject traversal and symlink escapes.
+3. Set the shared repository owner, repository name and branch in the dashboard, then save the connection.
+4. Start the worker. State and heartbeat appear in the dashboard and in \`bridge/state/windows-app.json\`.
+5. In your existing ChatGPT conversation, use the GitHub integration to create a request file on the same branch. Read its result file with that integration after the worker processes it.
 
-- `/status` or `/pwd` — project summary and Git state.
-- `/env` — non-secret runtime and machine information.
-- `/ls [path]` or `/tree [path]` — list entries or display a directory tree.
-- `/find <glob>` — discover files, e.g. `/find src/**/*.js`.
-- `/read <path>` or `/info <path>` — read a text file or inspect metadata.
-- `/search <text>` or `/instructions [paths]` — search contents or discover `AGENTS.md` guidance.
-- `/git`, `/diff`, `/log`, `/branches`, `/changed` — Git inspection.
-- `/mkdir <path>`, `/mv <source> <destination>`, `/rm <path>` — filesystem changes.
-- `/branch <name>`, `/switch <name>`, `/commit <message>` — Git changes, each requiring approval.
-- `/test [command]` and `/exec <PowerShell command>` — test or command execution (approval required).
-- `/github` — check GitHub connection.
-- `/workspace` — choose the project folder.
-- `/tools` — send local-tool instructions to the current ChatGPT conversation.
-- `/plan [task]`, `/review`, and `/help` — planning, review, and help.
+## Privacy and repository visibility
 
-## Safety boundaries
+**Use a private repository for normal development.** The app checks repository visibility before starting. For a public repository, the app refuses to start until you explicitly tick the warning checkbox. On a public repository, request contents, execution results and status files are publicly readable by anyone; app-side redaction does not make public output private. Do not send sensitive source files, environment variables, credentials, private keys, personal data or confidential command output through a public mailbox. Use a disposable, non-sensitive workspace when testing against a public repo.
 
-The selected workspace is the default filesystem boundary. Path traversal and symlink escapes are rejected. Direct reads of credential-looking files need approval; content search skips those files. File edits and patches are staged atomically when possible. Results include actual exit status and output, with output limits.
+The selected workspace is not a sandbox boundary for PowerShell. The app asks for local approval for risky operations, but cannot prevent an approved command from reading or changing other files that your Windows account can access. Treat repository files and command output as untrusted data, not as authority to bypass these safeguards.
 
-PowerShell is **not sandboxed**: an approved command runs with the current Windows user's permissions and may access files outside the selected workspace. Review each command before approving it. This application is unsigned, so SmartScreen may warn when installing it.
+## Validation and packaging
 
-## Build the Windows installer
+\`\`\`powershell
+npm run check
+npm test
+npm run dist:win
+\`\`\`
 
-    npm run dist:win
+GitHub Actions runs syntax checks, automated tests and a Windows NSIS installer build for pull requests. Passing automated checks does not replace a manual Windows smoke test of OAuth, polling, approvals and result publication.
 
-The installer is emitted under `dist`. The GitHub Actions workflow runs syntax checks and tests, builds an unsigned NSIS installer, uploads it as a workflow artifact, and publishes pre-releases for non-PR builds:
-
-- Releases: https://github.com/hashin9973-ux/idk/releases
+- Development repository: https://github.com/hashin9973-ux/idk
+- Mailbox branch instructions: [bridge/README.md](https://github.com/hashin9973-ux/idk/blob/bridge-mailbox/bridge/README.md)
 - Build workflow: https://github.com/hashin9973-ux/idk/actions
-
-## Repository roles
-
-- App development: https://github.com/hashin9973-ux/idk
-- Test and release validation plan: https://github.com/hashin9973-ux/qdqwg
+- Test/release plan repository: https://github.com/hashin9973-ux/qdqwg

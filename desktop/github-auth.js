@@ -1,17 +1,19 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const BLOCKED_PATH_SEGMENTS = new Set([
-  'secrets', 'dependabot', 'secret-scanning', 'code-scanning', 'billing',
-  'audit-log', 'scim', 'public-keys', 'ssh-signing-keys', 'codespaces-secrets'
-]);
 
 function cleanError(value) {
   return String(value || 'GitHub request failed').replace(/[\r\n]+/g, ' ').slice(0, 500);
 }
 
-function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl = globalThis.fetch }) {
+function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl = globalThis.fetch, execFileAsyncImpl = promisify(execFile) }) {
   let pendingDevice = null;
 
   function githubSettings() {
@@ -31,6 +33,10 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } catch {
       throw new Error('The saved GitHub token could not be decrypted. Sign in again.');
     }
+  }
+
+  function hasSavedToken() {
+    try { return Boolean(getToken()); } catch { return false; }
   }
 
   function saveToken(token) {
@@ -62,8 +68,134 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (Buffer.byteLength(text, 'utf8') > MAX_RESPONSE_BYTES) throw new Error('GitHub response exceeded the 1 MiB limit.');
     let value;
     try { value = text ? JSON.parse(text) : {}; } catch { throw new Error('GitHub returned an unexpected non-JSON response.'); }
-    if (!response.ok) throw new Error(cleanError(value.message || value.error_description || value.error || response.statusText));
+    if (!response.ok) {
+      const message = cleanError(value.message || value.error_description || value.error || response.statusText);
+      throw new Error('GitHub HTTP ' + response.status + ': ' + message);
+    }
     return value;
+  }
+
+  function validateMailboxRequest(input = {}) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('Repository API request must be an object.');
+    }
+    const method = String(input.method || 'GET').toUpperCase();
+    const pathValue = input.path;
+    if (!['GET', 'PUT'].includes(method)) throw new Error('The repository bridge only permits GitHub GET and PUT requests.');
+    if (typeof pathValue !== 'string' || !pathValue.startsWith('/') || pathValue.includes('\\') ||
+        pathValue.includes('%') || pathValue.includes('?') || pathValue.includes('#')) {
+      throw new Error('Invalid GitHub repository API path.');
+    }
+    const rootSettings = getSettings() || {};
+    const bridge = rootSettings.repositoryBridge || {};
+    const owner = String(bridge.owner || '').trim();
+    const repository = String(bridge.repo || '').trim();
+    const branch = validateBranch(bridge.branch || 'bridge-mailbox');
+    const namePattern = /^[A-Za-z0-9_.-]{1,100}$/;
+    if (!namePattern.test(owner) || owner === '.' || owner === '..' ||
+        !namePattern.test(repository) || repository === '.' || repository === '..') {
+      throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
+    }
+    const base = '/repos/' + owner + '/' + repository;
+    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state']);
+    let relative = '';
+    let kind = '';
+
+    if (pathValue === base) {
+      if (method !== 'GET' || input.body !== undefined || input.query !== undefined) {
+        throw new Error('Only repository metadata GET is allowed at this endpoint.');
+      }
+      return { method, path: base, query: undefined, body: undefined, url: 'https://api.github.com' + base };
+    }
+
+    const prefix = base + '/contents/';
+    if (!pathValue.startsWith(prefix)) throw new Error('GitHub route is outside the configured repository mailbox.');
+    relative = pathValue.slice(prefix.length);
+    const parts = relative.split('/');
+    if (parts.some(part => !part || part === '.' || part === '..' || !/^[A-Za-z0-9_.-]+$/.test(part))) {
+      throw new Error('Invalid repository mailbox path segment.');
+    }
+    if (relative === 'bridge/README.md') {
+      kind = 'documentation';
+    } else if (parts.length === 2 && allowedFolders.has(relative)) {
+      kind = 'directory';
+    } else if (parts.length === 3 && allowedFolders.has(parts.slice(0, 2).join('/')) &&
+        (parts[2] === '.gitkeep' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(parts[2]))) {
+      kind = 'file';
+    } else if (relative === 'bridge/state/windows-app.json') {
+      kind = 'state';
+    } else {
+      throw new Error('Path is outside the supported repository mailbox folders.');
+    }
+
+    if (method === 'GET') {
+      if (input.body !== undefined) throw new Error('GET requests cannot include a body.');
+      if (!input.query || typeof input.query !== 'object' || Array.isArray(input.query) ||
+          Object.keys(input.query).length !== 1 || input.query.ref !== branch) {
+        throw new Error('Mailbox reads must target the configured branch only.');
+      }
+      return {
+        method, path: pathValue, query: { ref: branch }, body: undefined,
+        url: 'https://api.github.com' + pathValue + '?ref=' + encodeURIComponent(branch)
+      };
+    }
+
+    if (kind !== 'file' && kind !== 'state') throw new Error('PUT is only permitted for mailbox file records.');
+    if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
+    const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
+    if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
+        typeof input.body.message !== 'string' || input.body.message.length > 200 ||
+        typeof input.body.content !== 'string' || input.body.content.length > MAX_RESPONSE_BYTES ||
+        input.body.branch !== branch ||
+        (input.body.sha !== undefined && (typeof input.body.sha !== 'string' || !/^[0-9a-f]{40}$/i.test(input.body.sha)))) {
+      throw new Error('Invalid or unsupported mailbox write payload.');
+    }
+    let payload;
+    try {
+      const decoded = Buffer.from(input.body.content, 'base64').toString('utf8');
+      payload = JSON.parse(decoded);
+    } catch {
+      throw new Error('Mailbox write content must be Base64-encoded JSON.');
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Mailbox file content must be a JSON object.');
+    const isFolderMarker = parts.length === 3 && parts[2] === '.gitkeep';
+    if (relative.startsWith('bridge/requests/') && !isFolderMarker) {
+      throw new Error('The Windows worker cannot create or overwrite ChatGPT request files.');
+    }
+    if (!isFolderMarker && relative.startsWith('bridge/results/') && payload.protocol !== 'chatgpt-local-repo-result/v1') {
+      throw new Error('Result files must use the supported result protocol.');
+    }
+    if (!isFolderMarker && relative.startsWith('bridge/claims/') && payload.protocol !== 'chatgpt-local-repo-claim/v1') {
+      throw new Error('Claim files must use the supported claim protocol.');
+    }
+    if (relative === 'bridge/state/windows-app.json' && payload.protocol !== 'chatgpt-local-repo-state/v1') {
+      throw new Error('Shared state files must use the supported state protocol.');
+    }
+    const body = {
+      message: input.body.message,
+      content: input.body.content,
+      branch,
+      ...(input.body.sha ? { sha: input.body.sha } : {})
+    };
+    return { method, path: pathValue, body, query: undefined, url: 'https://api.github.com' + pathValue };
+  }
+
+  async function requestApi(input = {}) {
+    const route = validateMailboxRequest(input);
+    const token = getToken();
+    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using the repository mailbox.');
+    const response = await fetchImpl(route.url, {
+      method: route.method,
+      headers: {
+        Authorization: 'Bearer ' + token,
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        ...(route.body ? { 'Content-Type': 'application/json' } : {})
+      },
+      ...(route.body ? { body: JSON.stringify(route.body) } : {}),
+      signal: AbortSignal.timeout(15000)
+    });
+    return { status: response.status, result: await readJson(response) };
   }
 
   async function getState() {
@@ -72,7 +204,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       configured: typeof settings.clientId === 'string' && OAUTH_CLIENT_ID_PATTERN.test(settings.clientId),
       clientId: typeof settings.clientId === 'string' ? settings.clientId : '',
       authenticated: false,
-      login: ''
+      login: '',
     };
     const token = getToken();
     if (!token) return state;
@@ -175,69 +307,214 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     return { authenticated: false, loggedOut: true };
   }
 
-  function validateApiPath(raw) {
-    if (typeof raw !== 'string' || raw.length < 2 || raw.length > 500 || !raw.startsWith('/') ||
-        raw.includes('://') || raw.includes('\\') || raw.includes('//') || raw.split('/').includes('..') ||
-        /[\r\n?#]/.test(raw) || /%2f|%5c|%2e/i.test(raw)) {
-      throw new Error('GitHub API path must be a relative API path beginning with / and must not contain traversal or query syntax.');
+  function validateRepository(value) {
+    if (typeof value !== 'string') throw new Error('repository must be owner/repository.');
+    const repository = value.trim().replace(/\.git$/i, '');
+    const parts = repository.split('/');
+    const partPattern = /^[A-Za-z0-9_.-]{1,100}$/;
+    if (parts.length !== 2 || parts.some(part => !partPattern.test(part) || part === '.' || part === '..')) {
+      throw new Error('repository must be a valid GitHub owner/repository name.');
     }
-    const allowed = /^\/(?:user(?:\/repos)?|repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)?|search\/(?:repositories|code|issues|commits)|rate_limit)(?:\/[A-Za-z0-9_.-]+)*$/;
-    if (!allowed.test(raw)) throw new Error('This GitHub API path is not in the app allowlist.');
-    const segments = raw.toLowerCase().split('/').filter(Boolean);
-    if (segments.some(segment => BLOCKED_PATH_SEGMENTS.has(segment))) {
-      throw new Error('This GitHub API path is blocked because it accesses sensitive security or account-management resources.');
-    }
-    return raw;
+    return parts[0] + '/' + parts[1];
   }
 
-  async function requestApi(args = {}) {
-    const method = String(args.method || 'GET').toUpperCase();
-    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw new Error('method must be GET, POST, PUT, PATCH, or DELETE.');
-    const apiPath = validateApiPath(args.path);
-    if (args.body !== undefined && (!args.body || typeof args.body !== 'object' || Array.isArray(args.body))) {
-      throw new Error('body must be a JSON object.');
+  function validateBranch(value) {
+    const branch = String(value || '').trim();
+    const parts = branch.split('/');
+    const forbidden = ['~', '^', ':', '?', '*', '[', ']', '\\'];
+    if (!branch || branch.length > 200 || branch.startsWith('-') || branch.startsWith('/') || branch.endsWith('/') ||
+        branch.includes('//') || branch.includes('..') || branch.includes('@{') ||
+        /[\x00-\x20\x7f]/.test(branch) || forbidden.some(character => branch.includes(character)) ||
+        parts.some(part => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))) {
+      throw new Error('branch must be a valid Git branch name.');
     }
-    if (args.query !== undefined && (!args.query || typeof args.query !== 'object' || Array.isArray(args.query))) {
-      throw new Error('query must be a JSON object.');
+    return branch;
+  }
+
+  function validateRemoteName(value) {
+    const remote = String(value || 'origin').trim();
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/.test(remote)) {
+      throw new Error('remote must be a simple Git remote name such as origin.');
     }
-    if (method === 'GET' && args.body !== undefined) throw new Error('GET requests must not include a body.');
+    return remote;
+  }
+
+  function normalizeGitHubRemote(raw) {
+    const value = String(raw || '').trim();
+    let repositoryPath = '';
+    if (/^git@github\.com:/i.test(value)) {
+      repositoryPath = value.replace(/^git@github\.com:/i, '');
+    } else {
+      let url;
+      try { url = new URL(value); } catch { throw new Error('The selected Git remote is not a valid GitHub URL.'); }
+      const credentialsAreValid = url.protocol === 'ssh:'
+        ? url.username.toLowerCase() === 'git' && !url.password
+        : !url.username && !url.password;
+      if (url.hostname.toLowerCase() !== 'github.com' || !credentialsAreValid ||
+          !['https:', 'ssh:', 'git:'].includes(url.protocol) || url.port || url.search || url.hash ||
+          url.pathname.includes('//')) {
+        throw new Error('Authenticated local Git operations are restricted to credential-free GitHub remotes.');
+      }
+      repositoryPath = url.pathname.replace(/^\/+/, '');
+    }
+    repositoryPath = repositoryPath.replace(/\/+$/, '').replace(/\.git$/i, '');
+    const repository = validateRepository(repositoryPath);
+    return {
+      repository,
+      url: 'https://github.com/' + repository + '.git'
+    };
+  }
+
+  function redactOutput(value, token) {
+    let text = String(value || '');
+    if (token) {
+      text = text.split(token).join('[REDACTED]');
+      const encoded = Buffer.from('x-access-token:' + token, 'utf8').toString('base64');
+      if (encoded) text = text.split(encoded).join('[REDACTED]');
+    }
+    return text.replace(/authorization:\s*basic\s+\S+/ig, 'Authorization: [REDACTED]')
+      .slice(0, MAX_RESPONSE_BYTES);
+  }
+
+  async function runGitOperation(input = {}) {
+    const operation = String(input.operation || '');
+    if (!['fetch', 'pull', 'push', 'clone'].includes(operation)) {
+      throw new Error('Git operation must be fetch, pull, push, or clone.');
+    }
     const token = getToken();
-    if (!token) throw new Error('Sign in to GitHub from the app Accounts dialog before using github_api.');
-    const url = new URL('https://api.github.com' + apiPath);
-    if (args.query) {
-      for (const [key, value] of Object.entries(args.query)) {
-        if (!/^[A-Za-z][A-Za-z0-9_-]{0,60}$/.test(key)) throw new Error('Invalid GitHub query parameter name.');
-        if (value === undefined || value === null) continue;
-        url.searchParams.set(key, Array.isArray(value) ? value.join(',') : String(value));
+    if (!token) throw new Error('Sign in with GitHub in the app Accounts window before using authenticated Git operations.');
+
+    const cwd = path.resolve(String(input.cwd || ''));
+    if (!input.cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
+      throw new Error('The selected local workspace is unavailable.');
+    }
+    const timeoutMs = Number.isInteger(input.timeoutMs) ? Math.min(Math.max(input.timeoutMs, 1000), 180000) : 120000;
+    async function executeGit(args, commandCwd = cwd) {
+      // Git hooks inherit a process environment. Use a fresh, empty hooks directory
+      // for each authenticated command so repository-configured hooks cannot read
+      // the temporary HTTP authorization header from their parent environment.
+      const emptyHooksPath = fs.mkdtempSync(path.join(os.tmpdir(), 'chatgpt-assistant-git-hooks-'));
+      const authEnvironment = {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_COUNT: '3',
+        GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+        GIT_CONFIG_VALUE_0: 'AUTHORIZATION: basic ' + Buffer.from('x-access-token:' + token, 'utf8').toString('base64'),
+        GIT_CONFIG_KEY_1: 'credential.helper',
+        GIT_CONFIG_VALUE_1: '',
+        GIT_CONFIG_KEY_2: 'core.hooksPath',
+        GIT_CONFIG_VALUE_2: emptyHooksPath
+      };
+      try {
+        try {
+          const result = await execFileAsyncImpl('git', args, {
+            cwd: commandCwd,
+            env: authEnvironment,
+            encoding: 'utf8',
+            timeout: timeoutMs,
+            maxBuffer: 2 * MAX_RESPONSE_BYTES,
+            windowsHide: true,
+            shell: false
+          });
+          return {
+            exitCode: 0,
+            stdout: redactOutput(result.stdout, token),
+            stderr: redactOutput(result.stderr, token),
+            timedOut: false
+          };
+        } catch (error) {
+          if (error && error.code === 'ENOENT') throw new Error('Git for Windows was not found on PATH.');
+          const timedOut = Boolean(error && (error.killed || error.code === 'ETIMEDOUT'));
+          return {
+            exitCode: timedOut ? 124 : (Number.isInteger(error && error.code) ? error.code : 1),
+            stdout: redactOutput(error && error.stdout, token),
+            stderr: redactOutput(error && error.stderr, token),
+            timedOut
+          };
+        }
+      } finally {
+        try { fs.rmSync(emptyHooksPath, { recursive: true, force: true }); } catch {}
       }
     }
-    const options = {
-      method,
-      headers: {
-        Authorization: 'Bearer ' + token,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      },
-      signal: AbortSignal.timeout(30000)
-    };
-    if (args.body !== undefined && method !== 'GET') {
-      const body = JSON.stringify(args.body);
-      if (Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) throw new Error('GitHub request body exceeds the 1 MiB limit.');
-      options.headers['Content-Type'] = 'application/json';
-      options.body = body;
+
+    if (operation === 'clone') {
+      const repository = validateRepository(input.repository);
+      const destination = path.resolve(String(input.destination || ''));
+      if (!input.destination || destination === cwd) {
+        throw new Error('clone requires a new relative destination inside the selected workspace.');
+      }
+      const relative = path.relative(cwd, destination);
+      if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+        throw new Error('clone destination must stay inside the selected workspace.');
+      }
+      const parent = path.dirname(destination);
+      if (!fs.existsSync(parent) || !fs.statSync(parent).isDirectory()) {
+        throw new Error('clone destination parent must already exist inside the workspace.');
+      }
+      if (fs.existsSync(destination)) {
+        const stat = fs.lstatSync(destination);
+        if (stat.isSymbolicLink() || !stat.isDirectory() || fs.readdirSync(destination).length) {
+          throw new Error('clone destination must not exist or must be an empty, non-symlink directory.');
+        }
+      }
+      const args = ['clone'];
+      if (input.branch !== undefined && input.branch !== null && String(input.branch).trim()) {
+        args.push('--branch', validateBranch(input.branch));
+      }
+      args.push('--', 'https://github.com/' + repository + '.git', destination);
+      const result = await executeGit(args, parent);
+      return {
+        operation,
+        repository,
+        path: relative.split(path.sep).join('/'),
+        cwd,
+        ...result
+      };
     }
-    const response = await fetchImpl(url, options);
-    const data = await readJson(response);
+
+    if (!fs.existsSync(path.join(cwd, '.git'))) {
+      throw new Error('The selected workspace is not a Git checkout.');
+    }
+    const remote = validateRemoteName(input.remote || 'origin');
+    const remoteResult = await executeGit(['remote', 'get-url', remote]);
+    if (remoteResult.exitCode !== 0) throw new Error('The local Git checkout has no readable remote named "' + remote + '".');
+    const normalized = normalizeGitHubRemote(remoteResult.stdout.trim());
+    let branch = '';
+
+    if (operation === 'pull' || operation === 'push') {
+      const branchResult = await executeGit(['branch', '--show-current']);
+      const currentBranch = branchResult.stdout.trim();
+      if (branchResult.exitCode !== 0 || !currentBranch) {
+        throw new Error(operation + ' requires a checked-out local branch; detached HEAD is not supported.');
+      }
+      branch = input.branch !== undefined && String(input.branch).trim()
+        ? validateBranch(input.branch)
+        : validateBranch(currentBranch);
+      if (operation === 'pull' && branch !== currentBranch) {
+        throw new Error('pull only updates the currently checked-out branch. Select "' + branch + '" first or omit the branch argument.');
+      }
+    }
+
+    let args;
+    if (operation === 'fetch') {
+      args = ['fetch', '--prune', normalized.url, '+refs/heads/*:refs/remotes/' + remote + '/*'];
+    } else if (operation === 'pull') {
+      args = ['pull', '--ff-only', normalized.url, branch];
+    } else {
+      args = ['push', normalized.url, 'HEAD:refs/heads/' + branch];
+    }
+    const result = await executeGit(args);
     return {
-      method,
-      path: apiPath,
-      status: response.status,
-      rateLimitRemaining: response.headers?.get?.('x-ratelimit-remaining') || null,
-      result: data
+      operation,
+      repository: normalized.repository,
+      remote,
+      ...(branch ? { branch } : {}),
+      cwd,
+      ...result
     };
   }
 
-  return { getState, setClientId, startLogin, pollLogin, logout, requestApi };
+  return { getState, setClientId, startLogin, pollLogin, logout, hasSavedToken, runGitOperation, requestApi };
 }
 
 module.exports = { createGitHubAuth, OAUTH_CLIENT_ID_PATTERN };
