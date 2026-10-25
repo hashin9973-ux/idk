@@ -538,6 +538,13 @@ function createToolBridge(deps) {
       const dependencies = [...collectBatchRefIds(step.args)];
       const task = (async () => {
         await Promise.all(dependencies.map(id => taskById.get(id)));
+        const failedDependency = dependencies.find(id => !outcomeById.get(id) || outcomeById.get(id).ok !== true);
+        if (failedDependency) {
+          const skipped = { ok: false, skipped: true, error: 'Not started because dependency ' + failedDependency + ' did not succeed.' };
+          completed.set(step.id, skipped);
+          outcomeById.set(step.id, skipped);
+          return skipped;
+        }
         if (stopOnError && index > firstFailureIndex) {
           const skipped = { ok: false, skipped: true, error: 'Not started because an earlier batch step failed or was cancelled.' };
           completed.set(step.id, skipped);
