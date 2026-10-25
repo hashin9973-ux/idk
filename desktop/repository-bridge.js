@@ -834,6 +834,17 @@ function createRepositoryBridge(deps) {
         lastPollAt = new Date().toISOString();
         lastError = '';
         announce();
+        const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
+        const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);
+        const contextWorkspaceChanged = Boolean(lastContextRefreshAt) && currentWorkspace !== lastContextWorkspace;
+        if (publishContextOnStart && (contextWorkspaceChanged || contextExpired)) {
+          try {
+            await publishEnvironmentContext();
+          } catch (error) {
+            lastError = 'Background context refresh failed: ' + cleanError(error.message);
+            announce();
+          }
+        }
         await publishState(firstPoll);
         for (const filename of pending) {
           if (!running) break;
