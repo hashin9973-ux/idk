@@ -461,13 +461,14 @@ function createRepositoryBridge(deps) {
       collect(output, null, null, strings, arrays);
       strings.sort((a, b) => b.length - a.length);
       if (strings.length) {
-        const slot = strings[0];
-        const nextLength = Math.max(48, Math.floor(slot.length / 2));
-        if (nextLength <= marker.length + 8) {
-          slot.parent[slot.key] = slot.value.slice(0, Math.max(24, nextLength - 3)) + '…';
-        } else {
-          const keep = Math.floor((nextLength - marker.length) / 2);
-          slot.parent[slot.key] = slot.value.slice(0, keep) + marker + slot.value.slice(-keep);
+        for (const slot of strings) {
+          const nextLength = Math.max(48, Math.floor(slot.length / 2));
+          if (nextLength <= marker.length + 8) {
+            slot.parent[slot.key] = slot.value.slice(0, Math.max(24, nextLength - 3)) + '…';
+          } else {
+            const keep = Math.floor((nextLength - marker.length) / 2);
+            slot.parent[slot.key] = slot.value.slice(0, keep) + marker + slot.value.slice(-keep);
+          }
         }
       } else {
         arrays.sort((a, b) => b.estimate - a.estimate);
