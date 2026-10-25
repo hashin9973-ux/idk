@@ -25,7 +25,7 @@ test('packaging includes the native Windows worker and mailbox implementation', 
 test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
-  for (const id of ['github-row', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'minimize', 'quit']) {
+  for (const id of ['github-row', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(renderer, /GitHub connected/);
@@ -33,6 +33,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
   assert.match(renderer, /windowsBridge\.startGitHubLogin/);
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
+  assert.match(renderer, /windowsBridge\.selectWorkspace/);
+  assert.match(renderer, /Workspace: /);
+  assert.match(renderer, /Current folder: /);
   assert.match(renderer, /Auto-accept everything: ON/);
   assert.doesNotMatch(html, /titlebar|brand-copy|settings-panel|worker-toggle|Start worker|open-chatgpt|workspace-heading|details-panel/);
   assert.match(html, /auto-accept-row/);
@@ -48,6 +51,9 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /bringMainWindowForward/);
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
+  assert.match(main, /'app:select-workspace'/);
+  assert.match(main, /function selectWorkspace\(\)/);
+  assert.match(main, /height: 164/);
   assert.match(main, /startGitHubCliLogin/);
   assert.match(main, /githubAuth\.importToken/);
   assert.match(main, /stdio: \['pipe', 'pipe', 'pipe'\]/);
@@ -63,10 +69,10 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'startGitHubLogin', 'pollGitHubLogin', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
-  assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|selectWorkspace|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
+  assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
 });
 
 test('repository mailbox has explicit request, result, claim and heartbeat paths', () => {
