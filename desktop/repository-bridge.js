@@ -10,6 +10,7 @@ const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 15000;
+const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_RESULT_BYTES = 90 * 1024;
@@ -140,6 +141,7 @@ function createRepositoryBridge(deps) {
     executeTool,
     onState = () => {},
     intervalMs = DEFAULT_INTERVAL_MS,
+    contextRefreshIntervalMs = DEFAULT_CONTEXT_REFRESH_MS,
     publishContextOnStart = false
   } = deps;
 
@@ -155,6 +157,8 @@ function createRepositoryBridge(deps) {
   let pendingCount = 0;
   let lastStatePublishAt = 0;
   const inMemoryClaims = new Set();
+  let lastContextRefreshAt = 0;
+  let lastContextWorkspace = '';
 
   function currentConfig() {
     const settings = getSettings() || {};
@@ -507,6 +511,7 @@ function createRepositoryBridge(deps) {
     const generatedAt = new Date().toISOString();
     const root = getWorkspaceRoot ? getWorkspaceRoot() : '';
     const files = {};
+    const contextReports = {};
     const collectors = [
       ['environment', 'environment_info', {}],
       ['project', 'project_status', {}],
@@ -528,6 +533,7 @@ function createRepositoryBridge(deps) {
           }));
           report.result.note = 'Instruction contents are intentionally not included in the environment snapshot. Request discover_instructions or read the relevant AGENTS.md file to retrieve content on demand.';
         }
+        contextReports[name] = report;
       } catch (error) {
         report = { ok: false, error: cleanError(error.message) };
       }
@@ -541,15 +547,40 @@ function createRepositoryBridge(deps) {
       await upsertContextJson(relativePath, record);
       files[name] = relativePath;
     }
+    const capabilityData = contextReports.capabilities && contextReports.capabilities.result || {};
+    const instructionData = contextReports.instructions && contextReports.instructions.result || {};
     const index = {
       protocol: CONTEXT_PROTOCOL,
       generated_at: generatedAt,
       worker_id: workerId,
       workspace_selected: Boolean(root),
-      retrieval_policy: 'Read this index first; retrieve only the context file(s) and source files relevant to the task. The snapshot may become stale; use refresh_environment_context or request live inspection.',
+      retrieval_policy: 'Use agent_context as the compact workspace and tool entry point. Detailed snapshots are available via files only when needed. Context is refreshed at startup, every few minutes, and when the selected workspace changes; request an explicit refresh if freshness matters.',
+      agent_context: {
+        protocol: 'chatgpt-local-agent-context/v1',
+        generated_at: generatedAt,
+        environment: contextReports.environment && contextReports.environment.result || null,
+        project: contextReports.project && contextReports.project.result || null,
+        directory_overview: contextReports.directory_tree && contextReports.directory_tree.result || null,
+        instruction_files: Array.isArray(instructionData.instructions) ? instructionData.instructions.map(item => ({ ...item, contents_included: false })) : [],
+        tool_catalog: {
+          protocol: capabilityData.protocol || null,
+          tools: Array.isArray(capabilityData.tools) ? capabilityData.tools : [],
+          tool_calling: capabilityData.tool_calling || null
+        },
+        operating_rules: [
+          'Use workspace-relative paths for file operations.',
+          'Inspect relevant project instructions and source before editing.',
+          'Batch known operations into one request; every step returns its own status and output.',
+          'Protected operations still require native Windows approval.',
+          'PowerShell is not sandboxed and runs as the signed-in Windows user.',
+          'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.'
+        ]
+      },
       files
     };
     await upsertContextJson('bridge/context/latest.json', index);
+    lastContextRefreshAt = Date.now();
+    lastContextWorkspace = String(root || '');
     return index;
   }
 
