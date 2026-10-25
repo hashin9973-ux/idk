@@ -732,13 +732,15 @@ function createRepositoryBridge(deps) {
         operating_rules: [
           'Use workspace-relative paths for file operations.',
           'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
-          'Inspect relevant project instructions and source before editing.',
-          'Batch known operations into one request; every step returns its own status and output.',
+          'Inspect relevant project instructions, manifests, existing source, and tests before editing; preserve unrelated changes.',
+          'For substantial work, define measurable acceptance criteria and a short plan. Choose architecture to match scope: do not collapse a complex game, app, or multi-system feature into one file unless the user explicitly asks.',
+          'Implement as integrated vertical slices with clear module boundaries. Batch related operations into one request; every step returns its own status and output. Do not run dependent verification before the edits it tests have completed.',
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
           'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.',
           'After creating a request, wait for bridge/results/<same-request-id>.json before treating it as finished or starting dependent work. A request or processing claim is not a result; if the result is missing, inspect windows-app state and the matching claim, then poll again rather than creating duplicates.',
-          'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, and stderr. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.'
+          'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, stderr, and truncation flags. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.',
+          'After edits, run project-native checks and tests, then a build and end-to-end smoke test when available. Fix failures and rerun verification. The final report must distinguish observed passing checks from unverified behavior; never claim tests, builds, or full playthroughs that were not actually run.'
         ]
       },
       files
