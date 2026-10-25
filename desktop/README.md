@@ -15,7 +15,7 @@ ChatGPT does not need a separate login inside this worker. **Sign in to ChatGPT*
 
 ## Trust boundaries
 
-- The worker polls the configured mailbox every 15 seconds.
+- The worker checks the mailbox every 2 seconds by default to minimize request/result latency. GitHub remains asynchronous, so a slow command or an unapproved operation may still take longer.
 - A private repository is strongly recommended because requests, results, context, and artifacts live in that repository.
 - Read-only workspace inspection normally runs without approval. File changes, Git writes, shell commands, tests, and uploads require native Windows approval.
 - PowerShell is not sandboxed: an approved command runs with the signed-in Windows user's permissions.
