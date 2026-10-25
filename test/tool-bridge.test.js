@@ -303,12 +303,67 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     const tools = result.result.tools;
     const batch = tools.find(item => item.name === 'batch');
     const write = tools.find(item => item.name === 'write_file');
+    const read = tools.find(item => item.name === 'read_file');
+    const search = tools.find(item => item.name === 'search');
+    const shell = tools.find(item => item.name === 'shell');
+    assert.equal(result.status, 'success');
+    assert.equal(result.result.tool_calling.catalog_version, 1);
     assert.equal(batch.parameters.properties.steps.type, 'array');
+    assert.equal(batch.parameters.properties.steps.maxItems, 20);
+    assert.ok(batch.parameters.properties.steps.items.properties.tool.enum.includes('read_file'));
+    assert.equal(batch.parameters.properties.steps.items.properties.tool.enum.includes('batch'), false);
     assert.deepEqual(write.parameters.required, ['path', 'content']);
+    assert.match(read.parameters.properties.path.description, /relative to the selected workspace/i);
+    assert.match(read.parameters.properties.startLine.description, /1-based/i);
+    assert.equal(search.parameters.properties.maxResults.default, 100);
+    assert.equal(shell.parameters.properties.timeoutMs.maximum, 120000);
+    assert.match(write.returns, /before\/after SHA-256/i);
     assert.match(batch.description, /one mailbox request/i);
     assert.equal(result.result.tool_calling.reference_syntax, '{\"$ref\":\"priorStepId.result.content\"}');
     assert.equal(tools.some(item => item.name === 'github_api'), false);
     assert.equal(tools.some(item => item.name === 'github_status'), false);
+    for (const tool of tools) {
+      assert.equal(tool.parameters.additionalProperties, false, tool.name);
+      for (const [name, schema] of Object.entries(tool.parameters.properties)) {
+        assert.ok(typeof schema.description === 'string' && schema.description.length > 10, tool.name + '.' + name);
+        assert.doesNotMatch(schema.description, /parameter for/i, tool.name + '.' + name);
+      }
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('batch keeps failure output and exit codes inline for the next agent decision', async () => {
+  const root = fixture();
+  try {
+    const fakeTools = {
+      ...localTools,
+      async executeTool(workspaceRoot, tool, args) {
+        if (tool === 'shell') return { command: args.command, exitCode: 7, timedOut: false, stdout: 'useful stdout', stderr: 'compiler error details' };
+        return localTools.executeTool(workspaceRoot, tool, args);
+      }
+    };
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools: fakeTools,
+      githubAuth: {}
+    });
+    const result = await bridge.runTool('batch', { steps: [
+      { id: 'compile', tool: 'shell', args: { command: 'Write-Output compile' } },
+      { id: 'should-not-run', tool: 'project_status', args: {} }
+    ] }, 'req-batch-failure-result');
+    assert.equal(result.ok, false);
+    const step = result.result.steps[0];
+    assert.equal(step.status, 'failed');
+    assert.equal(step.exit_code, 7);
+    assert.match(step.result.stdout, /useful stdout/);
+    assert.match(step.result.stderr, /compiler error details/);
+    assert.equal(result.result.stopped_at, 'compile');
+    assert.equal(result.result.steps.length, 1);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
