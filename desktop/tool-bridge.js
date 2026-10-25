@@ -508,6 +508,23 @@ function createToolBridge(deps) {
   }
 
 
+  function inferProjectCommands(project, projectCommands) {
+    const entries = new Set((project && project.topLevelEntries || []).map(String));
+    const scripts = projectCommands && projectCommands.scripts && typeof projectCommands.scripts === 'object' ? projectCommands.scripts : {};
+    const commands = [];
+    if (typeof scripts.test === 'string') commands.push({ name: 'test', command: 'npm test', source: 'package.json scripts.test' });
+    if (typeof scripts.check === 'string') commands.push({ name: 'check', command: 'npm run check', source: 'package.json scripts.check' });
+    if (typeof scripts.lint === 'string') commands.push({ name: 'lint', command: 'npm run lint', source: 'package.json scripts.lint' });
+    if (entries.has('pyproject.toml') || entries.has('pytest.ini') || entries.has('tests')) commands.push({ name: 'test', command: 'python -m pytest', source: 'Python project marker; verify dependencies first' });
+    if (entries.has('Cargo.toml')) commands.push({ name: 'test', command: 'cargo test', source: 'Cargo.toml' });
+    if (entries.has('go.mod')) commands.push({ name: 'test', command: 'go test ./...', source: 'go.mod' });
+    if (entries.has('pom.xml')) commands.push({ name: 'test', command: 'mvn test', source: 'pom.xml' });
+    if (entries.has('gradlew.bat')) commands.push({ name: 'test', command: '.\\gradlew.bat test', source: 'gradlew.bat' });
+    else if (entries.has('build.gradle') || entries.has('build.gradle.kts')) commands.push({ name: 'test', command: 'gradle test', source: 'Gradle build file' });
+    if (entries.has('global.json') || [...entries].some(name => name.endsWith('.sln') || name.endsWith('.csproj'))) commands.push({ name: 'test', command: 'dotnet test', source: '.NET project marker' });
+    const seen = new Set();
+    return commands.filter(item => { const key = item.command.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
+  }
   async function executeAgentContext(root, requestId) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
       localTools.executeTool(root, 'environment_info', {}),
