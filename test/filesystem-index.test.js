@@ -88,14 +88,12 @@ test('monitor writes a local index, then reflects added and removed names', asyn
     const file = path.join(root, 'created.txt');
     const addedUpdate = waitForNextUpdate(monitor);
     await fs.writeFile(file, 'contents deliberately omitted from index', 'utf8');
-    await monitor.fullRebuild();
     const added = await addedUpdate;
     assert.ok(added.content.includes('created.txt'));
     assert.equal(added.content.includes('contents deliberately omitted'), false);
 
     const removedUpdate = waitForNextUpdate(monitor);
     await fs.rm(file);
-    await monitor.fullRebuild();
     const removed = await removedUpdate;
     assert.equal(removed.content.includes('created.txt'), false);
   } finally {
@@ -120,6 +118,43 @@ function waitForNextUpdate(monitor) {
     };
   });
 }
+
+test('monitor retries a failed repository sync without requiring a local name change', async () => {
+  const root = await fixture();
+  const monitor = new FilesystemIndexMonitor({
+    root,
+    debounceMs: 20,
+    reconcileMs: 1000,
+    fallbackPollMs: 100
+  });
+  let attempts = 0;
+  let markFirstFailure;
+  const firstFailure = new Promise(resolve => { markFirstFailure = resolve; });
+  let markRetry;
+  const retrySucceeded = new Promise(resolve => { markRetry = resolve; });
+  monitor.onError = () => markFirstFailure();
+  monitor.onUpdate = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error('simulated repository offline');
+    markRetry();
+  };
+  try {
+    await monitor.start();
+    await Promise.race([
+      firstFailure,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('initial sync failure was not reported')), 4000))
+    ]);
+    await monitor.fullRebuild();
+    await Promise.race([
+      retrySucceeded,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('filesystem index sync was not retried')), 4000))
+    ]);
+    assert.equal(attempts, 2);
+  } finally {
+    await monitor.stop();
+    await cleanup(root);
+  }
+});
 
 test('scan requires an existing directory', async () => {
   await assert.rejects(scanWorkspace(path.join(os.tmpdir(), 'missing-index-root-' + Date.now())), /ENOENT/);
