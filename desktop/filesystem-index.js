@@ -323,10 +323,17 @@ class FilesystemIndexMonitor {
     });
     if (!force && rendered.hash === this.contentHash) return null;
     await writeAtomicIfConfigured(this.outputPath, rendered.content);
+    const snapshot = { ...rendered, content: rendered.content, localPath: this.outputPath || null };
+    try {
+      await this.onUpdate(snapshot);
+    } catch (error) {
+      // Keep the last-successful hash unchanged. The next reconciliation must retry
+      // publication instead of treating a failed sync as a completed update.
+      this.reportError(error);
+      return snapshot;
+    }
     this.contentHash = rendered.hash;
     this.updatedAt = rendered.updatedAt;
-    const snapshot = { ...rendered, content: rendered.content, localPath: this.outputPath || null };
-    try { await this.onUpdate(snapshot); } catch (error) { this.reportError(error); }
     return snapshot;
   }
 
