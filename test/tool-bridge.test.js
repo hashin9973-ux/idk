@@ -460,7 +460,9 @@ test('batch keeps failure output and exit codes inline for the next agent decisi
     assert.match(step.result.stdout, /useful stdout/);
     assert.match(step.result.stderr, /compiler error details/);
     assert.equal(result.result.stopped_at, 'compile');
-    assert.equal(result.result.steps.length, 1);
+    assert.equal(result.result.steps.length, 2);
+    assert.equal(result.result.steps[1].status, 'skipped');
+    assert.equal(result.result.steps[1].skipped, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
