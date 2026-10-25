@@ -339,6 +339,15 @@ test('repository API allows only the configured mailbox contents routes', async 
     updated_at: '2026-10-25T00:00:00.000Z',
     revision: 1
   };
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/vision/control.json',
+    body: {
+      message: '[vision bridge] reject invalid protocol',
+      content: Buffer.from(JSON.stringify({ protocol: 'wrong-protocol', enabled: true })).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  }), /chatgpt-colab-vision-control\/v1/);
   await auth.requestApi({
     method: 'PUT',
     path: '/repos/example/private-repo/contents/bridge/vision/control.json',
