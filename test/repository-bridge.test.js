@@ -21,6 +21,14 @@ function decode(value) {
   return JSON.parse(Buffer.from(value.content.replace(/\s/g, ''), 'base64').toString('utf8'));
 }
 
+async function waitFor(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for asynchronous mailbox work.');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
 function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
@@ -181,6 +189,7 @@ test('worker executes a request once, writes the actual result, claim and heartb
   try {
     const started = await bridge.start();
     assert.equal(started.running, true);
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
     assert.equal(executions, 1);
     const resultFile = fake.files.get('bridge/results/' + request.request_id + '.json');
     assert.ok(resultFile, 'the result should be written to the shared repository');
@@ -217,6 +226,47 @@ test('worker executes a request once, writes the actual result, claim and heartb
   }
 });
 
+test('worker executes independent mailbox requests concurrently with a bounded limit', async () => {
+  const requests = Array.from({ length: 5 }, (_, index) => ({
+    protocol: PROTOCOL,
+    request_id: 'req-parallel-' + String(index + 1).padStart(2, '0'),
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  }));
+  const fake = fakeGitHub({ initial: requests.map(request => ['bridge/requests/' + request.request_id + '.json', request]) });
+  const fixture = settingsFixture();
+  let active = 0;
+  let maximumActive = 0;
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise(resolve => setTimeout(resolve, 35));
+      active--;
+      return { ok: true, result: { id } };
+    },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
+    assert.equal(executions, 5);
+    assert.equal(maximumActive, 3, 'the mailbox worker should use its configured three-request concurrency');
+    for (const request of requests) {
+      const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+      assert.equal(result.status, 'completed');
+      assert.equal(result.result.result.id, request.request_id);
+    }
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test('invalid request JSON is reported and does not block later work', async () => {
   const first = { protocol: PROTOCOL, request_id: 'req-a-bad', created_at: new Date().toISOString(), tool: 'project_status', args: {} };
   const second = { protocol: PROTOCOL, request_id: 'req-z-good', created_at: new Date().toISOString(), tool: 'project_status', args: {} };
@@ -238,6 +288,7 @@ test('invalid request JSON is reported and does not block later work', async () 
   });
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/req-a-bad.json') && fake.files.has('bridge/results/req-z-good.json'));
     assert.equal(decode(fake.files.get('bridge/results/req-a-bad.json')).status, 'rejected');
     assert.equal(decode(fake.files.get('bridge/results/req-z-good.json')).status, 'completed');
     assert.equal(executions, 1);
@@ -270,6 +321,7 @@ test('malformed claim records are quarantined and do not block valid requests', 
   });
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + badRequest.request_id + '.json') && fake.files.has('bridge/results/' + goodRequest.request_id + '.json'));
     assert.equal(decode(fake.files.get('bridge/results/' + badRequest.request_id + '.json')).status, 'needs_manual_recovery');
     assert.equal(decode(fake.files.get('bridge/results/' + goodRequest.request_id + '.json')).status, 'completed');
     assert.equal(executions, 1, 'the malformed claim must not block later queue entries');
@@ -304,6 +356,7 @@ test('a terminal claim with a missing result is quarantined instead of re-execut
   });
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
     assert.equal(executions, 0, 'terminal claims are never replayed');
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     assert.equal(result.status, 'needs_manual_recovery');
@@ -423,6 +476,7 @@ test('large textual tool output is shortened inline without requiring a third fe
 
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/req-large-output.json'));
     const record = decode(fake.files.get('bridge/results/req-large-output.json'));
     assert.equal(record.status, 'partial');
     assert.equal(record.output_truncated, true);
@@ -537,6 +591,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
 
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/req-refresh-context.json'));
     const index = decode(fake.files.get('bridge/context/latest.json'));
     assert.equal(index.protocol, 'chatgpt-local-environment-context/v1');
     assert.ok(index.files.environment);
@@ -609,6 +664,7 @@ test('oversized structured results are compacted into one partial result instead
 
   try {
     await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/req-structured-result.json'));
     const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
     assert.equal(result.status, 'partial');
     assert.equal(result.output_truncated, true);
