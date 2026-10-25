@@ -92,7 +92,8 @@ function renderIndex(entries, options = {}) {
   const lines = entries.map(entry => {
     const suffix = entry.type === 'directory' ? '/' : entry.type === 'symlink' ? ' [symlink]' :
       entry.type === 'unreadable' ? ' [unreadable]' : entry.type === 'other' ? ' [other]' : '';
-    return entry.path + suffix;
+    // JSON-quote each path so unusual filenames cannot add fake lines or close the code fence.
+    return JSON.stringify(entry.path + suffix);
   });
   let emitted = lines.length;
   let content = '';
@@ -152,6 +153,7 @@ class FilesystemIndexMonitor {
     this.dirtyParents = new Set();
     this.fullRebuildRequested = false;
     this.flushing = false;
+    this.rebuildPromise = null;
   }
 
   async start() {
@@ -339,13 +341,30 @@ class FilesystemIndexMonitor {
 
   async fullRebuild() {
     if (!this.running) return null;
+    if (this.rebuildPromise) {
+      this.fullRebuildRequested = true;
+      return this.rebuildPromise;
+    }
+    const task = (async () => {
+      try {
+        const scan = await scanWorkspace(this.root, { maxEntries: this.maxEntries });
+        this.entries = new Map(scan.entries.map(entry => [entry.path, entry.type]));
+        return await this.emitIfChanged(false, scan.truncated || scan.unreadableDirectories > 0);
+      } catch (error) {
+        this.reportError(error);
+        return null;
+      }
+    })();
+    this.rebuildPromise = task;
     try {
-      const scan = await scanWorkspace(this.root, { maxEntries: this.maxEntries });
-      this.entries = new Map(scan.entries.map(entry => [entry.path, entry.type]));
-      return await this.emitIfChanged(false, scan.truncated || scan.unreadableDirectories > 0);
-    } catch (error) {
-      this.reportError(error);
-      return null;
+      return await task;
+    } finally {
+      this.rebuildPromise = null;
+      // A watcher or reconcile tick may have arrived during this scan.
+      if (this.running && (this.fullRebuildRequested || this.dirtyParents.size)) {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = setTimeout(() => { void this.flushChanges(); }, 0);
+      }
     }
   }
 
