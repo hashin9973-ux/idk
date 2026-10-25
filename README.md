@@ -98,7 +98,7 @@ Use unique IDs containing letters, digits, underscores, or hyphens; the first ch
 | `bridge/context/project_commands.json` | Project scripts parsed from `package.json`, when present |
 | `bridge/context/directory_tree.json` | Bounded workspace directory overview |
 | `bridge/context/instructions.json` | Instruction file paths, hashes, and sizes—not their contents |
-| `bridge/artifacts/<request_id>/...` | Full outputs and explicitly uploaded files |
+| `bridge/artifacts/<request_id>/...` | Explicitly uploaded or intentionally shared files; ordinary oversized tool output is shortened inline |
 
 At task start, use the `get_agent_context` tool when the installed app supports it; it returns one compact snapshot with Windows/runtime details, Git/project state, project-native commands, instruction-file metadata, a bounded directory view, and precise tool schemas. The worker also publishes the same `agent_context` inside `bridge/context/latest.json` and refreshes the snapshot at startup, every five minutes, and when the selected workspace changes. Do not fetch each context file separately just to bootstrap. Full instruction contents and source files remain on-demand; use `refresh_environment_context` if a just-made change requires a fresh published snapshot.
 
