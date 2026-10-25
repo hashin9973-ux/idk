@@ -219,7 +219,7 @@ async function restartFilesystemIndexMonitor() {
     outputPath: path.join(app.getPath('userData'), 'filesystem-index.md'),
     onUpdate: async snapshot => {
       latestFilesystemIndexSnapshot = snapshot;
-      if (!repositoryBridge || !repositoryBridge.getState().running) return;
+      if (!repositoryBridge || !repositoryBridge.getState().running) return false;
       try {
         await repositoryBridge.publishFilesystemIndex(snapshot);
         filesystemIndexSyncError = '';
