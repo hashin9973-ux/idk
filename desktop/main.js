@@ -792,6 +792,7 @@ if (!hasInstanceLock) {
       message.slice(0, 1600) + '\n\nThe app could not finish initialization. Check the latest Windows build if this persists.'
     );
   });
+}
 
 app.on('before-quit', event => {
   clearTimeout(saveTimer);
