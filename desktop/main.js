@@ -514,6 +514,34 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     return githubAuth.getState();
   });
+  ipcMain.handle('app:github-reconnect', async event => {
+    assertLocalUi(event, 'index.html');
+    const current = await githubAuth.getState();
+    if (current.authenticated) {
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
+        title: 'Reconnect GitHub',
+        message: 'Sign in to GitHub again?',
+        detail: 'This disconnects the saved GitHub account from this app and starts a fresh sign-in. Your GitHub account and repositories are not changed.',
+        buttons: ['Cancel', 'Sign in again'],
+        defaultId: 1,
+        cancelId: 0,
+        noLink: true
+      });
+      if (choice.response !== 1) return { cancelled: true };
+    }
+    if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) {
+      try { pendingGitHubCliLogin.child.kill(); } catch {}
+    }
+    pendingGitHubCliLogin = null;
+    githubAuth.logout();
+    const flow = startGitHubCliLogin();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setAlwaysOnTop(false);
+      mainWindow.blur();
+    }
+    return flow;
+  });
   ipcMain.handle('app:github-start-login', async event => {
     assertLocalUi(event, 'index.html');
     if (pendingGitHubCliLogin && ['pending', 'finishing'].includes(pendingGitHubCliLogin.status)) {
