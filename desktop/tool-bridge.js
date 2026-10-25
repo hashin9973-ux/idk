@@ -131,15 +131,16 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   steps: { type: 'array', description: 'Ordered local tool calls. Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 20 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
-  list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).' } },
+  list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).', default: '.' } },
   directory_tree: {
-    path: { description: 'Subdirectory to walk, relative to the selected workspace. Defaults to . (workspace root).' },
+    path: { description: 'Subdirectory to walk, relative to the selected workspace. Defaults to . (workspace root).', default: '.' },
     maxDepth: { default: 4 },
     maxEntries: { default: 500 }
   },
   glob_file_search: { pattern: { default: '**/*', description: 'Glob pattern, for example **/*.js or src/**/*.ts. Maximum 300 characters.' } },
   git_diff: { contextLines: { default: 3 } },
-  create_directory: { recursive: { default: true } },
+  create_directory: { recursive: { description: 'Create missing parent directories as needed. Defaults to true.', default: true } },
+  delete_path: { recursive: { description: 'For a directory, recursively delete its contents. Defaults to true.', default: true } },
   git_log: { path: { description: 'Optional workspace-relative path to limit the history.' } },
   git_show: { ref: { default: 'HEAD' } },
   git_commit: { paths: { description: 'Optional paths to stage before committing. If omitted, only changes already staged are committed.', items: { type: 'string' }, minItems: 1, maxItems: 100 } },
@@ -341,7 +342,9 @@ function createToolBridge(deps) {
       return header + resultWarning + 'The requested path appears to contain a credential or private key:\n' + displayApprovalValue(args.path || '', 1200);
     }
     if (tool === 'init') return header + resultWarning + 'Create AGENTS.md at the workspace root. An existing AGENTS.md will not be overwritten.';
-    if (tool === 'run_tests') return header + resultWarning + 'Run the detected test command. Tests execute project code and may have side effects.';
+    if (tool === 'run_tests') return header + resultWarning + (args.command
+      ? 'Run this explicit PowerShell test command. It runs with your Windows user permissions and may have side effects:\n\n' + displayApprovalValue(args.command, 4000) + '\n\nTimeout: ' + (Number.isInteger(args.timeoutMs) ? args.timeoutMs : 60000) + ' ms.'
+      : 'Detect and run the project-native test command. Tests execute project code and may have side effects.\nTimeout: ' + (Number.isInteger(args.timeoutMs) ? args.timeoutMs : 60000) + ' ms.');
     return header + resultWarning + 'Arguments (control characters escaped):\n' + displayApprovalValue(JSON.stringify(args, null, 2), 3500);
   }
 
@@ -414,9 +417,13 @@ function createToolBridge(deps) {
           description: TOOL_DESCRIPTIONS[item.name] || ('Run the ' + item.name + ' workspace tool.'),
           parameters: parameterSchema(item.name),
           ...(TOOL_RESULT_SUMMARIES[item.name] ? { returns: TOOL_RESULT_SUMMARIES[item.name] } : {}),
-          permission_note: item.mode === 'approval' || item.mode === 'approval-required' || item.mode === 'read-or-approval-for-secret-like-paths'
-            ? 'This call may display a native Windows approval dialog before execution.'
-            : 'No approval dialog is normally required; the app still validates paths and arguments.'
+          permission_note: item.name === 'batch'
+            ? 'The batch call itself is not approval; each contained operation is checked separately and protected steps show their own native Windows dialog.'
+            : item.mode === 'approval' || item.mode === 'approval-required' || item.mode === 'read-or-approval-for-secret-like-paths'
+              ? 'This call may display a native Windows approval dialog before execution.'
+              : item.mode === 'automatic-workspace-write'
+                ? 'Normally runs automatically for workspace-relative paths; secret-like paths still require native Windows approval.'
+                : 'No approval dialog is normally required; the app still validates paths and arguments.'
         }));
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
