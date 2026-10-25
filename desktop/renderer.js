@@ -34,6 +34,8 @@
   let workspaceBusy = false;
   let visionBusy = false;
   let visionSetupSnapshot = null;
+  let visionConnectWatchTimer = null;
+  let visionConnectWatchDeadline = 0;
 
   function setDot(dot, status) {
     dot.className = 'status-dot ' + status;
@@ -178,8 +180,9 @@
     const status = String(vision.status || 'unavailable');
     const labels = {
       ready: 'Vision: ready',
-      inactive: 'Vision: inactive',
+      inactive: vision.runtime_fresh === true ? 'Colab connected · vision off' : 'Vision: inactive',
       starting: 'Vision: starting',
+      waiting_for_runtime: 'Colab: waiting for connection',
       inference_in_progress: 'Vision: analyzing',
       report_available: 'Vision: report available',
       disconnected: 'Vision: disconnected',
@@ -253,8 +256,102 @@
     }
   }
 
-  async function openColabSignIn() {
+  function stopVisionConnectionWatch() {
+    if (visionConnectWatchTimer !== null) window.clearTimeout(visionConnectWatchTimer);
+    visionConnectWatchTimer = null;
+    visionConnectWatchDeadline = 0;
+  }
+
+  function scheduleVisionConnectionCheck() {
+    if (!visionConnectWatchDeadline) return;
+    if (Date.now() >= visionConnectWatchDeadline) {
+      stopVisionConnectionWatch();
+      void runVisionSetupCheck();
+      return;
+    }
+    if (visionConnectWatchTimer !== null) window.clearTimeout(visionConnectWatchTimer);
+    visionConnectWatchTimer = window.setTimeout(async () => {
+      visionConnectWatchTimer = null;
+      try {
+        const snapshot = await window.windowsBridge.getVisionStatus();
+        renderVisionStatus(snapshot);
+        if (snapshot && snapshot.runtime_fresh === true) {
+          stopVisionConnectionWatch();
+          visionSetupDetail.textContent = 'Colab connected';
+          visionSetupDetail.title = 'The app received a fresh heartbeat from the Colab worker through the shared GitHub mailbox. Vision activation and model loading are controlled separately.';
+          visionSetupDetail.dataset.state = 'passed';
+          void runVisionSetupCheck();
+          return;
+        }
+      } catch (error) {
+        visionColabDetail.title = 'The app could not refresh Colab status: ' + String(error && error.message || error);
+      }
+      scheduleVisionConnectionCheck();
+    }, 5000);
+  }
+
+  function startVisionConnectionWatch() {
+    stopVisionConnectionWatch();
+    visionConnectWatchDeadline = Date.now() + 120000;
+    scheduleVisionConnectionCheck();
+  }
+
+  async function connectColab() {
     if (visionBusy) return;
+    visionBusy = true;
+    visionSignInButton.disabled = true;
+    visionSignInButton.textContent = 'Connecting…';
+    try {
+      const result = await window.windowsBridge.connectColab();
+      if (result && result.connected === true) {
+        renderVisionStatus(result);
+        visionSetupDetail.textContent = 'Colab connected';
+        visionSetupDetail.title = result.message || 'A fresh runtime heartbeat was detected.';
+        visionSetupDetail.dataset.state = 'passed';
+        visionColabDetail.textContent = 'Heartbeat live';
+        visionColabDetail.title = result.message || 'The app is reading a fresh Colab heartbeat through GitHub.';
+        visionColabDetail.dataset.state = 'passed';
+        void window.windowsBridge.checkVisionSetup().then(renderVisionSetup).catch(() => {});
+      } else if (result && result.status === 'waiting_for_runtime') {
+        visionLabel.textContent = 'Colab: waiting for connection';
+        visionLabel.title = result.message || 'Waiting for a live Colab worker heartbeat.';
+        setDot(visionDot, 'waiting');
+        visionSetupDetail.textContent = 'Waiting for heartbeat';
+        visionSetupDetail.title = result.message || 'Open the notebook, configure its QDQWG_TOKEN secret, connect the runtime, and run the worker cell.';
+        visionSetupDetail.dataset.state = 'in_progress';
+        visionColabDetail.textContent = 'Run notebook cell';
+        visionColabDetail.title = result.message || 'The app is waiting for the runtime heartbeat.';
+        visionColabDetail.dataset.state = 'action_required';
+        visionModelDetail.textContent = 'Not started';
+        visionModelDetail.title = 'Connecting to Colab does not activate vision or download the model.';
+        visionModelDetail.dataset.state = 'not_verified';
+        startVisionConnectionWatch();
+      } else {
+        const message = result && (result.message || result.error) || 'Colab connection could not be started.';
+        visionSetupDetail.textContent = result && result.status === 'action_required' ? 'GitHub sign-in needed' : 'Connection failed';
+        visionSetupDetail.title = message;
+        visionSetupDetail.dataset.state = result && result.status === 'action_required' ? 'action_required' : 'failed';
+        visionColabDetail.textContent = result && result.status === 'action_required' ? 'Sign in to GitHub first' : 'Not connected';
+        visionColabDetail.title = message;
+        visionColabDetail.dataset.state = result && result.status === 'action_required' ? 'action_required' : 'failed';
+      }
+    } catch (error) {
+      const message = String(error && error.message || error);
+      visionSetupDetail.textContent = 'Connection failed';
+      visionSetupDetail.title = message;
+      visionSetupDetail.dataset.state = 'failed';
+      visionColabDetail.textContent = 'Not connected';
+      visionColabDetail.title = message;
+      visionColabDetail.dataset.state = 'failed';
+    } finally {
+      visionBusy = false;
+      visionSignInButton.disabled = false;
+      visionSignInButton.textContent = 'Connect Colab';
+      void refreshVisionStatus();
+    }
+  }
+
+
     visionBusy = true;
     visionSignInButton.disabled = true;
     const previousLabel = visionSignInButton.textContent;
@@ -413,7 +510,7 @@
   });
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
-  visionSignInButton.addEventListener('click', () => { void openColabSignIn(); });
+  visionSignInButton.addEventListener('click', () => { void connectColab(); });
   visionSetupButton.addEventListener('click', () => { void runVisionSetupCheck(); });
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
@@ -425,7 +522,10 @@
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) window.windowsBridge.retryConnection().catch(() => {});
   });
-  window.addEventListener('beforeunload', stopAuthPolling);
+  window.addEventListener('beforeunload', () => {
+    stopAuthPolling();
+    stopVisionConnectionWatch();
+  });
 
   refreshState();
   window.setInterval(refreshState, 15000);
