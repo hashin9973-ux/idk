@@ -79,7 +79,7 @@ Use `tool: "batch"` when several local operations can be planned in advance. One
 }
 ```
 
-A reference must point to an earlier step, using `{"$ref":"stepId.result.content"}` to substitute that value into the next step's arguments. Use the current `bridge/context/capabilities.json` catalog for tool-specific parameter schemas. Batch results include each step's ID, tool, status, and output; large outputs are externalized by the same artifact mechanism.
+A reference must point to an earlier step, using `{"$ref":"stepId.result.content"}` to substitute that value into the next step's arguments. Each tool definition exposes its exact parameter schema, limits, defaults, permission behavior, and common result fields. Batch results include each step's ID, tool, status, exit code when available, errors, and actual output even when a command fails. Large outputs are shortened in the same result and marked `partial` rather than requiring a third fetch.
 
 Use unique IDs containing letters, digits, underscores, or hyphens; the first character must be alphanumeric and the length must be 1–80 characters. Maximum request size is 1 MiB. Requests are immutable after publication.
 
@@ -91,15 +91,16 @@ Use unique IDs containing letters, digits, underscores, or hyphens; the first ch
 | `bridge/results/<id>.json` | Actual result, status, and artifact manifest |
 | `bridge/claims/<id>.json` | Claim and recovery state; prevents blind replay after an uncertain crash |
 | `bridge/state/windows-app.json` | Worker heartbeat, pending count, active request ID, and error |
-| `bridge/context/latest.json` | Index for the last published environment snapshot and paths to compact context and detail files |
+| `bridge/context/latest.json` | Single compact `agent_context` entry point plus paths to detail snapshots; refreshed in background |
 | `bridge/context/environment.json` | OS/runtime/machine context after redaction |
 | `bridge/context/project.json` | Workspace and detected project information |
-| `bridge/context/capabilities.json` | Available local tools and execution policy |
+| `bridge/context/capabilities.json` | Available local tools, precise parameter schemas, result contracts, and execution policy |
+| `bridge/context/project_commands.json` | Project scripts parsed from `package.json`, when present |
 | `bridge/context/directory_tree.json` | Bounded workspace directory overview |
 | `bridge/context/instructions.json` | Instruction file paths, hashes, and sizes—not their contents |
 | `bridge/artifacts/<request_id>/...` | Full outputs and explicitly uploaded files |
 
-Use the `get_agent_context` tool as the first request when the app build exposes it; this returns a compact context and tool catalog in one result. Do not fetch context files separately unless this tool is unavailable. Retrieve only relevant context or source files; snapshots can be stale, so use `refresh_environment_context` or a live inspection request when necessary. Project instructions such as `AGENTS.md` are discoverable on demand and are not published in full as part of the initial snapshot.
+At task start, use the `get_agent_context` tool when the installed app supports it; it returns one compact snapshot with Windows/runtime details, Git/project state, project-native commands, instruction-file metadata, a bounded directory view, and precise tool schemas. The worker also publishes the same `agent_context` inside `bridge/context/latest.json` and refreshes the snapshot at startup, every five minutes, and when the selected workspace changes. Do not fetch each context file separately just to bootstrap. Full instruction contents and source files remain on-demand; use `refresh_environment_context` if a just-made change requires a fresh published snapshot.
 
 ## Results and files
 
@@ -111,7 +112,11 @@ For a local file that you explicitly want to share, request the `upload_workspac
 
 ## Local tool catalogue
 
-**Batch workflow:** `batch` (1–20 sequential calls, earlier-result references, per-operation approval).\n\n**Workspace and files:** `get_capabilities`, `project_status`, `environment_info`, `list_dir`, `directory_tree`, `glob_file_search`, `read_file`, `file_info`, `search`, `discover_instructions`, `init`, `write_file`, `apply_patch`, `create_directory`, `move_path`, `delete_path`, `upload_workspace_file`.
+**Batch workflow:** `batch` (1–20 sequential calls, earlier-result references, per-operation approval).
+
+**Agent context:** `get_agent_context` (one-call workspace, project commands, instructions metadata, directory overview and tool schemas).
+
+**Workspace and files:** `get_capabilities`, `project_status`, `environment_info`, `list_dir`, `directory_tree`, `glob_file_search`, `read_file`, `file_info`, `search`, `discover_instructions`, `init`, `write_file`, `apply_patch`, `create_directory`, `move_path`, `delete_path`, `upload_workspace_file`.
 
 **Git:** `git_status`, `git_diff`, `git_log`, `git_show`, `git_branches`, `git_changed_files`, `git_create_branch`, `git_switch_branch`, `git_commit`, `git_fetch`, `git_pull`, `git_push`, `git_clone`.
 
