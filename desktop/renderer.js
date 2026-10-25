@@ -7,6 +7,9 @@
   const githubLabel = byId('github-status');
   const workerDot = byId('worker-dot');
   const workerLabel = byId('worker-status');
+  const autoAcceptRow = byId('auto-accept-row');
+  const autoAcceptDot = byId('auto-accept-dot');
+  const autoAcceptLabel = byId('auto-accept-status');
   const minimizeButton = byId('minimize');
   const quitButton = byId('quit');
 
@@ -15,6 +18,7 @@
   let authBusy = false;
   let authTimer = null;
   let loginCode = '';
+  let autoAcceptAll = false;
 
   function setDot(dot, status) {
     dot.className = 'status-dot ' + status;
@@ -59,6 +63,29 @@
     workerLabel.textContent = labels[status] || 'Worker ' + status;
     workerLabel.title = String(currentBridgeState.connectionError || currentBridgeState.lastError || workerLabel.textContent);
     setDot(workerDot, status === 'online' ? 'online' : status === 'offline' || status === 'attention' || status === 'setup' ? 'error' : 'waiting');
+    renderAutoAccept(currentBridgeState.autoAcceptAll === true);
+  }
+
+  function renderAutoAccept(enabled) {
+    autoAcceptAll = enabled === true;
+    autoAcceptLabel.textContent = autoAcceptAll ? 'Auto-accept everything: ON' : 'Auto-accept everything: OFF';
+    autoAcceptRow.title = autoAcceptAll
+      ? 'Enabled: local requests run without individual approval. Click to disable.'
+      : 'Click to enable automatic approval for all local operations. Enabling requires confirmation.';
+    autoAcceptRow.setAttribute('aria-pressed', String(autoAcceptAll));
+    setDot(autoAcceptDot, autoAcceptAll ? 'error' : 'waiting');
+  }
+
+  async function toggleAutoAcceptAll() {
+    autoAcceptRow.disabled = true;
+    try {
+      const result = await window.windowsBridge.setAutoAcceptAll(!autoAcceptAll);
+      renderAutoAccept(result.autoAcceptAll);
+    } catch (error) {
+      autoAcceptRow.title = String(error && error.message || error);
+    } finally {
+      autoAcceptRow.disabled = false;
+    }
   }
 
   async function refreshState() {
@@ -134,6 +161,7 @@
   }
 
   githubRow.addEventListener('click', connectGitHub);
+  autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
   window.windowsBridge.onBridgeState(renderWorker);
