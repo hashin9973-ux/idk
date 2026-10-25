@@ -239,6 +239,42 @@ test('status distinguishes missing runtime and a runtime waiting for Google auth
   assert.equal(needsAuth.status, 'needs_authentication');
 });
 
+test('setup check verifies the existing mailbox read without enabling vision or starting downloads', async () => {
+  const f = fixture();
+  f.putLocalJson('bridge/state/windows-app.json', {
+    protocol: 'chatgpt-local-repo-state/v1',
+    status: 'idle'
+  });
+  f.control(false);
+  f.runtime('inactive', false);
+  const result = await f.service.setupCheck({ authenticated: true, login: 'architect' });
+  assert.equal(result.status, 'action_required');
+  assert.equal(result.checks.github.status, 'passed');
+  assert.equal(result.checks.mailbox.status, 'passed');
+  assert.equal(result.checks.colab.status, 'passed');
+  assert.equal(result.checks.model.status, 'action_required');
+  assert.equal(result.checks.vision.status, 'disabled');
+  assert.equal(f.readLocalJson('bridge/vision/control.json').enabled, false);
+  assert.ok(Array.isArray(result.next_steps));
+});
+
+test('setup check does not pretend an absent runtime proves Google is signed out', async () => {
+  const f = fixture();
+  const result = await f.service.setupCheck({ authenticated: true, login: 'architect' });
+  assert.equal(result.checks.mailbox.status, 'failed');
+  assert.equal(result.checks.colab.status, 'not_verified');
+  assert.match(result.checks.colab.message, /does not prove Google is signed out/i);
+  assert.equal(result.checks.model.status, 'not_verified');
+});
+
+test('setup check reports missing GitHub sign-in and avoids mailbox API reads', async () => {
+  const f = fixture();
+  const result = await f.service.setupCheck({ authenticated: false });
+  assert.equal(result.status, 'action_required');
+  assert.equal(result.checks.github.status, 'action_required');
+  assert.equal(result.checks.mailbox.status, 'action_required');
+});
+
 test('screenshot transfer limit stays below the desktop GitHub Contents response cap', () => {
   assert.equal(MAX_SCREENSHOT_BYTES, 600 * 1024);
 });

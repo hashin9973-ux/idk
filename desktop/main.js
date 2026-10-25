@@ -26,10 +26,10 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES } = require('./vision-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./vision-service');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
-const STATUS_SIZE = { width: 318, height: 164 };
+const STATUS_SIZE = { width: 360, height: 266 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
@@ -646,6 +646,66 @@ function registerIpc() {
     return githubAuth
       ? githubAuth.getState()
       : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+  });
+  ipcMain.handle('app:vision-status', async event => {
+    assertLocalUi(event, 'index.html');
+    if (!visionService) {
+      return {
+        status: 'unavailable',
+        enabled: false,
+        runtime_fresh: false,
+        model_loaded: false,
+        message: appInitializationError || 'Vision service is not available in this app session.'
+      };
+    }
+    const githubState = githubAuth ? await githubAuth.getState() : { authenticated: false };
+    if (!githubState.authenticated) {
+      return {
+        status: 'inactive',
+        enabled: false,
+        runtime_fresh: false,
+        runtime_alive: false,
+        runtime_status: null,
+        model_loaded: false,
+        message: githubState.error
+          ? 'Vision status is unavailable until GitHub connectivity is restored: ' + String(githubState.error).slice(0, 500)
+          : 'Sign in to GitHub before the app can read Colab vision status.'
+      };
+    }
+    return visionService.status();
+  });
+  ipcMain.handle('app:vision-open-sign-in', async event => {
+    assertLocalUi(event, 'index.html');
+    const browser = await openInBrowserAndYield(COLAB_NOTEBOOK_URL);
+    return {
+      status: 'opened',
+      opened: Boolean(browser && browser.opened),
+      notebook_url: COLAB_NOTEBOOK_URL,
+      vision_activated: false,
+      message: 'Colab opened in your default browser. Complete Google sign-in if prompted. Opening the notebook does not start the vision model.'
+    };
+  });
+  ipcMain.handle('app:vision-setup-check', async event => {
+    assertLocalUi(event, 'index.html');
+    const githubState = githubAuth
+      ? await githubAuth.getState()
+      : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+    if (!visionService) {
+      return {
+        status: 'failed',
+        checked_at: new Date().toISOString(),
+        checks: {
+          github: { status: githubState.authenticated ? 'passed' : 'action_required', message: githubState.authenticated ? 'Signed in.' : 'GitHub sign-in is not verified.' },
+          mailbox: { status: 'not_verified', message: 'Vision/mailbox service is unavailable in this app session.' },
+          colab: { status: 'not_verified', message: 'Colab runtime status is unavailable.' },
+          model: { status: 'not_verified', message: 'Model readiness is unavailable.' },
+          vision: { status: 'disabled', message: 'No activation was attempted.' }
+        },
+        next_steps: [appInitializationError || 'Restart the app after resolving its initialization error.'],
+        note: 'Setup check does not enable vision or trigger model downloads.'
+      };
+    }
+    return visionService.setupCheck(githubState);
   });
   ipcMain.handle('app:copy-device-code', (event, rawCode) => {
     assertLocalUi(event, 'index.html');
