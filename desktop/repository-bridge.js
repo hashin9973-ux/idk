@@ -740,7 +740,10 @@ function createRepositoryBridge(deps) {
           'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.',
           'After creating a request, wait for bridge/results/<same-request-id>.json before treating it as finished or starting dependent work. A request or processing claim is not a result; if the result is missing, inspect windows-app state and the matching claim, then poll again rather than creating duplicates.',
           'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, stderr, and truncation flags. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.',
-          'After edits, run project-native checks and tests, then a build and end-to-end smoke test when available. Fix failures and rerun verification. The final report must distinguish observed passing checks from unverified behavior; never claim tests, builds, or full playthroughs that were not actually run.'
+          'After edits, run project-native checks and tests, then a build and end-to-end smoke test when available. Fix failures and rerun verification. The final report must distinguish observed passing checks from unverified behavior; never claim tests, builds, or full playthroughs that were not actually run.',
+          'Vision is optional and should be used only when visual evidence materially helps. Check vision_status first; if needed, activate Colab and confirm that the runtime and model are actually ready—opening the notebook alone is not readiness.',
+          'Use one targeted screenshot and, if analysis is pending, call vision_wait with the returned request ID rather than submitting duplicates. Vision may be slow; screenshot artifacts remain in Git history even after file deletion, so avoid sensitive content.',
+          'After visual inspection, vision_deactivate disables new requests only; it does not stop the Colab runtime, close the browser, or unload the model.'
         ]
       },
       files
