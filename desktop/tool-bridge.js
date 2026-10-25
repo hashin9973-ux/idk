@@ -847,9 +847,13 @@ function createToolBridge(deps) {
       } else if (tool === 'get_agent_context') {
         result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
+        const isVisionTool = VISION_TOOLS.has(tool);
+        if (isVisionTool && !visionService) throw new Error('Vision tools are unavailable in this app build.');
         const policy = tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
-          : localTools.getToolPolicy(tool, args);
+          : isVisionTool
+            ? { tool, requiresApproval: ['vision_activate', 'vision_analyze_screenshot'].includes(tool), automatic: false }
+            : localTools.getToolPolicy(tool, args);
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
             ? true
@@ -858,17 +862,33 @@ function createToolBridge(deps) {
             result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
           } else {
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
-            const output = await executeLocalTool(root, tool, args, id);
-            if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
-              result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
+            const output = isVisionTool
+              ? await visionServiceCall(visionService, tool, args, id)
+              : await executeLocalTool(root, tool, args, id);
+            if ((isVisionTool && visionOutputFailed(tool, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+              result = {
+                ok: false,
+                error: isVisionTool
+                  ? (output && (output.error || output.message) || 'Vision operation did not complete successfully.')
+                  : tool + ' exited with code ' + output.exitCode + '.',
+                result: output
+              };
             } else {
               result = { ok: true, result: output };
             }
           }
         } else {
-          const output = await executeLocalTool(root, tool, args, id);
-          if (output && Number.isInteger(output.exitCode) && output.exitCode !== 0) {
-            result = { ok: false, error: tool + ' exited with code ' + output.exitCode + '.', result: output };
+          const output = isVisionTool
+            ? await visionServiceCall(visionService, tool, args, id)
+            : await executeLocalTool(root, tool, args, id);
+          if ((isVisionTool && visionOutputFailed(tool, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+            result = {
+              ok: false,
+              error: isVisionTool
+                ? (output && (output.error || output.message) || 'Vision operation did not complete successfully.')
+                : tool + ' exited with code ' + output.exitCode + '.',
+              result: output
+            };
           } else {
             result = { ok: true, result: output };
           }
