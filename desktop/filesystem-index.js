@@ -105,11 +105,12 @@ function renderIndex(entries, options = {}) {
     if (Buffer.byteLength(content, 'utf8') <= maxBytes || emitted === 0) break;
     emitted = Math.max(0, Math.floor(emitted * 0.8));
   }
-  const canonical = entries.map(entry => entry.path + '\t' + entry.type).join('\n') +
-    '\ntruncated:' + String(scanTruncated || emitted < lines.length);
+  // Hash the actual published view, not hidden entries omitted by the byte cap.
+  // Normalize only the "Updated" line so unchanged indexes do not produce commits every poll.
+  const canonicalView = content.replace(/^- Updated: .*$/m, '- Updated: <timestamp>');
   return {
     content,
-    hash: createHash('sha256').update(canonical, 'utf8').digest('hex'),
+    hash: createHash('sha256').update(canonicalView, 'utf8').digest('hex'),
     entryCount: entries.length,
     publishedEntryCount: emitted,
     truncated: scanTruncated || emitted < lines.length,
