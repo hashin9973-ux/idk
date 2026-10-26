@@ -64,6 +64,10 @@ function fixture(options = {}) {
       const body = init.body ? JSON.parse(init.body) : {};
       calls.push({ type: 'direct_http', method: init.method || 'GET', path: parsed.pathname, body });
       if (parsed.pathname === '/health') return response(200, { ...state, heartbeat_at: new Date().toISOString() });
+      if (parsed.pathname === '/registration/ack') {
+        if (options.failRegistrationAck) return response(503, { protocol: DIRECT_VISION_PROTOCOL, error: 'test tunnel acknowledgement failure' });
+        return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, desktop_registered: true });
+      }
       if (parsed.pathname === '/activate') {
         state = { ...state, status: 'ready', enabled: true, model_loaded: true };
         return response(202, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: true });
@@ -167,6 +171,8 @@ test('Colab can register a direct tunnel using the app-generated challenge; heal
 
   const registered = await registerColab(f.service, port);
   assert.equal(registered.status, 200);
+  assert.equal((await registered.json()).tunnel_verified, true);
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.method === 'POST' && call.path === '/registration/ack'));
   const status = await f.service.status();
   assert.equal(status.runtime_fresh, true);
   assert.equal(status.connection_registered, true);
@@ -258,8 +264,10 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /verify_local_api_health/);
   assert.match(code, /Authorization.*Bearer/);
   assert.match(code, /output\.register_callback/);
+  assert.match(code, /registration.ack/);
+  assert.match(code, /_desktop_registration_event\.wait\(timeout=35\)/);
+  assert.doesNotMatch(code, /if not _registration_event\.wait/);
   assert.match(code, /invokeFunction\(callbackName/);
-  assert.match(code, /_registration_event\.wait\(timeout=35\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
   assert.match(code, /challenge_unavailable/);
   assert.match(code, /Downloading cloudflared binary/);
@@ -272,4 +280,18 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /computer\(action=status\)/);
   assert.match(code, /computer\(action=enable\)/);
   assert.doesNotMatch(code, /vision_activate|vision_status/);
+});
+
+
+test('registration does not claim success when the desktop-to-Colab acknowledgement fails', async t => {
+  const f = fixture({ failRegistrationAck: true });
+  t.after(() => f.service.dispose());
+  const port = await waitForPort(f.service);
+  const result = await registerColab(f.service, port);
+  assert.equal(result.status, 502);
+  const payload = await result.json();
+  assert.match(payload.error, /could not verify the HTTPS tunnel/);
+  const status = await f.service.status();
+  assert.equal(status.connection_registered, false);
+  assert.equal(status.runtime_fresh, false);
 });

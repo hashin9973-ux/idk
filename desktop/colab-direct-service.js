@@ -198,10 +198,34 @@ function createVisionService(deps) {
     if (payload.protocol !== DIRECT_VISION_PROTOCOL || !tunnelUrl || !safeApiKey(payload.api_key)) {
       return sendJson(res, 400, { ok: false, error: 'The Colab endpoint or protocol is invalid.' }, true, allowedOrigin);
     }
+    // Verify both directions before telling the notebook its tunnel is connected.
+    const previousConnection = colabConnection;
+    const previousEnabled = visionEnabled;
+    const registeredConnection = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
     pendingNonce = null;
-    colabConnection = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
+    colabConnection = registeredConnection;
     visionEnabled = false;
-    return sendJson(res, 200, { ok: true, protocol: DIRECT_VISION_PROTOCOL }, true, allowedOrigin);
+    try {
+      await directRequest('/registration/ack', {
+        method: 'POST',
+        timeoutMs: 15000,
+        body: { protocol: DIRECT_VISION_PROTOCOL, registered_at: new Date(now()).toISOString() }
+      });
+    } catch (error) {
+      if (colabConnection === registeredConnection) {
+        colabConnection = previousConnection;
+        visionEnabled = previousEnabled;
+      }
+      return sendJson(res, 502, {
+        ok: false,
+        error: 'The Windows app received the browser handshake but could not verify the HTTPS tunnel to Colab: ' + messageOf(error)
+      }, true, allowedOrigin);
+    }
+    return sendJson(res, 200, {
+      ok: true,
+      protocol: DIRECT_VISION_PROTOCOL,
+      tunnel_verified: true
+    }, true, allowedOrigin);
   }
 
   async function ensureReceiver() {
