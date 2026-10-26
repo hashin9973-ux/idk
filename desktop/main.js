@@ -21,7 +21,7 @@ const {
   desktopCapturer
 } = require('electron');
 const { clampRectToWorkArea } = require('./geometry');
-const { resolveWorkspaceRoot, isFilesystemRoot } = require('./workspace-path');
+const { resolveWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -232,10 +232,7 @@ function ensureWorkspaceRoot() {
   for (const candidate of candidates) {
     try {
       const root = resolveWorkspaceRoot(candidate, fallbackRoot);
-      fs.mkdirSync(root, { recursive: true });
-      if (!fs.statSync(root).isDirectory()) {
-        throw new Error('The configured workspace path exists but is not a directory: ' + root);
-      }
+      ensureWorkspaceDirectory(root, fs);
       settings.workspaceRoot = root;
       persistSettings();
       return root;
