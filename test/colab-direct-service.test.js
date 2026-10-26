@@ -151,7 +151,7 @@ test('Colab can register a direct tunnel using the app-generated challenge; heal
   assert.equal(new URL(openedUrl).searchParams.has('bridge_registration_nonce'), false);
 
   const challengeResponse = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
-    method: 'GET', headers: { Origin: ORIGIN }
+    method: 'GET', headers: { Origin: OUTPUT_ORIGIN }
   });
   assert.equal(challengeResponse.status, 200);
   const challenge = await challengeResponse.json();
