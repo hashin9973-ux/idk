@@ -17,18 +17,18 @@ let plan=[];
 
 function inside(root,target){const r=path.relative(root,target);return r===''||(r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r));}
 function safePath(rootInput,raw,allowRoot=false){
- if(typeof raw!=='string'||!raw.trim()||raw.length>2048)throw new Error('path must be a relative path up to 2048 characters.');
- if(raw==='.'&&allowRoot){}else{
-  if(path.isAbsolute(raw)||/^[a-z]:/i.test(raw)||raw.startsWith('\\\\')||raw.startsWith('//'))throw new Error('absolute paths are not allowed.');
-  if(raw.split(/[\\/]+/).includes('..'))throw new Error('parent traversal is not allowed.');
- }
- const root=path.resolve(rootInput),target=path.resolve(root,raw);
- if(!inside(root,target))throw new Error('path resolves outside the workspace.');
+ if(typeof raw!=='string'||!raw.trim()||raw.length>2048)throw new Error('path must be a non-empty path up to 2048 characters.');
+ const value=raw.trim(),root=path.resolve(rootInput);
+ if(value==='.'&&allowRoot)return root;
+ if(/^[a-z]:(?![\\/])/i.test(value))throw new Error('drive-relative paths are not allowed; use an absolute path such as C:\\folder or a workspace-relative path.');
+ const absolute=path.isAbsolute(value)||/^[a-z]:[\\/]/i.test(value)||value.startsWith('\\\\')||value.startsWith('//');
+ const target=absolute?path.resolve(value):path.resolve(root,value);
+ if(!inside(root,target))throw new Error('path resolves outside the selected workspace.');
+ if(target===root&&!allowRoot)throw new Error('a file path is required.');
  const realRoot=fs.realpathSync(root);let ancestor=target;
  while(!fs.existsSync(ancestor)){const parent=path.dirname(ancestor);if(parent===ancestor)throw new Error('cannot resolve workspace path.');ancestor=parent;}
  const effective=path.resolve(fs.realpathSync(ancestor),path.relative(ancestor,target));
  if(!inside(realRoot,effective))throw new Error('path follows a symlink outside the workspace.');
- if(target===root&&!allowRoot)throw new Error('a file path is required.');
  return target;
 }
 function readText(file,allowSensitive=false){
