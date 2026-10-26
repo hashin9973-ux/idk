@@ -76,7 +76,7 @@ test('workspace-relative file writes execute without a dialog and reject paths o
 
     const escaped = await bridge.runTool('write_file', { path: '../outside.txt', content: 'must not write' }, 'req-escape-write');
     assert.equal(escaped.ok, false);
-    assert.match(escaped.error, /parent traversal/);
+    assert.match(escaped.error, /outside the selected workspace/);
     assert.equal(fs.existsSync(path.join(path.dirname(root), 'outside.txt')), false);
     assert.equal(approvalCalls, 0);
   } finally {
@@ -130,7 +130,7 @@ test('auto-accept-all skips local approval dialogs, including sensitive-file app
     assert.equal(upload.result.path, 'artifact.txt');
     const escaped = await bridge.runTool('write_file', { path: '../outside.txt', content: 'still blocked' }, 'req-auto-escape');
     assert.equal(escaped.ok, false);
-    assert.match(escaped.error, /parent traversal/);
+    assert.match(escaped.error, /outside the selected workspace/);
     assert.equal(approvalCalls, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

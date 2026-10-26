@@ -166,7 +166,7 @@ test('create_directory, move_path and delete_path have real effects inside the w
     assert.equal(fs.readFileSync(path.join(root, 'tmp', 'nested', 'moved.txt'), 'utf8'), 'hello');
     await tools.executeTool(root, 'delete_path', { path: 'tmp/nested/moved.txt' });
     assert.equal(fs.existsSync(path.join(root, 'tmp', 'nested', 'moved.txt')), false);
-    await assert.rejects(tools.executeTool(root, 'move_path', { source: '../outside', destination: 'tmp/outside' }), /parent traversal/);
+    await assert.rejects(tools.executeTool(root, 'move_path', { source: '../outside', destination: 'tmp/outside' }), /outside the selected workspace/);
   } finally { cleanup(root); }
 });
 
