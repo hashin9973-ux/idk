@@ -498,6 +498,9 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(result.result.retrieval_rules.some(rule => /before asking for machine facts/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /Start with get_agent_context/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /Never replay an uncertain side-effecting request/i.test(rule)));
+    assert.ok(result.result.development_workflow.rules.some(rule => /measurable acceptance criteria/i.test(rule)));
+    assert.ok(result.result.development_workflow.rules.some(rule => /integrated vertical slices/i.test(rule)));
+    assert.ok(result.result.development_workflow.rules.some(rule => /end-to-end UI smoke test/i.test(rule)));
     assert.ok(Array.isArray(result.result.instruction_files));
     assert.ok(result.result.instruction_files.some(item => item.path === 'AGENTS.md' && /^[a-f0-9]{64}$/.test(item.sha256)));
     assert.equal(result.result.instruction_files.some(item => Object.hasOwn(item, 'content')), false);

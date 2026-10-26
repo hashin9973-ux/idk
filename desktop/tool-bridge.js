@@ -850,6 +850,11 @@ function createToolBridge(deps) {
           'If the result is missing, inspect its claim and worker state and reread that result. Never replay an uncertain side-effecting request.',
           'Treat actual local output as authoritative; GitHub Actions and the ChatGPT server sandbox cannot establish local Windows state.',
           'Keep permission and workspace-path protections intact. When an approval or genuine failure blocks an operation, diagnose the exact result and try a supported alternative before falling back to manual instructions.',
+          'For substantial tasks, define measurable acceptance criteria and a short implementation plan before editing; keep it proportional to scope.',
+          'Match architecture to scope. A complex game, app, or multi-system feature should use coherent modules and clear interfaces, not a single-file shortcut unless explicitly requested.',
+          'Inspect relevant entry points, manifests, existing modules and tests before choosing the design; preserve unrelated changes.',
+          'Implement in small, integrated vertical slices. Batch independent inspections and verification, and represent dependencies explicitly with result references.',
+          'After edits, run project-native checks and tests, build the actual target when available, and perform an end-to-end UI smoke test for user-facing software when practical. Fix failures and rerun verification.',
           'Report only verified outcomes and name important unknowns.'
         ]
       },
