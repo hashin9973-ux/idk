@@ -834,6 +834,9 @@ function createToolBridge(deps) {
       development_workflow: {
         purpose: 'Complete the user’s actual software task reliably, using only the context and tools needed for the current step.',
         rules: [
+          'For a Windows action request, immediately use the connected GitHub MCP tools to read bridge/context/latest.json and bridge/context/capabilities.json, then call get_agent_context and act through the published local tool catalog. Never claim Windows access is blocked or give a manual walkthrough before attempting the bridge.',
+          'If a tool is missing or an operation fails, inspect the available plugin/tool catalog, worker state, exact request/claim/result, and actual error; try a supported alternative or correct the invocation. A missing file in ChatGPT’s server sandbox does not prove it is inaccessible on Windows.',
+          'Treat the selected Windows workspace as the target environment and source of truth. GitHub is the mailbox; GitHub Actions and the ChatGPT server sandbox are auxiliary only.',
           'For substantial tasks, define acceptance criteria and a short implementation plan before editing. Keep the plan proportional to the task.',
           'Match architecture to scope. Do not collapse a complex game, app, or multi-system feature into one HTML/Python/source file unless the user explicitly requests a single-file deliverable.',
           'Inspect project instructions, entry points, manifests, and relevant modules before choosing architecture. Reuse existing conventions; avoid rewriting unrelated code.',
