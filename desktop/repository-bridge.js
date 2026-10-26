@@ -168,6 +168,7 @@ function createRepositoryBridge(deps) {
   let knownResultFiles = null;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
+  let contextRefreshInFlight = false;
 
   function currentConfig() {
     const settings = getSettings() || {};
@@ -746,6 +747,15 @@ function createRepositoryBridge(deps) {
           },
           calling_contract: 'Local tools are mailbox-backed, not native GitHub MCP function names. Use GitHub MCP file operations to publish the request JSON on the configured branch, then read the result at the matching request ID. Use bridge/context/capabilities.json for exact tool schemas.'
         },
+        tool_failure_contract: {
+        no_request: 'If bridge/requests/<request_id>.json was never published on the configured mailbox branch, the Windows worker never received the operation. Do not say the worker blocked it; publish a correctly formed request using the current tool catalog.',
+        pending: 'If the request exists but its matching result is missing, inspect the same request claim and bridge/state/windows-app.json, then reread the same result. A delay or missing result is not proof of a safety rejection. Never replay an uncertain side effect.',
+        rejected: 'Only a matching result with status rejected and a concrete error proves that the bridge rejected the request envelope or tool registration. Report the exact reason and correct the request.',
+        failed: 'A result with status failed is an execution/tool error. Inspect nested ok, exitCode, timedOut, stdout, stderr, and error. Compiler errors, non-zero builds, missing files, invalid paths, and patch-context mismatches are not automatically safety blocks.',
+        cancelled: 'A result with status cancelled means the operation was cancelled or local approval was declined. Check the exact result and current execution_policy.auto_accept_all before describing an approval issue.',
+        partial: 'A partial result or output_truncated flag means output was shortened; it does not by itself mean the operation was blocked.',
+        protections: 'Never bypass tool schemas, workspace and symlink boundaries, secret-file protections, privacy rules, or genuine local approval requirements.'
+        },
         operating_rules: [
           'Local tools are not native GitHub MCP function names. For any Windows action, use GitHub MCP file operations to read the published context and publish the mailbox request; do not look only for native local-tool functions.',
           'To invoke a local tool, create a unique immutable JSON file at bridge/requests/<request_id>.json using bridge_invocation.request_example as the envelope, replace both placeholders, then read bridge/results/<same-request-id>.json. The request is not a result.',
@@ -754,6 +764,9 @@ function createRepositoryBridge(deps) {
           'Ask only for genuinely missing user intent or preferences after safe discovery. For a build/mod request, discover the installed environment first, then ask at most one concise question about the desired behavior.',
           'If a result is missing, inspect the matching claim and bridge/state/windows-app.json, then re-read the same result. Do not declare access blocked or create a duplicate while the operation may be running.',
           'Only describe a tool or permission as unavailable after a matching request/result supplies a concrete rejection or failure. Preserve native approval, argument-validation and workspace restrictions; do not bypass them.',
+          'Do not claim the mailbox rejected a request unless its matching result has status rejected and a concrete rejection error. If a tool result failed due to a path, secret, schema, or permission check, report that exact error; a missing result or compiler error is not a generic safety block.',
+          'A project compile error, patch-context mismatch, timeout, unsupported argument, and output truncation each have different remedies; name and address the actual result instead of making a generic safety-block claim.',
+          'Context snapshots refresh in the background while the request queue is idle. Do not wait for context refresh to dispatch an already-published request.',
           'Use workspace-relative paths or absolute Windows paths that remain inside the selected workspace.',
           'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
           'Inspect relevant project instructions and source before editing.',
@@ -771,6 +784,21 @@ function createRepositoryBridge(deps) {
     lastContextRefreshAt = Date.now();
     lastContextWorkspace = String(root || '');
     return index;
+  }
+
+  function scheduleContextRefresh() {
+    if (!running || contextRefreshInFlight) return;
+    contextRefreshInFlight = true;
+    Promise.resolve()
+      .then(() => publishEnvironmentContext())
+      .catch(error => {
+        lastError = 'Background context refresh failed: ' + cleanError(error.message);
+        announce();
+      })
+      .finally(() => {
+        contextRefreshInFlight = false;
+        announce();
+      });
   }
 
   async function acquireClaim(requestId) {
@@ -1095,14 +1123,7 @@ function createRepositoryBridge(deps) {
         const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
         const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);
         const contextWorkspaceChanged = Boolean(lastContextRefreshAt) && currentWorkspace !== lastContextWorkspace;
-        if (publishContextOnStart && (contextWorkspaceChanged || contextExpired)) {
-          try {
-            await publishEnvironmentContext();
-          } catch (error) {
-            lastError = 'Background context refresh failed: ' + cleanError(error.message);
-            announce();
-          }
-        }
+        const contextRefreshRequired = publishContextOnStart && (contextWorkspaceChanged || contextExpired);
         await publishState(firstPoll);
         // Dispatch independent mailbox requests concurrently. The in-flight set is
         // populated before any async work starts, preventing duplicate local claims
@@ -1134,6 +1155,13 @@ function createRepositoryBridge(deps) {
         pendingCount = sorted.filter(filename => !knownResultFiles.has(filename)).length;
         announce();
         if (pending.length) await publishState();
+
+        // Context snapshots require several local reads and GitHub API writes.
+        // Keep that maintenance work off the request-dispatch path: drain queued
+        // requests first and refresh only while the mailbox queue is idle.
+        if (contextRefreshRequired && pendingCount === 0 && requestTasks.size === 0) {
+          scheduleContextRefresh();
+        }
       } catch (error) {
         lastError = cleanError(error.message);
         announce();
@@ -1174,13 +1202,6 @@ function createRepositoryBridge(deps) {
     await ensureFolders();
     running = true;
     lastError = '';
-    if (publishContextOnStart) {
-      try {
-        await publishEnvironmentContext();
-      } catch (error) {
-        lastError = 'Environment context publication failed: ' + cleanError(error.message);
-      }
-    }
     announce();
     // The first poll publishes the initial heartbeat; avoid a duplicate GET+PUT.
     await pollOnce();

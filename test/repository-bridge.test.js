@@ -551,6 +551,88 @@ test('workspace file upload stores raw bytes and returns a repository locator', 
   assert.deepEqual(Buffer.from(stored.content, 'base64'), bytes);
 });
 
+test('mailbox polling dispatches new requests while a background context refresh is stalled', async () => {
+  const fake = fakeGitHub();
+  const fixture = settingsFixture();
+  let releaseContext;
+  const contextGate = new Promise(resolve => { releaseContext = resolve; });
+  let contextStarted = false;
+  let projectStarted = false;
+  const requestId = 'req-context-refresh-nonblocking';
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args = {}, callId = '') => {
+      if (tool === 'environment_info' && String(callId).startsWith('context-')) {
+        contextStarted = true;
+        await contextGate;
+        return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: process.cwd() } };
+      }
+      if (tool === 'project_status') {
+        projectStarted = true;
+        return { ok: true, result: { isGitRepository: false, detectedTechnologies: ['.NET'], topLevelEntries: [] } };
+      }
+      if (tool === 'get_capabilities') {
+        return { ok: true, result: { protocol: 'chatgpt-local-tools-v2', tools: [], tool_calling: { mode: 'repository-mailbox-batch', catalog_version: 1 } } };
+      }
+      if (tool === 'discover_instructions') return { ok: true, result: { count: 0, instructions: [] } };
+      if (tool === 'read_file') return { ok: false, error: 'package.json is not present' };
+      return { ok: true, result: { tool } };
+    },
+    intervalMs: 5000,
+    publishContextOnStart: true,
+    contextRefreshIntervalMs: 5 * 60 * 1000
+  });
+
+  let startPromise;
+  try {
+    startPromise = bridge.start();
+    await waitFor(() => contextStarted, 1500);
+    const startupReturned = await Promise.race([
+      startPromise.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 250))
+    ]);
+    assert.equal(startupReturned, true, 'startup must not wait for the full context refresh');
+
+    const request = {
+      protocol: PROTOCOL,
+      request_id: requestId,
+      created_at: new Date().toISOString(),
+      tool: 'project_status',
+      args: {}
+    };
+    const requestPath = 'bridge/requests/' + requestId + '.json';
+    fake.files.set(requestPath, {
+      name: requestId + '.json',
+      path: requestPath,
+      type: 'file',
+      encoding: 'base64',
+      content: encode(request),
+      sha: 'sha-injected-request'
+    });
+
+    const pollReturned = await Promise.race([
+      bridge.pollOnce().then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 250))
+    ]);
+    assert.equal(pollReturned, true, 'polling must dispatch without awaiting background context collection');
+    await waitFor(() => projectStarted, 1500);
+    await waitFor(() => fake.files.has('bridge/results/' + requestId + '.json'), 1500);
+    const result = decode(fake.files.get('bridge/results/' + requestId + '.json'));
+    assert.equal(result.status, 'completed');
+    assert.equal(result.result.ok, true);
+
+    releaseContext();
+    await waitFor(() => fake.files.has('bridge/context/latest.json'), 2000);
+  } finally {
+    releaseContext();
+    if (startPromise) {
+      try { await startPromise; } catch {}
+    }
+    await bridge.stop();
+  }
+});
+
 test('environment refresh publishes one compact agent entry and refreshes after workspace changes', async () => {
   const request = {
     protocol: PROTOCOL,
@@ -602,6 +684,9 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.files.directory_tree);
     assert.ok(index.files.instructions);
     assert.equal(index.agent_context.protocol, 'chatgpt-local-agent-context/v1');
+    assert.match(index.agent_context.tool_failure_contract.no_request, /worker never received/i);
+    assert.match(index.agent_context.tool_failure_contract.rejected, /status rejected/i);
+    assert.match(index.agent_context.tool_failure_contract.failed, /not automatically safety blocks/i);
     assert.equal(index.agent_context.project_commands.name, 'fixture-app');
     assert.equal(index.agent_context.project_commands.scripts.test, 'node --test');
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
