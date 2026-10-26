@@ -251,6 +251,8 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /_registration_event\.wait\(timeout=35\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
   assert.match(code, /localhost_handshake_timeout/);
+  assert.match(code, /\\/vision\\/challenge/);
+  assert.doesNotMatch(code, /bridge_registration_nonce/);
   assert.match(code, /computer\(action=status\)/);
   assert.match(code, /computer\(action=enable\)/);
   assert.doesNotMatch(code, /vision_activate|vision_status/);
