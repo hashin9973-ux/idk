@@ -8,7 +8,6 @@ const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
 const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
-const COLAB_PROTOCOL_SCHEME = 'windowsrepositorybridge';
 const MODEL_ID = 'Qwen/Qwen3-VL-8B-Instruct-GGUF';
 const MODEL_FILE = 'Qwen3VL-8B-Instruct-Q4_K_M.gguf';
 const PROJECTOR_FILE = 'mmproj-Qwen3VL-8B-Instruct-F16.gguf';
@@ -28,22 +27,28 @@ function validJobId(value) {
   return typeof value === 'string' && /^computer-[a-f0-9]{24}$/.test(value);
 }
 
-function safeTunnelUrl(value) {
-  if (typeof value !== 'string' || value.length > 256) return null;
+function safeApiKey(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{40,100}$/.test(value);
+}
+
+function parseTunnelEndpoint(value) {
+  if (typeof value !== 'string' || value.length > 400) return null;
   try {
     const parsed = new URL(value);
+    const match = parsed.pathname.match(/^\/([A-Za-z0-9_-]{40,100})$/);
     if (parsed.protocol !== 'https:' ||
         !/^[a-z0-9-]+\.trycloudflare\.com$/i.test(parsed.hostname) ||
         parsed.port || parsed.username || parsed.password ||
-        parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
-    return parsed.origin;
+        !match || parsed.search || parsed.hash || !safeApiKey(match[1])) return null;
+    return { url: parsed.origin + parsed.pathname, apiKey: match[1] };
   } catch {
     return null;
   }
 }
 
-function safeApiKey(value) {
-  return typeof value === 'string' && /^[A-Za-z0-9_-]{40,100}$/.test(value);
+function safeTunnelUrl(value) {
+  const endpoint = parseTunnelEndpoint(value);
+  return endpoint ? endpoint.url : null;
 }
 
 function createVisionService(deps) {
@@ -54,17 +59,23 @@ function createVisionService(deps) {
     captureScreenshot,
     encodeJpeg,
     openColabNotebook,
+    readClipboardText,
     fsImpl = fs,
     now = () => Date.now(),
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollIntervalMs = 250,
+    clipboardPollIntervalMs = 1000,
+    clipboardWatchTimeoutMs = 20 * 60 * 1000,
     fetchImpl = globalThis.fetch
   } = deps || {};
 
   let lastColabOpenAt = 0;
   let colabConnection = null;
-  let pendingNonce = null;
+  let endpointWatch = null;
+  let endpointWatchPromise = null;
+  let endpointWatchError = '';
   let visionEnabled = false;
+  let disposed = false;
   const jobs = new Map();
 
   function mailboxConfig() {
@@ -108,34 +119,20 @@ function createVisionService(deps) {
     }
   }
 
-  async function registerColabTunnel(payload = {}) {
-    if (!pendingNonce || pendingNonce.expiresAt < now()) {
-      pendingNonce = null;
-      throw new Error('No active Colab pairing request exists. Click Connect Colab in the Windows app, then rerun the notebook cell.');
-    }
-    if (pendingNonce.registrationInFlight) {
-      throw new Error('A Colab tunnel pairing attempt is already being verified.');
-    }
-    if (payload.protocol !== DIRECT_VISION_PROTOCOL ||
-        typeof payload.nonce !== 'string' ||
-        !/^[a-f0-9]{64}$/.test(payload.nonce) ||
-        !crypto.timingSafeEqual(Buffer.from(payload.nonce, 'hex'), Buffer.from(pendingNonce.value, 'hex'))) {
-      throw new Error('The Colab pairing link is invalid, expired, or does not match the current Connect Colab request.');
-    }
-    const tunnelUrl = safeTunnelUrl(payload.tunnel_url);
-    if (!tunnelUrl || !safeApiKey(payload.api_key)) {
-      throw new Error('The Colab public HTTPS URL or bearer key is invalid.');
-    }
+  function endpointFromClipboard(text) {
+    if (typeof text !== 'string' || text.length > 4096) return null;
+    const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\/[A-Za-z0-9_-]{40,100}(?![A-Za-z0-9_-])/i);
+    return match ? parseTunnelEndpoint(match[0]) : null;
+  }
 
-    const pairing = pendingNonce;
-    pairing.registrationInFlight = true;
+  async function connectPublicEndpoint(endpointText) {
+    const endpoint = parseTunnelEndpoint(endpointText);
+    if (!endpoint) throw new Error('Clipboard does not contain a valid temporary Cloudflare HTTPS endpoint.');
     const previousConnection = colabConnection;
     const previousEnabled = visionEnabled;
-    const candidate = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
+    const candidate = { ...endpoint, registeredAt: now(), lastHealthAt: 0 };
     colabConnection = candidate;
     try {
-      // The app contacts the public Colab endpoint directly. Nothing in the browser
-      // is required to fetch localhost, so this path does not use Local Network Access.
       const health = await directRequest('/health', { timeoutMs: 15000 });
       if (health.protocol !== DIRECT_VISION_PROTOCOL ||
           typeof health.enabled !== 'boolean' ||
@@ -145,29 +142,128 @@ function createVisionService(deps) {
       const ack = await directRequest('/registration/ack', {
         method: 'POST',
         timeoutMs: 15000,
-        body: { protocol: DIRECT_VISION_PROTOCOL, paired_at: new Date(now()).toISOString() }
+        body: { protocol: DIRECT_VISION_PROTOCOL, connected_at: new Date(now()).toISOString() }
       });
       if (ack.accepted !== true || ack.desktop_registered !== true) {
-        throw new Error('Colab did not confirm the authenticated server-to-server pairing.');
+        throw new Error('Colab did not confirm the authenticated HTTPS connection.');
       }
       visionEnabled = health.enabled === true;
-      if (pendingNonce === pairing) pendingNonce = null;
+      endpointWatchError = '';
+      endpointWatch = null;
       return {
         ...stateFromRemote(health),
         connected: true,
         opened: false,
         vision_activated: visionEnabled,
         notebook_url: COLAB_NOTEBOOK_URL,
-        message: 'Colab is connected through its authenticated public HTTPS tunnel. Local Network Access is not required. Vision remains user-controlled.'
+        message: 'Colab is connected through its authenticated public HTTPS endpoint. The Windows app detected the URL from the notebook output; no app-link handoff or Local Network permission was needed.'
       };
     } catch (error) {
       if (colabConnection === candidate) {
         colabConnection = previousConnection;
         visionEnabled = previousEnabled;
       }
-      throw new Error('Could not pair with the public Colab server: ' + messageOf(error));
+      throw new Error('Could not connect to the detected Colab endpoint: ' + messageOf(error));
+    }
+  }
+
+  async function watchClipboardForEndpoint(watch) {
+    let lastAttemptedUrl = '';
+    let lastAttemptAt = 0;
+    const deadline = watch.startedAt + clipboardWatchTimeoutMs;
+    try {
+      while (!disposed && endpointWatch === watch && now() < deadline) {
+        let text = '';
+        try {
+          text = typeof readClipboardText === 'function' ? String(readClipboardText() || '') : '';
+        } catch (error) {
+          endpointWatchError = 'Could not read the Windows clipboard: ' + messageOf(error);
+        }
+        if (text && text !== watch.baseline) {
+          const endpoint = endpointFromClipboard(text);
+          if (endpoint && (endpoint.url !== lastAttemptedUrl || now() - lastAttemptAt >= 5000)) {
+            lastAttemptedUrl = endpoint.url;
+            lastAttemptAt = now();
+            try {
+              await connectPublicEndpoint(endpoint.url);
+              return;
+            } catch (error) {
+              endpointWatchError = messageOf(error);
+            }
+          }
+        }
+        await sleep(clipboardPollIntervalMs);
+      }
+      if (endpointWatch === watch) {
+        watch.active = false;
+        if (!endpointWatchError) {
+          endpointWatchError = 'Timed out waiting for the notebook to copy its public HTTPS endpoint. Rerun the cell; if automatic clipboard copy is blocked, use the notebook’s Copy endpoint fallback button.';
+        }
+      }
+    } catch (error) {
+      endpointWatchError = messageOf(error);
     } finally {
-      if (pendingNonce === pairing) pairing.registrationInFlight = false;
+      if (endpointWatch === watch) endpointWatchPromise = null;
+    }
+  }
+
+  async function openColabIfNeeded() {
+    if (endpointWatch && endpointWatch.active) return { opened: false, watching: true };
+    if (typeof openColabNotebook !== 'function') throw new Error('Opening the Colab notebook is unavailable in this app build.');
+
+    let baseline = '';
+    try { baseline = typeof readClipboardText === 'function' ? String(readClipboardText() || '') : ''; } catch {}
+    const watch = { baseline, startedAt: now(), active: true };
+    endpointWatch = watch;
+    endpointWatchError = '';
+
+    // If the tab was opened recently but its clipboard watcher timed out, re-arm
+    // the watcher without spawning another browser tab.
+    if (lastColabOpenAt && now() - lastColabOpenAt < 60000) {
+      endpointWatchPromise = watchClipboardForEndpoint(watch);
+      void endpointWatchPromise;
+      return { opened: false, reused: true, watching: true };
+    }
+
+    try {
+      const result = await openColabNotebook(COLAB_NOTEBOOK_URL);
+      lastColabOpenAt = now();
+      endpointWatchPromise = watchClipboardForEndpoint(watch);
+      void endpointWatchPromise;
+      return { opened: true, result: result || null, watching: true };
+    } catch (error) {
+      if (endpointWatch === watch) endpointWatch = null;
+      throw error;
+    }
+  }
+
+  async function connectColab() {
+    try {
+      const state = await queryRuntime();
+      if (state.runtime_fresh) {
+        return {
+          ...state, connected: true, opened: false, vision_activated: state.enabled,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          message: state.model_loaded
+            ? 'Colab is connected directly through its authenticated public HTTPS endpoint. Vision ' + (state.enabled ? 'is enabled.' : 'is off.')
+            : 'Colab is connected directly. Vision is off; the model will not download until computer(action=enable) is requested.'
+        };
+      }
+      const opened = await openColabIfNeeded();
+      return {
+        ...state, status: 'waiting_for_runtime', connected: false,
+        opened: Boolean(opened.opened), open_throttled: Boolean(opened.throttled),
+        endpoint_watch_active: Boolean(opened.watching),
+        vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
+        message: opened.watching
+          ? 'The app is watching the Windows clipboard for the random public HTTPS endpoint produced by the Colab notebook. Run the server cell; it copies the endpoint automatically, and the app connects as soon as it detects it. If clipboard write is blocked, click Copy endpoint in the notebook output. No app-link handoff is needed.'
+          : opened.throttled
+            ? 'The app is already watching for a public endpoint or recently opened the notebook. Run the server cell in Colab; the Windows app will detect the endpoint automatically.'
+            : 'The app could not start watching for the notebook endpoint.',
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'The notebook copies the public endpoint and the app detects it automatically. Vision remains off until explicitly enabled.']
+      };
+    } catch (error) {
+      return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
     }
   }
 
@@ -245,44 +341,6 @@ function createVisionService(deps) {
         connection_registered: true, model_loaded: false,
         message: 'The Colab tunnel was registered but is not responding: ' + messageOf(error)
       };
-    }
-  }
-
-  async function openColabIfNeeded() {
-    if (now() - lastColabOpenAt < 60000) return { opened: false, throttled: true };
-    if (typeof openColabNotebook !== 'function') throw new Error('Opening the Colab notebook is unavailable in this app build.');
-    pendingNonce = { value: crypto.randomBytes(32).toString('hex'), expiresAt: now() + PAIRING_NONCE_TTL_MS, registrationInFlight: false };
-    const notebookUrl = new URL(COLAB_NOTEBOOK_URL);
-    notebookUrl.searchParams.set('wrb_pair_nonce', pendingNonce.value);
-    const result = await openColabNotebook(notebookUrl.href);
-    lastColabOpenAt = now();
-    return { opened: true, result: result || null };
-  }
-
-  async function connectColab() {
-    try {
-      const state = await queryRuntime();
-      if (state.runtime_fresh) {
-        return {
-          ...state, connected: true, opened: false, vision_activated: state.enabled,
-          notebook_url: COLAB_NOTEBOOK_URL,
-          message: state.model_loaded
-            ? 'Colab is connected directly through its authenticated HTTPS tunnel. Vision ' + (state.enabled ? 'is enabled.' : 'is off.')
-            : 'Colab is connected directly. Vision is off; the model will not download until computer(action=enable) is requested.'
-        };
-      }
-      const opened = await openColabIfNeeded();
-      return {
-        ...state, status: 'waiting_for_runtime', connected: false,
-        opened: Boolean(opened.opened), open_throttled: Boolean(opened.throttled),
-        vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
-        message: opened.throttled
-          ? 'The notebook was opened recently but has not registered its HTTPS tunnel. Switch to Colab and run the notebook cell; no Colab Secret or GitHub token is needed.'
-          : 'Colab was opened. Connect a runtime if needed and run the notebook cell. When the random public HTTPS URL is ready, click Connect Windows Bridge and approve opening the Windows Repository Bridge app. The app then pairs directly with Colab; Local Network Access is not needed. Vision stays off.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Click Connect Windows Bridge in the notebook and approve opening the Windows Repository Bridge app. Call computer(action=enable) only when you want the model loaded.']
-      };
-    } catch (error) {
-      return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
     }
   }
 
@@ -404,8 +462,24 @@ function createVisionService(deps) {
   }
 
   async function status() {
+    const remote = await queryRuntime();
+    if (!colabConnection && endpointWatch && endpointWatch.active) {
+      return {
+        ...remote,
+        status: 'waiting_for_endpoint',
+        endpoint_watch_active: true,
+        connection_registered: false,
+        enabled: false,
+        model_loaded: false,
+        message: endpointWatchError
+          ? 'Waiting for the Colab endpoint. Last detection attempt: ' + endpointWatchError
+          : 'The Windows app is watching the clipboard for the public HTTPS URL printed by the Colab notebook.'
+      };
+    }
     return {
-      ...(await queryRuntime()),
+      ...remote,
+      endpoint_watch_active: Boolean(endpointWatch && endpointWatch.active),
+      endpoint_watch_error: endpointWatchError || '',
       notebook_url: COLAB_NOTEBOOK_URL,
       transport: 'direct_https_tunnel',
       report_location_hint: 'Returned through the normal GitHub mailbox tool result; there is no separate vision result artifact.'
@@ -548,16 +622,18 @@ function createVisionService(deps) {
   }
 
   async function dispose() {
-    pendingNonce = null;
+    disposed = true;
+    endpointWatch = null;
   }
 
   return {
-    activate, deactivate, status, setupCheck, connectColab, registerColabTunnel, analyzeScreenshot, wait, dispose,
-    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, COLAB_PROTOCOL_SCHEME, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
+    activate, deactivate, status, setupCheck, connectColab, connectPublicEndpoint, analyzeScreenshot, wait, dispose,
+    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
 }
 
 module.exports = {
-  createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL, COLAB_PROTOCOL_SCHEME,
-  MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, validJobId, safeTunnelUrl, safeApiKey
+  createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL,
+  MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, validJobId,
+  safeTunnelUrl, safeApiKey, parseTunnelEndpoint
 };

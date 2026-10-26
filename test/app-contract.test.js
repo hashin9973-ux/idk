@@ -256,13 +256,15 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes('captureDesktopScreenshot'));
   assert.ok(main.includes('encodeVisionJpeg'));
   assert.ok(main.includes('colab.research.google.com'));
+  assert.ok(main.includes('readClipboardText: () => clipboard.readText()'));
   assert.ok(vision.includes("const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1'"));
   assert.ok(vision.includes('runtime_kept_alive: true'));
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
   assert.ok(vision.includes('input_sha256'));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
-  assert.ok(vision.includes("const COLAB_PROTOCOL_SCHEME = 'windowsrepositorybridge'"));
-  assert.ok(vision.includes('async function registerColabTunnel'));
+  assert.ok(vision.includes('async function connectPublicEndpoint'));
+  assert.ok(vision.includes('async function watchClipboardForEndpoint'));
+  assert.ok(vision.includes('parseTunnelEndpoint'));
   assert.ok(vision.includes('safeTunnelUrl'));
   assert.ok(compatibility.includes("require('./colab-direct-service')"));
   assert.ok(python.includes('cloudflared'));
@@ -270,8 +272,10 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
   assert.ok(python.includes('llama-server'));
   assert.ok(python.includes('class DirectVisionHandler'));
-  assert.ok(python.includes('display_desktop_pairing_link'));
-  assert.ok(python.includes('windowsrepositorybridge://connect-colab'));
+  assert.ok(python.includes('display_public_endpoint'));
+  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT='));
+  assert.ok(python.includes('navigator.clipboard.writeText'));
+  assert.ok(python.includes('def _route_path(self)'));
   assert.ok(!python.includes('QDQWG_TOKEN'));
   assert.ok(!python.includes('userdata.get'));
   assert.ok(!python.includes('api.github.com/repos/hashin9973-ux/qdqwg'));
@@ -279,18 +283,19 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.equal(/process\.kill|kill\(\)|shutdown.*Colab/i.test(vision), false);
 });
 
-
-test('Colab pairing uses an app URI and never asks the browser for localhost access', () => {
+test('Colab connection detects the public endpoint copied by the notebook without a pairing link', () => {
   const main = read('desktop', 'main.js');
   const service = read('desktop', 'colab-direct-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
-  const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
-  assert.match(main, /setAsDefaultProtocolClient\(COLAB_PROTOCOL_SCHEME/);
-  assert.match(main, /receiveColabProtocolLink/);
-  assert.match(service, /async function registerColabTunnel/);
-  assert.match(service, /wrb_pair_nonce/);
-  assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register/);
-  assert.match(python, /wrb_pair_nonce/);
-  assert.match(python, /windowsrepositorybridge:\/\/connect-colab/);
-  assert.doesNotMatch(python, /navigator\.permissions\.query|targetAddressSpace|localhost.*handshake/);
+  const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('\n')).join('\n');
+  assert.match(main, /readClipboardText: \(\) => clipboard\.readText\(\)/);
+  assert.match(service, /async function watchClipboardForEndpoint/);
+  assert.match(service, /text !== watch\.baseline/);
+  assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
+  assert.match(python, /PUBLIC_VISION_ENDPOINT=/);
+  assert.match(python, /navigator\.clipboard\.writeText/);
+  assert.match(python, /Copy endpoint for Windows Bridge/);
+  assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
+  assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
+  assert.doesNotMatch(python, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
 });
