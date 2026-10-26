@@ -600,7 +600,9 @@ function createToolBridge(deps) {
             ? (typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
             ? 'Auto-accept everything is enabled; protected steps run without per-operation approval dialogs.'
             : 'The batch call itself is not approval; protected steps show their own native Windows dialog.')
-            : item.mode === 'approval' || item.mode === 'approval-required' || item.mode === 'read-or-approval-for-secret-like-paths'
+            : item.mode === 'action-dependent-approval'
+              ? 'Native approval is required for connect, enable, and screenshot actions; status, disable, and wait do not prompt. Auto-accept everything may bypass those dialogs.'
+              : item.mode === 'approval' || item.mode === 'approval-required' || item.mode === 'read-or-approval-for-secret-like-paths'
               ? (typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
                 ? 'Auto-accept everything is enabled; this protected call runs without a per-operation dialog.'
                 : 'This call may display a native Windows approval dialog before execution.')

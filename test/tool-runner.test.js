@@ -14,11 +14,13 @@ function fixture() {
 }
 function cleanup(root) { fs.rmSync(root, { recursive: true, force: true }); }
 
-test('workspace path policy rejects traversal and absolute paths', () => {
+test('workspace path policy allows in-workspace absolute paths and rejects paths outside the workspace', () => {
   const root = fixture();
   try {
-    assert.throws(() => tools.safePath(root, '../outside.txt', false), /parent traversal/);
-    assert.throws(() => tools.safePath(root, path.join(root, 'src', 'index.js'), false), /absolute paths/);
+    assert.throws(() => tools.safePath(root, '../outside.txt', false), /outside the selected workspace/);
+    assert.equal(tools.safePath(root, path.join(root, 'src', 'index.js'), false), path.join(root, 'src', 'index.js'));
+    const outside = path.join(path.dirname(root), 'outside-' + path.basename(root) + '.txt');
+    assert.throws(() => tools.safePath(root, outside, false), /outside the selected workspace/);
   } finally { cleanup(root); }
 });
 
@@ -301,25 +303,25 @@ test('absolute paths inside a workspace are accepted while outside absolute path
   try {
     const inside = path.join(root, 'inside.txt');
     fs.writeFileSync(inside, 'inside', 'utf8');
-    assert.equal(localTools.safePath(root, inside, false), inside);
+    assert.equal(tools.safePath(root, inside, false), inside);
     const outside = path.join(path.dirname(root), 'outside-' + path.basename(root) + '.txt');
-    assert.throws(() => localTools.safePath(root, outside, false), /outside the selected workspace/);
-    assert.throws(() => localTools.safePath(root, '../outside.txt', false), /outside the selected workspace/);
+    assert.throws(() => tools.safePath(root, outside, false), /outside the selected workspace/);
+    assert.throws(() => tools.safePath(root, '../outside.txt', false), /outside the selected workspace/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('file glob and text search accept a targeted subdirectory path', () => {
+test('file glob and text search accept a targeted subdirectory path', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'targeted-workspace-search-'));
   try {
     fs.mkdirSync(path.join(root, 'src'), { recursive: true });
     fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
     fs.writeFileSync(path.join(root, 'src', 'app.js'), 'needle inside source', 'utf8');
     fs.writeFileSync(path.join(root, 'docs', 'readme.md'), 'needle in docs', 'utf8');
-    const glob = localTools.executeTool(root, 'glob_file_search', { path: 'src', pattern: '**/*.js' });
+    const glob = await tools.executeTool(root, 'glob_file_search', { path: 'src', pattern: '**/*.js' });
     assert.deepEqual(glob.files, ['src/app.js']);
-    const search = localTools.executeTool(root, 'search', { path: 'docs', query: 'needle' });
+    const search = await tools.executeTool(root, 'search', { path: 'docs', query: 'needle' });
     assert.equal(search.matches.length, 1);
     assert.equal(search.matches[0].path, 'docs/readme.md');
   } finally {
