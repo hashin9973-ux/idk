@@ -11,7 +11,8 @@ const {
   safeApiKey
 } = require('../desktop/colab-direct-service');
 
-const ORIGIN = 'https://colab.research.google.com';\nconst OUTPUT_ORIGIN = 'https://test-session-123-colab.googleusercontent.com';
+const ORIGIN = 'https://colab.research.google.com';
+const OUTPUT_ORIGIN = 'https://test-session-123-colab.googleusercontent.com';
 const serviceTestCalls = new WeakMap();
 const TUNNEL = 'https://direct-vision-test.trycloudflare.com';
 const API_KEY = 'a'.repeat(43);
