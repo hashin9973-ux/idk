@@ -58,10 +58,10 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
   list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
   directory_tree: 'Return a bounded workspace-relative tree. Use format=paths for a compact listing that minimizes transfer size; common generated/dependency directories and symlinks are skipped.',
-  glob_file_search: 'Find workspace files using a glob such as **/*.js. Skips common generated/dependency directories.',
+  glob_file_search: 'Find files using a glob such as **/*.js. Optional path restricts the search to a subdirectory; skips common generated/dependency directories.',
   read_file: 'Read UTF-8 text from a workspace-relative file. Use startLine/endLine for a 1-based inclusive range of at most 5,000 lines. Secret-like paths require local approval.',
   file_info: 'Return type, byte size, timestamps, permissions, and a SHA-256 digest for regular files.',
-  search: 'Search workspace text files for a literal string by default or a regular expression when regex=true. Secret-like files and binary/oversized files are skipped.',
+  search: 'Search text files for a literal string by default or a regular expression when regex=true. Optional path restricts the search to a subdirectory. Secret-like files and binary/oversized files are skipped.',
   git_status: 'Return current branch and working-tree status without changing the repository.',
   git_diff: 'Return the current diff; optionally restrict to relative paths, staged changes, or 0–20 context lines.',
   git_log: 'Read recent Git commits, optionally limited to a workspace-relative file path.',
@@ -155,7 +155,11 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
     maxDepth: { default: 4 },
     maxEntries: { default: 500 }
   },
-  glob_file_search: { pattern: { default: '**/*', description: 'Glob pattern, for example **/*.js or src/**/*.ts. Maximum 300 characters.' } },
+  glob_file_search: {
+    pattern: { default: '**/*', description: 'Glob pattern relative to path, for example **/*.js or src/**/*.ts. Maximum 300 characters.' },
+    path: { description: 'Optional starting directory relative to the workspace, or an absolute path inside it. Defaults to the workspace root.', default: '.' }
+  },
+  search: { path: { description: 'Optional directory to search, relative to the workspace or an absolute path inside it. Defaults to the workspace root.', default: '.' } },
   git_diff: { contextLines: { default: 3 } },
   create_directory: { recursive: { description: 'Create missing parent directories as needed. Defaults to true.', default: true } },
   delete_path: { recursive: { description: 'Set true to delete a non-empty directory tree. Defaults to false; without it, only files and empty directories can be deleted.', default: false } },
@@ -471,13 +475,18 @@ function createToolBridge(deps) {
         (sensitive ? '\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
         '\nMaximum upload size: 8 MiB.';
     }
-    if (tool === 'vision_activate') {
-      return header + resultWarning + 'Enable optional screenshot understanding through Google Colab. This may open Colab in your normal browser and may require visible Google sign-in, a GPU runtime and model initialization. It will never terminate an existing runtime.';
-    }
-    if (tool === 'vision_analyze_screenshot') {
-      const source = args.source === 'workspace_file' ? 'workspace file: ' + displayApprovalValue(args.path || '(missing path)', 1200) : 'current primary display';
-      return header + resultWarning + 'Capture and upload one screenshot for vision inference. Source: ' + source +
-        '\nThe screenshot may contain private desktop content. A compressed JPEG (maximum 600 KiB) is temporarily committed to the configured mailbox. Deleting the file later does not erase it from the earlier Git commits. Only proceed if repository access and history retention are acceptable.';
+    if (tool === 'computer') {
+      if (args.action === 'connect') {
+        return header + resultWarning + 'Open the Colab notebook in the normal browser and establish the direct local-to-Colab connection. This does not load the model. The user may need to connect a runtime and run the notebook cell.';
+      }
+      if (args.action === 'enable') {
+        return header + resultWarning + 'Enable screenshot understanding in Colab. If no runtime is connected, the notebook opens and requires the user to run its server cell. When connected, this may mount Google Drive, download several gigabytes of model files, and compile the runtime.';
+      }
+      if (args.action === 'screenshot') {
+        const source = args.source === 'workspace_file' ? 'workspace image: ' + displayApprovalValue(args.path || '(missing path)', 1200) : 'current primary Windows display';
+        return header + resultWarning + 'Capture and send one image for visual analysis. Source: ' + source +
+          '\nThe image is sent directly to the authenticated temporary Colab HTTPS endpoint; the screenshot is not uploaded as a separate GitHub artifact. The model report returns through the shared mailbox, so it may contain details visible on your screen. Only proceed when that disclosure is acceptable.';
+      }
     }
     if (GITHUB_GIT_TOOLS.has(tool)) {
       const repository = tool === 'git_clone' ? String(args.repository || '(missing repository)') : String(args.remote || 'origin');
@@ -579,11 +588,7 @@ function createToolBridge(deps) {
           { name: 'batch', mode: 'local-batch' },
           { name: 'get_agent_context', mode: 'read' },
           { name: 'upload_workspace_file', mode: 'approval-required' },
-          { name: 'vision_activate', mode: 'approval-required' },
-          { name: 'vision_deactivate', mode: 'repository-bridge-control' },
-          { name: 'vision_status', mode: 'read' },
-          { name: 'vision_analyze_screenshot', mode: 'approval-required' },
-          { name: 'vision_wait', mode: 'read' },
+          { name: 'computer', mode: 'action-dependent-approval' },
           { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
@@ -764,7 +769,7 @@ function createToolBridge(deps) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
       localTools.executeTool(root, 'environment_info', {}),
       localTools.executeTool(root, 'project_status', {}),
-      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: 2, maxEntries: 180, format: 'paths' }),
+      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: isFilesystemRoot(root) ? 1 : 2, maxEntries: 180, format: 'paths' }),
       localTools.executeTool(root, 'discover_instructions', {}),
       executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog')
     ]);
@@ -795,6 +800,11 @@ function createToolBridge(deps) {
       protocol: 'chatgpt-local-agent-context/v1',
       generated_at: new Date().toISOString(),
       workspace_selected: true,
+      workspace_mode: isFilesystemRoot(root) ? 'drive-root' : 'folder',
+      path_style: process.platform === 'win32' ? 'Windows' : process.platform,
+      workspace_path_guidance: isFilesystemRoot(root)
+        ? 'The selected workspace is an entire drive. Use drive-relative paths such as Users/Example/Projects/app.js or an absolute Windows path within the selected drive. The background index lists only the root entries; inspect relevant folders on demand.'
+        : 'Use workspace-relative paths or absolute Windows paths that resolve inside the selected workspace.',
       environment,
       project,
       project_commands: projectCommands,
@@ -817,7 +827,9 @@ function createToolBridge(deps) {
         'The shared snapshot is refreshed in the background by the Windows worker. Request a fresh live context when a just-made workspace change matters.',
         'Fetch full instruction contents and source files only when relevant to the current task.',
         'Use batch for up to 50 known operations to minimize GitHub request/result round trips; references may only point to earlier completed steps.',
-        'Use workspace-relative paths. Protected steps follow the current local approval setting.',
+        isFilesystemRoot(root)
+          ? 'The entire drive is the workspace. The background index intentionally contains only top-level names; use list_dir, directory_tree, glob_file_search, or search with a targeted path to explore a subdirectory. Do not recursively dump the whole drive.'
+          : 'Use paths relative to the selected workspace, or absolute Windows paths that remain inside it. Protected steps follow the current local approval setting.',
         'The shell runs as the signed-in Windows user and is not sandboxed.'
       ],
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
@@ -836,12 +848,21 @@ function createToolBridge(deps) {
       } else if (tool === 'get_agent_context') {
         result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
-        const isVisionTool = VISION_TOOLS.has(tool);
-        if (isVisionTool && !visionService) throw new Error('Vision tools are unavailable in this app build.');
+        const isComputerTool = COMPUTER_TOOLS.has(tool);
+        if (isComputerTool && !visionService) throw new Error('The computer screenshot service is unavailable in this app build.');
+        if (isComputerTool && !['status', 'connect', 'enable', 'disable', 'screenshot', 'wait'].includes(args.action)) {
+          throw new Error('Unsupported computer action. Use status, connect, enable, disable, screenshot, or wait.');
+        }
+        if (isComputerTool && args.action === 'wait' && typeof args.request_id !== 'string') {
+          throw new Error('computer(action=wait) requires the request_id returned by computer(action=screenshot).');
+        }
+        if (isComputerTool && args.action === 'screenshot' && args.source === 'workspace_file' && typeof args.path !== 'string') {
+          throw new Error('computer(action=screenshot, source=workspace_file) requires path.');
+        }
         const policy = tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
-          : isVisionTool
-            ? { tool, requiresApproval: ['vision_activate', 'vision_analyze_screenshot'].includes(tool), automatic: false }
+          : isComputerTool
+            ? { tool, requiresApproval: ['connect', 'enable', 'screenshot'].includes(args.action), automatic: false }
             : localTools.getToolPolicy(tool, args);
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
@@ -851,14 +872,14 @@ function createToolBridge(deps) {
             result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
           } else {
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
-            const output = isVisionTool
-              ? await visionServiceCall(visionService, tool, args, id)
+            const output = isComputerTool
+              ? await computerServiceCall(visionService, args, id)
               : await executeLocalTool(root, tool, args, id);
-            if ((isVisionTool && visionOutputFailed(tool, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+            if ((isComputerTool && computerOutputFailed(args.action, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
               result = {
                 ok: false,
-                error: isVisionTool
-                  ? (output && (output.error || output.message) || 'Vision operation did not complete successfully.')
+                error: isComputerTool
+                  ? (output && (output.error || output.message) || 'The computer action did not complete successfully.')
                   : tool + ' exited with code ' + output.exitCode + '.',
                 result: output
               };
@@ -867,14 +888,14 @@ function createToolBridge(deps) {
             }
           }
         } else {
-          const output = isVisionTool
-            ? await visionServiceCall(visionService, tool, args, id)
+          const output = isComputerTool
+            ? await computerServiceCall(visionService, args, id)
             : await executeLocalTool(root, tool, args, id);
-          if ((isVisionTool && visionOutputFailed(tool, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+          if ((isComputerTool && computerOutputFailed(args.action, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
             result = {
               ok: false,
-              error: isVisionTool
-                ? (output && (output.error || output.message) || 'Vision operation did not complete successfully.')
+              error: isComputerTool
+                ? (output && (output.error || output.message) || 'The computer action did not complete successfully.')
                 : tool + ' exited with code ' + output.exitCode + '.',
               result: output
             };
