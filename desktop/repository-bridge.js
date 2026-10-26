@@ -755,8 +755,8 @@ function createRepositoryBridge(deps) {
         cancelled: 'A result with status cancelled means the operation was cancelled or local approval was declined. Check the exact result and current execution_policy.auto_accept_all before describing an approval issue.',
         partial: 'A partial result or output_truncated flag means output was shortened; it does not by itself mean the operation was blocked.',
         protections: 'Never bypass tool schemas, workspace and symlink boundaries, secret-file protections, privacy rules, or genuine local approval requirements.'
-      },
-      operating_rules: [
+        },
+        operating_rules: [
           'Local tools are not native GitHub MCP function names. For any Windows action, use GitHub MCP file operations to read the published context and publish the mailbox request; do not look only for native local-tool functions.',
           'To invoke a local tool, create a unique immutable JSON file at bridge/requests/<request_id>.json using bridge_invocation.request_example as the envelope, replace both placeholders, then read bridge/results/<same-request-id>.json. The request is not a result.',
           'Immediately request get_agent_context through the mailbox, then act through the exact local tool catalog and schemas it returns. Do not stop because get_agent_context, read_file, or shell is absent from the native GitHub MCP function list.',
@@ -764,7 +764,7 @@ function createRepositoryBridge(deps) {
           'Ask only for genuinely missing user intent or preferences after safe discovery. For a build/mod request, discover the installed environment first, then ask at most one concise question about the desired behavior.',
           'If a result is missing, inspect the matching claim and bridge/state/windows-app.json, then re-read the same result. Do not declare access blocked or create a duplicate while the operation may be running.',
           'Only describe a tool or permission as unavailable after a matching request/result supplies a concrete rejection or failure. Preserve native approval, argument-validation and workspace restrictions; do not bypass them.',
-          'Never claim a bridge safety block without a matching result with status rejected and its concrete error; a missing result or failed command is not enough.',
+          'Do not claim the mailbox rejected a request unless its matching result has status rejected and a concrete rejection error. If a tool result failed due to a path, secret, schema, or permission check, report that exact error; a missing result or compiler error is not a generic safety block.',
           'A project compile error, patch-context mismatch, timeout, unsupported argument, and output truncation each have different remedies; name and address the actual result instead of making a generic safety-block claim.',
           'Context snapshots refresh in the background while the request queue is idle. Do not wait for context refresh to dispatch an already-published request.',
           'Use workspace-relative paths or absolute Windows paths that remain inside the selected workspace.',
