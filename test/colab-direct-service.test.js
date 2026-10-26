@@ -8,15 +8,14 @@ const vm = require('node:vm');
 const {
   createVisionService,
   DIRECT_VISION_PROTOCOL,
+  COLAB_PROTOCOL_SCHEME,
   safeTunnelUrl,
   safeApiKey
 } = require('../desktop/colab-direct-service');
 
-const ORIGIN = 'https://colab.research.google.com';
-const OUTPUT_ORIGIN = 'https://test-session-123-colab.googleusercontent.com';
-const serviceTestCalls = new WeakMap();
 const TUNNEL = 'https://direct-vision-test.trycloudflare.com';
 const API_KEY = 'a'.repeat(43);
+const serviceTestCalls = new WeakMap();
 
 function response(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
@@ -58,12 +57,16 @@ function fixture(options = {}) {
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     pollIntervalMs: 10,
-    callbackPortStart: options.callbackPortStart || (22000 + Math.floor(Math.random() * 10000)),
-    callbackPortCount: 8,
     fetchImpl: async (url, init = {}) => {
       const parsed = new URL(url);
       const body = init.body ? JSON.parse(init.body) : {};
-      calls.push({ type: 'direct_http', method: init.method || 'GET', path: parsed.pathname, body });
+      calls.push({
+        type: 'direct_http',
+        method: init.method || 'GET',
+        path: parsed.pathname,
+        authorization: init.headers && init.headers.Authorization,
+        body
+      });
       if (parsed.pathname === '/health') return response(200, { ...state, heartbeat_at: new Date().toISOString() });
       if (parsed.pathname === '/registration/ack') {
         if (options.failRegistrationAck) return response(503, { protocol: DIRECT_VISION_PROTOCOL, error: 'test tunnel acknowledgement failure' });
@@ -97,42 +100,26 @@ function fixture(options = {}) {
   return { service, calls, getState: () => state, setState: patch => { state = { ...state, ...patch }; } };
 }
 
-async function waitForPort(service) {
-  for (let attempt = 0; attempt < 100; attempt++) {
-    const port = service.getRegistrationPort();
-    if (port) return port;
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  throw new Error('Local registration listener did not start');
+async function startPairing(service, calls) {
+  const result = await service.connectColab();
+  assert.equal(result.status, 'waiting_for_runtime');
+  assert.equal(result.opened, true);
+  const openedUrl = calls.find(call => call.type === 'opened_colab')?.url;
+  assert.ok(openedUrl, 'Connect Colab should open the notebook');
+  const nonce = new URL(openedUrl).searchParams.get('wrb_pair_nonce');
+  assert.match(nonce || '', /^[a-f0-9]{64}$/);
+  return { result, openedUrl, nonce };
 }
 
-async function registerColab(service, port, options = {}) {
-  const origin = options.origin || OUTPUT_ORIGIN;
-  const base = 'http://127.0.0.1:' + port;
-  let opened = [...(serviceTestCalls.get(service) || [])];
-  let openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
-  if (!openedUrl) {
-    await service.connectColab();
-    opened = [...(serviceTestCalls.get(service) || [])];
-    openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
-  }
-  if (!openedUrl) throw new Error('The app did not open the Colab notebook.');
-  const challengeResponse = await fetch(base + '/vision/challenge', {
-    method: 'GET',
-    headers: { Origin: origin }
+async function registerColab(service, calls, options = {}) {
+  const pairing = await startPairing(service, calls);
+  const result = await service.registerColabTunnel({
+    protocol: options.protocol || DIRECT_VISION_PROTOCOL,
+    nonce: options.nonce || pairing.nonce,
+    tunnel_url: options.url || TUNNEL,
+    api_key: options.apiKey || API_KEY
   });
-  if (!challengeResponse.ok) return challengeResponse;
-  const challenge = await challengeResponse.json();
-  return fetch(base + '/vision/register', {
-    method: 'POST',
-    headers: { Origin: origin, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      protocol: DIRECT_VISION_PROTOCOL,
-      nonce: challenge.nonce,
-      tunnel_url: options.url || TUNNEL,
-      api_key: options.apiKey || API_KEY
-    })
-  });
+  return { ...pairing, registration: result };
 }
 
 test('tunnel validation rejects non-HTTPS, non-Cloudflare, and credential-bearing URLs', () => {
@@ -143,65 +130,67 @@ test('tunnel validation rejects non-HTTPS, non-Cloudflare, and credential-bearin
   assert.equal(safeTunnelUrl('https://direct-vision-test.trycloudflare.com/path'), null);
   assert.equal(safeApiKey(API_KEY), true);
   assert.equal(safeApiKey('short'), false);
+  assert.equal(COLAB_PROTOCOL_SCHEME, 'windowsrepositorybridge');
 });
 
-test('Colab can register a direct tunnel using the app-generated challenge; health checks bypass GitHub', async t => {
+test('app opens a nonce-paired Colab URL and pairs over the public HTTPS endpoint without a local listener', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
-  const port = await waitForPort(f.service);
-  const result = await f.service.connectColab();
-  assert.equal(result.status, 'waiting_for_runtime');
-  assert.equal(result.opened, true);
-  const openedUrl = f.calls.find(call => call.type === 'opened_colab')?.url;
-  assert.equal(new URL(openedUrl).searchParams.has('bridge_registration_nonce'), false);
+  const pairing = await registerColab(f.service, f.calls);
+  assert.equal(new URL(pairing.openedUrl).origin, 'https://colab.research.google.com');
+  assert.equal(pairing.registration.connected, true);
+  assert.equal(pairing.registration.connection_registered, true);
+  assert.equal(pairing.registration.status, 'inactive');
+  assert.equal(pairing.registration.model_loaded, false);
+  assert.equal(pairing.registration.transport, 'direct_https_tunnel');
+  assert.equal(f.service.getRegistrationPort, undefined, 'the desktop no longer hosts a localhost registration server');
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.path === '/health' && call.method === 'GET'));
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.path === '/registration/ack' && call.method === 'POST'));
+  assert.ok(f.calls.filter(call => call.type === 'direct_http').every(call => call.authorization === 'Bearer ' + API_KEY));
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.method !== 'GET' && call.path?.includes('/contents/')).length, 0);
+});
 
-  const challengeResponse = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
-    method: 'GET', headers: { Origin: OUTPUT_ORIGIN }
-  });
-  assert.equal(challengeResponse.status, 200);
-  const challenge = await challengeResponse.json();
-  assert.equal(challenge.protocol, DIRECT_VISION_PROTOCOL);
-  assert.match(challenge.nonce, /^[a-f0-9]{64}$/);
-  assert.equal(challengeResponse.headers.get('access-control-allow-origin'), OUTPUT_ORIGIN);
+test('pairing rejects bad nonces, unsupported URLs, and invalid API keys', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const pairing = await startPairing(f.service, f.calls);
+  const valid = { protocol: DIRECT_VISION_PROTOCOL, nonce: pairing.nonce, tunnel_url: TUNNEL, api_key: API_KEY };
+  await assert.rejects(
+    f.service.registerColabTunnel({ ...valid, nonce: 'b'.repeat(64) }),
+    /pairing link is invalid|expired|does not match/i
+  );
+  await assert.rejects(
+    f.service.registerColabTunnel({ ...valid, tunnel_url: 'https://example.com' }),
+    /public HTTPS URL or bearer key is invalid/i
+  );
+  await assert.rejects(
+    f.service.registerColabTunnel({ ...valid, api_key: 'short' }),
+    /public HTTPS URL or bearer key is invalid/i
+  );
+  const state = await f.service.status();
+  assert.equal(state.connection_registered, false);
+  assert.equal(state.runtime_fresh, false);
+});
 
-  const topLevelChallenge = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
-    method: 'GET', headers: { Origin: ORIGIN }
-  });
-  assert.equal(topLevelChallenge.status, 200);
-  assert.equal(topLevelChallenge.headers.get('access-control-allow-origin'), ORIGIN);
-
-  const registered = await registerColab(f.service, port);
-  assert.equal(registered.status, 200);
-  assert.equal((await registered.json()).tunnel_verified, true);
-  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.method === 'POST' && call.path === '/registration/ack'));
+test('pairing rolls back if the authenticated server-to-server acknowledgement fails', async t => {
+  const f = fixture({ failRegistrationAck: true });
+  t.after(() => f.service.dispose());
+  const pairing = await startPairing(f.service, f.calls);
+  await assert.rejects(f.service.registerColabTunnel({
+    protocol: DIRECT_VISION_PROTOCOL,
+    nonce: pairing.nonce,
+    tunnel_url: TUNNEL,
+    api_key: API_KEY
+  }), /Could not pair with the public Colab server.*HTTP 503/);
   const status = await f.service.status();
-  assert.equal(status.runtime_fresh, true);
-  assert.equal(status.connection_registered, true);
-  assert.equal(status.status, 'inactive');
-  assert.equal(status.model_loaded, false);
-  assert.equal(status.transport, 'direct_https_tunnel');
-  assert.equal(f.calls.filter(call => call.method && call.method !== 'GET' && call.path?.includes('/contents/')).length, 0);
-});
-
-test('local registration rejects requests from an untrusted origin and rejects an invalid tunnel URL', async t => {
-  const f = fixture();
-  t.after(() => f.service.dispose());
-  const port = await waitForPort(f.service);
-  const blocked = await registerColab(f.service, port, { origin: 'https://evil.example' });
-  assert.equal(blocked.status, 403);
-  assert.equal(blocked.headers.get('access-control-allow-origin'), null);
-  const opaque = await registerColab(f.service, port, { origin: 'null' });
-  assert.equal(opaque.status, 403);
-  const invalid = await registerColab(f.service, port, { url: 'https://example.com' });
-  assert.equal(invalid.status, 400);
-  assert.equal((await f.service.status()).runtime_fresh, false);
+  assert.equal(status.connection_registered, false);
+  assert.equal(status.runtime_fresh, false);
 });
 
 test('activation and deactivation are explicit and deactivation never shuts down the runtime', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
-  const port = await waitForPort(f.service);
-  assert.equal((await registerColab(f.service, port)).status, 200);
+  await registerColab(f.service, f.calls);
   const activated = await f.service.activate({}, 'activation-1');
   assert.equal(activated.status, 'ready');
   assert.equal(activated.enabled, true);
@@ -213,13 +202,12 @@ test('activation and deactivation are explicit and deactivation never shuts down
   assert.equal(f.getState().model_loaded, true);
 });
 
-test('screenshot bytes travel through the direct Colab endpoint and report is returned to the app', async t => {
+test('screenshot bytes upload directly to the Colab endpoint and its report returns to the app', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
-  const port = await waitForPort(f.service);
-  assert.equal((await registerColab(f.service, port)).status, 200);
+  await registerColab(f.service, f.calls);
   await f.service.activate({}, 'activate-for-analysis');
-  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'analysis-direct-1');
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-aaaaaaaaaaaaaaaaaaaaaaaa');
   assert.equal(result.status, 'report_available');
   assert.match(result.report, /A test window is visible/);
   assert.equal(result.input_sha256, result.input_image.sha256);
@@ -234,8 +222,7 @@ test('screenshot bytes travel through the direct Colab endpoint and report is re
 test('setup check never asks for QDQWG_TOKEN and keeps GitHub mailbox verification separate', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
-  const port = await waitForPort(f.service);
-  await registerColab(f.service, port);
+  await registerColab(f.service, f.calls);
   const result = await f.service.setupCheck({ authenticated: true, login: 'tester' });
   assert.equal(result.checks.github.status, 'passed');
   assert.equal(result.checks.mailbox.status, 'passed');
@@ -244,7 +231,7 @@ test('setup check never asks for QDQWG_TOKEN and keeps GitHub mailbox verificati
   assert.ok(result.next_steps.every(step => !/QDQWG_TOKEN|Colab Secret|fine-grained token/i.test(step)));
 });
 
-test('notebook top-level browser registration JavaScript parses independently', () => {
+test('notebook pairing JavaScript parses and opens the Windows app protocol link', () => {
   const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
   const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
   const source = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
@@ -255,54 +242,31 @@ test('notebook top-level browser registration JavaScript parses independently', 
   assert.ok(start >= 0 && end > start, 'browser script template must be extractable');
   const browserSource = source.slice(start + marker.length, end).replace('const payload = __PAYLOAD__;', 'const payload = {};');
   assert.doesNotMatch(browserSource, /__PAYLOAD__/);
-  assert.doesNotThrow(() => new vm.Script(browserSource), 'top-level browser script must parse');
+  assert.doesNotThrow(() => new vm.Script(browserSource), 'browser pairing script must parse');
+  assert.match(browserSource, /windowsrepositorybridge:\/\/connect-colab/);
+  assert.match(browserSource, /wrb_pair_nonce/);
+  assert.doesNotMatch(browserSource, /navigator\.permissions|targetAddressSpace|http:\/\/127\.0\.0\.1/);
 });
 
-test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () => {
+test('notebook and desktop service no longer use browser-to-localhost registration', () => {
   const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
   const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
   const source = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
     .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\n');
   assert.match(source, /cloudflared/);
   assert.match(source, /DirectVisionHandler/);
-  assert.match(source, /register_tunnel_with_desktop/);
+  assert.match(source, /display_desktop_pairing_link/);
+  assert.match(source, /registration\/ack/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
+  const desktopService = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'colab-direct-service.js'), 'utf8');
+  assert.doesNotMatch(desktopService, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register|CALLBACK_PORT/);
 });
 
-
-test('notebook verifies the lightweight API and uses a top-level user-gesture LNA handshake', () => {
-  const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
-  const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
-  const code = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
-    .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\n');
-
-  assert.match(code, /verify_local_api_health/);
-  assert.match(code, /Authorization.*Bearer/);
-  assert.match(code, /output\.eval_js\(js\)/);
-  assert.match(code, /getPermission/);
-  assert.match(code, /let permissionState = "prompt"/);
-  assert.ok(code.indexOf('let permissionState = "prompt"') < code.indexOf('button.addEventListener("click"'), 'permission state must initialize before exposing the button');
-  assert.match(code, /navigator\.permissions\.query\(\{name:"loopback-network"\}\)/);
-  assert.match(code, /targetAddressSpace:"loopback"/);
-  assert.match(code, /Connect Windows Bridge/);
-  assert.match(code, /registration\/ack/);
-  assert.match(code, /_desktop_registration_event\.wait\(timeout=80\)/);
-  assert.match(code, /stop_connection_bootstrap\(\)/);
-  assert.match(code, /accept Chrome's Local Network Access prompt/);
-  assert.doesNotMatch(code, /output\.register_callback|invokeFunction\(callbackName|_registration_event\.wait\(timeout=35\)/);
-  assert.doesNotMatch(code, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
-});
-
-
-test('registration does not claim success when the desktop-to-Colab acknowledgement fails', async t => {
-  const f = fixture({ failRegistrationAck: true });
-  t.after(() => f.service.dispose());
-  const port = await waitForPort(f.service);
-  const result = await registerColab(f.service, port);
-  assert.equal(result.status, 502);
-  const payload = await result.json();
-  assert.match(payload.error, /could not verify the HTTPS tunnel/);
-  const status = await f.service.status();
-  assert.equal(status.connection_registered, false);
-  assert.equal(status.runtime_fresh, false);
+test('Windows app registers and handles only the intended Colab deep-link route', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'main.js'), 'utf8');
+  assert.match(main, /setAsDefaultProtocolClient\(COLAB_PROTOCOL_SCHEME/);
+  assert.match(main, /second-instance/);
+  assert.match(main, /windowsrepositorybridge:\/\/connect-colab/);
+  assert.match(main, /registerColabTunnel\(payload\)/);
+  assert.match(main, /app:vision-connect-colab/);
 });
