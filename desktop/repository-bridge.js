@@ -747,7 +747,7 @@ function createRepositoryBridge(deps) {
           calling_contract: 'Local tools are mailbox-backed, not native GitHub MCP function names. Use GitHub MCP file operations to publish the request JSON on the configured branch, then read the result at the matching request ID. Use bridge/context/capabilities.json for exact tool schemas.'
         },
         operating_rules: [
-          'For any Windows action, first use the connected GitHub MCP to read bridge/context/latest.json and bridge/context/capabilities.json from this repository branch. Do not assume the local tools are listed as native MCP functions.',
+          'Local tools are not native GitHub MCP function names. For any Windows action, use GitHub MCP file operations to read the published context and publish the mailbox request; do not look only for native local-tool functions.',
           'To invoke a local tool, create a unique immutable JSON file at bridge/requests/<request_id>.json using bridge_invocation.request_example as the envelope, replace both placeholders, then read bridge/results/<same-request-id>.json. The request is not a result.',
           'Immediately request get_agent_context through the mailbox, then act through the exact local tool catalog and schemas it returns. Do not stop because get_agent_context, read_file, or shell is absent from the native GitHub MCP function list.',
           'Before asking for machine-discoverable facts such as installed applications/games, executable versions, install paths, frameworks, files, or configuration, perform targeted read-only Windows discovery. Prefer manifests, executable metadata, registry/package metadata, and bounded searches; avoid unnecessary whole-drive crawls.',
