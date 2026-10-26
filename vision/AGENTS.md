@@ -7,7 +7,7 @@ The notebook provides optional visual evidence to the Windows Repository Bridge;
 
 ## Preserve the connection architecture
 - Keep the desktop app's ChatGPT-facing surface as one `computer` tool with actions `status`, `connect`, `enable`, `disable`, `screenshot`, and `wait`. Do not reintroduce exposed legacy `vision_*` actions.
-- Colab and the Windows app communicate directly through the authenticated temporary HTTPS tunnel. The one-time localhost handshake registers the tunnel credentials with the app; do not require users to paste a GitHub token, Colab secret, tunnel URL, or bearer key.
+- Colab and the Windows app communicate directly through the authenticated temporary HTTPS tunnel. The one-time localhost handshake registers the tunnel credentials with the app; render a clear **Connect to Windows app** button and initiate the first loopback request from that user click. Check `navigator.permissions.query({ name: 'loopback-network' })` in a guarded try/catch; never query the deprecated combined `local-network-access` permission name. Explain that the browser may require Loopback network / Local network access permission and display the specific connection error. Do not require users to paste a GitHub token, Colab secret, tunnel URL, or bearer key.
 - Keep tunnel credentials ephemeral, high-entropy, authenticated, and out of repository files, logs, notebook outputs intended for sharing, and errors. Expose only the required health/control/analysis endpoints.
 - Screenshots go directly to the authenticated Colab service. Do not add a separate GitHub screenshot artifact or commit screen contents to the mailbox. Only the returned report travels through the normal matched tool result.
 
