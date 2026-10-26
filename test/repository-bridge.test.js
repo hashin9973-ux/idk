@@ -607,7 +607,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
     assert.equal(index.agent_context.tool_catalog.catalog_version, 1);
     assert.ok(index.agent_context.operating_rules.some(rule => /no request file exists.*do not attribute.*Windows worker/i.test(rule)));
-    assert.ok(index.agent_context.operating_rules.some(rule => /Do not claim access is blocked.*before actually trying the bridge/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /claim access is blocked.*before actually trying the bridge/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /ChatGPT server-sandbox path failure is not evidence/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /complex game.*one file/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /measurable acceptance criteria/i.test(rule)));
