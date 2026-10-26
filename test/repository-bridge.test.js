@@ -227,7 +227,7 @@ test('worker executes a request once, writes the actual result, claim and heartb
 });
 
 test('worker executes independent mailbox requests concurrently with a bounded limit', async () => {
-  const requests = Array.from({ length: 5 }, (_, index) => ({
+  const requests = Array.from({ length: 15 }, (_, index) => ({
     protocol: PROTOCOL,
     request_id: 'req-parallel-' + String(index + 1).padStart(2, '0'),
     created_at: new Date().toISOString(),
@@ -255,8 +255,8 @@ test('worker executes independent mailbox requests concurrently with a bounded l
   try {
     await bridge.start();
     await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
-    assert.equal(executions, 5);
-    assert.equal(maximumActive, 3, 'the mailbox worker should use its configured three-request concurrency');
+    assert.equal(executions, 15);
+    assert.equal(maximumActive, 10, 'the mailbox worker should use its configured ten-request concurrency');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
       assert.equal(result.status, 'completed');
