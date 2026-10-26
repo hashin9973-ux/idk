@@ -299,7 +299,8 @@ test('the desktop uses a clipboard reader only for the explicit Colab connect fl
   const service = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'colab-direct-service.js'), 'utf8');
   assert.match(main, /readClipboardText: \(\) => clipboard\.readText\(\)/);
   assert.match(service, /async function watchClipboardForEndpoint/);
-  assert.match(service, /text !== watch\.baseline/);
+  assert.match(service, /if \(text\) \{\s*const endpoint = endpointFromClipboard\(text\)/);
+  assert.doesNotMatch(service, /text !== watch\.baseline/);
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
   assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register|wrb_pair_nonce/);
