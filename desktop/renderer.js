@@ -224,7 +224,7 @@
     } else {
       if (visionConnectWatchDeadline && Date.now() < visionConnectWatchDeadline) {
         visionColabDetail.textContent = 'Waiting for the direct Colab connection';
-        visionColabDetail.title = 'Run the notebook cell, then click Connect Windows Bridge and approve opening the Windows app. It pairs over the public HTTPS tunnel; no Local Network Access permission or Colab Secret is needed.';
+        visionColabDetail.title = 'Run the notebook cell. The app watches the clipboard for the public endpoint and connects automatically; no app-link handoff, Local Network permission or Colab Secret is needed.';
         visionColabDetail.dataset.state = 'action_required';
       } else {
         visionColabDetail.textContent = vision.runtime_status
@@ -340,7 +340,7 @@
         visionSetupDetail.title = result.message || 'Open the notebook, connect a runtime if needed, and run the server cell. Then click Connect Windows Bridge and approve opening the Windows app.';
         visionSetupDetail.dataset.state = 'in_progress';
         visionColabDetail.textContent = 'Run notebook cell';
-        visionColabDetail.title = result.message || 'The app is waiting for the direct Colab endpoint to register.';
+        visionColabDetail.title = result.message || 'The app is watching for the public endpoint copied by the notebook.';
         visionColabDetail.dataset.state = 'action_required';
         visionModelDetail.textContent = 'Not started';
         visionModelDetail.title = 'Connecting to Colab does not activate vision or download the model.';
