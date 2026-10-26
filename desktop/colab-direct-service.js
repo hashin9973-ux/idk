@@ -300,7 +300,7 @@ function createVisionService(deps) {
       const state = await queryRuntime();
       if (state.runtime_fresh) {
         return {
-          ...state, connected: true, opened: false, computer(action=enable)d: state.enabled,
+          ...state, connected: true, opened: false, vision_activated: state.enabled,
           notebook_url: COLAB_NOTEBOOK_URL,
           message: state.model_loaded
             ? 'Colab is connected directly through its authenticated HTTPS tunnel. Vision ' + (state.enabled ? 'is enabled.' : 'is off.')
@@ -311,14 +311,14 @@ function createVisionService(deps) {
       return {
         ...state, status: 'waiting_for_runtime', connected: false,
         opened: Boolean(opened.opened), open_throttled: Boolean(opened.throttled),
-        computer(action=enable)d: false, notebook_url: COLAB_NOTEBOOK_URL,
+        vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
         message: opened.throttled
           ? 'The notebook was opened recently but has not registered its HTTPS tunnel. Switch to Colab and run the notebook cell; no Colab Secret or GitHub token is needed.'
           : 'Colab was opened. Connect a runtime if needed and run the notebook cell. It will automatically register an authenticated HTTPS tunnel with this app. Vision stays off.',
         next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Wait until the app reports Colab connected. Call computer(action=enable) only when you want the model loaded.']
       };
     } catch (error) {
-      return { status: 'error', connected: false, opened: false, computer(action=enable)d: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
+      return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
     }
   }
 
