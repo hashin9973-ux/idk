@@ -729,8 +729,32 @@ function createRepositoryBridge(deps) {
           tools: Array.isArray(capabilityData.tools) ? capabilityData.tools : [],
           tool_calling: capabilityData.tool_calling || null
         },
+        bridge_invocation: {
+          repository: [currentConfig().owner, currentConfig().repo].filter(Boolean).join('/'),
+          branch: currentConfig().branch || DEFAULT_BRANCH,
+          protocol: PROTOCOL,
+          request_path_template: 'bridge/requests/<request_id>.json',
+          result_path_template: 'bridge/results/<same-request-id>.json',
+          claim_path_template: 'bridge/claims/<same-request-id>.json',
+          worker_state_path: 'bridge/state/windows-app.json',
+          request_example: {
+            protocol: PROTOCOL,
+            request_id: 'req-YYYYMMDD-unique',
+            created_at: '<current ISO-8601 timestamp>',
+            tool: 'get_agent_context',
+            args: {}
+          },
+          calling_contract: 'Local tools are mailbox-backed, not native GitHub MCP function names. Use GitHub MCP file operations to publish the request JSON on the configured branch, then read the result at the matching request ID. Use bridge/context/capabilities.json for exact tool schemas.'
+        },
         operating_rules: [
-          'Use workspace-relative paths for file operations.',
+          'Local tools are not native GitHub MCP function names. For any Windows action, use GitHub MCP file operations to read the published context and publish the mailbox request; do not look only for native local-tool functions.',
+          'To invoke a local tool, create a unique immutable JSON file at bridge/requests/<request_id>.json using bridge_invocation.request_example as the envelope, replace both placeholders, then read bridge/results/<same-request-id>.json. The request is not a result.',
+          'Immediately request get_agent_context through the mailbox, then act through the exact local tool catalog and schemas it returns. Do not stop because get_agent_context, read_file, or shell is absent from the native GitHub MCP function list.',
+          'Before asking for machine-discoverable facts such as installed applications/games, executable versions, install paths, frameworks, files, or configuration, perform targeted read-only Windows discovery. Prefer manifests, executable metadata, registry/package metadata, and bounded searches; avoid unnecessary whole-drive crawls.',
+          'Ask only for genuinely missing user intent or preferences after safe discovery. For a build/mod request, discover the installed environment first, then ask at most one concise question about the desired behavior.',
+          'If a result is missing, inspect the matching claim and bridge/state/windows-app.json, then re-read the same result. Do not declare access blocked or create a duplicate while the operation may be running.',
+          'Only describe a tool or permission as unavailable after a matching request/result supplies a concrete rejection or failure. Preserve native approval, argument-validation and workspace restrictions; do not bypass them.',
+          'Use workspace-relative paths or absolute Windows paths that remain inside the selected workspace.',
           'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
           'Inspect relevant project instructions and source before editing.',
           'Batch known operations into one request; every step returns its own status and output.',

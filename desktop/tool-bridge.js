@@ -826,6 +826,10 @@ function createToolBridge(deps) {
         tool_calling: capabilities.tool_calling
       },
       retrieval_rules: [
+        'The connected GitHub MCP does not expose these local tools as native functions. For a Windows task, read bridge/context/latest.json and bridge/context/capabilities.json, then create bridge/requests/<unique-id>.json with protocol chatgpt-local-repo-bridge/v1, request_id, created_at, tool, and args; read bridge/results/<same-id>.json.',
+        'Immediately invoke get_agent_context through that mailbox protocol before asking for machine facts. Use the published schemas exactly; do not treat a missing native function name or a server-sandbox path miss as proof that Windows access is blocked.',
+        'Discover installed software, games, versions, paths, project files and configuration with targeted local tools before asking the user. Ask only for genuinely missing intent after discovery.',
+        'If a matching result is absent, inspect the matching claim and worker state and re-read the same result. Do not replay an uncertain side effect or create a duplicate request.',
         'The shared snapshot is refreshed in the background by the Windows worker. Request a fresh live context when a just-made workspace change matters.',
         'Fetch full instruction contents and source files only when relevant to the current task.',
         'Use batch for up to 50 known operations to minimize GitHub request/result round trips; references may only point to earlier completed steps.',
@@ -834,6 +838,20 @@ function createToolBridge(deps) {
           : 'Use paths relative to the selected workspace, or absolute Windows paths that remain inside it. Protected steps follow the current local approval setting.',
         'The shell runs as the signed-in Windows user and is not sandboxed.'
       ],
+      development_workflow: {
+        purpose: 'Use the actual Windows environment as the working environment, through its GitHub mailbox.',
+        rules: [
+          'First inspect the published context and exact schemas, then submit a real local-tool request using the mailbox JSON envelope. Native GitHub MCP function names and local mailbox tool names are different interfaces.',
+          'Start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, and the local tool catalog in one result.',
+          'For unknown environment facts, run targeted discovery before asking the user: check installed application/game manifests, executable version metadata, likely install locations, frameworks and relevant project files.',
+          'Batch independent read-only inspections. Use one small inspection request, one focused edit request, and one verification request rather than one request per file or command.',
+          'Match every result to its request_id. Inspect status, nested ok, exitCode, timedOut, stdout/stderr and truncation. A request or claim alone is not completion.',
+          'If the result is missing, inspect its claim and worker state and reread that result. Never replay an uncertain side-effecting request.',
+          'Treat actual local output as authoritative; GitHub Actions and the ChatGPT server sandbox cannot establish local Windows state.',
+          'Keep permission and workspace-path protections intact. When an approval or genuine failure blocks an operation, diagnose the exact result and try a supported alternative before falling back to manual instructions.',
+          'Report only verified outcomes and name important unknowns.'
+        ]
+      },
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
     };
   }
