@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const {
   createVisionService,
   DIRECT_VISION_PROTOCOL,
@@ -243,6 +244,20 @@ test('setup check never asks for QDQWG_TOKEN and keeps GitHub mailbox verificati
   assert.ok(result.next_steps.every(step => !/QDQWG_TOKEN|Colab Secret|fine-grained token/i.test(step)));
 });
 
+test('notebook top-level browser registration JavaScript parses independently', () => {
+  const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
+  const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
+  const source = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
+    .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\n');
+  const marker = 'js = r"""';
+  const start = source.indexOf(marker);
+  const end = source.indexOf('""".replace("__PAYLOAD__", payload_json)', start);
+  assert.ok(start >= 0 && end > start, 'browser script template must be extractable');
+  const browserSource = source.slice(start + marker.length, end).replace('const payload = __PAYLOAD__;', 'const payload = {};');
+  assert.doesNotMatch(browserSource, /__PAYLOAD__/);
+  assert.doesNotThrow(() => new vm.Script(browserSource), 'top-level browser script must parse');
+});
+
 test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () => {
   const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
   const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
@@ -255,7 +270,7 @@ test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () =
 });
 
 
-test('notebook verifies the lightweight local API and stops on a failed or unreported handshake', () => {
+test('notebook verifies the lightweight API and uses a top-level user-gesture LNA handshake', () => {
   const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
   const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
   const code = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
@@ -263,23 +278,17 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
 
   assert.match(code, /verify_local_api_health/);
   assert.match(code, /Authorization.*Bearer/);
-  assert.match(code, /output\.register_callback/);
-  assert.match(code, /registration.ack/);
-  assert.match(code, /_desktop_registration_event\.wait\(timeout=35\)/);
-  assert.doesNotMatch(code, /if not _registration_event\.wait/);
-  assert.match(code, /invokeFunction\(callbackName/);
+  assert.match(code, /output\.eval_js\(js\)/);
+  assert.match(code, /getPermission/);
+  assert.match(code, /navigator\.permissions\.query\(\{name:"loopback-network"\}\)/);
+  assert.match(code, /targetAddressSpace:"loopback"/);
+  assert.match(code, /Connect Windows Bridge/);
+  assert.match(code, /registration\/ack/);
+  assert.match(code, /_desktop_registration_event\.wait\(timeout=80\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
-  assert.match(code, /challenge_unavailable/);
-  assert.match(code, /Downloading cloudflared binary/);
-  assert.match(code, /waiting up to 90 seconds for an HTTPS URL/);
-  assert.match(code, /stage_elapsed_seconds/);
-  assert.match(code, /Browser output origin/);
-  assert.match(code, /loopback permission state/);
-  assert.match(code, /\/vision\/challenge/);
-  assert.doesNotMatch(code, /bridge_registration_nonce/);
-  assert.match(code, /computer\(action=status\)/);
-  assert.match(code, /computer\(action=enable\)/);
-  assert.doesNotMatch(code, /vision_activate|vision_status/);
+  assert.match(code, /allow Chrome's Local Network Access prompt/);
+  assert.doesNotMatch(code, /output\.register_callback|invokeFunction\(callbackName|_registration_event\.wait\(timeout=35\)/);
+  assert.doesNotMatch(code, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
 
 
