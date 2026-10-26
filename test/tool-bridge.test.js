@@ -500,6 +500,9 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(Array.isArray(result.result.development_workflow.rules));
     const workflowRules = result.result.development_workflow.rules.join(' ');
     assert.match(workflowRules, /complex game.*one HTML\/Python\/source file/i);
+    assert.match(workflowRules, /Never claim Windows access is blocked.*before attempting the bridge/i);
+    assert.match(workflowRules, /missing file in ChatGPT’s server sandbox does not prove/i);
+    assert.match(workflowRules, /GitHub is the mailbox.*source of truth/i);
     assert.match(workflowRules, /matching result/i);
     assert.match(workflowRules, /exitCode/i);
     assert.match(workflowRules, /unverified behavior/i);
