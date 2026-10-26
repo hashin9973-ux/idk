@@ -21,7 +21,7 @@ const {
   desktopCapturer
 } = require('electron');
 const { clampRectToWorkArea } = require('./geometry');
-const { resolveWorkspaceRoot } = require('./workspace-path');
+const { resolveWorkspaceRoot, isFilesystemRoot } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -210,8 +210,8 @@ function getDefaultWorkspaceRoot() {
 }
 
 function getWorkspaceRoot() {
-  // A prior bad value such as "C:\\" resolves to the drive root. Never use a
-  // drive/filesystem root as the workspace; normalize it back to a safe folder.
+  // An explicitly selected drive root is a valid workspace. Path-based tools
+  // remain confined to this root and reject symlink escapes.
   const root = resolveWorkspaceRoot(settings.workspaceRoot, getDefaultWorkspaceRoot());
   if (settings.workspaceRoot !== root) {
     settings.workspaceRoot = root;
@@ -281,16 +281,30 @@ async function restartFilesystemIndexMonitor() {
 
 function selectWorkspace() {
   return dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
-    title: 'Choose the sandbox folder ChatGPT may modify and delete files inside',
+    title: 'Choose the folder or entire drive ChatGPT may access',
     defaultPath: fs.existsSync(getWorkspaceRoot()) ? getWorkspaceRoot() : app.getPath('documents'),
     properties: ['openDirectory', 'createDirectory']
-  }).then(result => {
+  }).then(async result => {
     if (result.canceled || !result.filePaths || !result.filePaths.length) {
       return { canceled: true, workspaceRoot: getWorkspaceRoot() };
     }
     const selected = path.resolve(result.filePaths[0]);
     if (!fs.existsSync(selected) || !fs.statSync(selected).isDirectory()) {
       throw new Error('Selected workspace is not a directory.');
+    }
+    if (isFilesystemRoot(selected)) {
+      const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+        type: 'warning',
+        title: 'Use the entire drive as the ChatGPT workspace?',
+        message: 'ChatGPT will be able to read, create, edit, move, and delete files anywhere on this drive using workspace file tools.',
+        detail: 'This is not an operating-system sandbox. File tools remain confined to the selected drive and reject symlink escapes, but ordinary edits/deletions inside it can run automatically. PowerShell runs with your Windows-user permissions and is not restricted to this drive. The background index scans only the drive root; deeper folders are explored on demand.',
+        buttons: ['Use entire drive', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1
+      });
+      if (warning.response !== 0) {
+        return { canceled: true, workspaceRoot: getWorkspaceRoot(), message: 'Whole-drive workspace selection was cancelled.' };
+      }
     }
     settings.workspaceRoot = selected;
     persistSettings();

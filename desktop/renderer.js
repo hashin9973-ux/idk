@@ -106,14 +106,17 @@
     const root = typeof workspace.root === 'string' ? workspace.root : '';
     const leaf = root.split(/[\\/]/).filter(Boolean).pop() || root;
     const index = workspace.index || {};
-    workspaceLabel.textContent = root ? 'Workspace: ' + leaf : 'Choose workspace folder';
+    const driveRoot = /^[a-z]:[\\/]?$/i.test(root);
+    workspaceLabel.textContent = root ? (driveRoot ? 'Workspace: entire drive ' + root : 'Workspace: ' + leaf) : 'Choose workspace folder';
     const details = [];
     if (root) details.push('Current folder: ' + root);
     if (Number.isInteger(index.entryCount)) details.push('Indexed entries: ' + index.entryCount);
     if (index.updatedAt) details.push('Last local index update: ' + index.updatedAt);
     if (index.truncated) details.push('Warning: index is incomplete due to size or entry limits.');
     if (workspace.syncError) details.push('Index sync error: ' + workspace.syncError);
-    workspaceRow.title = 'Click to choose a different workspace folder. ' +
+    workspaceRow.title = (driveRoot
+      ? 'Entire drive selected. File tools may access every file on this drive. The index lists top-level names only; explore subfolders on demand. '
+      : 'Click to choose a different workspace folder or drive. ') +
       (details.length ? details.join(' | ') : 'No workspace selected yet.');
     setDot(workspaceDot, workspace.syncError ? 'error' : index.running ? 'online' : 'waiting');
   }
