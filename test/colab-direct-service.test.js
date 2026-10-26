@@ -219,5 +219,6 @@ test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () =
   assert.match(source, /cloudflared/);
   assert.match(source, /DirectVisionHandler/);
   assert.match(source, /register_tunnel_with_desktop/);
+  assert.match(source, /computer-\[a-f0-9\]\{24\}/, 'Colab must accept the desktop-generated screenshot request ID');
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
