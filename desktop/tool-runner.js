@@ -1,7 +1,7 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync,spawn}=require('node:child_process');
-const MAX_FILE=1024*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=128*1024,MAX_RESULTS=150,MAX_MS=120000;
+const MAX_FILE=1024*1024,MAX_READ_FILE_BYTES=32*1024*1024,MAX_READ_PAGE_BYTES=12*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=128*1024,MAX_RESULTS=150,MAX_MS=120000;
 const IGNORED=new Set(['.git','node_modules','.venv','venv','dist','build','coverage','.next','.cache','target','bin','obj','__pycache__']);
 function looksSensitiveFile(file){
  const segments=String(file).split(/[\\/]+/).filter(Boolean);
@@ -31,9 +31,9 @@ function safePath(rootInput,raw,allowRoot=false){
  if(!inside(realRoot,effective))throw new Error('path follows a symlink outside the workspace.');
  return target;
 }
-function readText(file,allowSensitive=false){
+function readText(file,allowSensitive=false,maxBytes=MAX_FILE){
  const s=fs.statSync(file);if(!s.isFile())throw new Error('path is not a regular file.');
- if(s.size>MAX_FILE)throw new Error('file exceeds the 1 MiB read limit.');
+ if(s.size>maxBytes)throw new Error('file exceeds the '+(maxBytes===MAX_READ_FILE_BYTES?'32 MiB text read limit':'1 MiB read limit')+'.');
  if(looksSensitiveFile(file)&&!allowSensitive)throw new Error('Refusing to read a file that looks like a secret or private key without explicit approval.');
  const b=fs.readFileSync(file);if(b.includes(0))throw new Error('binary files are not supported.');
  return new TextDecoder('utf-8',{fatal:true}).decode(b);
@@ -92,7 +92,104 @@ function searchFiles(root,args={}){
 }
 function git(root,args){const r=spawnSync('git',args,{cwd:root,encoding:'utf8',timeout:15000,maxBuffer:MAX_OUTPUT,windowsHide:true,shell:false});if(r.error)throw new Error(r.error.code==='ENOENT'?'Git was not found on PATH.':'Git failed: '+r.error.message);return{exitCode:r.status===null?1:r.status,stdout:r.stdout||'',stderr:r.stderr||'',command:['git',...args]};}
 function projectStatus(root){const names=fs.readdirSync(root),isGit=fs.existsSync(path.join(root,'.git')),tech=[];if(names.includes('package.json'))tech.push('Node.js');if(names.includes('pyproject.toml')||names.includes('requirements.txt'))tech.push('Python');if(names.includes('Cargo.toml'))tech.push('Rust');if(names.includes('go.mod'))tech.push('Go');if(names.some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))tech.push('.NET');if(names.includes('pom.xml')||names.includes('build.gradle'))tech.push('Java');return{workspace:root,isGitRepository:isGit,git:isGit?git(root,['status','--short','--branch']):null,detectedTechnologies:tech,topLevelEntries:names.slice(0,100)};}
-function readFile(root,args){const target=safePath(root,args.path,false);if(!fs.existsSync(target))throw new Error('file not found.');const full=readText(target,args.approved===true),lines=full.split(/\r?\n/);const hasRange=args.startLine!==undefined||args.endLine!==undefined;let content=full,startLine=1,endLine=lines.length;if(hasRange){startLine=Number.isInteger(args.startLine)?args.startLine:1;endLine=Number.isInteger(args.endLine)?args.endLine:Math.min(lines.length,startLine+4999);if(startLine<1||endLine<startLine)throw new Error('startLine/endLine must define a valid 1-based range.');if(endLine-startLine>4999)throw new Error('a single read may return at most 5,000 lines.');content=lines.slice(startLine-1,Math.min(endLine,lines.length)).join('\n');}return{path:path.relative(root,target).replace(/\\/g,'/'),bytes:Buffer.byteLength(full),sha256:crypto.createHash('sha256').update(full).digest('hex'),totalLines:lines.length,startLine,endLine:Math.min(endLine,lines.length),content};}
+function readFile(root,args){
+ const target=safePath(root,args.path,false);
+ if(!fs.existsSync(target))throw new Error('file not found.');
+ const full=readText(target,args.approved===true,MAX_READ_FILE_BYTES);
+ const lines=full.split(/\r?\n/);
+ const totalLines=lines.length;
+ const startLine=Number.isInteger(args.startLine)?args.startLine:1;
+ const endLine=Number.isInteger(args.endLine)?args.endLine:Math.min(totalLines,startLine+4999);
+ const startCharacter=Number.isInteger(args.startCharacter)?args.startCharacter:0;
+ if(startLine<1||endLine<startLine)throw new Error('startLine/endLine must define a valid 1-based range.');
+ if(startLine>totalLines)throw new Error('startLine is past the end of the file; totalLines='+totalLines+'.');
+ if(endLine-startLine>4999)throw new Error('a single read may request at most 5,000 lines.');
+ if(startCharacter<0)throw new Error('startCharacter must be a non-negative Unicode character offset.');
+ const firstLineCharacters=[...lines[startLine-1]];
+ if(startCharacter>firstLineCharacters.length)throw new Error('startCharacter is past the end of startLine; use the returned nextStartCharacter exactly.');
+ const eol=full.includes('\r\n')?'\r\n':'\n';
+ const byteBudget=MAX_READ_PAGE_BYTES-Buffer.byteLength(eol,'utf8');
+ let content='';
+ let contentBytes=0;
+ let returnedEndLine=startLine-1;
+ let nextStartLine=startLine;
+ let nextStartCharacter=startCharacter;
+ let stoppedForBytes=false;
+ for(let lineNumber=startLine;lineNumber<=endLine;lineNumber++){
+  const characters=[...lines[lineNumber-1]];
+  const offset=lineNumber===startLine?startCharacter:0;
+  const remainder=characters.slice(offset);
+  const separator=returnedEndLine>=startLine?eol:'';
+  const separatorBytes=Buffer.byteLength(separator,'utf8');
+  const remainingBudget=byteBudget-contentBytes-separatorBytes;
+  const remainderText=remainder.join('');
+  if(Buffer.byteLength(remainderText,'utf8')<=remainingBudget){
+   content+=separator+remainderText;
+   contentBytes=Buffer.byteLength(content,'utf8');
+   returnedEndLine=lineNumber;
+   nextStartLine=lineNumber+1;
+   nextStartCharacter=0;
+   continue;
+  }
+  let piece='';
+  let pieceBytes=0;
+  let consumed=0;
+  for(const character of remainder){
+   const characterBytes=Buffer.byteLength(character,'utf8');
+   if(pieceBytes+characterBytes>remainingBudget)break;
+   piece+=character;
+   pieceBytes+=characterBytes;
+   consumed++;
+  }
+  if(consumed===0&&remainingBudget<=0){
+   nextStartLine=lineNumber;
+   nextStartCharacter=offset;
+   stoppedForBytes=true;
+   break;
+  }
+  content+=separator+piece;
+  contentBytes=Buffer.byteLength(content,'utf8');
+  returnedEndLine=lineNumber;
+  if(offset+consumed<characters.length){
+   nextStartLine=lineNumber;
+   nextStartCharacter=offset+consumed;
+  }else{
+   nextStartLine=lineNumber+1;
+   nextStartCharacter=0;
+  }
+  stoppedForBytes=true;
+  break;
+ }
+ const hasMoreInFile=nextStartCharacter>0||nextStartLine<=totalLines;
+ const hasMoreInRange=nextStartCharacter>0?nextStartLine<=endLine:nextStartLine<=endLine;
+ const appendBoundaryEol=hasMoreInFile&&nextStartCharacter===0&&returnedEndLine>=startLine&&(hasMoreInRange||args.endLine===undefined);
+ if(appendBoundaryEol)content+=eol;
+ contentBytes=Buffer.byteLength(content,'utf8');
+ const reachedEof=!hasMoreInFile;
+ const fileComplete=startLine===1&&reachedEof;
+ return{
+  path:path.relative(root,target).replace(/\\/g,'/'),
+  bytes:Buffer.byteLength(full),
+  sha256:crypto.createHash('sha256').update(full).digest('hex'),
+  totalLines,
+  requestedStartLine:startLine,
+  requestedEndLine:endLine,
+  startLine,
+  endLine:Math.max(startLine,returnedEndLine),
+  returnedLineCount:Math.max(0,returnedEndLine-startLine+1),
+  returnedBytes:contentBytes,
+  pageLimitBytes:MAX_READ_PAGE_BYTES,
+  rangeComplete:!hasMoreInRange,
+  hasMoreInRange,
+  hasMoreInFile,
+  reachedEof,
+  fileComplete,
+  nextStartLine:hasMoreInFile?nextStartLine:null,
+  nextStartCharacter:hasMoreInFile?nextStartCharacter:0,
+  stoppedForBytes,
+  content
+ };
+}
 function writeFile(root,args){const target=safePath(root,args.path,false);if(typeof args.content!=='string')throw new Error('content must be a string.');const bytes=Buffer.from(args.content,'utf8');if(bytes.length>MAX_FILE)throw new Error('content exceeds 1 MiB.');if(!fs.existsSync(path.dirname(target)))throw new Error('parent directory must already exist.');const before=fs.existsSync(target)?crypto.createHash('sha256').update(fs.readFileSync(target)).digest('hex'):null;if(before!==null)readText(target,args.approved===true);atomicWrite(target,bytes);return{path:path.relative(root,target).replace(/\\/g,'/'),bytesWritten:bytes.length,beforeSha256:before,afterSha256:crypto.createHash('sha256').update(bytes).digest('hex')};}
 function parsePatch(text,root,approved=false){if(typeof text!=='string'||Buffer.byteLength(text)>MAX_PATCH)throw new Error('patch must be a string up to 2 MiB.');const lines=text.replace(/\r\n/g,'\n').split('\n');if(lines[0]!=='*** Begin Patch')throw new Error('patch must start with *** Begin Patch.');const plans=[];let i=1;while(i<lines.length&&lines[i]!=='*** End Patch'){const h=lines[i++];if(h.startsWith('*** Add File: ')){const rel=h.slice(14).trim(),target=safePath(root,rel,false),body=[];while(i<lines.length&&!/^\*\*\* (Add File|Update File|Delete File): /.test(lines[i])&&lines[i]!=='*** End Patch'){const line=lines[i++];if(!line.startsWith('+'))throw new Error('Add File lines must start with +.');body.push(line.slice(1));}plans.push({kind:'add',relative:path.relative(root,target).replace(/\\/g,'/'),target,text:body.join('\n')+'\n'});}else if(h.startsWith('*** Delete File: ')){const rel=h.slice(17).trim(),target=safePath(root,rel,false);plans.push({kind:'delete',relative:path.relative(root,target).replace(/\\/g,'/'),target,text:null});}else if(h.startsWith('*** Update File: ')){const rel=h.slice(17).trim(),target=safePath(root,rel,false);if(!fs.existsSync(target))throw new Error('Update target not found: '+rel);const original=readText(target,approved===true),eol=original.includes('\r\n')?'\r\n':'\n',final=original.endsWith('\n');let current=original.replace(/\r\n/g,'\n').replace(/\n$/,'').split('\n'),cursor=0,saw=false;while(i<lines.length&&!/^\*\*\* (Add File|Update File|Delete File): /.test(lines[i])&&lines[i]!=='*** End Patch'){if(!lines[i].startsWith('@@'))throw new Error('expected @@ hunk header.');const hint=lines[i++].slice(2).trim(),old=[],neu=[];while(i<lines.length&&!lines[i].startsWith('@@')&&!/^\*\*\* (Add File|Update File|Delete File): /.test(lines[i])&&lines[i]!=='*** End Patch'){const line=lines[i++];if(line==='*** End of File')continue;if(!line.length)throw new Error('blank context line must start with a space.');if(line[0]===' '){old.push(line.slice(1));neu.push(line.slice(1));}else if(line[0]==='-')old.push(line.slice(1));else if(line[0]==='+')neu.push(line.slice(1));else if(line[0]==='\\')continue;else throw new Error('invalid patch line: '+line.slice(0,80));}let at=-1;if(!old.length){at=hint?current.findIndex(line=>line.includes(hint))+1:0;if(hint&&at===0)throw new Error('patch context not found: '+hint);}else{for(let k=Math.max(0,cursor);k<=current.length-old.length;k++){if(old.every((s,j)=>current[k+j]===s)){at=k;break;}}if(at<0)for(let k=0;k<Math.min(cursor,current.length-old.length+1);k++){if(old.every((s,j)=>current[k+j]===s)){at=k;break;}}if(at<0)throw new Error('patch context did not match '+rel+'; re-read and retry.');}current.splice(at,old.length,...neu);cursor=at+neu.length;saw=true;}if(!saw)throw new Error('Update File requires a hunk.');plans.push({kind:'update',relative:path.relative(root,target).replace(/\\/g,'/'),target,text:current.join(eol)+(final?eol:'')});}else throw new Error('unsupported patch operation: '+h);}if(lines[i]!=='*** End Patch'||!plans.length)throw new Error('patch is incomplete or empty.');const seen=new Set();for(const p of plans){const k=process.platform==='win32'?p.relative.toLowerCase():p.relative;if(seen.has(k))throw new Error('duplicate path in patch: '+p.relative);seen.add(k);if(p.text!==null&&Buffer.byteLength(p.text)>MAX_FILE)throw new Error('patched file exceeds 1 MiB: '+p.relative);}return plans;}
 function applyPatch(root,args){const approved=args.approved===true,plans=parsePatch(args.patch,root,approved);return{...applyPlans(plans,approved),preview:plans.map(p=>({path:p.relative,action:p.kind}))};}
