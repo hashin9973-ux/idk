@@ -159,3 +159,13 @@ test('monitor retries a failed repository sync without requiring a local name ch
 test('scan requires an existing directory', async () => {
   await assert.rejects(scanWorkspace(path.join(os.tmpdir(), 'missing-index-root-' + Date.now())), /ENOENT/);
 });
+
+test('drive-root scans keep only immediate children and mark scope in the published index', async () => {
+  const root = path.parse(path.resolve(os.tmpdir())).root;
+  const scan = await scanWorkspace(root, { maxEntries: 500 });
+  assert.equal(scan.rootMode, 'drive-root');
+  assert.ok(scan.entries.length <= 500);
+  assert.equal(scan.entries.some(entry => entry.path.includes(path.sep) || entry.path.includes('/')), false);
+  const rendered = renderIndex(scan.entries, { rootMode: scan.rootMode, truncated: scan.truncated });
+  assert.match(rendered.content, /drive root top-level only/);
+});
