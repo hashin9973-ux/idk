@@ -59,7 +59,7 @@ function safeColabOrigin(value) {
         parsed.username || parsed.password || parsed.port) return null;
     const hostname = parsed.hostname.toLowerCase();
     if (hostname === 'colab.research.google.com' ||
-        /^[a-z0-9-]+-colab\\.googleusercontent\\.com$/.test(hostname)) {
+        /^[a-z0-9-]+-colab\.googleusercontent\.com$/.test(hostname)) {
       return parsed.origin;
     }
     return null;
