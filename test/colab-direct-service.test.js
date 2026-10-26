@@ -261,6 +261,8 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /_registration_event\.wait\(timeout=35\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
   assert.match(code, /challenge_unavailable/);
+  assert.match(code, /Downloading cloudflared binary/);
+  assert.match(code, /waiting up to 90 seconds for an HTTPS URL/);
   assert.match(code, /\/vision\/challenge/);
   assert.doesNotMatch(code, /bridge_registration_nonce/);
   assert.match(code, /computer\(action=status\)/);
