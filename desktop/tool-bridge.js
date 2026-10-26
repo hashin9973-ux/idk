@@ -248,27 +248,28 @@ function isPlainObject(value) {
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
-function visionServiceCall(service, tool, args, requestId) {
-  switch (tool) {
-    case 'vision_activate': return service.activate(args, requestId);
-    case 'vision_deactivate': return service.deactivate(args, requestId);
-    case 'vision_status': return service.status(args, requestId);
-    case 'vision_analyze_screenshot': return service.analyzeScreenshot(args, requestId);
-    case 'vision_wait': return service.wait(args, requestId);
-    default: throw new Error('Unknown vision tool: ' + tool);
+function computerServiceCall(service, args, requestId) {
+  switch (args.action) {
+    case 'status': return service.status(args);
+    case 'connect': return service.connectColab();
+    case 'enable': return service.activate(args, requestId);
+    case 'disable': return service.deactivate(args, requestId);
+    case 'screenshot': return service.analyzeScreenshot(args, requestId);
+    case 'wait': return service.wait(args);
+    default: throw new Error('Unsupported computer action. Use status, connect, enable, disable, screenshot, or wait.');
   }
 }
 
-function visionOutputFailed(tool, output) {
+function computerOutputFailed(action, output) {
   if (!output || output.status === 'error' || output.status === 'inference_failed') return true;
-  if (tool === 'vision_analyze_screenshot') return !['report_available', 'inference_in_progress'].includes(output.status);
-  if (tool === 'vision_wait') return ['inactive', 'needs_authentication', 'gpu_unavailable', 'disconnected'].includes(output.status);
+  if (action === 'screenshot') return !['report_available', 'inference_in_progress'].includes(output.status);
+  if (action === 'wait') return ['inactive', 'needs_authentication', 'gpu_unavailable', 'disconnected'].includes(output.status);
   return false;
 }
 
 function createToolBridge(deps) {
   const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService } = deps;
-  const VISION_TOOLS = new Set(['vision_activate', 'vision_deactivate', 'vision_status', 'vision_analyze_screenshot', 'vision_wait']);
+  const COMPUTER_TOOLS = new Set(['computer']);
 
   function validateArgs(tool, args) {
     if (BLOCKED_TOOLS_FOR_MAILBOX.has(tool)) {
@@ -381,11 +382,7 @@ function createToolBridge(deps) {
       case 'get_agent_context':
         reads.push('*');
         break;
-      case 'vision_activate':
-      case 'vision_deactivate':
-      case 'vision_status':
-      case 'vision_analyze_screenshot':
-      case 'vision_wait':
+      case 'computer':
       case 'shell':
       case 'run_tests':
       case 'git_fetch':
