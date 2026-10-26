@@ -286,7 +286,7 @@ test('notebook verifies the lightweight API and uses a top-level user-gesture LN
   assert.match(code, /registration\/ack/);
   assert.match(code, /_desktop_registration_event\.wait\(timeout=80\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
-  assert.match(code, /allow Chrome's Local Network Access prompt/);
+  assert.match(code, /accept Chrome's Local Network Access prompt/);
   assert.doesNotMatch(code, /output\.register_callback|invokeFunction\(callbackName|_registration_event\.wait\(timeout=35\)/);
   assert.doesNotMatch(code, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
