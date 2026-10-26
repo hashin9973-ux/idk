@@ -11,7 +11,7 @@ const {
   safeApiKey
 } = require('../desktop/colab-direct-service');
 
-const ORIGIN = 'https://colab.research.google.com';
+const ORIGIN = 'https://colab.research.google.com';\nconst OUTPUT_ORIGIN = 'https://test-session-123-colab.googleusercontent.com';
 const serviceTestCalls = new WeakMap();
 const TUNNEL = 'https://direct-vision-test.trycloudflare.com';
 const API_KEY = 'a'.repeat(43);
@@ -101,7 +101,7 @@ async function waitForPort(service) {
 }
 
 async function registerColab(service, port, options = {}) {
-  const origin = options.origin || ORIGIN;
+  const origin = options.origin || OUTPUT_ORIGIN;
   const base = 'http://127.0.0.1:' + port;
   let opened = [...(serviceTestCalls.get(service) || [])];
   let openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
@@ -156,6 +156,13 @@ test('Colab can register a direct tunnel using the app-generated challenge; heal
   const challenge = await challengeResponse.json();
   assert.equal(challenge.protocol, DIRECT_VISION_PROTOCOL);
   assert.match(challenge.nonce, /^[a-f0-9]{64}$/);
+  assert.equal(challengeResponse.headers.get('access-control-allow-origin'), OUTPUT_ORIGIN);
+
+  const topLevelChallenge = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
+    method: 'GET', headers: { Origin: ORIGIN }
+  });
+  assert.equal(topLevelChallenge.status, 200);
+  assert.equal(topLevelChallenge.headers.get('access-control-allow-origin'), ORIGIN);
 
   const registered = await registerColab(f.service, port);
   assert.equal(registered.status, 200);
@@ -174,6 +181,9 @@ test('local registration rejects requests from an untrusted origin and rejects a
   const port = await waitForPort(f.service);
   const blocked = await registerColab(f.service, port, { origin: 'https://evil.example' });
   assert.equal(blocked.status, 403);
+  assert.equal(blocked.headers.get('access-control-allow-origin'), null);
+  const opaque = await registerColab(f.service, port, { origin: 'null' });
+  assert.equal(opaque.status, 403);
   const invalid = await registerColab(f.service, port, { url: 'https://example.com' });
   assert.equal(invalid.status, 400);
   assert.equal((await f.service.status()).runtime_fresh, false);
