@@ -147,12 +147,86 @@ test('ranged file reads, file metadata, and directory trees return bounded works
     assert.equal(ranged.content, 'two');
     assert.equal(ranged.startLine, 2);
     assert.equal(ranged.totalLines, 4);
+    assert.equal(ranged.rangeComplete, true);
+    assert.equal(ranged.hasMoreInFile, true);
+    assert.equal(ranged.fileComplete, false);
     const info = await tools.executeTool(root, 'file_info', { path: 'src/lines.txt' });
     assert.equal(info.type, 'file');
     assert.equal(info.sha256.length, 64);
     const tree = await tools.executeTool(root, 'directory_tree', { path: 'src', maxDepth: 2, maxEntries: 20 });
     assert.ok(tree.entries.some(entry => entry.path === 'src/index.js'));
     assert.ok(tree.entries.some(entry => entry.path === 'src/lines.txt'));
+  } finally { cleanup(root); }
+});
+
+test('large text reads report the real line count and paginate without dropping middle content', async () => {
+  const root = fixture();
+  try {
+    const original = Array.from({ length: 1800 }, (_, index) =>
+      'line-' + String(index + 1).padStart(4, '0') + '-' + 'x'.repeat(78)
+    ).join('\n') + '\n';
+    fs.writeFileSync(path.join(root, 'src', 'large.txt'), original, 'utf8');
+
+    let page = await tools.executeTool(root, 'read_file', { path: 'src/large.txt' });
+    assert.equal(page.totalLines, 1801, 'totalLines must count the entire source file, including its terminal empty line');
+    assert.equal(page.fileComplete, false);
+    assert.equal(page.hasMoreInFile, true);
+    assert.ok(page.returnedLineCount < page.totalLines);
+    assert.ok(page.returnedBytes <= page.pageLimitBytes);
+    assert.ok(page.nextStartLine > page.startLine);
+    assert.doesNotMatch(page.content, /line-1800-/);
+
+    const chunks = [page.content];
+    let pages = 1;
+    while (page.hasMoreInFile) {
+      page = await tools.executeTool(root, 'read_file', {
+        path: 'src/large.txt',
+        startLine: page.nextStartLine,
+        startCharacter: page.nextStartCharacter,
+        endLine: page.totalLines
+      });
+      chunks.push(page.content);
+      pages++;
+      assert.ok(page.returnedBytes <= page.pageLimitBytes);
+      assert.equal(page.totalLines, 1801);
+      assert.ok(pages < 50, 'page loop must make progress and reach EOF');
+    }
+
+    assert.equal(page.fileComplete, true);
+    assert.equal(page.hasMoreInFile, false);
+    assert.ok(pages > 1);
+    assert.equal(chunks.join(''), original, 'concatenated pages must reproduce every byte of text in order');
+  } finally { cleanup(root); }
+});
+
+test('read_file continuation can resume in the middle of a very long Unicode line', async () => {
+  const root = fixture();
+  try {
+    const original = '🙂'.repeat(12000) + '\nend of file\n';
+    fs.writeFileSync(path.join(root, 'src', 'long-line.txt'), original, 'utf8');
+
+    let page = await tools.executeTool(root, 'read_file', { path: 'src/long-line.txt' });
+    const chunks = [page.content];
+    assert.equal(page.totalLines, 3);
+    assert.equal(page.hasMoreInFile, true);
+    assert.equal(page.nextStartLine, 1);
+    assert.ok(page.nextStartCharacter > 0);
+
+    let pages = 1;
+    while (page.hasMoreInFile) {
+      page = await tools.executeTool(root, 'read_file', {
+        path: 'src/long-line.txt',
+        startLine: page.nextStartLine,
+        startCharacter: page.nextStartCharacter,
+        endLine: page.totalLines
+      });
+      chunks.push(page.content);
+      pages++;
+      assert.ok(page.returnedBytes <= page.pageLimitBytes);
+      assert.ok(pages < 20, 'long-line continuation must make progress and reach EOF');
+    }
+    assert.equal(page.fileComplete, true);
+    assert.equal(chunks.join(''), original, 'Unicode continuation must not lose or duplicate characters');
   } finally { cleanup(root); }
 });
 
