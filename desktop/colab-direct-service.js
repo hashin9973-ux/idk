@@ -49,6 +49,25 @@ function safeApiKey(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{40,100}$/.test(value);
 }
 
+// Colab's top-level app and sandboxed JavaScript output frames use different,
+// but Google-controlled, HTTPS origins. Do not trust arbitrary origins or opaque "null".
+function safeColabOrigin(value) {
+  if (typeof value !== 'string' || value.length > 300) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:' || parsed.origin !== value ||
+        parsed.username || parsed.password || parsed.port) return null;
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname === 'colab.research.google.com' ||
+        /^[a-z0-9-]+-colab\\.googleusercontent\\.com$/.test(hostname)) {
+      return parsed.origin;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function createVisionService(deps) {
   const {
     githubAuth,
@@ -116,12 +135,13 @@ function createVisionService(deps) {
     }
   }
 
-  function sendJson(res, status, value, cors = false) {
+  function sendJson(res, status, value, cors = false, requestOrigin = null) {
     res.statusCode = status;
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     if (cors) {
-      res.setHeader('Access-Control-Allow-Origin', COLAB_ORIGIN);
+      // Echo only a validated, official Colab origin so output-frame CORS succeeds.
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin || COLAB_ORIGIN);
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
@@ -144,43 +164,44 @@ function createVisionService(deps) {
 
   async function handleRegistration(req, res) {
     const origin = req.headers.origin;
-    if (origin !== COLAB_ORIGIN) {
-      sendJson(res, 403, { ok: false, error: 'Only the official Google Colab origin can register this connection.' });
+    const allowedOrigin = safeColabOrigin(origin);
+    if (!allowedOrigin) {
+      sendJson(res, 403, { ok: false, error: 'Only HTTPS Google Colab and its official Colab output-frame origins can register this connection.' });
       return;
     }
     const url = new URL(req.url || '/', 'http://127.0.0.1');
-    if (req.method === 'OPTIONS') return sendJson(res, 204, {}, true);
+    if (req.method === 'OPTIONS') return sendJson(res, 204, {}, true, allowedOrigin);
     if (req.method === 'GET' && url.pathname === '/vision/challenge') {
       if (!pendingNonce || pendingNonce.expiresAt < now()) {
         pendingNonce = null;
-        return sendJson(res, 410, { ok: false, error: 'No live registration challenge exists. Click Connect Colab in the Windows app and retry.' }, true);
+        return sendJson(res, 410, { ok: false, error: 'No live registration challenge exists. Click Connect Colab in the Windows app and retry.' }, true, allowedOrigin);
       }
       return sendJson(res, 200, {
         ok: true,
         protocol: DIRECT_VISION_PROTOCOL,
         nonce: pendingNonce.value
-      }, true);
+      }, true, allowedOrigin);
     }
     if (req.method !== 'POST' || url.pathname !== '/vision/register') {
-      return sendJson(res, 404, { ok: false, error: 'Unknown registration route.' }, true);
+      return sendJson(res, 404, { ok: false, error: 'Unknown registration route.' }, true, allowedOrigin);
     }
     let payload;
     try {
       payload = await readBody(req);
     } catch (error) {
-      return sendJson(res, 400, { ok: false, error: messageOf(error) }, true);
+      return sendJson(res, 400, { ok: false, error: messageOf(error) }, true, allowedOrigin);
     }
     if (!pendingNonce || pendingNonce.expiresAt < now() || payload.nonce !== pendingNonce.value) {
-      return sendJson(res, 403, { ok: false, error: 'The one-time registration challenge is missing, expired, or incorrect.' }, true);
+      return sendJson(res, 403, { ok: false, error: 'The one-time registration challenge is missing, expired, or incorrect.' }, true, allowedOrigin);
     }
     const tunnelUrl = safeTunnelUrl(payload.tunnel_url);
     if (payload.protocol !== DIRECT_VISION_PROTOCOL || !tunnelUrl || !safeApiKey(payload.api_key)) {
-      return sendJson(res, 400, { ok: false, error: 'The Colab endpoint or protocol is invalid.' }, true);
+      return sendJson(res, 400, { ok: false, error: 'The Colab endpoint or protocol is invalid.' }, true, allowedOrigin);
     }
     pendingNonce = null;
     colabConnection = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
     visionEnabled = false;
-    return sendJson(res, 200, { ok: true, protocol: DIRECT_VISION_PROTOCOL }, true);
+    return sendJson(res, 200, { ok: true, protocol: DIRECT_VISION_PROTOCOL }, true, allowedOrigin);
   }
 
   async function ensureReceiver() {
