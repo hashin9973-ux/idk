@@ -227,6 +227,7 @@ test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () =
   assert.match(source, /button\.textContent = "Connect to Windows app"/);
   assert.match(source, /button\.addEventListener\("click", async/);
   assert.match(source, /local network access/i);
+  assert.match(source, /loopback-network/);
   assert.doesNotMatch(source, /vision_activate/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
