@@ -111,7 +111,7 @@ async function registerColab(service, port, options = {}) {
     openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
   }
   if (!openedUrl) throw new Error('The app did not open Colab with a registration nonce.');
-  const nonce = new URL(openedUrl).searchParams.get('bridge_registration_nonce');
+  const nonce = options.nonce === undefined ? new URL(openedUrl).searchParams.get('bridge_registration_nonce') : options.nonce;
   return fetch(base + '/vision/register', {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/json' },
@@ -159,8 +159,13 @@ test('local registration rejects requests from an untrusted origin and rejects a
   const port = await waitForPort(f.service);
   const blocked = await registerColab(f.service, port, { origin: 'https://evil.example' });
   assert.equal(blocked.status, 403);
+  const invalidNonce = await registerColab(f.service, port, { nonce: 'f'.repeat(64) });
+  assert.equal(invalidNonce.status, 403);
+  assert.equal(invalidNonce.headers.get('access-control-allow-origin'), ORIGIN);
+  assert.match((await invalidNonce.json()).error, /challenge/i);
   const invalid = await registerColab(f.service, port, { url: 'https://example.com' });
   assert.equal(invalid.status, 400);
+  assert.equal(invalid.headers.get('access-control-allow-origin'), ORIGIN);
   assert.equal((await f.service.status()).runtime_fresh, false);
 });
 
@@ -219,5 +224,9 @@ test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () =
   assert.match(source, /cloudflared/);
   assert.match(source, /DirectVisionHandler/);
   assert.match(source, /register_tunnel_with_desktop/);
+  assert.match(source, /button\.textContent = "Connect to Windows app"/);
+  assert.match(source, /button\.addEventListener\("click", async/);
+  assert.match(source, /local network access/i);
+  assert.doesNotMatch(source, /vision_activate/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
