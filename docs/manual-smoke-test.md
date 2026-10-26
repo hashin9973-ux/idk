@@ -7,7 +7,7 @@ This is a manual test because GitHub Actions cannot prove the app can connect to
 ## Before starting
 
 - Use a **private** copy of `hashin9973-ux/qdqwg` and the dedicated `bridge-mailbox` branch.
-- Ensure the configured workspace contains only harmless test files. On first launch this is `Documents/ChatGPTWorkspace`; an existing `workspaceRoot` setting is preserved. Do not use the real Cyberpunk modding workspace for the first run.
+- Ensure the configured workspace contains only harmless test files. On first launch this is `Documents/ChatGPTWorkspace`; an existing `workspaceRoot` setting is preserved. Use a disposable project folder for the first run. Test whole-drive selection separately and verify that it shows an explicit warning and indexes only the drive root.
 - No custom GitHub OAuth App or client ID should be needed. If GitHub is not connected, click the **GitHub not connected** status row; the bundled GitHub CLI opens the official device-authorization page in your default browser. Complete the device flow.
 - Keep secrets, tokens, credentials, private keys, and confidential source material out of the workspace files you intend to upload.
 
@@ -94,17 +94,15 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 Automated tests and a successful installer build are necessary but not substitutes for this smoke test.
 
 
-## Optional Colab vision smoke test
+## Optional computer screenshot smoke test
 
-1. With GitHub connected, call vision_status; it should report inactive if vision has never been enabled.
-2. Call vision_activate and follow the notebook URL. Add QDQWG_TOKEN in Colab Secrets and run the notebook worker cell. A new model cache requires several gigabytes of Drive space and a one-time llama.cpp build.
-3. Poll vision_status until it says ready and confirms model_loaded: true. Opening the notebook alone is not readiness.
-4. Call vision_analyze_screenshot with {"source":"desktop","waitMs":0}. Confirm the returned status is pending or report-available and record the same request_id.
-5. If pending, call vision_wait with that exact request_id. Confirm report_available, input_image.sha256 and result request ID match the queued request, and report_path points to bridge/vision/reports/<request_id>.txt.
-6. Call vision_deactivate. Confirm enabled:false and runtime_kept_alive:true; do not expect Colab or its browser tab to close.
-7. Test recoverable statuses by intentionally disconnecting Colab and verify that the app says disconnected, not report-available. Restore the runtime and re-run the worker cell.
+1. With GitHub connected, call the `computer` tool with `{"action":"status"}` to check whether Colab is connected and whether the model is ready.
+2. Call `computer` with `{"action":"connect"}` to open the notebook if necessary. Connect a Colab runtime and run **Start the direct Colab vision server**. No GitHub token or Colab Secret is required.
+3. Once Colab is connected, call `computer` with `{"action":"enable"}` and wait until it reports `model_loaded: true`. Enabling may download several gigabytes of model files and compile llama.cpp.
+4. Call `computer` with `{"action":"screenshot","source":"desktop","waitMs":0}`. If it returns a pending state, call `computer` with `{"action":"wait","request_id":"<returned computer-... ID>"}` and verify the request ID and screenshot SHA-256 match.
+5. Call `computer` with `{"action":"disable"}`. Confirm new screenshot requests are disabled and `runtime_kept_alive: true`; the browser tab and runtime should remain running.
+6. Disconnect Colab and verify `computer(action=status)` reports disconnection rather than a successful screenshot. Restore the runtime and rerun the notebook cell.
 
-These manual integration checks require a real Google account, a permitted Colab runtime/GPU and a repository-scoped token. Unit tests use a fake mailbox/API and are not a live Colab test.
+These manual checks require a real Google account and a permitted Colab runtime/GPU. Automated tests use a fake transport and do not prove live Colab operation.
 
-
-Vision privacy note: the screenshot is committed to `qdqwg` as a temporary artifact. The worker attempts to delete its current branch path after processing, but that deletion does not erase older Git commits. Only use vision when repository access and retained history are acceptable.
+Screenshot bytes are sent directly to the authenticated temporary Colab HTTPS endpoint, not committed as a separate screenshot artifact. The resulting report is returned through the normal GitHub mailbox and may still disclose visible screen content.
