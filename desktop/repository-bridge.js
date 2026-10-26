@@ -730,6 +730,9 @@ function createRepositoryBridge(deps) {
           tool_calling: capabilityData.tool_calling || null
         },
         operating_rules: [
+          'For Windows action requests, use the connected GitHub MCP tools to inspect bridge/context/latest.json and bridge/context/capabilities.json, then call get_agent_context and use the published local tools. Do not claim access is blocked or default to manual instructions before actually trying the bridge.',
+          'If the expected tool is missing or fails, inspect available plugins/tools, worker state, and matching request/claim/result records; diagnose the actual error and try a supported alternative. A ChatGPT server-sandbox path failure is not evidence of Windows inaccessibility.',
+          'The selected Windows workspace is the source of truth. GitHub is only the communication mailbox; CI and server-side sandbox results do not establish local Windows state.',
           'Use workspace-relative paths for file operations.',
           'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
           'Inspect relevant project instructions, manifests, existing source, and tests before editing; preserve unrelated changes.',
