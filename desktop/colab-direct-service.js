@@ -540,7 +540,7 @@ function createVisionService(deps) {
     const deadline = now() + duration;
     while (true) {
       const job = jobs.get(jobId);
-      if (!job) return { status: 'error', request_id: jobId, error: 'No local vision job with this ID exists in the current app session. If the app restarted, submit a new screenshot request.' };
+      if (!job) return { status: 'error', request_id: jobId, error: 'No local screenshot job with this ID exists in the current app session. If the app restarted, submit a new screenshot request.' };
       if (job.result) return job.result;
       if (now() >= deadline) break;
       await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - now())));
@@ -576,7 +576,7 @@ function createVisionService(deps) {
 
   async function wait(args = {}) {
     try {
-      if (!validJobId(args.request_id)) throw new Error('request_id must be the vision job ID returned by computer(action=screenshot) (vision- followed by 24 hexadecimal characters).');
+      if (!validJobId(args.request_id)) throw new Error('request_id must be the screenshot job ID returned by computer(action=screenshot) (computer- followed by 24 hexadecimal characters).');
       return await waitForJob(args.request_id, safeWaitMs(args.waitMs));
     } catch (error) {
       return { status: 'error', request_id: args.request_id || null, error: messageOf(error) };
