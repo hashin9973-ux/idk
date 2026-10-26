@@ -267,7 +267,6 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /registration.ack/);
   assert.match(code, /_desktop_registration_event\.wait\(timeout=35\)/);
   assert.match(code, /invokeFunction\(callbackName/);
-  assert.match(code, /_desktop_registration_event\.wait\(timeout=35\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
   assert.match(code, /challenge_unavailable/);
   assert.match(code, /Downloading cloudflared binary/);
