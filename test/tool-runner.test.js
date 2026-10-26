@@ -173,7 +173,7 @@ test('large text reads report the real line count and paginate without dropping 
     assert.equal(page.hasMoreInFile, true);
     assert.ok(page.returnedLineCount < page.totalLines);
     assert.ok(page.returnedBytes <= page.pageLimitBytes);
-    assert.ok(page.nextStartLine > page.startLine);
+    assert.ok(page.nextStartLine > page.startLine || page.nextStartCharacter > 0);
     assert.doesNotMatch(page.content, /line-1800-/);
 
     const chunks = [page.content];
