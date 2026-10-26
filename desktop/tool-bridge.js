@@ -855,7 +855,7 @@ function createToolBridge(deps) {
           'Inspect relevant entry points, manifests, existing modules and tests before choosing the design; preserve unrelated changes.',
           'Implement in small, integrated vertical slices. Batch independent inspections and verification, and represent dependencies explicitly with result references.',
           'After edits, run project-native checks and tests, build the actual target when available, and perform an end-to-end UI smoke test for user-facing software when practical. Fix failures and rerun verification.',
-          'Report only verified outcomes and name important unknowns.
+          'Report only verified outcomes and name important unknowns.'
         ]
       },
       detail: { directory_tree_tool: 'directory_tree', instruction_tool: 'discover_instructions', capabilities_tool: 'get_capabilities' }
