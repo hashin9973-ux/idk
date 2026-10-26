@@ -204,11 +204,20 @@
         : danger ? 'error' : 'waiting');
 
     if (vision.runtime_fresh === true) {
+      const stageName = String(vision.stage || '').replace(/_/g, ' ');
+      const elapsedSeconds = Number.isFinite(vision.stage_elapsed_seconds)
+        ? Math.max(0, Math.floor(vision.stage_elapsed_seconds)) : null;
+      const elapsedLabel = elapsedSeconds === null ? ''
+        : elapsedSeconds >= 60
+          ? Math.floor(elapsedSeconds / 60) + 'm ' + (elapsedSeconds % 60) + 's'
+          : elapsedSeconds + 's';
       const runtimeLabel = status === 'inactive'
         ? 'Direct tunnel live; vision disabled'
-        : status === 'needs_authentication' ? 'Google/Drive authentication required'
-          : status === 'gpu_unavailable' ? 'GPU unavailable'
-            : 'Direct tunnel live (' + String(vision.runtime_status || status).replace(/_/g, ' ') + ')';
+        : status === 'starting' && stageName
+          ? 'Vision setup: ' + stageName + (elapsedLabel ? ' · ' + elapsedLabel : '')
+          : status === 'needs_authentication' ? 'Google/Drive authentication required'
+            : status === 'gpu_unavailable' ? 'GPU unavailable'
+              : 'Direct tunnel live (' + String(vision.runtime_status || status).replace(/_/g, ' ') + ')';
       visionColabDetail.textContent = runtimeLabel;
       visionColabDetail.title = String(vision.message || '');
       visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error'].includes(status) ? 'action_required' : 'passed';
