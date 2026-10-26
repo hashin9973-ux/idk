@@ -335,44 +335,6 @@ function createVisionService(deps) {
     }
   }
 
-  async function openColabIfNeeded() {
-    if (now() - lastColabOpenAt < 60000) return { opened: false, throttled: true };
-    if (typeof openColabNotebook !== 'function') throw new Error('Opening the Colab notebook is unavailable in this app build.');
-    pendingNonce = { value: crypto.randomBytes(32).toString('hex'), expiresAt: now() + PAIRING_NONCE_TTL_MS, registrationInFlight: false };
-    const notebookUrl = new URL(COLAB_NOTEBOOK_URL);
-    notebookUrl.searchParams.set('wrb_pair_nonce', pendingNonce.value);
-    const result = await openColabNotebook(notebookUrl.href);
-    lastColabOpenAt = now();
-    return { opened: true, result: result || null };
-  }
-
-  async function connectColab() {
-    try {
-      const state = await queryRuntime();
-      if (state.runtime_fresh) {
-        return {
-          ...state, connected: true, opened: false, vision_activated: state.enabled,
-          notebook_url: COLAB_NOTEBOOK_URL,
-          message: state.model_loaded
-            ? 'Colab is connected directly through its authenticated HTTPS tunnel. Vision ' + (state.enabled ? 'is enabled.' : 'is off.')
-            : 'Colab is connected directly. Vision is off; the model will not download until computer(action=enable) is requested.'
-        };
-      }
-      const opened = await openColabIfNeeded();
-      return {
-        ...state, status: 'waiting_for_runtime', connected: false,
-        opened: Boolean(opened.opened), open_throttled: Boolean(opened.throttled),
-        vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
-        message: opened.throttled
-          ? 'The notebook was opened recently but has not registered its HTTPS tunnel. Switch to Colab and run the notebook cell; no Colab Secret or GitHub token is needed.'
-          : 'Colab was opened. Connect a runtime if needed and run the notebook cell. When the random public HTTPS URL is ready, click Connect Windows Bridge and approve opening the Windows Repository Bridge app. The app then pairs directly with Colab; Local Network Access is not needed. Vision stays off.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Click Connect Windows Bridge in the notebook and approve opening the Windows Repository Bridge app. Call computer(action=enable) only when you want the model loaded.']
-      };
-    } catch (error) {
-      return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
-    }
-  }
-
   async function activate(args = {}, callId = null) {
     try {
       let state = await queryRuntime();
