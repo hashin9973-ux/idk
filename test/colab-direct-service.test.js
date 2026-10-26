@@ -266,6 +266,7 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /output\.register_callback/);
   assert.match(code, /registration.ack/);
   assert.match(code, /_desktop_registration_event\.wait\(timeout=35\)/);
+  assert.doesNotMatch(code, /if not _registration_event\.wait/);
   assert.match(code, /invokeFunction\(callbackName/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
   assert.match(code, /challenge_unavailable/);
