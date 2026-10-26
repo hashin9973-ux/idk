@@ -110,7 +110,7 @@ async function registerColab(service, port, options = {}) {
     opened = [...(serviceTestCalls.get(service) || [])];
     openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
   }
-  if (!openedUrl) throw new Error('The app did not open Colab with a registration nonce.');
+  if (!openedUrl) throw new Error('The app did not open the Colab notebook.');
   const challengeResponse = await fetch(base + '/vision/challenge', {
     method: 'GET',
     headers: { Origin: origin }
@@ -251,7 +251,7 @@ test('notebook verifies the lightweight local API and stops on a failed or unrep
   assert.match(code, /_registration_event\.wait\(timeout=35\)/);
   assert.match(code, /stop_connection_bootstrap\(\)/);
   assert.match(code, /localhost_handshake_timeout/);
-  assert.match(code, /\\/vision\\/challenge/);
+  assert.match(code, /\/vision\/challenge/);
   assert.doesNotMatch(code, /bridge_registration_nonce/);
   assert.match(code, /computer\(action=status\)/);
   assert.match(code, /computer\(action=enable\)/);
