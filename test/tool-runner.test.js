@@ -223,14 +223,15 @@ test('run_tests honors an explicit project-native PowerShell command and timeout
     t.skip('PowerShell execution is only available on Windows.');
     return;
   }
+  // Allow cold PowerShell startup on loaded hosted Windows runners; a separate test asserts timeout behavior.
   const root = fixture();
   try {
     const result = await tools.executeTool(root, 'run_tests', {
       command: "Write-Output 'explicit test command'; exit 0",
-      timeoutMs: 5000
+      timeoutMs: 15000
     });
     assert.equal(result.exitCode, 0);
-    assert.equal(result.timeoutMs, 5000);
+    assert.equal(result.timeoutMs, 15000);
     assert.equal(result.stdout_truncated, false);
     assert.equal(result.stderr_truncated, false);
     assert.match(result.stdout, /explicit test command/);

@@ -12,6 +12,7 @@ const {
 } = require('../desktop/colab-direct-service');
 
 const ORIGIN = 'https://colab.research.google.com';
+const OUTPUT_ORIGIN = 'https://test-session-123-colab.googleusercontent.com';
 const serviceTestCalls = new WeakMap();
 const TUNNEL = 'https://direct-vision-test.trycloudflare.com';
 const API_KEY = 'a'.repeat(43);
@@ -101,7 +102,7 @@ async function waitForPort(service) {
 }
 
 async function registerColab(service, port, options = {}) {
-  const origin = options.origin || ORIGIN;
+  const origin = options.origin || OUTPUT_ORIGIN;
   const base = 'http://127.0.0.1:' + port;
   let opened = [...(serviceTestCalls.get(service) || [])];
   let openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
@@ -110,14 +111,19 @@ async function registerColab(service, port, options = {}) {
     opened = [...(serviceTestCalls.get(service) || [])];
     openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
   }
-  if (!openedUrl) throw new Error('The app did not open Colab with a registration nonce.');
-  const nonce = new URL(openedUrl).searchParams.get('bridge_registration_nonce');
+  if (!openedUrl) throw new Error('The app did not open the Colab notebook.');
+  const challengeResponse = await fetch(base + '/vision/challenge', {
+    method: 'GET',
+    headers: { Origin: origin }
+  });
+  if (!challengeResponse.ok) return challengeResponse;
+  const challenge = await challengeResponse.json();
   return fetch(base + '/vision/register', {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       protocol: DIRECT_VISION_PROTOCOL,
-      nonce,
+      nonce: challenge.nonce,
       tunnel_url: options.url || TUNNEL,
       api_key: options.apiKey || API_KEY
     })
@@ -141,6 +147,23 @@ test('Colab can register a direct tunnel using the app-generated challenge; heal
   const result = await f.service.connectColab();
   assert.equal(result.status, 'waiting_for_runtime');
   assert.equal(result.opened, true);
+  const openedUrl = f.calls.find(call => call.type === 'opened_colab')?.url;
+  assert.equal(new URL(openedUrl).searchParams.has('bridge_registration_nonce'), false);
+
+  const challengeResponse = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
+    method: 'GET', headers: { Origin: OUTPUT_ORIGIN }
+  });
+  assert.equal(challengeResponse.status, 200);
+  const challenge = await challengeResponse.json();
+  assert.equal(challenge.protocol, DIRECT_VISION_PROTOCOL);
+  assert.match(challenge.nonce, /^[a-f0-9]{64}$/);
+  assert.equal(challengeResponse.headers.get('access-control-allow-origin'), OUTPUT_ORIGIN);
+
+  const topLevelChallenge = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
+    method: 'GET', headers: { Origin: ORIGIN }
+  });
+  assert.equal(topLevelChallenge.status, 200);
+  assert.equal(topLevelChallenge.headers.get('access-control-allow-origin'), ORIGIN);
 
   const registered = await registerColab(f.service, port);
   assert.equal(registered.status, 200);
@@ -159,6 +182,9 @@ test('local registration rejects requests from an untrusted origin and rejects a
   const port = await waitForPort(f.service);
   const blocked = await registerColab(f.service, port, { origin: 'https://evil.example' });
   assert.equal(blocked.status, 403);
+  assert.equal(blocked.headers.get('access-control-allow-origin'), null);
+  const opaque = await registerColab(f.service, port, { origin: 'null' });
+  assert.equal(opaque.status, 403);
   const invalid = await registerColab(f.service, port, { url: 'https://example.com' });
   assert.equal(invalid.status, 400);
   assert.equal((await f.service.status()).runtime_fresh, false);
@@ -220,4 +246,30 @@ test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () =
   assert.match(source, /DirectVisionHandler/);
   assert.match(source, /register_tunnel_with_desktop/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
+});
+
+
+test('notebook verifies the lightweight local API and stops on a failed or unreported handshake', () => {
+  const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
+  const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
+  const code = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
+    .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\n');
+
+  assert.match(code, /verify_local_api_health/);
+  assert.match(code, /Authorization.*Bearer/);
+  assert.match(code, /output\.register_callback/);
+  assert.match(code, /invokeFunction\(callbackName/);
+  assert.match(code, /_registration_event\.wait\(timeout=35\)/);
+  assert.match(code, /stop_connection_bootstrap\(\)/);
+  assert.match(code, /challenge_unavailable/);
+  assert.match(code, /Downloading cloudflared binary/);
+  assert.match(code, /waiting up to 90 seconds for an HTTPS URL/);
+  assert.match(code, /stage_elapsed_seconds/);
+  assert.match(code, /Browser output origin/);
+  assert.match(code, /loopback permission state/);
+  assert.match(code, /\/vision\/challenge/);
+  assert.doesNotMatch(code, /bridge_registration_nonce/);
+  assert.match(code, /computer\(action=status\)/);
+  assert.match(code, /computer\(action=enable\)/);
+  assert.doesNotMatch(code, /vision_activate|vision_status/);
 });
