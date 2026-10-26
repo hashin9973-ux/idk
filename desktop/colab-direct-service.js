@@ -209,13 +209,22 @@ function createVisionService(deps) {
 
   async function openColabIfNeeded() {
     if (endpointWatch && endpointWatch.active) return { opened: false, watching: true };
-    if (now() - lastColabOpenAt < 60000) return { opened: false, throttled: true };
     if (typeof openColabNotebook !== 'function') throw new Error('Opening the Colab notebook is unavailable in this app build.');
+
     let baseline = '';
     try { baseline = typeof readClipboardText === 'function' ? String(readClipboardText() || '') : ''; } catch {}
     const watch = { baseline, startedAt: now(), active: true };
     endpointWatch = watch;
     endpointWatchError = '';
+
+    // If the tab was opened recently but its clipboard watcher timed out, re-arm
+    // the watcher without spawning another browser tab.
+    if (lastColabOpenAt && now() - lastColabOpenAt < 60000) {
+      endpointWatchPromise = watchClipboardForEndpoint(watch);
+      void endpointWatchPromise;
+      return { opened: false, reused: true, watching: true };
+    }
+
     try {
       const result = await openColabNotebook(COLAB_NOTEBOOK_URL);
       lastColabOpenAt = now();
