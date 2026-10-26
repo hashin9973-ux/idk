@@ -209,7 +209,7 @@ function createVisionService(deps) {
   }
 
   async function directRequest(route, options = {}) {
-    if (!colabConnection) throw new Error('Colab is not registered. Click Connect Colab and run the notebook cell.');
+    if (!colabConnection) throw new Error('Colab is not registered. Click Connect Colab in the app, run the notebook cell, then click its Connect to Windows app button.');
     if (typeof fetchImpl !== 'function') throw new Error('This app does not provide an HTTPS client for direct Colab vision.');
     const method = options.method || 'GET';
     const timeoutMs = options.timeoutMs || 10000;
@@ -313,9 +313,9 @@ function createVisionService(deps) {
         opened: Boolean(opened.opened), open_throttled: Boolean(opened.throttled),
         vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
         message: opened.throttled
-          ? 'The notebook was opened recently but has not registered its HTTPS tunnel. Switch to Colab and run the notebook cell; no Colab Secret or GitHub token is needed.'
-          : 'Colab was opened. Connect a runtime if needed and run the notebook cell. It will automatically register an authenticated HTTPS tunnel with this app. Vision stays off.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Wait until the app reports Colab connected. Call computer(action=enable) only when you want the model loaded.']
+          ? 'The notebook was opened recently but has not registered its HTTPS tunnel. In that Colab tab, run the notebook cell and click Connect to Windows app in its output. If Chrome asks to allow local network access, allow it. No Colab Secret or GitHub token is needed.'
+          : 'Colab was opened. Connect a runtime if needed, run the notebook cell, then click Connect to Windows app in its output. If Chrome asks to allow local network access, allow it. This registers the authenticated tunnel; vision stays off.',
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Click “Connect to Windows app” in the cell output. If Chrome asks, allow local network access for Colab.', 'Wait until the app reports Colab connected. Use computer(action=enable) only when you want the model loaded.']
       };
     } catch (error) {
       return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
@@ -330,7 +330,7 @@ function createVisionService(deps) {
         return {
           ...state, status: 'starting', enabled: false, opened: Boolean(opened.opened),
           notebook_url: COLAB_NOTEBOOK_URL,
-          message: 'Run the Colab worker cell to establish the direct connection, then call computer(action=enable) again. The model will not load before explicit activation.'
+          message: 'Run the Colab worker cell, click Connect to Windows app in its output, then use computer(action=enable) when you actually want to load the model.'
         };
       }
       if (state.enabled && state.model_loaded && state.status === 'ready') {
@@ -417,7 +417,7 @@ function createVisionService(deps) {
     const state = await queryRuntime();
     if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
     else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
-    else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
+    else checks.colab = { status: 'not_verified', message: 'Run the notebook cell, then click Connect to Windows app in its output. If Chrome asks, allow local network access for Colab. No token copy/paste is required.' };
     if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The vision model and projector are loaded in the connected Colab runtime.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
     else checks.model = { status: 'not_verified', message: 'The model is not loaded. Call computer(action=enable) when visual analysis is needed.' };
