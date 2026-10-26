@@ -22,7 +22,7 @@ Use the request ID to inspect `bridge/requests/<request-id>.json`, `bridge/claim
 ## Trust boundaries
 
 - The worker checks the mailbox every 2 seconds by default to minimize request/result latency. GitHub remains asynchronous, so a slow command or an unapproved operation may still take longer.
-- Up to three independent mailbox requests can run at once. Inside a `batch`, independent steps can run concurrently (`maxConcurrency` 1–8, default 4); `$ref` dependencies, conflicting workspace paths, and operations with unknown side effects preserve the required order. Results remain in the submitted step order, and queued steps skipped after a failure are marked `skipped`.
+- Up to ten independent mailbox requests can run at once. Inside a `batch`, independent steps can run concurrently (`maxConcurrency` 1–8, default 4); `$ref` dependencies, conflicting workspace paths, and operations with unknown side effects preserve the required order. Results remain in the submitted step order, and queued steps skipped after a failure are marked `skipped`.
 - A private repository is strongly recommended because requests, results, context, and artifacts live in that repository.
 - Read-only workspace inspection normally runs without approval. Ordinary file edits/moves/deletions inside the selected workspace normally run automatically unless a path looks sensitive. If a whole drive is selected, that includes files anywhere inside the drive. Git writes, shell commands, tests, and uploads require native Windows approval unless Auto-accept everything was explicitly enabled.
 - PowerShell is not sandboxed: an approved command runs with the signed-in Windows user's permissions.
