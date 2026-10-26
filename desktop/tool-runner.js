@@ -165,7 +165,7 @@ function readFile(root,args){
  const appendBoundaryEol=hasMoreInFile&&nextStartCharacter===0&&returnedEndLine>=startLine&&(hasMoreInRange||args.endLine===undefined);
  if(appendBoundaryEol)content+=eol;
  contentBytes=Buffer.byteLength(content,'utf8');
- const fileComplete=startLine===1&&!hasMoreInFile;
+ const fileComplete=!hasMoreInFile;
  return{
   path:path.relative(root,target).replace(/\\/g,'/'),
   bytes:Buffer.byteLength(full),
