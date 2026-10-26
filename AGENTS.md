@@ -32,6 +32,13 @@ The only public computer interface is the single `computer` tool with `status`, 
 - Use connect/enable only on the user's explicit request. Do not claim that disable stops the Colab runtime; it prevents new screenshot requests while leaving the runtime/model running.
 - Preserve the authenticated direct HTTPS transport and avoid writing screenshots/tunnel secrets as separate repository artifacts.
 
+## Reliable text-file reads
+- The `read_file` result's `totalLines` is computed from the complete decoded file; never estimate the file's total by counting the current `content` page.
+- Text content is returned in lossless pages limited to 12 KiB so the GitHub mailbox does not silently shorten large bodies. Check `hasMoreInFile`, `fileComplete`, `nextStartLine`, and `nextStartCharacter`; resume at the exact returned pointer until EOF before claiming the whole file was read.
+- If a line is longer than one page, continuation stays on that line and `nextStartCharacter` is a Unicode code-point offset. Preserve page order and do not insert a newline when continuing mid-line.
+- Report `totalLines`, `bytes`, and `sha256` from full-file metadata; separately report which line/page range was actually read. If the user requests the entire file, collect every page needed to reach EOF.
+- Files over 32 MiB or binary data are explicitly rejected by `read_file`; do not describe an incomplete page as a complete read.
+
 ## Development and verification
 - Follow the existing JavaScript/Electron stack, code style, dependency versions, and established module boundaries. Prefer focused, tested changes over broad rewrites.
 - Add or update regression tests for behavioral changes, especially workspace path boundaries, request/result protocol behavior, approval policy, authentication, and UI/app contracts.
