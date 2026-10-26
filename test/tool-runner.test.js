@@ -150,6 +150,11 @@ test('ranged file reads, file metadata, and directory trees return bounded works
     assert.equal(ranged.rangeComplete, true);
     assert.equal(ranged.hasMoreInFile, true);
     assert.equal(ranged.fileComplete, false);
+    assert.equal(ranged.reachedEof, false);
+    const full = await tools.executeTool(root, 'read_file', { path: 'src/lines.txt' });
+    assert.equal(full.fileComplete, true);
+    assert.equal(full.reachedEof, true);
+    assert.equal(full.content, 'one\ntwo\nthree\n');
     const info = await tools.executeTool(root, 'file_info', { path: 'src/lines.txt' });
     assert.equal(info.type, 'file');
     assert.equal(info.sha256.length, 64);
@@ -192,7 +197,8 @@ test('large text reads report the real line count and paginate without dropping 
       assert.ok(pages < 50, 'page loop must make progress and reach EOF');
     }
 
-    assert.equal(page.fileComplete, true);
+    assert.equal(page.fileComplete, false, 'multi-page reads must not misrepresent the final page as a complete one-shot read');
+    assert.equal(page.reachedEof, true);
     assert.equal(page.hasMoreInFile, false);
     assert.ok(pages > 1);
     assert.equal(chunks.join(''), original, 'concatenated pages must reproduce every byte of text in order');
