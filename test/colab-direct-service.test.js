@@ -274,7 +274,7 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   assert.match(source, /def _route_path\(self\)/);
   assert.match(source, /requests\.get\(url, headers=\{"Authorization": "Bearer " \+ API_KEY\}, timeout=2\)/);
   assert.match(source, /DIRECT_PROTOCOL/);
-  assert.match(source, /register.*ack/);
+  assert.match(source, /registration\/ack/);
   assert.doesNotMatch(source, /register_tunnel_with_desktop|display_desktop_pairing_link|windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
