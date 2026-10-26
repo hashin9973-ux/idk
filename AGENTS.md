@@ -30,6 +30,7 @@ The only public computer interface is the single `computer` tool with `status`, 
 - Vision is optional. Never automatically connect, enable, capture, disable, or otherwise change the user's vision state.
 - Check status first. Capture only when visual evidence materially helps and the service is already connected, enabled, and model-ready; if not ready, continue with code, logs, tests, and structured machine state.
 - Use connect/enable only on the user's explicit request. Do not claim that disable stops the Colab runtime; it prevents new screenshot requests while leaving the runtime/model running.
+- Colab hosts the authenticated API behind a temporary random public HTTPS tunnel. Pair through the user-clicked `windowsrepositorybridge://connect-colab` link; the browser must never call localhost or require Local Network Access permission.
 - Preserve the authenticated direct HTTPS transport and avoid writing screenshots/tunnel secrets as separate repository artifacts.
 
 ## Reliable text-file reads

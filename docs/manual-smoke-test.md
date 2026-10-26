@@ -97,7 +97,7 @@ Automated tests and a successful installer build are necessary but not substitut
 ## Optional computer screenshot smoke test
 
 1. With GitHub connected, call the `computer` tool with `{"action":"status"}` to check whether Colab is connected and whether the model is ready.
-2. Call `computer` with `{"action":"connect"}` to open the notebook if necessary. Connect a Colab runtime and run **Start the direct Colab vision server**. No GitHub token or Colab Secret is required.
+2. Call `computer` with `{"action":"connect"}` to open the notebook if necessary. Connect a Colab runtime and run **Start the direct Colab vision server**. Click **Connect Windows Bridge** in the notebook and approve opening **Windows Repository Bridge** when the browser asks. The app verifies the random public HTTPS endpoint directly; Local Network Access, a GitHub token, and a Colab Secret are not required.
 3. Once Colab is connected, call `computer` with `{"action":"enable"}` and wait until it reports `model_loaded: true`. Enabling may download several gigabytes of model files and compile llama.cpp.
 4. Call `computer` with `{"action":"screenshot","source":"desktop","waitMs":0}`. If it returns a pending state, call `computer` with `{"action":"wait","request_id":"<returned computer-... ID>"}` and verify the request ID and screenshot SHA-256 match.
 5. Call `computer` with `{"action":"disable"}`. Confirm new screenshot requests are disabled and `runtime_kept_alive: true`; the browser tab and runtime should remain running.

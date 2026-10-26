@@ -26,7 +26,7 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./colab-direct-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, COLAB_PROTOCOL_SCHEME } = require('./colab-direct-service');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 360, height: 266 };
@@ -56,6 +56,7 @@ let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let pendingGitHubCliLogin = null;
+let pendingColabProtocolLink = process.argv.find(arg => typeof arg === 'string' && arg.toLowerCase().startsWith('windowsrepositorybridge://connect-colab')) || null;
 let ipcRegistered = false;
 let appInitializationError = '';
 let workspaceInitializationError = '';
@@ -580,6 +581,71 @@ function bringMainWindowForward() {
   showMainWindow();
 }
 
+function findColabProtocolLink(argv) {
+  if (!Array.isArray(argv)) return null;
+  return argv.find(arg => typeof arg === 'string' &&
+    arg.length <= 2400 &&
+    arg.toLowerCase().startsWith(COLAB_PROTOCOL_SCHEME + '://connect-colab')) || null;
+}
+
+function parseColabProtocolLink(raw) {
+  try {
+    if (typeof raw !== 'string' || raw.length > 2400) return null;
+    const url = new URL(raw);
+    if (url.protocol !== COLAB_PROTOCOL_SCHEME + ':' ||
+        url.hostname !== 'connect-colab' ||
+        (url.pathname && url.pathname !== '/') ||
+        url.hash) return null;
+    return {
+      protocol: url.searchParams.get('protocol'),
+      nonce: url.searchParams.get('nonce'),
+      tunnel_url: url.searchParams.get('url'),
+      api_key: url.searchParams.get('key')
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function receiveColabProtocolLink(raw) {
+  const payload = parseColabProtocolLink(raw);
+  if (!payload) {
+    showMainWindow();
+    void dialog.showMessageBox(mainWindow, {
+      type: 'error',
+      title: 'Invalid Colab connection link',
+      message: 'Windows Repository Bridge could not read the Colab connection link.',
+      detail: 'Return to the Colab notebook, click Connect Windows Bridge, and approve opening this app again.'
+    });
+    return false;
+  }
+  if (!visionService) {
+    pendingColabProtocolLink = raw;
+    return false;
+  }
+
+  showMainWindow();
+  try {
+    const result = await visionService.registerColabTunnel(payload);
+    if (result && result.connected === true && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('app:vision-pairing-result', { ok: true, message: result.message || 'Colab connected.' });
+    }
+    return Boolean(result && result.connected === true);
+  } catch (error) {
+    const message = String(error && error.message || error || 'Unknown pairing error').slice(0, 1000);
+    console.warn('Colab public tunnel pairing failed:', message);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      void dialog.showMessageBox(mainWindow, {
+        type: 'error',
+        title: 'Colab connection failed',
+        message: 'The Windows app could not verify the public Colab server.',
+        detail: message + '\\n\\nClick Connect Colab in the app and rerun the notebook cell to create a fresh pairing link.'
+      });
+    }
+    return false;
+  }
+}
+
 function assertLocalUi(event, filename) {
   if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
     throw new Error('Only the local desktop UI may invoke this action.');
@@ -941,9 +1007,22 @@ const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', showMainWindow);
+  app.on('second-instance', (event, commandLine) => {
+    showMainWindow();
+    const protocolLink = findColabProtocolLink(commandLine);
+    if (protocolLink) void receiveColabProtocolLink(protocolLink);
+  });
+  app.on('open-url', (event, rawUrl) => {
+    event.preventDefault();
+    if (findColabProtocolLink([rawUrl])) void receiveColabProtocolLink(rawUrl);
+  });
 
   app.whenReady().then(() => {
+    if (process.defaultApp && process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(COLAB_PROTOCOL_SCHEME, process.execPath, [path.resolve(process.argv[1])]);
+    } else {
+      app.setAsDefaultProtocolClient(COLAB_PROTOCOL_SCHEME);
+    }
     app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
     settings = loadSettings();
     const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
@@ -1030,6 +1109,12 @@ if (!hasInstanceLock) {
       startAutoConnectLoop();
     } else if (appInitializationError) {
       setAutoConnectionStatus('attention', appInitializationError);
+    }
+
+    if (pendingColabProtocolLink) {
+      const protocolLink = pendingColabProtocolLink;
+      pendingColabProtocolLink = null;
+      void receiveColabProtocolLink(protocolLink);
     }
 
     if (!tray) {
