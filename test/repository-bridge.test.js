@@ -694,6 +694,9 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.agent_context.operating_rules.some(rule => /no request file exists.*do not attribute.*Windows worker/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /not native GitHub MCP function names/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /targeted read-only Windows discovery/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /measurable acceptance criteria and a short implementation plan/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /do not collapse a complex game.*one file/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /run project-native checks and tests/i.test(rule)));
     const invocation = index.agent_context.bridge_invocation;
     assert.equal(invocation.protocol, PROTOCOL);
     assert.equal(invocation.repository.split('/').length, 2);
