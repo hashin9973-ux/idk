@@ -607,6 +607,18 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
     assert.equal(index.agent_context.tool_catalog.catalog_version, 1);
     assert.ok(index.agent_context.operating_rules.some(rule => /no request file exists.*do not attribute.*Windows worker/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /not native GitHub MCP function names/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /targeted read-only Windows discovery/i.test(rule)));
+    const invocation = index.agent_context.bridge_invocation;
+    assert.equal(invocation.protocol, PROTOCOL);
+    assert.match(invocation.repository, /^[^/]+\\/[^/]+$/);
+    assert.equal(invocation.branch, 'bridge-mailbox');
+    assert.equal(invocation.request_path_template, 'bridge/requests/<request_id>.json');
+    assert.equal(invocation.result_path_template, 'bridge/results/<same-request-id>.json');
+    assert.equal(invocation.request_example.protocol, PROTOCOL);
+    assert.equal(invocation.request_example.tool, 'get_agent_context');
+    assert.deepEqual(invocation.request_example.args, {});
+    assert.match(invocation.calling_contract, /publish the request JSON.*read the result/i);
     assert.equal(index.agent_context.tool_catalog.tools[0].parameters.properties.path.description, 'Workspace-relative path');
     assert.equal(JSON.stringify(index.agent_context).includes('do not publish this instruction body'), false);
     assert.equal(JSON.stringify(index.agent_context).includes('private-host'), false);
