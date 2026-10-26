@@ -774,7 +774,7 @@ function createRepositoryBridge(deps) {
           'Match architecture to scope. Do not collapse a complex game, app, or multi-system feature into one file unless the user explicitly requests it.',
           'Implement integrated vertical slices with clear module boundaries. After edits, run project-native checks and tests, and an end-to-end smoke test for user-facing behavior when available; fix failures and rerun verification.',
           'Report only verified results and distinguish tested behavior from anything that remains unverified.',
-          'Batch known operations into one request; every step returns its own status and output.
+          'Batch known operations into one request; every step returns its own status and output.'
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
           'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.',
