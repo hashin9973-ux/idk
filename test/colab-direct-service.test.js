@@ -221,3 +221,21 @@ test('notebook no longer depends on GitHub secrets or GitHub mailbox APIs', () =
   assert.match(source, /register_tunnel_with_desktop/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
+
+test('notebook verifies the lightweight local API and stops on a failed or unreported handshake', () => {
+  const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
+  const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
+  const code = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
+    .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\\n');
+
+  assert.match(code, /verify_local_api_health/);
+  assert.match(code, /Authorization.*Bearer/);
+  assert.match(code, /output\\.register_callback/);
+  assert.match(code, /invokeFunction\\(callbackName/);
+  assert.match(code, /_registration_event\\.wait\\(timeout=35\\)/);
+  assert.match(code, /stop_connection_bootstrap\\(\\)/);
+  assert.match(code, /localhost_handshake_timeout/);
+  assert.match(code, /computer\\(action=status\\)/);
+  assert.match(code, /computer\\(action=enable\\)/);
+  assert.doesNotMatch(code, /vision_activate|vision_status/);
+});
