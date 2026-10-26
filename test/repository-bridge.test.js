@@ -611,7 +611,8 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.agent_context.operating_rules.some(rule => /targeted read-only Windows discovery/i.test(rule)));
     const invocation = index.agent_context.bridge_invocation;
     assert.equal(invocation.protocol, PROTOCOL);
-    assert.match(invocation.repository, /^[^/]+\\/[^/]+$/);
+    assert.equal(invocation.repository.split('/').length, 2);
+    assert.ok(invocation.repository.split('/').every(Boolean));
     assert.equal(invocation.branch, 'bridge-mailbox');
     assert.equal(invocation.request_path_template, 'bridge/requests/<request_id>.json');
     assert.equal(invocation.result_path_template, 'bridge/results/<same-request-id>.json');
