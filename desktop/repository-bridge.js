@@ -770,7 +770,11 @@ function createRepositoryBridge(deps) {
           'Use workspace-relative paths or absolute Windows paths that remain inside the selected workspace.',
           'Use mailbox evidence to diagnose delivery: a request file proves it was committed to the shared mailbox; a matching claim proves the worker claimed it; a matching result records its outcome. If no request file exists on the configured branch, do not attribute the failure to the Windows worker.',
           'Inspect relevant project instructions and source before editing.',
-          'Batch known operations into one request; every step returns its own status and output.',
+          'For substantial tasks, define measurable acceptance criteria and a short implementation plan; keep the plan proportional to the task.',
+          'Match architecture to scope. Do not collapse a complex game, app, or multi-system feature into one file unless the user explicitly requests it.',
+          'Implement integrated vertical slices with clear module boundaries. After edits, run project-native checks and tests, and an end-to-end smoke test for user-facing behavior when available; fix failures and rerun verification.',
+          'Report only verified results and distinguish tested behavior from anything that remains unverified.',
+          'Batch known operations into one request; every step returns its own status and output.
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
           'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.',
