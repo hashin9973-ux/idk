@@ -111,13 +111,18 @@ async function registerColab(service, port, options = {}) {
     openedUrl = opened.find(call => call.type === 'opened_colab')?.url;
   }
   if (!openedUrl) throw new Error('The app did not open Colab with a registration nonce.');
-  const nonce = new URL(openedUrl).searchParams.get('bridge_registration_nonce');
+  const challengeResponse = await fetch(base + '/vision/challenge', {
+    method: 'GET',
+    headers: { Origin: origin }
+  });
+  if (!challengeResponse.ok) return challengeResponse;
+  const challenge = await challengeResponse.json();
   return fetch(base + '/vision/register', {
     method: 'POST',
     headers: { Origin: origin, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       protocol: DIRECT_VISION_PROTOCOL,
-      nonce,
+      nonce: challenge.nonce,
       tunnel_url: options.url || TUNNEL,
       api_key: options.apiKey || API_KEY
     })
@@ -141,6 +146,16 @@ test('Colab can register a direct tunnel using the app-generated challenge; heal
   const result = await f.service.connectColab();
   assert.equal(result.status, 'waiting_for_runtime');
   assert.equal(result.opened, true);
+  const openedUrl = f.calls.find(call => call.type === 'opened_colab')?.url;
+  assert.equal(new URL(openedUrl).searchParams.has('bridge_registration_nonce'), false);
+
+  const challengeResponse = await fetch('http://127.0.0.1:' + port + '/vision/challenge', {
+    method: 'GET', headers: { Origin: ORIGIN }
+  });
+  assert.equal(challengeResponse.status, 200);
+  const challenge = await challengeResponse.json();
+  assert.equal(challenge.protocol, DIRECT_VISION_PROTOCOL);
+  assert.match(challenge.nonce, /^[a-f0-9]{64}$/);
 
   const registered = await registerColab(f.service, port);
   assert.equal(registered.status, 200);
