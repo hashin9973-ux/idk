@@ -280,6 +280,8 @@ test('notebook verifies the lightweight API and uses a top-level user-gesture LN
   assert.match(code, /Authorization.*Bearer/);
   assert.match(code, /output\.eval_js\(js\)/);
   assert.match(code, /getPermission/);
+  assert.match(code, /let permissionState = "prompt"/);
+  assert.ok(code.indexOf('let permissionState = "prompt"') < code.indexOf('button.addEventListener("click"'), 'permission state must initialize before exposing the button');
   assert.match(code, /navigator\.permissions\.query\(\{name:"loopback-network"\}\)/);
   assert.match(code, /targetAddressSpace:"loopback"/);
   assert.match(code, /Connect Windows Bridge/);
