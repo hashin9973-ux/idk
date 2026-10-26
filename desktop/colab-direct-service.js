@@ -288,6 +288,8 @@ function createVisionService(deps) {
       runtime_status: reported, heartbeat_at: data.heartbeat_at || new Date(now()).toISOString(),
       gpu: data.gpu || null, vram_mib: Number.isFinite(data.vram_mib) ? data.vram_mib : null,
       model_loaded: loaded, model: data.model || MODEL_FILE, stage: data.stage || null,
+      stage_started_at: data.stage_started_at || null,
+      stage_elapsed_seconds: Number.isFinite(data.stage_elapsed_seconds) ? Math.max(0, Math.floor(data.stage_elapsed_seconds)) : null,
       active_request_id: data.active_request_id || null, last_completed_request_id: data.last_completed_request_id || null,
       message: String(data.message || ''), transport: 'direct_https_tunnel'
     };
