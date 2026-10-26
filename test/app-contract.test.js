@@ -290,7 +290,8 @@ test('Colab connection detects the public endpoint copied by the notebook withou
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('\n')).join('\n');
   assert.match(main, /readClipboardText: \(\) => clipboard\.readText\(\)/);
   assert.match(service, /async function watchClipboardForEndpoint/);
-  assert.match(service, /text !== watch\.baseline/);
+  assert.match(service, /if \(text\) \{\s*const endpoint = endpointFromClipboard\(text\)/);
+  assert.doesNotMatch(service, /text !== watch\.baseline/);
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
   assert.match(python, /PUBLIC_VISION_ENDPOINT=/);
   assert.match(python, /navigator\.clipboard\.writeText/);

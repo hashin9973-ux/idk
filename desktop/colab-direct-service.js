@@ -179,7 +179,12 @@ function createVisionService(deps) {
         } catch (error) {
           endpointWatchError = 'Could not read the Windows clipboard: ' + messageOf(error);
         }
-        if (text && text !== watch.baseline) {
+        // Connect Colab is an explicit user action. A valid endpoint may already be
+        // on the clipboard if the notebook cell copied it just before this watcher
+        // started, so do not require it to differ from the initial snapshot. The
+        // authenticated health/ack handshake safely rejects a stale endpoint; the
+        // watcher remains active for a newly copied URL after any failed attempt.
+        if (text) {
           const endpoint = endpointFromClipboard(text);
           if (endpoint && (endpoint.url !== lastAttemptedUrl || now() - lastAttemptAt >= 5000)) {
             lastAttemptedUrl = endpoint.url;

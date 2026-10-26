@@ -64,6 +64,9 @@ function fixture(options = {}) {
     pollIntervalMs: 10,
     fetchImpl: async (url, init = {}) => {
       const parsed = new URL(url);
+      if (options.failHost && parsed.hostname === options.failHost) {
+        throw new Error('test endpoint unavailable');
+      }
       const prefix = '/' + API_KEY;
       const route = parsed.pathname.startsWith(prefix + '/') ? parsed.pathname.slice(prefix.length) : parsed.pathname;
       const body = init.body ? JSON.parse(init.body) : {};
@@ -164,16 +167,28 @@ test('Connect Colab watches the clipboard and connects when the notebook copies 
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
 });
 
-test('the app ignores stale clipboard content and waits for a new notebook endpoint', async t => {
-  const f = fixture({ initialClipboard: ENDPOINT });
+test('the app verifies a valid endpoint already on the clipboard after explicit Connect Colab', async t => {
+  const f = fixture({ initialClipboard: 'PUBLIC_VISION_ENDPOINT=' + ENDPOINT });
   t.after(() => f.service.dispose());
   const result = await f.service.connectColab();
   assert.equal(result.endpoint_watch_active, true);
+  const connected = await waitForConnected(f.service);
+  assert.equal(connected.connection_registered, true);
+  assert.equal(connected.runtime_fresh, true);
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/health'));
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'));
+});
+
+test('the watcher continues after a stale clipboard endpoint fails verification', async t => {
+  const stale = 'https://stale-vision-test.trycloudflare.com/' + API_KEY;
+  const f = fixture({ initialClipboard: stale, failHost: 'stale-vision-test.trycloudflare.com' });
+  t.after(() => f.service.dispose());
+  await f.service.connectColab();
   await new Promise(resolve => setTimeout(resolve, 30));
   const waiting = await f.service.status();
   assert.equal(waiting.connection_registered, false);
   assert.equal(waiting.status, 'waiting_for_endpoint');
-  assert.equal(f.calls.some(call => call.type === 'direct_http'), false);
+  assert.match(waiting.message, /test endpoint unavailable/);
   f.setClipboard('PUBLIC_VISION_ENDPOINT=' + ENDPOINT);
   const connected = await waitForConnected(f.service);
   assert.equal(connected.connection_registered, true);
@@ -284,7 +299,8 @@ test('the desktop uses a clipboard reader only for the explicit Colab connect fl
   const service = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'colab-direct-service.js'), 'utf8');
   assert.match(main, /readClipboardText: \(\) => clipboard\.readText\(\)/);
   assert.match(service, /async function watchClipboardForEndpoint/);
-  assert.match(service, /text !== watch\.baseline/);
+  assert.match(service, /if \(text\) \{\s*const endpoint = endpointFromClipboard\(text\)/);
+  assert.doesNotMatch(service, /text !== watch\.baseline/);
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
   assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register|wrb_pair_nonce/);
