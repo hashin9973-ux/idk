@@ -551,6 +551,64 @@ test('workspace file upload stores raw bytes and returns a repository locator', 
   assert.deepEqual(Buffer.from(stored.content, 'base64'), bytes);
 });
 
+test('queued mailbox requests are dispatched without waiting for a slow context refresh', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-context-refresh-nonblocking',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/req-context-refresh-nonblocking.json', request]] });
+  const fixture = settingsFixture();
+  let releaseContext;
+  const contextGate = new Promise(resolve => { releaseContext = resolve; });
+  let contextStarted = false;
+  let projectStarted = false;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args = {}, requestId = '') => {
+      if (tool === 'environment_info' && String(requestId).startsWith('context-')) {
+        contextStarted = true;
+        await contextGate;
+        return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: process.cwd() } };
+      }
+      if (tool === 'project_status') {
+        projectStarted = true;
+        return { ok: true, result: { isGitRepository: false, detectedTechnologies: ['.NET'], topLevelEntries: [] } };
+      }
+      if (tool === 'get_capabilities') {
+        return { ok: true, result: { protocol: 'chatgpt-local-tools-v2', tools: [], tool_calling: { mode: 'repository-mailbox-batch', catalog_version: 1 } } };
+      }
+      if (tool === 'discover_instructions') return { ok: true, result: { count: 0, instructions: [] } };
+      if (tool === 'read_file') return { ok: false, error: 'package.json is not present' };
+      return { ok: true, result: { tool } };
+    },
+    intervalMs: 5000,
+    publishContextOnStart: true,
+    contextRefreshIntervalMs: 5 * 60 * 1000
+  });
+
+  try {
+    const startPromise = bridge.start();
+    await waitFor(() => projectStarted, 1500);
+    const started = await startPromise;
+    assert.equal(started.running, true);
+    await waitFor(() => fake.files.has('bridge/results/req-context-refresh-nonblocking.json'), 1500);
+    const record = decode(fake.files.get('bridge/results/req-context-refresh-nonblocking.json'));
+    assert.equal(record.status, 'completed');
+    assert.equal(record.result.ok, true);
+
+    await waitFor(() => contextStarted, 1500);
+    releaseContext();
+    await waitFor(() => fake.files.has('bridge/context/latest.json'), 2000);
+  } finally {
+    releaseContext();
+    await bridge.stop();
+  }
+});
+
 test('environment refresh publishes one compact agent entry and refreshes after workspace changes', async () => {
   const request = {
     protocol: PROTOCOL,
@@ -602,6 +660,9 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.files.directory_tree);
     assert.ok(index.files.instructions);
     assert.equal(index.agent_context.protocol, 'chatgpt-local-agent-context/v1');
+    assert.match(index.agent_context.tool_failure_contract.no_request, /worker never received/i);
+    assert.match(index.agent_context.tool_failure_contract.rejected, /status rejected/i);
+    assert.match(index.agent_context.tool_failure_contract.failed, /not automatically safety blocks/i);
     assert.equal(index.agent_context.project_commands.name, 'fixture-app');
     assert.equal(index.agent_context.project_commands.scripts.test, 'node --test');
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
