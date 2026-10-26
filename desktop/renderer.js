@@ -224,7 +224,7 @@
     } else {
       if (visionConnectWatchDeadline && Date.now() < visionConnectWatchDeadline) {
         visionColabDetail.textContent = 'Waiting for the direct Colab connection';
-        visionColabDetail.title = 'In Colab, run the direct vision server cell. It registers an authenticated HTTPS tunnel with the app automatically; no Colab Secret is needed.';
+        visionColabDetail.title = 'Run the notebook cell, then click Connect Windows Bridge and approve opening the Windows app. It pairs over the public HTTPS tunnel; no Local Network Access permission or Colab Secret is needed.';
         visionColabDetail.dataset.state = 'action_required';
       } else {
         visionColabDetail.textContent = vision.runtime_status
@@ -337,7 +337,7 @@
         visionLabel.title = result.message || 'Waiting for a direct Colab connection.';
         setDot(visionDot, 'waiting');
         visionSetupDetail.textContent = 'Waiting for Colab';
-        visionSetupDetail.title = result.message || 'Open the notebook, connect a runtime if needed, and run the direct vision server cell. It automatically registers with the app.';
+        visionSetupDetail.title = result.message || 'Open the notebook, connect a runtime if needed, and run the server cell. Then click Connect Windows Bridge and approve opening the Windows app.';
         visionSetupDetail.dataset.state = 'in_progress';
         visionColabDetail.textContent = 'Run notebook cell';
         visionColabDetail.title = result.message || 'The app is waiting for the direct Colab endpoint to register.';
