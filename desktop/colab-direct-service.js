@@ -2,16 +2,13 @@
 
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const http = require('node:http');
 const path = require('node:path');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
 const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
-const COLAB_ORIGIN = 'https://colab.research.google.com';
-const CALLBACK_PORT_START = 17843;
-const CALLBACK_PORT_COUNT = 12;
+const COLAB_PROTOCOL_SCHEME = 'windowsrepositorybridge';
 const MODEL_ID = 'Qwen/Qwen3-VL-8B-Instruct-GGUF';
 const MODEL_FILE = 'Qwen3VL-8B-Instruct-Q4_K_M.gguf';
 const PROJECTOR_FILE = 'mmproj-Qwen3VL-8B-Instruct-F16.gguf';
@@ -20,7 +17,7 @@ const MAX_INPUT_FILE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_WAIT_MS = 5000;
 const MAX_WAIT_MS = 120000;
 const DIRECT_TIMEOUT_MS = 360000;
-const CALLBACK_NONCE_TTL_MS = 10 * 60 * 1000;
+const PAIRING_NONCE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_PROMPT = 'Describe the screenshot using only visible evidence. Include: (1) overview, (2) important visible objects, panels, controls and layout, (3) accurate transcription of visible text, (4) visible errors or anomalies, (5) the screenshot evidence supporting each observation, and (6) explicit uncertainty where text/details are unclear. Do not infer unseen state or perform debugging/reasoning.';
 
 function messageOf(error) {
@@ -49,25 +46,6 @@ function safeApiKey(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{40,100}$/.test(value);
 }
 
-// Colab's top-level app and sandboxed JavaScript output frames use different,
-// but Google-controlled, HTTPS origins. Do not trust arbitrary origins or opaque "null".
-function safeColabOrigin(value) {
-  if (typeof value !== 'string' || value.length > 300) return null;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== 'https:' || parsed.origin !== value ||
-        parsed.username || parsed.password || parsed.port) return null;
-    const hostname = parsed.hostname.toLowerCase();
-    if (hostname === 'colab.research.google.com' ||
-        /^[a-z0-9-]+-colab\.googleusercontent\.com$/.test(hostname)) {
-      return parsed.origin;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 function createVisionService(deps) {
   const {
     githubAuth,
@@ -80,16 +58,11 @@ function createVisionService(deps) {
     now = () => Date.now(),
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollIntervalMs = 250,
-    fetchImpl = globalThis.fetch,
-    callbackPortStart = CALLBACK_PORT_START,
-    callbackPortCount = CALLBACK_PORT_COUNT
+    fetchImpl = globalThis.fetch
   } = deps || {};
 
   let lastColabOpenAt = 0;
   let colabConnection = null;
-  let receiverServer = null;
-  let receiverPort = null;
-  let receiverPromise = null;
   let pendingNonce = null;
   let visionEnabled = false;
   const jobs = new Map();
@@ -135,133 +108,67 @@ function createVisionService(deps) {
     }
   }
 
-  function sendJson(res, status, value, cors = false, requestOrigin = null) {
-    res.statusCode = status;
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 'no-store');
-    if (cors) {
-      // Echo only a validated, official Colab origin so output-frame CORS succeeds.
-      res.setHeader('Access-Control-Allow-Origin', requestOrigin || COLAB_ORIGIN);
-      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-      res.setHeader('Access-Control-Allow-Private-Network', 'true');
-      res.setHeader('Vary', 'Origin');
+  async function registerColabTunnel(payload = {}) {
+    if (!pendingNonce || pendingNonce.expiresAt < now()) {
+      pendingNonce = null;
+      throw new Error('No active Colab pairing request exists. Click Connect Colab in the Windows app, then rerun the notebook cell.');
     }
-    res.end(JSON.stringify(value));
-  }
-
-  async function readBody(req, maxBytes = 32000) {
-    if (Number(req.headers['content-length'] || 0) > maxBytes) throw new Error('Registration payload is too large.');
-    const pieces = [];
-    let size = 0;
-    for await (const part of req) {
-      size += part.length;
-      if (size > maxBytes) throw new Error('Registration payload is too large.');
-      pieces.push(part);
+    if (pendingNonce.registrationInFlight) {
+      throw new Error('A Colab tunnel pairing attempt is already being verified.');
     }
-    return JSON.parse(Buffer.concat(pieces).toString('utf8'));
-  }
-
-  async function handleRegistration(req, res) {
-    const origin = req.headers.origin;
-    const allowedOrigin = safeColabOrigin(origin);
-    if (!allowedOrigin) {
-      sendJson(res, 403, { ok: false, error: 'Only HTTPS Google Colab and its official Colab output-frame origins can register this connection.' });
-      return;
-    }
-    const url = new URL(req.url || '/', 'http://127.0.0.1');
-    if (req.method === 'OPTIONS') return sendJson(res, 204, {}, true, allowedOrigin);
-    if (req.method === 'GET' && url.pathname === '/vision/challenge') {
-      if (!pendingNonce || pendingNonce.expiresAt < now()) {
-        pendingNonce = null;
-        return sendJson(res, 410, { ok: false, error: 'No live registration challenge exists. Click Connect Colab in the Windows app and retry.' }, true, allowedOrigin);
-      }
-      return sendJson(res, 200, {
-        ok: true,
-        protocol: DIRECT_VISION_PROTOCOL,
-        nonce: pendingNonce.value
-      }, true, allowedOrigin);
-    }
-    if (req.method !== 'POST' || url.pathname !== '/vision/register') {
-      return sendJson(res, 404, { ok: false, error: 'Unknown registration route.' }, true, allowedOrigin);
-    }
-    let payload;
-    try {
-      payload = await readBody(req);
-    } catch (error) {
-      return sendJson(res, 400, { ok: false, error: messageOf(error) }, true, allowedOrigin);
-    }
-    if (!pendingNonce || pendingNonce.expiresAt < now() || payload.nonce !== pendingNonce.value) {
-      return sendJson(res, 403, { ok: false, error: 'The one-time registration challenge is missing, expired, or incorrect.' }, true, allowedOrigin);
+    if (payload.protocol !== DIRECT_VISION_PROTOCOL ||
+        typeof payload.nonce !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(payload.nonce) ||
+        !crypto.timingSafeEqual(Buffer.from(payload.nonce, 'hex'), Buffer.from(pendingNonce.value, 'hex'))) {
+      throw new Error('The Colab pairing link is invalid, expired, or does not match the current Connect Colab request.');
     }
     const tunnelUrl = safeTunnelUrl(payload.tunnel_url);
-    if (payload.protocol !== DIRECT_VISION_PROTOCOL || !tunnelUrl || !safeApiKey(payload.api_key)) {
-      return sendJson(res, 400, { ok: false, error: 'The Colab endpoint or protocol is invalid.' }, true, allowedOrigin);
+    if (!tunnelUrl || !safeApiKey(payload.api_key)) {
+      throw new Error('The Colab public HTTPS URL or bearer key is invalid.');
     }
-    // Verify both directions before telling the notebook its tunnel is connected.
+
+    const pairing = pendingNonce;
+    pairing.registrationInFlight = true;
     const previousConnection = colabConnection;
     const previousEnabled = visionEnabled;
-    const registeredConnection = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
-    pendingNonce = null;
-    colabConnection = registeredConnection;
-    visionEnabled = false;
+    const candidate = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
+    colabConnection = candidate;
     try {
-      await directRequest('/registration/ack', {
+      // The app contacts the public Colab endpoint directly. Nothing in the browser
+      // is required to fetch localhost, so this path does not use Local Network Access.
+      const health = await directRequest('/health', { timeoutMs: 15000 });
+      if (health.protocol !== DIRECT_VISION_PROTOCOL ||
+          typeof health.enabled !== 'boolean' ||
+          typeof health.model_loaded !== 'boolean') {
+        throw new Error('The public Colab endpoint returned an invalid health response.');
+      }
+      const ack = await directRequest('/registration/ack', {
         method: 'POST',
         timeoutMs: 15000,
-        body: { protocol: DIRECT_VISION_PROTOCOL, registered_at: new Date(now()).toISOString() }
+        body: { protocol: DIRECT_VISION_PROTOCOL, paired_at: new Date(now()).toISOString() }
       });
+      if (ack.accepted !== true || ack.desktop_registered !== true) {
+        throw new Error('Colab did not confirm the authenticated server-to-server pairing.');
+      }
+      visionEnabled = health.enabled === true;
+      if (pendingNonce === pairing) pendingNonce = null;
+      return {
+        ...stateFromRemote(health),
+        connected: true,
+        opened: false,
+        vision_activated: visionEnabled,
+        notebook_url: COLAB_NOTEBOOK_URL,
+        message: 'Colab is connected through its authenticated public HTTPS tunnel. Local Network Access is not required. Vision remains user-controlled.'
+      };
     } catch (error) {
-      if (colabConnection === registeredConnection) {
+      if (colabConnection === candidate) {
         colabConnection = previousConnection;
         visionEnabled = previousEnabled;
       }
-      return sendJson(res, 502, {
-        ok: false,
-        error: 'The Windows app received the browser handshake but could not verify the HTTPS tunnel to Colab: ' + messageOf(error)
-      }, true, allowedOrigin);
+      throw new Error('Could not pair with the public Colab server: ' + messageOf(error));
+    } finally {
+      if (pendingNonce === pairing) pairing.registrationInFlight = false;
     }
-    return sendJson(res, 200, {
-      ok: true,
-      protocol: DIRECT_VISION_PROTOCOL,
-      tunnel_verified: true
-    }, true, allowedOrigin);
-  }
-
-  async function ensureReceiver() {
-    if (receiverServer && receiverServer.listening) return receiverPort;
-    if (receiverPromise) return receiverPromise;
-    receiverPromise = new Promise((resolve, reject) => {
-      let offset = 0;
-      const tryPort = () => {
-        if (offset >= callbackPortCount) {
-          receiverPromise = null;
-          reject(new Error('No free localhost port was available for Colab registration. Close duplicate app instances and retry.'));
-          return;
-        }
-        const port = callbackPortStart + offset++;
-        const server = http.createServer((req, res) => {
-          void handleRegistration(req, res).catch(error => {
-            if (!res.headersSent) sendJson(res, 500, { ok: false, error: messageOf(error) });
-            else res.destroy();
-          });
-        });
-        server.on('error', error => {
-          try { server.close(); } catch {}
-          if (error && error.code === 'EADDRINUSE') return tryPort();
-          receiverPromise = null;
-          reject(error);
-        });
-        server.listen(port, '127.0.0.1', () => {
-          receiverServer = server;
-          receiverPort = port;
-          receiverPromise = null;
-          resolve(port);
-        });
-      };
-      tryPort();
-    });
-    return receiverPromise;
   }
 
   async function directRequest(route, options = {}) {
@@ -344,11 +251,12 @@ function createVisionService(deps) {
   async function openColabIfNeeded() {
     if (now() - lastColabOpenAt < 60000) return { opened: false, throttled: true };
     if (typeof openColabNotebook !== 'function') throw new Error('Opening the Colab notebook is unavailable in this app build.');
-    await ensureReceiver();
-    pendingNonce = { value: crypto.randomBytes(32).toString('hex'), expiresAt: now() + CALLBACK_NONCE_TTL_MS };
-    const result = await openColabNotebook(COLAB_NOTEBOOK_URL);
+    pendingNonce = { value: crypto.randomBytes(32).toString('hex'), expiresAt: now() + PAIRING_NONCE_TTL_MS, registrationInFlight: false };
+    const notebookUrl = new URL(COLAB_NOTEBOOK_URL);
+    notebookUrl.searchParams.set('wrb_pair_nonce', pendingNonce.value);
+    const result = await openColabNotebook(notebookUrl.href);
     lastColabOpenAt = now();
-    return { opened: true, result: result || null, callback_port: receiverPort };
+    return { opened: true, result: result || null };
   }
 
   async function connectColab() {
@@ -370,8 +278,8 @@ function createVisionService(deps) {
         vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
         message: opened.throttled
           ? 'The notebook was opened recently but has not registered its HTTPS tunnel. Switch to Colab and run the notebook cell; no Colab Secret or GitHub token is needed.'
-          : 'Colab was opened. Connect a runtime if needed and run the notebook cell. It will automatically register an authenticated HTTPS tunnel with this app. Vision stays off.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Wait until the app reports Colab connected. Call computer(action=enable) only when you want the model loaded.']
+          : 'Colab was opened. Connect a runtime if needed and run the notebook cell. When the random public HTTPS URL is ready, click Connect Windows Bridge and approve opening the Windows Repository Bridge app. The app then pairs directly with Colab; Local Network Access is not needed. Vision stays off.',
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Click Connect Windows Bridge in the notebook and approve opening the Windows Repository Bridge app. Call computer(action=enable) only when you want the model loaded.']
       };
     } catch (error) {
       return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
@@ -641,24 +549,15 @@ function createVisionService(deps) {
 
   async function dispose() {
     pendingNonce = null;
-    if (receiverServer) {
-      const server = receiverServer;
-      receiverServer = null;
-      receiverPort = null;
-      await new Promise(resolve => server.close(() => resolve()));
-    }
   }
 
-  void ensureReceiver().catch(() => {});
-
   return {
-    activate, deactivate, status, setupCheck, connectColab, analyzeScreenshot, wait, dispose,
-    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, CALLBACK_PORT_START, CALLBACK_PORT_COUNT },
-    getRegistrationPort: () => receiverPort
+    activate, deactivate, status, setupCheck, connectColab, registerColabTunnel, analyzeScreenshot, wait, dispose,
+    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, COLAB_PROTOCOL_SCHEME, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
 }
 
 module.exports = {
-  createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL,
+  createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL, COLAB_PROTOCOL_SCHEME,
   MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, validJobId, safeTunnelUrl, safeApiKey
 };
