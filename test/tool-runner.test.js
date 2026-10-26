@@ -14,11 +14,13 @@ function fixture() {
 }
 function cleanup(root) { fs.rmSync(root, { recursive: true, force: true }); }
 
-test('workspace path policy rejects traversal and absolute paths', () => {
+test('workspace path policy allows in-workspace absolute paths and rejects paths outside the workspace', () => {
   const root = fixture();
   try {
-    assert.throws(() => tools.safePath(root, '../outside.txt', false), /parent traversal/);
-    assert.throws(() => tools.safePath(root, path.join(root, 'src', 'index.js'), false), /absolute paths/);
+    assert.throws(() => tools.safePath(root, '../outside.txt', false), /outside the selected workspace/);
+    assert.equal(tools.safePath(root, path.join(root, 'src', 'index.js'), false), path.join(root, 'src', 'index.js'));
+    const outside = path.join(path.dirname(root), 'outside-' + path.basename(root) + '.txt');
+    assert.throws(() => tools.safePath(root, outside, false), /outside the selected workspace/);
   } finally { cleanup(root); }
 });
 
@@ -164,7 +166,7 @@ test('create_directory, move_path and delete_path have real effects inside the w
     assert.equal(fs.readFileSync(path.join(root, 'tmp', 'nested', 'moved.txt'), 'utf8'), 'hello');
     await tools.executeTool(root, 'delete_path', { path: 'tmp/nested/moved.txt' });
     assert.equal(fs.existsSync(path.join(root, 'tmp', 'nested', 'moved.txt')), false);
-    await assert.rejects(tools.executeTool(root, 'move_path', { source: '../outside', destination: 'tmp/outside' }), /parent traversal/);
+    await assert.rejects(tools.executeTool(root, 'move_path', { source: '../outside', destination: 'tmp/outside' }), /outside the selected workspace/);
   } finally { cleanup(root); }
 });
 
@@ -295,3 +297,34 @@ test('PowerShell reports when stdout is truncated at the output limit', async t 
   } finally { cleanup(root); }
 });
 
+
+test('absolute paths inside a workspace are accepted while outside absolute paths remain blocked', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'absolute-workspace-path-'));
+  try {
+    const inside = path.join(root, 'inside.txt');
+    fs.writeFileSync(inside, 'inside', 'utf8');
+    assert.equal(tools.safePath(root, inside, false), inside);
+    const outside = path.join(path.dirname(root), 'outside-' + path.basename(root) + '.txt');
+    assert.throws(() => tools.safePath(root, outside, false), /outside the selected workspace/);
+    assert.throws(() => tools.safePath(root, '../outside.txt', false), /outside the selected workspace/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('file glob and text search accept a targeted subdirectory path', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'targeted-workspace-search-'));
+  try {
+    fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'src', 'app.js'), 'needle inside source', 'utf8');
+    fs.writeFileSync(path.join(root, 'docs', 'readme.md'), 'needle in docs', 'utf8');
+    const glob = await tools.executeTool(root, 'glob_file_search', { path: 'src', pattern: '**/*.js' });
+    assert.deepEqual(glob.files, ['src/app.js']);
+    const search = await tools.executeTool(root, 'search', { path: 'docs', query: 'needle' });
+    assert.equal(search.matches.length, 1);
+    assert.equal(search.matches[0].path, 'docs/readme.md');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

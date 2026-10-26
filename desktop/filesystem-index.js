@@ -44,10 +44,17 @@ function entryType(entry) {
   return 'other';
 }
 
+function isFilesystemRootPath(rootInput) {
+  const resolved = path.resolve(rootInput);
+  const root = path.parse(resolved).root;
+  return Boolean(root && resolved.toLowerCase() === root.toLowerCase());
+}
+
 async function scanWorkspace(rootInput, options = {}) {
   const root = path.resolve(rootInput);
   const rootStat = await fsp.stat(root);
   if (!rootStat.isDirectory()) throw new Error('Filesystem index root must be a directory.');
+  const rootMode = isFilesystemRootPath(root) ? 'drive-root' : 'folder';
   const maxEntries = Number.isInteger(options.maxEntries)
     ? Math.max(1, Math.min(options.maxEntries, 500000))
     : DEFAULT_MAX_ENTRIES;
@@ -74,7 +81,9 @@ async function scanWorkspace(rootInput, options = {}) {
       const relative = current.relative ? current.relative + '/' + child.name : child.name;
       const type = entryType(child);
       entries.push({ path: relative, type });
-      if (type === 'directory') subdirectories.push({ absolute, relative });
+      // A drive root may contain millions of descendants. List only immediate
+      // children and let ChatGPT explore target directories on demand.
+      if (type === 'directory' && rootMode !== 'drive-root') subdirectories.push({ absolute, relative });
       if (entries.length >= maxEntries) {
         truncated = true;
         break;
@@ -86,9 +95,8 @@ async function scanWorkspace(rootInput, options = {}) {
 
   if (stack.length) truncated = true;
   entries.sort((a, b) => a.path.localeCompare(b.path) || a.type.localeCompare(b.type));
-  return { root, entries, truncated, unreadableDirectories };
+  return { root, rootMode, entries, truncated, unreadableDirectories };
 }
-
 function renderIndex(entries, options = {}) {
   const updatedAt = options.updatedAt || new Date().toISOString();
   const maxBytes = Number.isInteger(options.maxBytes)
@@ -110,10 +118,11 @@ function renderIndex(entries, options = {}) {
       '',
       '- Updated: ' + updatedAt,
       '- Entries scanned: ' + entries.length,
-      '- Complete scan: ' + (incomplete ? 'no (scan/output limit or unreadable paths)' : 'yes'),
+      '- Scope: ' + (options.rootMode === 'drive-root' ? 'drive root top-level only; explore subdirectories on demand' : 'selected workspace and its subdirectories'),
+      '- Complete scan: ' + (incomplete ? 'no (scan/output limit or unreadable paths)' : 'yes for the stated scope'),
       '',
       'Paths are relative to the selected workspace. This index contains names and item types only, never file contents or absolute local paths.',
-      'Directory paths end in /. Symbolic links are listed but never followed.',
+      'Directory paths end in /. Symbolic links are listed but never followed. Drive-root mode intentionally does not recursively crawl the entire drive.',
       '',
       '~~~~text',
       '<workspace>/'
@@ -155,6 +164,7 @@ class FilesystemIndexMonitor {
       throw new Error('Filesystem index monitor requires a workspace root.');
     }
     this.root = path.resolve(options.root);
+    this.rootMode = isFilesystemRootPath(this.root) ? 'drive-root' : 'folder';
     this.outputPath = typeof options.outputPath === 'string' ? path.resolve(options.outputPath) : '';
     this.onUpdate = typeof options.onUpdate === 'function' ? options.onUpdate : async () => {};
     this.onError = typeof options.onError === 'function' ? options.onError : () => {};
@@ -197,7 +207,7 @@ class FilesystemIndexMonitor {
   openWatcher() {
     if (!this.running) return;
     try {
-      this.watcher = fs.watch(this.root, { recursive: true }, (eventType, filename) => {
+      this.watcher = fs.watch(this.root, { recursive: this.rootMode !== 'drive-root' }, (eventType, filename) => {
         // The index describes names, not contents or modification times.
         if (!this.running || eventType === 'change') return;
         if (filename === null || filename === undefined || String(filename) === '') {
@@ -368,7 +378,8 @@ class FilesystemIndexMonitor {
     let rendered = renderIndex(entries, {
       updatedAt: new Date().toISOString(),
       maxBytes: this.maxBytes,
-      truncated: truncation
+      truncated: truncation,
+      rootMode: this.rootMode
     });
     const localChanged = rendered.hash !== this.localContentHash;
     if (!localChanged && this.localUpdatedAt) {
@@ -376,7 +387,8 @@ class FilesystemIndexMonitor {
       rendered = renderIndex(entries, {
         updatedAt: this.localUpdatedAt,
         maxBytes: this.maxBytes,
-        truncated: truncation
+        truncated: truncation,
+        rootMode: this.rootMode
       });
     } else {
       await writeAtomicIfConfigured(this.outputPath, rendered.content);
@@ -413,6 +425,7 @@ class FilesystemIndexMonitor {
     const task = (async () => {
       try {
         const scan = await scanWorkspace(this.root, { maxEntries: this.maxEntries, outputPath: this.outputPath });
+        this.rootMode = scan.rootMode;
         this.entries = new Map(scan.entries.map(entry => [entry.path, entry.type]));
         return await this.emitIfChanged(false, scan.truncated || scan.unreadableDirectories > 0);
       } catch (error) {
@@ -457,6 +470,7 @@ class FilesystemIndexMonitor {
       entryCount: this.entries.size,
       updatedAt: this.updatedAt,
       truncated: this.entries.size >= this.maxEntries,
+      rootMode: this.rootMode,
       localPath: this.outputPath || null
     };
   }

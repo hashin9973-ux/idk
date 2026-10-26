@@ -76,7 +76,7 @@ test('workspace-relative file writes execute without a dialog and reject paths o
 
     const escaped = await bridge.runTool('write_file', { path: '../outside.txt', content: 'must not write' }, 'req-escape-write');
     assert.equal(escaped.ok, false);
-    assert.match(escaped.error, /parent traversal/);
+    assert.match(escaped.error, /outside the selected workspace/);
     assert.equal(fs.existsSync(path.join(path.dirname(root), 'outside.txt')), false);
     assert.equal(approvalCalls, 0);
   } finally {
@@ -130,7 +130,7 @@ test('auto-accept-all skips local approval dialogs, including sensitive-file app
     assert.equal(upload.result.path, 'artifact.txt');
     const escaped = await bridge.runTool('write_file', { path: '../outside.txt', content: 'still blocked' }, 'req-auto-escape');
     assert.equal(escaped.ok, false);
-    assert.match(escaped.error, /parent traversal/);
+    assert.match(escaped.error, /outside the selected workspace/);
     assert.equal(approvalCalls, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -497,6 +497,50 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(result.result.instruction_files.some(item => item.path === 'AGENTS.md' && /^[a-f0-9]{64}$/.test(item.sha256)));
     assert.equal(result.result.instruction_files.some(item => Object.hasOwn(item, 'content')), false);
     assert.ok(result.result.suggested_commands.some(item => item.command === 'npm test'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('computer uses familiar actions in one tool and gates visual side effects', async () => {
+  const root = fixture();
+  try {
+    let approvalCalls = 0;
+    const calls = [];
+    const fakeComputer = {
+      async status() { calls.push('status'); return { status: 'inactive', runtime_fresh: false }; },
+      async connectColab() { calls.push('connect'); return { status: 'waiting_for_runtime', opened: true }; },
+      async activate() { calls.push('enable'); return { status: 'starting', enabled: true, model_loaded: false }; },
+      async deactivate() { calls.push('disable'); return { status: 'inactive', enabled: false, runtime_kept_alive: true }; },
+      async analyzeScreenshot(args, id) { calls.push('screenshot'); return { status: 'report_available', request_id: 'computer-aaaaaaaaaaaaaaaaaaaaaaaa', report: 'A window is visible.' }; },
+      async wait(args) { calls.push('wait'); return { status: 'report_available', request_id: args.request_id, report: 'A window is visible.' }; }
+    };
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvalCalls++; return { response: 0 }; } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {},
+      visionService: fakeComputer
+    });
+    const status = await bridge.runTool('computer', { action: 'status' }, 'req-computer-status');
+    assert.equal(status.ok, true);
+    assert.equal(approvalCalls, 0);
+    const enabled = await bridge.runTool('computer', { action: 'enable' }, 'req-computer-enable');
+    assert.equal(enabled.ok, true);
+    assert.equal(approvalCalls, 1);
+    const shot = await bridge.runTool('computer', { action: 'screenshot', source: 'desktop' }, 'req-computer-shot');
+    assert.equal(shot.ok, true);
+    assert.equal(approvalCalls, 2);
+    assert.equal(shot.result.request_id, 'computer-aaaaaaaaaaaaaaaaaaaaaaaa');
+    const disabled = await bridge.runTool('computer', { action: 'disable' }, 'req-computer-disable');
+    assert.equal(disabled.ok, true);
+    assert.equal(approvalCalls, 2);
+    const catalog = await bridge.runTool('get_capabilities', {}, 'req-computer-catalog');
+    const names = catalog.result.tools.map(item => item.name);
+    assert.ok(names.includes('computer'));
+    assert.equal(names.some(name => /^vision_/.test(name)), false);
+    assert.deepEqual(calls, ['status', 'enable', 'screenshot', 'disable']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -28,7 +28,7 @@ function messageOf(error) {
 }
 
 function validJobId(value) {
-  return typeof value === 'string' && /^vision-[a-f0-9]{24}$/.test(value);
+  return typeof value === 'string' && /^computer-[a-f0-9]{24}$/.test(value);
 }
 
 function safeTunnelUrl(value) {
@@ -304,7 +304,7 @@ function createVisionService(deps) {
           notebook_url: COLAB_NOTEBOOK_URL,
           message: state.model_loaded
             ? 'Colab is connected directly through its authenticated HTTPS tunnel. Vision ' + (state.enabled ? 'is enabled.' : 'is off.')
-            : 'Colab is connected directly. Vision is off; the model will not download until vision_activate is requested.'
+            : 'Colab is connected directly. Vision is off; the model will not download until computer(action=enable) is requested.'
         };
       }
       const opened = await openColabIfNeeded();
@@ -315,7 +315,7 @@ function createVisionService(deps) {
         message: opened.throttled
           ? 'The notebook was opened recently but has not registered its HTTPS tunnel. Switch to Colab and run the notebook cell; no Colab Secret or GitHub token is needed.'
           : 'Colab was opened. Connect a runtime if needed and run the notebook cell. It will automatically register an authenticated HTTPS tunnel with this app. Vision stays off.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Wait until the app reports Colab connected. Call vision_activate only when you want the model loaded.']
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'Wait until the app reports Colab connected. Call computer(action=enable) only when you want the model loaded.']
       };
     } catch (error) {
       return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
@@ -330,7 +330,7 @@ function createVisionService(deps) {
         return {
           ...state, status: 'starting', enabled: false, opened: Boolean(opened.opened),
           notebook_url: COLAB_NOTEBOOK_URL,
-          message: 'Run the Colab worker cell to establish the direct connection, then call vision_activate again. The model will not load before explicit activation.'
+          message: 'Run the Colab worker cell to establish the direct connection, then call computer(action=enable) again. The model will not load before explicit activation.'
         };
       }
       if (state.enabled && state.model_loaded && state.status === 'ready') {
@@ -382,7 +382,7 @@ function createVisionService(deps) {
         in_progress_request_id: before.active_request_id || null,
         in_progress_may_finish: Boolean(before.active_request_id),
         message: 'Future screenshot requests are disabled. The Colab runtime, tunnel, and loaded model are left running.',
-        next_step: 'Call vision_activate to re-enable requests; the loaded model should be reused.'
+        next_step: 'Call computer(action=enable) to re-enable requests; the loaded model should be reused.'
       };
     } catch (error) {
       return { status: 'error', error: messageOf(error), runtime_shutdown_attempted: false };
@@ -420,7 +420,7 @@ function createVisionService(deps) {
     else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
     if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The vision model and projector are loaded in the connected Colab runtime.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Call vision_activate when visual analysis is needed.' };
+    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Call computer(action=enable) when visual analysis is needed.' };
     checks.vision = state.enabled
       ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the model is loaded.' : 'Vision is enabled; model setup is still in progress.' }
       : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
@@ -430,8 +430,8 @@ function createVisionService(deps) {
     if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal ChatGPT tool requests and results.');
     if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
-    if (checks.model.status !== 'passed') next_steps.push('Setup check does not activate vision. Call vision_activate only when you want model setup/loading.');
-    if (checks.vision.status === 'disabled') next_steps.push('Vision remains disabled until vision_activate is explicitly called.');
+    if (checks.model.status !== 'passed') next_steps.push('Setup check does not activate vision. Call computer(action=enable) only when you want model setup/loading.');
+    if (checks.vision.status === 'disabled') next_steps.push('Vision remains disabled until computer(action=enable) is explicitly called.');
     return {
       status: passed ? 'ready' : failed ? 'failed' : 'action_required',
       checked_at: checkedAt, notebook_url: COLAB_NOTEBOOK_URL, checks, next_steps,
@@ -540,7 +540,7 @@ function createVisionService(deps) {
     const deadline = now() + duration;
     while (true) {
       const job = jobs.get(jobId);
-      if (!job) return { status: 'error', request_id: jobId, error: 'No local vision job with this ID exists in the current app session. If the app restarted, submit a new screenshot request.' };
+      if (!job) return { status: 'error', request_id: jobId, error: 'No local screenshot job with this ID exists in the current app session. If the app restarted, submit a new screenshot request.' };
       if (job.result) return job.result;
       if (now() >= deadline) break;
       await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - now())));
@@ -549,7 +549,7 @@ function createVisionService(deps) {
     return {
       status: 'inference_in_progress', request_id: jobId, pending: true,
       wait_timeout_ms: duration, runtime_status: current.runtime_status || current.status,
-      message: 'Colab is analyzing the screenshot. This is pending, not success; call vision_wait again with the same request_id.',
+      message: 'Colab is analyzing the screenshot. This is pending, not success; call computer(action=wait) again with the same request_id.',
       input_image: job.metadata
     };
   }
@@ -557,12 +557,12 @@ function createVisionService(deps) {
   async function analyzeScreenshot(args = {}, callId = null) {
     let jobId;
     try {
-      jobId = 'vision-' + crypto.createHash('sha256').update(String(callId || crypto.randomUUID())).digest('hex').slice(0, 24);
+      jobId = 'computer-' + crypto.createHash('sha256').update(String(callId || crypto.randomUUID())).digest('hex').slice(0, 24);
       const previous = jobs.get(jobId);
       if (previous) return previous.result || waitForJob(jobId, safeWaitMs(args.waitMs));
       const state = await queryRuntime();
       if (!state.runtime_fresh || !state.enabled || !state.model_loaded || state.status !== 'ready') {
-        return { ...state, request_id: jobId, error: 'Colab is not connected, activated, and model-loaded. No screenshot was captured or sent.', next_step: 'Call vision_activate and wait until vision_status reports ready.' };
+        return { ...state, request_id: jobId, error: 'Colab is not connected, activated, and model-loaded. No screenshot was captured or sent.', next_step: 'Call computer(action=enable) and wait until computer(action=status) reports ready.' };
       }
       const screenshot = await prepareScreenshot(args, jobId);
       const job = { request_id: jobId, metadata: screenshot.metadata, createdAt: new Date(now()).toISOString(), result: null };
@@ -576,7 +576,7 @@ function createVisionService(deps) {
 
   async function wait(args = {}) {
     try {
-      if (!validJobId(args.request_id)) throw new Error('request_id must be the vision job ID returned by vision_analyze_screenshot (vision- followed by 24 hexadecimal characters).');
+      if (!validJobId(args.request_id)) throw new Error('request_id must be the screenshot job ID returned by computer(action=screenshot) (computer- followed by 24 hexadecimal characters).');
       return await waitForJob(args.request_id, safeWaitMs(args.waitMs));
     } catch (error) {
       return { status: 'error', request_id: args.request_id || null, error: messageOf(error) };

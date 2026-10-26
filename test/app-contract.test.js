@@ -222,6 +222,24 @@ test('manual smoke-test documentation covers local execution, truncated-output r
 });
 
 
+
+test('whole-drive workspaces require explicit confirmation and use a shallow index', () => {
+  const main = read('desktop', 'main.js');
+  const workspace = read('desktop', 'workspace-path.js');
+  const index = read('desktop', 'filesystem-index.js');
+  const runner = read('desktop', 'tool-runner.js');
+  const bridge = read('desktop', 'tool-bridge.js');
+  const renderer = read('desktop', 'renderer.js');
+  assert.ok(main.includes('Use the entire drive as the ChatGPT workspace?'));
+  assert.ok(main.includes('isFilesystemRoot(selected)'));
+  assert.ok(workspace.includes('explicitly selected filesystem/drive'));
+  assert.ok(index.includes("rootMode !== 'drive-root'"));
+  assert.ok(index.includes("recursive: this.rootMode !== 'drive-root'"));
+  assert.ok(runner.includes('const absolute=path.isAbsolute(value)'));
+  assert.ok(bridge.includes("workspace_mode: isFilesystemRoot(root) ? 'drive-root' : 'folder'"));
+  assert.ok(renderer.includes('Workspace: entire drive '));
+});
+
 test('optional Colab vision uses direct authenticated HTTPS without a Colab GitHub token', () => {
   const main = read('desktop', 'main.js');
   const bridge = read('desktop', 'tool-bridge.js');
@@ -229,9 +247,10 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   const compatibility = read('desktop', 'vision-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
-  for (const name of ['vision_activate', 'vision_deactivate', 'vision_status', 'vision_analyze_screenshot', 'vision_wait']) {
-    assert.ok(bridge.includes(name), 'missing vision tool ' + name);
-  }
+  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'waitMs', 'request_id']"));
+  assert.ok(bridge.includes("enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait']"));
+  assert.ok(bridge.includes('function computerServiceCall'));
+  assert.doesNotMatch(bridge, /name: 'vision_(?:activate|deactivate|status|analyze_screenshot|wait)'/);
   assert.ok(main.includes("require('./colab-direct-service')"));
   assert.ok(main.includes('captureDesktopScreenshot'));
   assert.ok(main.includes('encodeVisionJpeg'));

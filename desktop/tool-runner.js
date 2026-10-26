@@ -17,18 +17,18 @@ let plan=[];
 
 function inside(root,target){const r=path.relative(root,target);return r===''||(r!=='..'&&!r.startsWith('..'+path.sep)&&!path.isAbsolute(r));}
 function safePath(rootInput,raw,allowRoot=false){
- if(typeof raw!=='string'||!raw.trim()||raw.length>2048)throw new Error('path must be a relative path up to 2048 characters.');
- if(raw==='.'&&allowRoot){}else{
-  if(path.isAbsolute(raw)||/^[a-z]:/i.test(raw)||raw.startsWith('\\\\')||raw.startsWith('//'))throw new Error('absolute paths are not allowed.');
-  if(raw.split(/[\\/]+/).includes('..'))throw new Error('parent traversal is not allowed.');
- }
- const root=path.resolve(rootInput),target=path.resolve(root,raw);
- if(!inside(root,target))throw new Error('path resolves outside the workspace.');
+ if(typeof raw!=='string'||!raw.trim()||raw.length>2048)throw new Error('path must be a non-empty path up to 2048 characters.');
+ const value=raw.trim(),root=path.resolve(rootInput);
+ if(value==='.'&&allowRoot)return root;
+ if(/^[a-z]:(?![\\/])/i.test(value))throw new Error('drive-relative paths are not allowed; use an absolute path such as C:\\folder or a workspace-relative path.');
+ const absolute=path.isAbsolute(value)||/^[a-z]:[\\/]/i.test(value)||value.startsWith('\\\\')||value.startsWith('//');
+ const target=absolute?path.resolve(value):path.resolve(root,value);
+ if(!inside(root,target))throw new Error('path resolves outside the selected workspace.');
+ if(target===root&&!allowRoot)throw new Error('a file path is required.');
  const realRoot=fs.realpathSync(root);let ancestor=target;
  while(!fs.existsSync(ancestor)){const parent=path.dirname(ancestor);if(parent===ancestor)throw new Error('cannot resolve workspace path.');ancestor=parent;}
  const effective=path.resolve(fs.realpathSync(ancestor),path.relative(ancestor,target));
  if(!inside(realRoot,effective))throw new Error('path follows a symlink outside the workspace.');
- if(target===root&&!allowRoot)throw new Error('a file path is required.');
  return target;
 }
 function readText(file,allowSensitive=false){
@@ -57,8 +57,39 @@ function applyPlans(plans,approved=false){
 function listDir(root,args={}){const dir=safePath(root,args.path||'.',true);if(!fs.existsSync(dir)||!fs.statSync(dir).isDirectory())throw new Error('directory not found.');const all=fs.readdirSync(dir,{withFileTypes:true}),entries=all.filter(e=>!e.isSymbolicLink()).sort((a,b)=>a.name.localeCompare(b.name)).slice(0,500).map(e=>{const full=path.join(dir,e.name);return{name:e.name,type:e.isDirectory()?'directory':'file',...(e.isFile()?{bytes:fs.statSync(full).size}:{})};});return{path:path.relative(root,dir)||'.',entries,truncated:all.length>entries.length};}
 function globRegex(glob){const s=String(glob||'**/*').replace(/\\/g,'/').replace(/^\.\//,'');let out='^';for(let i=0;i<s.length;i++){const ch=s[i];if(ch==='*'){if(s[i+1]==='*'){i++;if(s[i+1]==='/'){i++;out+='(?:.*/)?';}else out+='.*';}else out+='[^/]*';}else if(ch==='?')out+='[^/]';else out+=/[.+^$()|[\]\\]/.test(ch)?'\\'+ch:ch;}return new RegExp(out+'$',process.platform==='win32'?'i':'');}
 function walk(root,limit=5000){const files=[],stack=[root];while(stack.length&&files.length<limit){const dir=stack.pop();let es;try{es=fs.readdirSync(dir,{withFileTypes:true});}catch{continue;}for(const e of es){if(e.isSymbolicLink())continue;const f=path.join(dir,e.name);if(e.isDirectory()){if(!IGNORED.has(e.name))stack.push(f);}else if(e.isFile())files.push(f);if(files.length>=limit)break;}}return files;}
-function globFiles(root,args={}){const pattern=args.pattern||'**/*';if(typeof pattern!=='string'||pattern.length>300)throw new Error('pattern must be at most 300 characters.');const files=walk(root),re=globRegex(pattern),hits=files.filter(f=>re.test(path.relative(root,f).replace(/\\/g,'/'))).slice(0,200);return{pattern,count:hits.length,truncated:files.length>=5000||hits.length>=200,files:hits.map(f=>path.relative(root,f).replace(/\\/g,'/'))};}
-function searchFiles(root,args={}){const q=args.query;if(typeof q!=='string'||!q.length||q.length>500)throw new Error('query must be 1–500 characters.');const include=typeof args.include==='string'?globRegex(args.include):null,max=Number.isInteger(args.maxResults)?Math.min(Math.max(args.maxResults,1),MAX_RESULTS):100;let re=null;if(args.regex===true){try{re=new RegExp(q,args.caseSensitive?'g':'gi');}catch(e){throw new Error('invalid regex: '+e.message);}}const hits=[];let scanned=0,truncated=false;for(const file of walk(root)){const rel=path.relative(root,file).replace(/\\/g,'/');if(looksSensitiveFile(file))continue;if(include&&!include.test(rel))continue;let text;try{if(fs.statSync(file).size>MAX_FILE)continue;const b=fs.readFileSync(file);if(b.includes(0))continue;text=new TextDecoder('utf-8',{fatal:true}).decode(b);}catch{continue;}scanned++;const lines=text.split(/\r?\n/);for(let i=0;i<lines.length;i++){let col=-1;if(re){re.lastIndex=0;const m=re.exec(lines[i]);if(m)col=m.index;}else col=(args.caseSensitive?lines[i]:lines[i].toLowerCase()).indexOf(args.caseSensitive?q:q.toLowerCase());if(col>=0){hits.push({path:rel,line:i+1,column:col+1,text:lines[i].slice(0,500)});if(hits.length>=max){truncated=true;break;}}}if(truncated)break;}return{query:q,filesScanned:scanned,count:hits.length,truncated,matches:hits};}
+function globFiles(root,args={}){
+ const pattern=args.pattern||'**/*';
+ if(typeof pattern!=='string'||pattern.length>300)throw new Error('pattern must be at most 300 characters.');
+ const base=safePath(root,args.path||'.',true);
+ if(!fs.existsSync(base)||!fs.statSync(base).isDirectory())throw new Error('search base directory not found.');
+ const files=walk(base),re=globRegex(pattern),hits=files.filter(f=>re.test(path.relative(base,f).replace(/\\/g,'/'))).slice(0,200);
+ return{path:path.relative(root,base).replace(/\\/g,'/')||'.',pattern,count:hits.length,truncated:files.length>=5000||hits.length>=200,files:hits.map(f=>path.relative(root,f).replace(/\\/g,'/'))};
+}
+function searchFiles(root,args={}){
+ const q=args.query;
+ if(typeof q!=='string'||!q.length||q.length>500)throw new Error('query must be 1–500 characters.');
+ const base=safePath(root,args.path||'.',true);
+ if(!fs.existsSync(base)||!fs.statSync(base).isDirectory())throw new Error('search base directory not found.');
+ const include=typeof args.include==='string'?globRegex(args.include):null,max=Number.isInteger(args.maxResults)?Math.min(Math.max(args.maxResults,1),MAX_RESULTS):100;
+ let re=null;
+ if(args.regex===true){try{re=new RegExp(q,args.caseSensitive?'g':'gi');}catch(e){throw new Error('invalid regex: '+e.message);}}
+ const hits=[];let scanned=0,truncated=false;
+ for(const file of walk(base)){
+  const rel=path.relative(base,file).replace(/\\/g,'/'),workspaceRel=path.relative(root,file).replace(/\\/g,'/');
+  if(looksSensitiveFile(file))continue;
+  if(include&&!include.test(rel))continue;
+  let text;try{if(fs.statSync(file).size>MAX_FILE)continue;const b=fs.readFileSync(file);if(b.includes(0))continue;text=new TextDecoder('utf-8',{fatal:true}).decode(b);}catch{continue;}
+  scanned++;const lines=text.split(/\r?\n/);
+  for(let i=0;i<lines.length;i++){
+   let col=-1;
+   if(re){re.lastIndex=0;const m=re.exec(lines[i]);if(m)col=m.index;}
+   else col=(args.caseSensitive?lines[i]:lines[i].toLowerCase()).indexOf(args.caseSensitive?q:q.toLowerCase());
+   if(col>=0){hits.push({path:workspaceRel,line:i+1,column:col+1,text:lines[i].slice(0,500)});if(hits.length>=max){truncated=true;break;}}
+  }
+  if(truncated)break;
+ }
+ return{path:path.relative(root,base).replace(/\\/g,'/')||'.',query:q,filesScanned:scanned,count:hits.length,truncated,matches:hits};
+}
 function git(root,args){const r=spawnSync('git',args,{cwd:root,encoding:'utf8',timeout:15000,maxBuffer:MAX_OUTPUT,windowsHide:true,shell:false});if(r.error)throw new Error(r.error.code==='ENOENT'?'Git was not found on PATH.':'Git failed: '+r.error.message);return{exitCode:r.status===null?1:r.status,stdout:r.stdout||'',stderr:r.stderr||'',command:['git',...args]};}
 function projectStatus(root){const names=fs.readdirSync(root),isGit=fs.existsSync(path.join(root,'.git')),tech=[];if(names.includes('package.json'))tech.push('Node.js');if(names.includes('pyproject.toml')||names.includes('requirements.txt'))tech.push('Python');if(names.includes('Cargo.toml'))tech.push('Rust');if(names.includes('go.mod'))tech.push('Go');if(names.some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))tech.push('.NET');if(names.includes('pom.xml')||names.includes('build.gradle'))tech.push('Java');return{workspace:root,isGitRepository:isGit,git:isGit?git(root,['status','--short','--branch']):null,detectedTechnologies:tech,topLevelEntries:names.slice(0,100)};}
 function readFile(root,args){const target=safePath(root,args.path,false);if(!fs.existsSync(target))throw new Error('file not found.');const full=readText(target,args.approved===true),lines=full.split(/\r?\n/);const hasRange=args.startLine!==undefined||args.endLine!==undefined;let content=full,startLine=1,endLine=lines.length;if(hasRange){startLine=Number.isInteger(args.startLine)?args.startLine:1;endLine=Number.isInteger(args.endLine)?args.endLine:Math.min(lines.length,startLine+4999);if(startLine<1||endLine<startLine)throw new Error('startLine/endLine must define a valid 1-based range.');if(endLine-startLine>4999)throw new Error('a single read may return at most 5,000 lines.');content=lines.slice(startLine-1,Math.min(endLine,lines.length)).join('\n');}return{path:path.relative(root,target).replace(/\\/g,'/'),bytes:Buffer.byteLength(full),sha256:crypto.createHash('sha256').update(full).digest('hex'),totalLines:lines.length,startLine,endLine:Math.min(endLine,lines.length),content};}
