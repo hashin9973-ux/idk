@@ -200,6 +200,7 @@ function createVisionService(deps) {
     }
     // Verify both directions before telling the notebook its tunnel is connected.
     const previousConnection = colabConnection;
+    const previousEnabled = visionEnabled;
     const registeredConnection = { url: tunnelUrl, apiKey: payload.api_key, registeredAt: now(), lastHealthAt: 0 };
     pendingNonce = null;
     colabConnection = registeredConnection;
@@ -211,7 +212,10 @@ function createVisionService(deps) {
         body: { protocol: DIRECT_VISION_PROTOCOL, registered_at: new Date(now()).toISOString() }
       });
     } catch (error) {
-      if (colabConnection === registeredConnection) colabConnection = previousConnection;
+      if (colabConnection === registeredConnection) {
+        colabConnection = previousConnection;
+        visionEnabled = previousEnabled;
+      }
       return sendJson(res, 502, {
         ok: false,
         error: 'The Windows app received the browser handshake but could not verify the HTTPS tunnel to Colab: ' + messageOf(error)
