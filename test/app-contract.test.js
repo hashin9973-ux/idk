@@ -284,13 +284,13 @@ test('Colab pairing uses an app URI and never asks the browser for localhost acc
   const main = read('desktop', 'main.js');
   const service = read('desktop', 'colab-direct-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
-  const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\\n');
-  assert.match(main, /setAsDefaultProtocolClient\\(COLAB_PROTOCOL_SCHEME/);
+  const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
+  assert.match(main, /setAsDefaultProtocolClient\(COLAB_PROTOCOL_SCHEME/);
   assert.match(main, /receiveColabProtocolLink/);
   assert.match(service, /async function registerColabTunnel/);
   assert.match(service, /wrb_pair_nonce/);
-  assert.doesNotMatch(service, /http\\.createServer|ensureReceiver|vision\\/challenge|vision\\/register/);
+  assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register/);
   assert.match(python, /wrb_pair_nonce/);
-  assert.match(python, /windowsrepositorybridge:\\\/\\\/connect-colab/);
-  assert.doesNotMatch(python, /navigator\\.permissions\\.query|targetAddressSpace|localhost.*handshake/);
+  assert.match(python, /windowsrepositorybridge:\/\/connect-colab/);
+  assert.doesNotMatch(python, /navigator\.permissions\.query|targetAddressSpace|localhost.*handshake/);
 });
