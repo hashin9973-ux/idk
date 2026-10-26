@@ -65,7 +65,7 @@ function createVisionService(deps) {
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollIntervalMs = 250,
     clipboardPollIntervalMs = 1000,
-    clipboardWatchTimeoutMs = 10 * 60 * 1000,
+    clipboardWatchTimeoutMs = 20 * 60 * 1000,
     fetchImpl = globalThis.fetch
   } = deps || {};
 
