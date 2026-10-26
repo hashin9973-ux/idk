@@ -63,6 +63,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /createRepositoryBridge/);
   assert.match(main, /createGitHubAuth/);
   assert.match(main, /resolveWorkspaceRoot/);
+  assert.match(main, /ensureWorkspaceDirectory\(root, fs\)/);
   assert.match(main, /getDefaultWorkspaceRoot/);
   assert.ok(main.includes("path.join(app.getPath('userData'), 'ChatGPTWorkspace')"));
   assert.match(main, /openInBrowserAndYield/);

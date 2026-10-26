@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs');
 
 function isFilesystemRoot(resolvedPath, pathApi = path) {
   if (typeof resolvedPath !== 'string' || !resolvedPath.trim()) return false;
@@ -25,4 +26,19 @@ function resolveWorkspaceRoot(configuredPath, fallbackPath, pathApi = path) {
   throw new Error('No usable workspace directory is configured. Choose a drive or folder, or use the default Documents workspace.');
 }
 
-module.exports = { isFilesystemRoot, resolveWorkspaceRoot };
+/**
+ * Validate a workspace without trying to create it when it already exists.
+ * This matters on Windows, where mkdir('C:\\', { recursive: true }) can throw
+ * EPERM even though the drive root is a valid existing directory.
+ */
+function ensureWorkspaceDirectory(workspacePath, fsApi = fs) {
+  if (!fsApi.existsSync(workspacePath)) {
+    fsApi.mkdirSync(workspacePath, { recursive: true });
+  }
+  if (!fsApi.statSync(workspacePath).isDirectory()) {
+    throw new Error('The configured workspace path exists but is not a directory: ' + workspacePath);
+  }
+  return workspacePath;
+}
+
+module.exports = { isFilesystemRoot, resolveWorkspaceRoot, ensureWorkspaceDirectory };
