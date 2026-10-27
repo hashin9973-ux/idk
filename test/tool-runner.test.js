@@ -360,7 +360,7 @@ test('PowerShell timeout always returns a terminal result and partial output', a
   } finally { cleanup(root); }
 });
 
-test('PowerShell reports when stdout is truncated at the output limit', async t => {
+test('PowerShell preserves stdout beyond the former 128 KiB limit for artifact fallback', async t => {
   if (process.platform !== 'win32') {
     t.skip('PowerShell execution is only available on Windows.');
     return;
@@ -369,11 +369,31 @@ test('PowerShell reports when stdout is truncated at the output limit', async t 
   try {
     const result = await tools.executeTool(root, 'shell', {
       command: "[Console]::Out.Write('x' * 200000)",
-      timeoutMs: 5000
+      timeoutMs: 10000
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout_truncated, false);
+    assert.equal(result.stderr_truncated, false);
+    assert.equal(result.stdout.length, 200000);
+    assert.equal(result.stdout, 'x'.repeat(200000));
+  } finally { cleanup(root); }
+});
+
+test('PowerShell reports truncation only after the per-stream hard output ceiling', async t => {
+  if (process.platform !== 'win32') {
+    t.skip('PowerShell execution is only available on Windows.');
+    return;
+  }
+  const root = fixture();
+  try {
+    const result = await tools.executeTool(root, 'shell', {
+      command: "[Console]::Out.Write('x' * 9000000)",
+      timeoutMs: 20000
     });
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout_truncated, true);
     assert.equal(result.stderr_truncated, false);
+    assert.ok(result.stdout.length >= 8 * 1024 * 1024, 'all output up to the hard capture ceiling should be retained');
     assert.match(result.stdout, /stdout truncated/);
   } finally { cleanup(root); }
 });
