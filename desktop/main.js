@@ -30,7 +30,7 @@ const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = requir
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 360, height: 348 };
-const VISION_MANUAL_HEIGHT = 452;
+const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
