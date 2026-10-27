@@ -5,6 +5,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const {
   app,
   BrowserWindow,
@@ -30,6 +31,7 @@ const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = requir
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
+const { createObserveService } = require('./observe-service');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -93,7 +95,7 @@ app.on('child-process-gone', (_event, details) => {
 });
 appendDiagnosticLog('startup', 'Main process loaded; pid=' + process.pid);
 
-const STATUS_SIZE = { width: 360, height: 348 };
+const STATUS_SIZE = { width: 360, height: 374 };
 const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
@@ -115,6 +117,7 @@ let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
+let observeService = null;
 let windowsInputController = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
@@ -498,6 +501,33 @@ async function captureDesktopScreenshot() {
   };
 }
 
+function fingerprintDesktopScreenshot(captured) {
+  if (!captured || !Buffer.isBuffer(captured.bytes) || !captured.bytes.length) {
+    throw new Error('Observe received an empty screenshot.');
+  }
+  const image = nativeImage.createFromBuffer(captured.bytes);
+  if (!image || image.isEmpty()) throw new Error('Observe could not decode the captured screenshot.');
+  const size = image.getSize();
+  const bitmap = image.toBitmap();
+  if (!size.width || !size.height || !bitmap || bitmap.length < size.width * size.height * 4) {
+    throw new Error('Observe screenshot bitmap has invalid dimensions.');
+  }
+  // A small spatial sample detects meaningful visual changes cheaply and ignores most encoder noise.
+  const sample = Buffer.alloc(32 * 18 * 3);
+  let offset = 0;
+  for (let y = 0; y < 18; y += 1) {
+    const py = Math.min(size.height - 1, Math.floor((y + 0.5) * size.height / 18));
+    for (let x = 0; x < 32; x += 1) {
+      const px = Math.min(size.width - 1, Math.floor((x + 0.5) * size.width / 32));
+      const source = (py * size.width + px) * 4;
+      sample[offset++] = bitmap[source];
+      sample[offset++] = bitmap[source + 1];
+      sample[offset++] = bitmap[source + 2];
+    }
+  }
+  return crypto.createHash('sha256').update(sample).digest('hex');
+}
+
 function encodeVisionJpeg(input) {
   if (!Buffer.isBuffer(input) || input.length === 0) throw new Error('Image conversion requires non-empty bytes.');
   const original = nativeImage.createFromBuffer(input);
@@ -728,6 +758,18 @@ function registerIpc() {
     return githubAuth
       ? githubAuth.getState()
       : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+  });
+  ipcMain.handle('app:observe-status', event => {
+    assertLocalUi(event, 'index.html');
+    return observeService ? observeService.status() : { enabled: false, status: 'unavailable', error: 'Observe service is unavailable.' };
+  });
+  ipcMain.handle('app:observe-toggle', async (event, enabled) => {
+    assertLocalUi(event, 'index.html');
+    if (typeof enabled !== 'boolean') throw new Error('Observe toggle must be a boolean.');
+    if (!observeService) throw new Error('Observe service is unavailable.');
+    const githubState = githubAuth ? await githubAuth.getState() : { authenticated: false };
+    if (enabled && !githubState.authenticated) throw new Error('Sign in to GitHub before enabling Observe mode.');
+    return observeService.setEnabled(enabled);
   });
   ipcMain.handle('app:vision-status', async event => {
     assertLocalUi(event, 'index.html');
@@ -1090,6 +1132,12 @@ if (!hasInstanceLock) {
           readClipboardText: () => clipboard.readText(),
           publishWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
         });
+        observeService = createObserveService({
+          githubAuth,
+          captureScreenshot: captureDesktopScreenshot,
+          fingerprintScreenshot: fingerprintDesktopScreenshot,
+          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot
+        });
         toolBridge = createToolBridge({
           dialog,
           getMainWindow: () => mainWindow,
@@ -1177,6 +1225,10 @@ app.on('before-quit', event => {
   if (tray) {
     tray.destroy();
     tray = null;
+  }
+  if (observeService) {
+    void observeService.dispose().catch(() => {});
+    observeService = null;
   }
   if (!finishingVisionDispose && (visionService || windowsInputController)) {
     event.preventDefault();
