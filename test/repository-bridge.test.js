@@ -774,7 +774,7 @@ test('a started worker can be stopped cleanly', async () => {
 
 
 test('large textual tool output is preserved in retrievable text artifacts with an inline preview', async () => {
-  const longText = 'Header line\\n' + 'A'.repeat(18000) + '\\n' + 'λ🙂'.repeat(8000);
+  const longText = 'Header line\\n' + 'A'.repeat(200000) + '\\n' + 'λ🙂'.repeat(8000);
   const request = {
     protocol: PROTOCOL,
     request_id: 'req-large-output',
