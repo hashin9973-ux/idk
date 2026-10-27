@@ -964,7 +964,10 @@ function createRepositoryBridge(deps) {
       const claimRemote = await readRemoteFile('bridge/claims/' + entry.name);
       if (claimRemote && (!claimRemote.value || claimRemote.value.status !== 'completed')) continue;
 
-      const flatArtifactPattern = new RegExp('^' + requestId + '-batch-output-\\d{3}\\.json
+      const legacyArtifactPrefix = requestId + '-batch-output-';
+      const flatArtifacts = flatArtifactEntries.filter(item => item && item.type === 'file' &&
+        typeof item.name === 'string' && item.name.startsWith(legacyArtifactPrefix) &&
+        /^\d{3}\.json$/.test(item.name.slice(legacyArtifactPrefix.length)));
       const nestedArtifacts = await listFolder('bridge/artifacts/' + requestId);
       const artifactsByPath = new Map();
       for (const artifact of [...flatArtifacts, ...nestedArtifacts]) {
