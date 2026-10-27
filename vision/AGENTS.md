@@ -1,25 +1,28 @@
 # AGENTS.md — Colab vision subsystem
 
-These instructions apply to files in `vision/`, especially `vision_worker.ipynb`. Follow the root `../AGENTS.md` for overall app architecture, workspace and approval boundaries, coding conventions, and verification.
+These instructions apply to files in `vision/`, especially `vision_worker.ipynb`. Follow the root `../AGENTS.md` for overall architecture, workspace and approval boundaries, coding conventions, and verification.
 
 ## Purpose and boundaries
-The notebook provides optional visual evidence to the Windows Repository Bridge; it is not the default path for file discovery or debugging. Use source, logs, tests, and structured environment results first. Vision is useful only when visible UI or graphical state materially affects the task.
+The Colab notebook is the authenticated visual-analysis backend for the Windows computer tool. It should minimize time to the first useful visual report, return coordinate-aware concise output, keep the model warm when the runtime stays alive, and avoid unrelated repository/mailbox changes.
 
-## Preserve the connection architecture
-- Keep the desktop app's ChatGPT-facing surface as one `computer` tool with actions `status`, `connect`, `enable`, `disable`, `screenshot`, and `wait`. Do not reintroduce exposed legacy `vision_*` actions.
-- Colab hosts the authenticated API behind a temporary random Cloudflare HTTPS tunnel. The notebook displays a single endpoint URL whose path contains the ephemeral high-entropy access key and attempts to copy it. After the user clicks Connect Colab, the Windows app watches the clipboard and verifies a `https://*.trycloudflare.com/<secret>` endpoint over authenticated HTTPS. Clipboard auto-detection is best effort: if it remains waiting, the user can click **Paste URL** in the Windows app and paste the full `PUBLIC_VISION_ENDPOINT=...` line, or select the notebook's endpoint text and copy it manually. The pasted endpoint passes the same health and registration handshake. Keep the URL ephemeral and private; do not persist it, put it into mailbox files/logs, or ask users to paste a GitHub token or Colab Secret. Do not use app URI handoff, pairing codes, browser-to-localhost calls, or require Local Network Access permission.
-- Keep tunnel credentials ephemeral and high-entropy. The endpoint URL itself is a temporary bearer capability: show it only in the user's active Colab cell output and clipboard, never write it to repository files, request/result records, logs, saved settings, or other artifacts. Expose only the required health/control/analysis endpoints.
-- Screenshots go directly to the authenticated Colab service. Do not add a separate GitHub screenshot artifact or commit screen contents to the mailbox. Only the returned report travels through the normal matched tool result.
+## Connection and model lifecycle
+- After the Windows app authenticates the temporary public endpoint and completes registration acknowledgement, it automatically calls `/activate`. The worker then loads the model in the background. Do not require a second manual `computer(action=enable)` call after a successful connection.
+- Distinguish tunnel connected, model loading, model ready, inference in progress, inactive (explicitly disabled), and errors. Never report ready until the model and projector are loaded and the local llama-server health check succeeds.
+- Use a random in-memory bearer key in the endpoint path plus the Authorization header. Keep the full endpoint ephemeral and private; never persist it to mailbox files/logs/settings, commit it, print it to request/result records, or ask the user for GitHub credentials or Colab Secrets.
+- Clipboard detection is convenience only; manual paste must use the same strict HTTPS URL validation, health check, and registration acknowledgement. Do not use app URI handoff, browser-to-localhost calls, or require Local Network Access permission.
 
-## User-controlled vision state
-- Never connect, enable, screenshot, disable, load a model, mount a drive, or trigger multi-gigabyte model downloads automatically.
-- `status` is the read-only readiness check. Capture only after an explicit visual request or a task where visual evidence materially helps, and only when the Colab service is connected, vision is enabled, and the model is ready.
-- `connect` may open Colab but does not load the model. `enable` is a user-controlled, potentially expensive setup step and may mount Google Drive/download model weights. Use connect/enable only when the user explicitly asks.
-- `disable` prevents new screenshot requests; it must not unexpectedly terminate Colab, unload the model, or change other runtime state.
-- If inference is pending, preserve its request ID and resume with `wait`; never duplicate a screenshot because the first response is delayed.
+## Fast visual context
+- Prefer concise responses with actionable pixel-coordinate boxes and center points; include the screenshot frame dimensions from the desktop service. Use confidence/uncertainty for ambiguous targets rather than claiming pixel-perfect model perception.
+- Keep screenshot size under the existing direct HTTPS request limit. Use a shorter generation budget and reasonable context size for fast visual state checks. Preserve request ID and screenshot SHA-256 matching, and do not send duplicate inference when a job is pending.
+- Cache compiled server binaries/shared libraries and model files on the existing Google Drive cache where safe, then restore the executable to local runtime storage before execution. If cache restoration fails or required server flags are unavailable, fail clearly rather than silently executing an invalid binary.
+- The notebook only performs visual inference. Mouse/keyboard input is executed locally by the Windows app and never sent to Colab.
+
+## Security and user control
+- The user explicitly asked for automatic activation after connecting Colab; do not auto-launch Colab or create a public tunnel without an explicit connect request.
+- `disable` prevents new screenshot analysis but does not shut down the runtime or unload a loaded model.
+- Do not add screenshots or tunnel secrets as GitHub artifacts. Only the corresponding analysis report returns through the normal matched computer tool result.
 
 ## Notebook integrity and verification
-- Preserve valid Jupyter notebook JSON and code-cell source representation. Keep the desktop app's notebook validation passing.
-- Inspect the existing notebook cells and matching desktop service/tests before changing protocol names, dependencies, model settings, paths, or runtime lifecycle.
-- After changes, run the root repository's `npm run check` and `npm test`; add regression coverage for desktop-side contract changes. Clearly distinguish local syntax/contract checks from a live Colab GPU/inference test.
-- Do not claim a live connection, model load, GPU availability, inference, or end-to-end screenshot worked unless it was actually exercised and the result supports that claim.
+- Preserve valid Jupyter notebook JSON and code-cell source representation; clear saved cell outputs so a short-lived endpoint never leaks into the repository.
+- Run `npm run check` and `npm test`, and verify the Python source embedded in notebook code cells compiles. Distinguish static verification and CI from a live Colab GPU/inference test.
+- Do not claim a live tunnel, GPU, model load, inference, or end-to-end screenshot worked unless directly tested.

@@ -13,11 +13,11 @@ const MODEL_FILE = 'Qwen3VL-8B-Instruct-Q4_K_M.gguf';
 const PROJECTOR_FILE = 'mmproj-Qwen3VL-8B-Instruct-F16.gguf';
 const MAX_SCREENSHOT_BYTES = 600 * 1024;
 const MAX_INPUT_FILE_BYTES = 32 * 1024 * 1024;
-const DEFAULT_WAIT_MS = 5000;
+const DEFAULT_WAIT_MS = 15000;
 const MAX_WAIT_MS = 120000;
 const DIRECT_TIMEOUT_MS = 360000;
 const PAIRING_NONCE_TTL_MS = 10 * 60 * 1000;
-const DEFAULT_PROMPT = 'Describe the screenshot using only visible evidence. Include: (1) overview, (2) important visible objects, panels, controls and layout, (3) accurate transcription of visible text, (4) visible errors or anomalies, (5) the screenshot evidence supporting each observation, and (6) explicit uncertainty where text/details are unclear. Do not infer unseen state or perform debugging/reasoning.';
+const DEFAULT_PROMPT = 'Fast computer-use observation. Return a concise, structured report, not a long essay. State the visible screen/application/game state first. Use this screenshot coordinate frame: origin (0,0) at top-left, x increases right, y increases down, pixel dimensions are supplied in metadata. For each actionable target, give label, approximate bounding box [left,top,right,bottom], center [x,y], and confidence; never invent precise geometry when unclear. Transcribe only important visible text and report visible controls, cursor, player/target/status HUD, errors, and uncertainty. Distinguish observed facts from estimates. Do not infer unseen state or perform general reasoning.';
 
 function messageOf(error) {
   return String(error && error.message || error || 'Unknown vision error').slice(0, 1600);
@@ -60,6 +60,7 @@ function createVisionService(deps) {
     encodeJpeg,
     openColabNotebook,
     readClipboardText,
+    inputControl,
     fsImpl = fs,
     now = () => Date.now(),
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
@@ -78,6 +79,10 @@ function createVisionService(deps) {
   let connectionAttemptSequence = 0;
   let visionEnabled = false;
   let disposed = false;
+  let controlSessionActive = false;
+  let controlSessionTimer = null;
+  let latestScreenFrame = { width: 1920, height: 1080 };
+  const CONTROL_SESSION_TIMEOUT_MS = 15 * 60 * 1000;
   const jobs = new Map();
 
   function mailboxConfig() {
@@ -153,21 +158,34 @@ function createVisionService(deps) {
       if (ack.accepted !== true || ack.desktop_registered !== true) {
         throw new Error('Colab did not confirm the authenticated HTTPS connection.');
       }
-      visionEnabled = health.enabled === true;
+      // A successful connection is the user's request to prepare vision: activate immediately,
+      // then let the existing runtime worker load the model in the background.
+      const activation = await directRequest('/activate', {
+        method: 'POST',
+        timeoutMs: 10000,
+        connection: candidate,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: 'connect-' + String(now()) }
+      });
+      if (activation.accepted !== true || activation.enabled !== true) {
+        throw new Error('Colab connected, but it did not accept automatic vision activation.');
+      }
+      visionEnabled = true;
       endpointWatchError = '';
       endpointWatchAttemptInProgress = false;
       if (endpointWatch) endpointWatch.active = false;
       endpointWatch = null;
       return {
-        ...stateFromRemote(health),
+        ...stateFromRemote({ ...health, enabled: true, status: health.model_loaded ? 'ready' : 'starting',
+          stage: health.model_loaded ? (health.stage || 'ready') : 'activation',
+          message: health.model_loaded ? 'Colab is connected and the vision model is ready.' : 'Colab is connected. Vision is active; model loading is running in the background.' }),
         connected: true,
         opened: false,
         manually_entered: source === 'manual',
-        vision_activated: visionEnabled,
+        vision_activated: true,
         notebook_url: COLAB_NOTEBOOK_URL,
-        message: source === 'manual'
-          ? 'Colab is connected through the manually pasted, authenticated HTTPS endpoint. The endpoint passed the live health and registration checks. Vision remains off until explicitly enabled.'
-          : 'Colab is connected through its authenticated public HTTPS endpoint. The Windows app verified the URL with live health and registration checks.'
+        message: health.model_loaded
+          ? 'Colab is connected and the vision model is ready.'
+          : 'Colab is connected and vision has been activated automatically. Model loading continues in the background; computer(action=status) reports progress.'
       };
     } catch (error) {
       if (attemptId === connectionAttemptSequence && colabConnection === candidate) {
@@ -294,12 +312,21 @@ function createVisionService(deps) {
       }
       const state = await queryRuntime();
       if (state.runtime_fresh) {
+        if (!state.enabled || !state.model_loaded || state.status !== 'ready') {
+          const activated = await activate({}, 'connect-existing-' + String(now()));
+          return {
+            ...activated, connected: true, opened: false,
+            vision_activated: activated.enabled === true,
+            notebook_url: COLAB_NOTEBOOK_URL,
+            message: activated.model_loaded
+              ? 'Colab is connected and the vision model is ready.'
+              : 'Colab is connected. Vision is active and model loading continues in the background.'
+          };
+        }
         return {
-          ...state, connected: true, opened: false, vision_activated: state.enabled,
+          ...state, connected: true, opened: false, vision_activated: true,
           notebook_url: COLAB_NOTEBOOK_URL,
-          message: state.model_loaded
-            ? 'Colab is connected directly through its authenticated public HTTPS endpoint. Vision ' + (state.enabled ? 'is enabled.' : 'is off.')
-            : 'Colab is connected directly. Vision is off; the model will not download until computer(action=enable) is requested.'
+          message: 'Colab is connected and vision is enabled; the model is loaded and ready.'
         };
       }
       const opened = await openColabIfNeeded();
@@ -503,20 +530,24 @@ function createVisionService(deps) {
     else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
     if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The vision model and projector are loaded in the connected Colab runtime.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Call computer(action=enable) when visual analysis is needed.' };
+    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and the model/projector are loading in the background. Keep the Colab cell running and check status again.' };
+    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
     checks.vision = state.enabled
       ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the model is loaded.' : 'Vision is enabled; model setup is still in progress.' }
       : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
     const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
     const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
+    const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
+      checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
     const next_steps = [];
-    if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal ChatGPT tool requests and results.');
+    if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
     if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
-    if (checks.model.status !== 'passed') next_steps.push('Setup check does not activate vision. Call computer(action=enable) only when you want model setup/loading.');
-    if (checks.vision.status === 'disabled') next_steps.push('Vision remains disabled until computer(action=enable) is explicitly called.');
+    if (checks.model.status === 'in_progress') next_steps.push('Vision is already active. The model is warming up; check computer(action=status) again once loading progresses.');
+    else if (checks.model.status !== 'passed') next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Use computer(action=enable) only to retry activation if status shows inactive.');
+    if (checks.vision.status === 'disabled') next_steps.push('The runtime is connected but inactive. Call computer(action=enable) to retry activation.');
     return {
-      status: passed ? 'ready' : failed ? 'failed' : 'action_required',
+      status: passed ? 'ready' : failed ? 'failed' : loading ? 'loading' : 'action_required',
       checked_at: checkedAt, notebook_url: COLAB_NOTEBOOK_URL, checks, next_steps,
       note: 'The tunnel URL and random bearer key are held only in app/notebook memory for the current runtime. Screenshot bytes and vision reports bypass GitHub; the report returns through the app’s normal bridge result.'
     };
@@ -610,13 +641,19 @@ function createVisionService(deps) {
     const bytes = Buffer.isBuffer(encoded) ? encoded : encoded && encoded.bytes;
     if (!Buffer.isBuffer(bytes) || !bytes.length) throw new Error('Image conversion returned no JPEG bytes.');
     if (bytes.length > MAX_SCREENSHOT_BYTES) throw new Error('Screenshot could not be compressed below the 600 KiB direct Colab transfer limit.');
+    const width = encoded && encoded.width || null;
+    const height = encoded && encoded.height || null;
+    if (source === 'desktop' && Number.isInteger(width) && Number.isInteger(height)) {
+      latestScreenFrame = { width, height };
+    }
     return {
       bytes,
       metadata: {
         request_id: requestId, source, source_name: sourceName,
         ...(sourcePath ? { workspace_path: sourcePath } : {}),
-        content_type: 'image/jpeg', width: encoded && encoded.width || null,
-        height: encoded && encoded.height || null, jpeg_quality: encoded && encoded.quality || null,
+        content_type: 'image/jpeg', width, height,
+        coordinate_system: source === 'desktop' ? 'pixels, origin top-left; coordinates refer to this JPEG frame' : null,
+        jpeg_quality: encoded && encoded.quality || null,
         bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex')
       }
     };
@@ -639,7 +676,10 @@ function createVisionService(deps) {
           protocol: DIRECT_VISION_PROTOCOL, request_id: jobId,
           sha256: screenshot.metadata.sha256, content_type: 'image/jpeg',
           bytes: screenshot.bytes.length, image_base64: screenshot.bytes.toString('base64'),
-          prompt: String(prompt || DEFAULT_PROMPT).slice(0, 2000)
+          prompt: [
+            'Screenshot pixel frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + '; origin (0,0) is the top-left corner, x increases right, y increases down. Report coordinate estimates in this exact frame.',
+            String(prompt || DEFAULT_PROMPT)
+          ].join('\n').slice(0, 2000)
         }
       });
       if (data.request_id !== jobId || data.input_sha256 !== screenshot.metadata.sha256) {
@@ -712,13 +752,83 @@ function createVisionService(deps) {
     }
   }
 
+  function armControlSessionExpiry() {
+    if (controlSessionTimer) clearTimeout(controlSessionTimer);
+    controlSessionTimer = setTimeout(() => {
+      controlSessionActive = false;
+      controlSessionTimer = null;
+      if (inputControl && typeof inputControl.releaseAll === 'function') {
+        void inputControl.releaseAll().catch(() => {});
+      }
+    }, CONTROL_SESSION_TIMEOUT_MS);
+    if (typeof controlSessionTimer.unref === 'function') controlSessionTimer.unref();
+  }
+
+  async function inputAction(args = {}, callId = null) {
+    const action = args.action;
+    if (action === 'start_control') {
+      if (!inputControl || typeof inputControl.run !== 'function') {
+        return { status: 'error', error: 'Windows mouse/keyboard control is unavailable in this build.' };
+      }
+      controlSessionActive = true;
+      armControlSessionExpiry();
+      return {
+        status: 'control_ready', active: true, expires_after_inactivity_ms: CONTROL_SESSION_TIMEOUT_MS,
+        message: 'Computer control is enabled for this app session. Use screenshot for visual context, then batch mouse/keyboard actions with computer(action=sequence). Stop control when finished.'
+      };
+    }
+    if (action === 'stop_control') {
+      controlSessionActive = false;
+      if (controlSessionTimer) clearTimeout(controlSessionTimer);
+      controlSessionTimer = null;
+      let released = { released: 0 };
+      if (inputControl && typeof inputControl.releaseAll === 'function') released = await inputControl.releaseAll();
+      return { status: 'control_stopped', active: false, ...released };
+    }
+    if (!inputControl || typeof inputControl.run !== 'function') {
+      return { status: 'error', error: 'Windows mouse/keyboard control is unavailable in this build.' };
+    }
+    const inputTypes = new Set(['click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up']);
+    const sequence = action === 'sequence';
+    const steps = sequence ? args.steps : inputTypes.has(action) ? [{ ...args, type: action }] : null;
+    if (!Array.isArray(steps)) return { status: 'error', error: 'Unsupported computer input action.' };
+    if (controlSessionActive) armControlSessionExpiry();
+    const result = await inputControl.run(steps, latestScreenFrame);
+    if (!sequence || args.observe === false) {
+      return {
+        ...result, action, control_active: controlSessionActive,
+        message: 'Input executed on the local Windows desktop. Coordinates use the most recent desktop screenshot frame.'
+      };
+    }
+    const observation = await analyzeScreenshot({
+      source: 'desktop',
+      prompt: typeof args.prompt === 'string' && args.prompt.trim() ? args.prompt : DEFAULT_PROMPT,
+      waitMs: args.waitMs
+    }, callId);
+    return {
+      ...result, action, control_active: controlSessionActive,
+      observation,
+      message: observation && observation.status === 'report_available'
+        ? 'Input sequence completed and a fresh visual observation is available.'
+        : 'Input sequence completed; the requested follow-up observation is not yet ready. Use computer(action=wait) with its request_id if one was returned.'
+    };
+  }
+
   async function dispose() {
     disposed = true;
     endpointWatch = null;
+    if (controlSessionTimer) clearTimeout(controlSessionTimer);
+    controlSessionTimer = null;
+    controlSessionActive = false;
+    if (inputControl && typeof inputControl.dispose === 'function') {
+      try { await inputControl.dispose(); } catch {}
+    }
   }
 
   return {
-    activate, deactivate, status, setupCheck, connectColab, connectPublicEndpoint, analyzeScreenshot, wait, dispose,
+    activate, deactivate, status, setupCheck, connectColab, connectPublicEndpoint, analyzeScreenshot, wait, inputAction,
+    isControlSessionActive: () => controlSessionActive,
+    dispose,
     constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
 }

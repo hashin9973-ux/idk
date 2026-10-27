@@ -37,7 +37,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   git_push: ['remote', 'branch', 'timeoutMs'],
   git_clone: ['repository', 'path', 'branch', 'timeoutMs'],
   upload_workspace_file: ['path', 'artifactName'],
-  computer: ['action', 'source', 'path', 'prompt', 'waitMs', 'request_id'],
+  computer: ['action', 'source', 'path', 'prompt', 'waitMs', 'request_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight'],
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
@@ -89,7 +89,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
-  computer: 'Use this single computer tool only when visual inspection is requested or materially helpful. action=status checks readiness; connect opens Colab but does not load the model; enable loads screenshot understanding and may download several GB; disable prevents new screenshots but keeps the runtime alive; screenshot captures the Windows desktop or a workspace image after the model is ready; wait checks an existing screenshot request.',
+  computer: 'Use one computer tool for visual context and local mouse/keyboard control. Connect automatically activates vision and begins model loading; status reports readiness. After screenshot, coordinates use its returned JPEG pixel frame, origin at top-left. click/move/drag/scroll and key/mouse actions send Windows inputs. sequence batches up to 50 inputs and can capture/analyze a fresh screenshot afterward. start_control enables a control session without per-action approval; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
   batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large aggregate outputs are bundled as mailbox artifacts; fetch all listed parts concurrently and review them together. Stop launching later steps after a failure by default.'
 });
@@ -105,7 +105,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   path: { type: 'string', description: 'Path relative to the selected workspace or an absolute Windows path inside it. Paths outside the selected workspace and symlink escapes are rejected.' },
   pattern: { type: 'string', description: 'Glob pattern relative to the workspace, for example **/*.js.', maxLength: 300, default: '**/*' },
   query: { type: 'string', description: 'Non-empty text to search for; interpreted literally unless regex=true.', minLength: 1, maxLength: 500 },
-  action: { type: 'string', description: 'Computer action: status, connect, enable, disable, screenshot, or wait.', enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait'] },
+  action: { type: 'string', description: 'Computer action: status, connect, enable, disable, screenshot, wait, start_control, stop_control, click, move, drag, scroll, press, type, hotkey, mouse_down, mouse_up, key_down, key_up, or sequence.', enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up', 'sequence'] },
   ref: { type: 'string', description: 'Simple Git revision such as HEAD, a branch name, or a commit hash. Complex revision expressions and option-like values are rejected.', maxLength: 120, default: 'HEAD' },
   message: { type: 'string', description: 'Commit message.', minLength: 1, maxLength: 500 },
   content: { type: 'string', description: 'Complete UTF-8 file contents. Maximum 1 MiB; replaces the target file when it exists.', maxLength: 1048576 },
@@ -120,7 +120,22 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   source: { type: 'string', description: 'Screenshot source: desktop captures the current primary Windows display; workspace_file reads an image within the selected workspace.', enum: ['desktop', 'workspace_file'], default: 'desktop' },
   prompt: { type: 'string', description: 'Optional visual observation prompt. The vision model should describe visible evidence only.', maxLength: 2000 },
   waitMs: { type: 'integer', description: 'How long to wait for completion before returning a pending request ID (0–120,000 ms).', minimum: 0, maximum: 120000, default: 5000 },
-  request_id: { type: 'string', description: 'Existing screenshot request ID returned by computer(action=screenshot). Format: computer- followed by 24 lowercase hexadecimal characters.', pattern: '^computer-[a-f0-9]{24}$' },
+  request_id: { type: 'string', description: 'Existing screenshot request ID returned by computer(action=screenshot) or computer(action=sequence, observe=true). Format: computer- followed by 24 lowercase hexadecimal characters.', pattern: '^computer-[a-f0-9]{24}$' },
+  x: { type: 'number', description: 'Horizontal coordinate in pixels measured against the latest desktop screenshot, origin top-left.', minimum: 0 },
+  y: { type: 'number', description: 'Vertical coordinate in pixels measured against the latest desktop screenshot, origin top-left.', minimum: 0 },
+  fromX: { type: 'number', description: 'Starting horizontal pixel coordinate for drag or interpolated movement.', minimum: 0 },
+  fromY: { type: 'number', description: 'Starting vertical pixel coordinate for drag or interpolated movement.', minimum: 0 },
+  button: { type: 'string', description: 'Mouse button: left, right, or middle.', enum: ['left', 'right', 'middle'], default: 'left' },
+  clicks: { type: 'integer', description: 'Number of clicks from 1–3.', minimum: 1, maximum: 3, default: 1 },
+  deltaX: { type: 'integer', description: 'Horizontal wheel delta; one typical notch is 120 or -120.', minimum: -12000, maximum: 12000, default: 0 },
+  deltaY: { type: 'integer', description: 'Vertical wheel delta; one typical notch is 120 or -120.', minimum: -12000, maximum: 12000, default: 0 },
+  durationMs: { type: 'integer', description: 'Smooth move/drag or wait duration, max 5000 ms (move/drag max 3000).', minimum: 0, maximum: 5000, default: 0 },
+  key: { type: 'string', description: 'A key name such as W, ENTER, ESC, CTRL, SPACE, LEFT, or F1.', maxLength: 20 },
+  keys: { type: 'array', description: 'Keys for a hotkey combination.', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 20 } },
+  text: { type: 'string', description: 'Text to type via Unicode input (up to 2,000 characters).', maxLength: 2000 },
+  observe: { type: 'boolean', description: 'For sequence, capture/analyze a fresh screenshot after actions. Defaults to true.', default: true },
+  frameWidth: { type: 'integer', description: 'Optional coordinate frame width.', minimum: 1, maximum: 20000 },
+  frameHeight: { type: 'integer', description: 'Optional coordinate frame height.', minimum: 1, maximum: 20000 },
   command: { type: 'string', description: 'PowerShell command to execute from the workspace. Arbitrary commands run with the signed-in user permissions and require local approval.', minLength: 1, maxLength: 20000 },
   maxDepth: { type: 'integer', description: 'Maximum directory depth (1–12). Defaults to 4.', minimum: 1, maximum: 12, default: 4 },
   maxEntries: { type: 'integer', description: 'Maximum tree entries (1–2,000). Defaults to 500.', minimum: 1, maximum: 2000, default: 500 },
@@ -147,11 +162,32 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   computer: {
-    action: { enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait'] },
+    action: { enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up', 'sequence'] },
     source: { enum: ['desktop', 'workspace_file'], default: 'desktop' },
     path: { description: 'Optional image path within the workspace; required when action=screenshot and source=workspace_file.' },
-    waitMs: { default: 5000 },
-    request_id: { description: 'Existing screenshot request ID returned by computer(action=screenshot). Format: computer- followed by 24 lowercase hexadecimal characters.', pattern: '^computer-[a-f0-9]{24}$' }
+    waitMs: { default: 15000 },
+    request_id: { description: 'Existing screenshot request ID returned by computer(action=screenshot) or computer(action=sequence, observe=true).', pattern: '^computer-[a-f0-9]{24}$' },
+    steps: {
+      type: 'array', description: 'Ordered local mouse/keyboard inputs, up to 50 steps. Each step has a type and its action-specific fields; all steps run in one PowerShell process.',
+      minItems: 1, maxItems: 50,
+      items: { type: 'object',
+        properties: {
+          type: { type: 'string', enum: ['click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up', 'wait'] },
+          x: { type: 'number', minimum: 0 }, y: { type: 'number', minimum: 0 },
+          fromX: { type: 'number', minimum: 0 }, fromY: { type: 'number', minimum: 0 },
+          button: { type: 'string', enum: ['left', 'right', 'middle'], default: 'left' },
+          clicks: { type: 'integer', minimum: 1, maximum: 3, default: 1 },
+          deltaX: { type: 'integer', minimum: -12000, maximum: 12000, default: 0 },
+          deltaY: { type: 'integer', minimum: -12000, maximum: 12000, default: 0 },
+          durationMs: { type: 'integer', minimum: 0, maximum: 5000, default: 0 },
+          key: { type: 'string', maxLength: 20 },
+          keys: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 20 } },
+          text: { type: 'string', maxLength: 2000 }
+        }, required: ['type'], additionalProperties: false
+      }
+    },
+    observe: { type: 'boolean', description: 'For sequence, capture and analyze a fresh screenshot afterward.', default: true },
+    frameWidth: { type: 'integer', minimum: 1, maximum: 20000 }, frameHeight: { type: 'integer', minimum: 1, maximum: 20000 }
   },
   list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).', default: '.' } },
   directory_tree: {
@@ -229,7 +265,7 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   git_clone: 'Returns exitCode, stdout/stderr and timeout status for the clone operation.',
   update_plan: 'Returns the current ordered plan with IDs, step text and pending/in_progress/completed status.',
   upload_workspace_file: 'Returns the repository artifact path/URL, media type, byte size, SHA-256, visibility and retrieval note.',
-  computer: 'Returns actual Colab/model readiness and, when requested, a verified screenshot report or pending request ID. Pending is not completed inference.',
+  computer: 'Returns model readiness, screenshot analysis with coordinate-frame metadata, local mouse/keyboard input outcomes, or a batched observe-act-observe result.',
   refresh_environment_context: 'Returns the compact context index, including current agent_context, project-native command hints and tool catalog.',
   batch: 'Returns ordered steps with IDs, tool names, success/failed/cancelled status, errors/cancellation details, exit codes, and actual results even for failed commands.',
   get_agent_context: 'Returns a compact environment/project snapshot, project scripts, suggested native commands, instruction file paths/hashes/sizes, bounded tree and complete tool catalog.'
@@ -264,13 +300,29 @@ function computerServiceCall(service, args, requestId) {
     case 'disable': return service.deactivate(args, requestId);
     case 'screenshot': return service.analyzeScreenshot(args, requestId);
     case 'wait': return service.wait(args);
-    default: throw new Error('Unsupported computer action. Use status, connect, enable, disable, screenshot, or wait.');
+    case 'start_control':
+    case 'stop_control':
+    case 'sequence':
+    case 'click':
+    case 'move':
+    case 'drag':
+    case 'scroll':
+    case 'press':
+    case 'type':
+    case 'hotkey':
+    case 'mouse_down':
+    case 'mouse_up':
+    case 'key_down':
+    case 'key_up':
+      return service.inputAction(args, requestId);
+    default: throw new Error('Unsupported computer action.');
   }
 }
 
 function computerOutputFailed(action, output) {
   if (!output || output.status === 'error' || output.status === 'inference_failed') return true;
   if (action === 'screenshot') return !['report_available', 'inference_in_progress'].includes(output.status);
+  if (action === 'sequence') return output.status === 'error';
   if (action === 'wait') return ['inactive', 'needs_authentication', 'gpu_unavailable', 'disconnected'].includes(output.status);
   return false;
 }
@@ -481,15 +533,21 @@ function createToolBridge(deps) {
     }
     if (tool === 'computer') {
       if (args.action === 'connect') {
-        return header + resultWarning + 'Open the Colab notebook in the normal browser and establish the direct local-to-Colab connection. This does not load the model. The user may need to connect a runtime and run the notebook cell.';
+        return header + resultWarning + 'Open the Colab notebook in the normal browser. Once its server endpoint connects, the Windows app automatically activates vision and begins model loading.';
       }
       if (args.action === 'enable') {
-        return header + resultWarning + 'Enable screenshot understanding in Colab. If no runtime is connected, the notebook opens and requires the user to run its server cell. When connected, this may mount Google Drive, download several gigabytes of model files, and compile the runtime.';
+        return header + resultWarning + 'Retry vision activation in the connected Colab runtime. If the model is not initialized, this may mount Google Drive, download several gigabytes of model files, and compile the runtime.';
+      }
+      if (args.action === 'start_control') {
+        return header + resultWarning + 'Start a local computer-control session. During this session ChatGPT may send mouse and keyboard inputs and request screenshots through the already-connected authenticated Colab endpoint without asking for approval on every action. The session expires after 15 minutes of inactivity; stop_control releases held keys and mouse buttons.';
+      }
+      if (args.action === 'sequence' || ['click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'].includes(args.action)) {
+        return header + resultWarning + 'Perform local Windows mouse/keyboard input. Coordinates refer to the latest screenshot pixel frame. Review this action: ' + displayApprovalValue(JSON.stringify(args), 3000);
       }
       if (args.action === 'screenshot') {
         const source = args.source === 'workspace_file' ? 'workspace image: ' + displayApprovalValue(args.path || '(missing path)', 1200) : 'current primary Windows display';
         return header + resultWarning + 'Capture and send one image for visual analysis. Source: ' + source +
-          '\nThe image is sent directly to the authenticated temporary Colab HTTPS endpoint; the screenshot is not uploaded as a separate GitHub artifact. The model report returns through the shared mailbox, so it may contain details visible on your screen. Only proceed when that disclosure is acceptable.';
+          '\nThe image is sent directly to the authenticated temporary Colab HTTPS endpoint; the screenshot is not uploaded as a separate GitHub artifact. The model returns a concise description with approximate pixel-coordinate boxes for visible targets. Only proceed when this screen disclosure is acceptable.';
       }
     }
     if (GITHUB_GIT_TOOLS.has(tool)) {
@@ -879,8 +937,8 @@ function createToolBridge(deps) {
       } else {
         const isComputerTool = COMPUTER_TOOLS.has(tool);
         if (isComputerTool && !visionService) throw new Error('The computer screenshot service is unavailable in this app build.');
-        if (isComputerTool && !['status', 'connect', 'enable', 'disable', 'screenshot', 'wait'].includes(args.action)) {
-          throw new Error('Unsupported computer action. Use status, connect, enable, disable, screenshot, or wait.');
+        if (isComputerTool && !['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'sequence', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'].includes(args.action)) {
+          throw new Error('Unsupported computer action.');
         }
         if (isComputerTool && args.action === 'wait' && typeof args.request_id !== 'string') {
           throw new Error('computer(action=wait) requires the request_id returned by computer(action=screenshot).');
@@ -888,10 +946,17 @@ function createToolBridge(deps) {
         if (isComputerTool && args.action === 'screenshot' && args.source === 'workspace_file' && typeof args.path !== 'string') {
           throw new Error('computer(action=screenshot, source=workspace_file) requires path.');
         }
+        const inputActions = ['sequence', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'];
+        const controlActive = isComputerTool && typeof visionService.isControlSessionActive === 'function' && visionService.isControlSessionActive();
         const policy = tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
           : isComputerTool
-            ? { tool, requiresApproval: ['connect', 'enable', 'screenshot'].includes(args.action), automatic: false }
+            ? {
+                tool,
+                requiresApproval: ['connect', 'enable', 'start_control'].includes(args.action) ||
+                  (['screenshot', ...inputActions].includes(args.action) && !controlActive),
+                automatic: false
+              }
             : localTools.getToolPolicy(tool, args);
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true

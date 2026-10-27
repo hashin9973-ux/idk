@@ -27,6 +27,7 @@ const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./colab-direct-service');
+const { createWindowsInputController } = require('./windows-input');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 360, height: 348 };
@@ -51,11 +52,13 @@ let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
+let windowsInputController = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
 let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
+let finishingVisionDispose = false;
 let pendingGitHubCliLogin = null;
 let ipcRegistered = false;
 let appInitializationError = '';
@@ -419,11 +422,14 @@ async function captureDesktopScreenshot() {
     throw new Error('Windows did not provide a usable desktop screenshot. Check desktop capture permissions and retry.');
   }
   const size = source.thumbnail.getSize();
+  const scaleFactor = Number(primaryDisplay.scaleFactor) || 1;
   return {
     bytes: source.thumbnail.toPNG(),
     filename: 'desktop-' + new Date().toISOString().replace(/[:.]/g, '-') + '.png',
     width: size.width,
     height: size.height,
+    screen_width: Math.max(1, Math.round(primaryDisplay.size.width * scaleFactor)),
+    screen_height: Math.max(1, Math.round(primaryDisplay.size.height * scaleFactor)),
     display_id: source.display_id || null
   };
 }
@@ -996,10 +1002,22 @@ if (!hasInstanceLock) {
 
     if (githubAuth) {
       try {
+        windowsInputController = createWindowsInputController({
+          platform: process.platform,
+          getFrame: () => {
+            const display = screen.getPrimaryDisplay();
+            const scale = Number(display.scaleFactor) || 1;
+            return {
+              width: Math.max(1, Math.round(display.size.width * scale)),
+              height: Math.max(1, Math.round(display.size.height * scale))
+            };
+          }
+        });
         visionService = createVisionService({
           githubAuth,
           getSettings: () => settings,
           getWorkspaceRoot,
+          inputControl: windowsInputController,
           captureScreenshot: captureDesktopScreenshot,
           encodeJpeg: encodeVisionJpeg,
           openColabNotebook: url => openInBrowserAndYield(url),
@@ -1091,6 +1109,16 @@ app.on('before-quit', event => {
   if (tray) {
     tray.destroy();
     tray = null;
+  }
+  if (!finishingVisionDispose && (visionService || windowsInputController)) {
+    event.preventDefault();
+    finishingVisionDispose = true;
+    const dispose = visionService && typeof visionService.dispose === 'function'
+      ? visionService.dispose()
+      : windowsInputController && typeof windowsInputController.dispose === 'function'
+        ? windowsInputController.dispose()
+        : Promise.resolve();
+    Promise.resolve(dispose).catch(() => {}).finally(() => app.quit());
   }
 });
 
