@@ -303,6 +303,8 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('"images": [image_b64]'));
   assert.ok(python.includes('OLLAMA_API + "/api/chat"'));
   assert.ok(python.includes('model_loaded=True'));
+  assert.ok(python.includes('SETUP_BUDGET_SECONDS = 480'));
+  assert.ok(python.includes('_setup_blocked = True'));
   assert.doesNotMatch(python, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
   assert.ok(python.includes('automatically activates after authenticated desktop registration'));
   const registrationAckStart = python.indexOf('if route == "/registration/ack":');
