@@ -11,12 +11,15 @@ const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
 const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
-const DEFAULT_INTERVAL_MS = 2000;
-const MAX_CONCURRENT_REQUESTS = 10;
+const DEFAULT_INTERVAL_MS = 1000;
+const MAX_CONCURRENT_REQUESTS = 32;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
-const MAX_RESULT_BYTES = 90 * 1024;
+// Keep inline JSON under GitHub Contents API's 1 MiB response/content boundary.
+const MAX_RESULT_BYTES = 850 * 1024;
+const MAX_INLINE_BATCH_RESULT_BYTES = 600 * 1024;
+const MAX_BATCH_OUTPUT_PART_BYTES = 700 * 1024;
 const MAX_INLINE_TEXT_BYTES = 32 * 1024;
 const MAX_ARTIFACT_PART_BYTES = 256 * 1024;
 const MAX_WORKSPACE_UPLOAD_BYTES = 8 * 1024 * 1024;
@@ -154,8 +157,9 @@ function createRepositoryBridge(deps) {
   let timer = null;
   let pollInFlight = false;
   let pollPromise = null;
-  let refillRequested = false;
   const activeRequestIds = new Set();
+  const pendingRequestQueue = [];
+  const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
   const requestTelemetry = new AsyncLocalStorage();
@@ -299,11 +303,14 @@ function createRepositoryBridge(deps) {
       artifact_root: 'bridge/artifacts/'
     };
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
+    // Reserve the refresh window before network I/O so overlapping polls don't
+    // queue duplicate state writes. Result dispatch must not wait for this heartbeat.
+    lastStatePublishAt = now;
     try {
       const file = await readRemoteFile('bridge/state/windows-app.json');
       await writeRemoteJson('bridge/state/windows-app.json', snapshot, file && file.sha, false);
-      lastStatePublishAt = now;
     } catch (error) {
+      if (lastStatePublishAt === now) lastStatePublishAt = 0;
       lastError = 'Could not publish shared state: ' + cleanError(error.message);
       announce();
     }
@@ -491,6 +498,104 @@ function createRepositoryBridge(deps) {
     }
     if (chunk || chunks.length === 0) chunks.push(chunk);
     return chunks;
+  }
+
+
+  function summarizeBatchOutput(value, depth = 0) {
+    if (typeof value === 'string') {
+      if (Buffer.byteLength(value, 'utf8') <= 1800) return value;
+      const preview = value.slice(0, 1100) + '\n[… complete value is in result.output_artifacts …]\n' + value.slice(-350);
+      return preview;
+    }
+    if (Array.isArray(value)) {
+      const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8');
+      if (bytes > 6000) {
+        return {
+          item_count: value.length,
+          preview: value.slice(0, 2).map(item => summarizeBatchOutput(item, depth + 1)),
+          note: 'Complete array is stored in result.output_artifacts.'
+        };
+      }
+      return value.map(item => summarizeBatchOutput(item, depth + 1));
+    }
+    if (!isPlainObject(value)) return value;
+    if (depth >= 6) return '[nested output is in result.output_artifacts]';
+    const output = {};
+    for (const [key, item] of Object.entries(value)) output[key] = summarizeBatchOutput(item, depth + 1);
+    return output;
+  }
+
+  async function bundleLargeBatchOutput(requestId, report, artifactManifest, artifactErrors) {
+    const steps = report && report.result && Array.isArray(report.result.steps) ? report.result.steps : null;
+    if (!steps || Buffer.byteLength(JSON.stringify(report), 'utf8') <= MAX_INLINE_BATCH_RESULT_BYTES) return report;
+
+    const groups = [];
+    let current = [];
+    let currentBytes = 1200;
+    for (const step of steps) {
+      const stepBytes = Buffer.byteLength(JSON.stringify(step), 'utf8') + 1;
+      if (stepBytes + 1200 > MAX_BATCH_OUTPUT_PART_BYTES) {
+        throw new Error('A single batch-step output is larger than the safe artifact-part size; narrow that operation or return its output in bounded pages.');
+      }
+      if (current.length && currentBytes + stepBytes > MAX_BATCH_OUTPUT_PART_BYTES) {
+        groups.push(current);
+        current = [];
+        currentBytes = 1200;
+      }
+      current.push(step);
+      currentBytes += stepBytes;
+    }
+    if (current.length) groups.push(current);
+
+    const parts = [];
+    for (let index = 0; index < groups.length; index++) {
+      const partNumber = index + 1;
+      const relativePath = 'bridge/artifacts/' + requestId + '-batch-output-' + String(partNumber).padStart(3, '0') + '.json';
+      const payload = {
+        protocol: 'chatgpt-local-batch-output/v1',
+        request_id: requestId,
+        part: partNumber,
+        total_parts: groups.length,
+        steps: groups[index]
+      };
+      const content = JSON.stringify(payload, null, 2) + '\n';
+      const saved = await writeRemoteContent(relativePath, content, '[local bridge] publish complete batch output part');
+      const stepIds = groups[index].map(step => step.id);
+      const ref = { path: relativePath, bytes: saved.bytes, sha256: saved.sha256, step_ids: stepIds };
+      parts.push(ref);
+      artifactManifest.push({
+        kind: 'batch_output_part',
+        path: relativePath,
+        bytes: saved.bytes,
+        sha256: saved.sha256,
+        step_ids: stepIds,
+        field: 'result.result.output_artifacts'
+      });
+    }
+
+    return {
+      ...report,
+      result: {
+        ...report.result,
+        steps: steps.map(step => ({
+          id: step.id,
+          tool: step.tool,
+          call_id: step.call_id,
+          ok: step.ok === true,
+          status: step.status,
+          ...(step.skipped ? { skipped: true } : {}),
+          ...(step.cancelled ? { cancelled: true } : {}),
+          ...(step.error ? { error: step.error } : {}),
+          ...(step.message && !step.ok ? { message: step.message } : {}),
+          ...(Number.isInteger(step.exit_code) ? { exit_code: step.exit_code } : {}),
+          ...(step.timed_out ? { timed_out: true } : {}),
+          ...(step.result !== undefined ? { result: summarizeBatchOutput(step.result) } : {}),
+          output_in_artifact: true
+        })),
+        output_bundled: true,
+        output_artifacts: parts
+      }
+    };
   }
 
   async function externalizeLargeText(requestId, value, artifactManifest, artifactErrors, keyPath = 'output') {
@@ -1018,7 +1123,15 @@ function createRepositoryBridge(deps) {
     const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
     const artifactManifest = [];
     const artifactErrors = [];
-    const safeReport = await externalizeLargeText(requestId, sanitizedReport, artifactManifest, artifactErrors);
+    let reportForInline = sanitizedReport;
+    if (request.tool === 'batch') {
+      try {
+        reportForInline = await bundleLargeBatchOutput(requestId, sanitizedReport, artifactManifest, artifactErrors);
+      } catch (error) {
+        artifactErrors.push({ kind: 'batch_output_bundle', error: cleanError(error.message) });
+      }
+    }
+    const safeReport = await externalizeLargeText(requestId, reportForInline, artifactManifest, artifactErrors);
     const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
       safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
     const outputWasShortened = JSON.stringify(safeReport).includes('[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED.') ||
@@ -1094,6 +1207,54 @@ function createRepositoryBridge(deps) {
     }
   }
 
+
+  function enqueuePendingRequests(filenames) {
+    for (const filename of filenames) {
+      const requestId = filename.slice(0, -'.json'.length);
+      if (!SAFE_ID.test(requestId)) continue;
+      if (knownResultFiles && knownResultFiles.has(filename)) continue;
+      if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(filename)) continue;
+      pendingRequestQueue.push(filename);
+      pendingRequestQueueSet.add(filename);
+    }
+  }
+
+  function dispatchPendingRequests() {
+    if (!running) return;
+    while (running && requestTasks.size < MAX_CONCURRENT_REQUESTS && pendingRequestQueue.length) {
+      const filename = pendingRequestQueue.shift();
+      pendingRequestQueueSet.delete(filename);
+      const requestId = filename.slice(0, -'.json'.length);
+      if (!SAFE_ID.test(requestId) || inFlightRequestIds.has(requestId) ||
+          (knownResultFiles && knownResultFiles.has(filename))) continue;
+
+      // Reserve the ID before the first await so overlapping poll cycles cannot
+      // start two executions of the same request.
+      inFlightRequestIds.add(requestId);
+      const task = processRequest(filename)
+        .catch(error => {
+          lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
+          announce();
+        })
+        .finally(() => {
+          inFlightRequestIds.delete(requestId);
+          requestTasks.delete(requestId);
+          const queued = pendingRequestQueue.filter(name => !(knownResultFiles && knownResultFiles.has(name))).length;
+          const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id + '.json'))).length;
+          pendingCount = queued + active;
+          announce();
+          // Use the already-discovered queue to refill a freed slot; don't spend
+          // another GitHub folder-list API call for every completed request.
+          dispatchPendingRequests();
+        });
+      requestTasks.set(requestId, task);
+    }
+    const queued = pendingRequestQueue.filter(name => !(knownResultFiles && knownResultFiles.has(name))).length;
+    const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id + '.json'))).length;
+    pendingCount = queued + active;
+    announce();
+  }
+
   async function pollOnce() {
     if (pollInFlight || !running) return;
     pollInFlight = true;
@@ -1119,51 +1280,22 @@ function createRepositoryBridge(deps) {
           .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
           .sort();
         const pending = sorted.filter(filename => !knownResultFiles.has(filename));
-        pendingCount = pending.length;
+        enqueuePendingRequests(pending);
         const firstPoll = !lastPollAt;
         lastPollAt = new Date().toISOString();
         lastError = '';
         announce();
+
+        // Dispatch immediately after the request directory read. Publishing a
+        // heartbeat is maintenance work and must not add a round trip to pickup.
+        dispatchPendingRequests();
+        void publishState(firstPoll);
+
         const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
         const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);
         const contextWorkspaceChanged = Boolean(lastContextRefreshAt) && currentWorkspace !== lastContextWorkspace;
         const contextRefreshRequired = publishContextOnStart && (contextWorkspaceChanged || contextExpired);
-        await publishState(firstPoll);
-        // Dispatch independent mailbox requests concurrently. The in-flight set is
-        // populated before any async work starts, preventing duplicate local claims
-        // if another poll runs while a request is still loading from GitHub.
-        for (const filename of pending) {
-          if (!running || requestTasks.size >= MAX_CONCURRENT_REQUESTS) break;
-          const requestId = filename.slice(0, -'.json'.length);
-          if (inFlightRequestIds.has(requestId) || knownResultFiles.has(filename)) continue;
-          inFlightRequestIds.add(requestId);
-          const task = processRequest(filename)
-            .catch(error => {
-              lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
-              announce();
-            })
-            .finally(() => {
-              inFlightRequestIds.delete(requestId);
-              requestTasks.delete(requestId);
-              pendingCount = sorted.filter(name => !knownResultFiles.has(name)).length;
-              announce();
-              // Refill a freed execution slot immediately rather than waiting for
-              // the next periodic mailbox poll when other requests are already queued.
-              if (running) {
-                if (pollInFlight) refillRequested = true;
-                else void pollOnce();
-              }
-            });
-          requestTasks.set(requestId, task);
-        }
-        pendingCount = sorted.filter(filename => !knownResultFiles.has(filename)).length;
-        announce();
-        if (pending.length) await publishState();
-
-        // Context snapshots require several local reads and GitHub API writes.
-        // Keep that maintenance work off the request-dispatch path: drain queued
-        // requests first and refresh only while the mailbox queue is idle.
-        if (contextRefreshRequired && pendingCount === 0 && requestTasks.size === 0) {
+        if (contextRefreshRequired && pendingCount === 0 && requestTasks.size === 0 && pendingRequestQueue.length === 0) {
           scheduleContextRefresh();
         }
       } catch (error) {
@@ -1173,10 +1305,6 @@ function createRepositoryBridge(deps) {
         pollInFlight = false;
         pollPromise = null;
         announce();
-        if (running && refillRequested) {
-          refillRequested = false;
-          void pollOnce();
-        }
       }
     })();
     pollPromise = task;
@@ -1189,7 +1317,7 @@ function createRepositoryBridge(deps) {
     timer = setTimeout(async () => {
       await pollOnce();
       scheduleNextPoll();
-    }, Math.max(2000, intervalMs));
+    }, Math.max(1000, intervalMs));
   }
 
   async function start() {
