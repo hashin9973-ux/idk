@@ -36,18 +36,53 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
   }
   const calls = [];
+  let headCommitSha = 'f'.repeat(40);
+  let gitObjectCounter = 1;
   const treePathsBySha = new Map();
   function treeShaForPath(relativePath) {
     const sha = require('node:crypto').createHash('sha1').update(relativePath || '/').digest('hex');
     treePathsBySha.set(sha, relativePath || '');
     return sha;
   }
+  const pendingTrees = new Map();
+  const gitCommits = new Map([[headCommitSha, { treeSha: treeShaForPath(''), parents: [] }]]);
   const githubAuth = {
     getState: async () => ({ authenticated: true, login: 'worker-test' }),
     requestApi: async ({ method, path, body, query }) => {
       calls.push({ method, path, body, query });
       if (method === 'GET' && path === '/repos/test-owner/test-repo') {
         return { status: 200, result: { private: privateRepo } };
+      }
+      if (method === 'GET' && path === '/repos/test-owner/test-repo/git/ref/heads/bridge-mailbox') {
+        return { status: 200, result: { ref: 'refs/heads/bridge-mailbox', object: { sha: headCommitSha } } };
+      }
+      const gitCommitPrefix = '/repos/test-owner/test-repo/git/commits/';
+      if (method === 'GET' && path.startsWith(gitCommitPrefix)) {
+        const sha = path.slice(gitCommitPrefix.length);
+        const entry = gitCommits.get(sha);
+        if (!entry) throw new Error('Not Found (404)');
+        return { status: 200, result: { sha, tree: { sha: entry.treeSha }, parents: entry.parents.map(parent => ({ sha: parent })) } };
+      }
+      if (method === 'POST' && path === '/repos/test-owner/test-repo/git/trees') {
+        const sha = String(gitObjectCounter++).padStart(40, '0');
+        pendingTrees.set(sha, body.tree || []);
+        return { status: 201, result: { sha } };
+      }
+      if (method === 'POST' && path === '/repos/test-owner/test-repo/git/commits') {
+        const sha = String(gitObjectCounter++).padStart(40, '0');
+        gitCommits.set(sha, { treeSha: body.tree, parents: body.parents || [], message: body.message });
+        return { status: 201, result: { sha } };
+      }
+      if (method === 'PATCH' && path === '/repos/test-owner/test-repo/git/refs/heads/bridge-mailbox') {
+        const commit = gitCommits.get(body.sha);
+        if (!commit || !Array.isArray(commit.parents) || commit.parents[0] !== headCommitSha) {
+          throw new Error('non-fast-forward reference update rejected');
+        }
+        for (const entry of pendingTrees.get(commit.treeSha) || []) {
+          if (entry.sha === null) files.delete(entry.path);
+        }
+        headCommitSha = body.sha;
+        return { status: 200, result: { ref: 'refs/heads/bridge-mailbox', object: { sha: headCommitSha } } };
       }
       if (method === 'GET' && path === '/repos/test-owner/test-repo/commits') {
         assert.deepEqual(query, { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 1 });
@@ -150,7 +185,7 @@ function settingsFixture(allowPublicMailbox = false) {
 
 test('config validation rejects invalid owner, repository and branch input', () => {
   assert.deepEqual(validateConfig({ owner: 'test-owner', repo: 'test-repo' }), {
-    owner: 'test-owner', repo: 'test-repo', branch: DEFAULT_BRANCH, allowPublicMailbox: false
+    owner: 'test-owner', repo: 'test-repo', branch: DEFAULT_BRANCH, allowPublicMailbox: false, retentionDays: 30
   });
   assert.throws(() => validateConfig({ owner: '../owner', repo: 'repo', branch: 'bridge-mailbox' }), /owner/i);
   assert.throws(() => validateConfig({ owner: 'owner', repo: '..', branch: 'bridge-mailbox' }), /repository/i);
@@ -624,7 +659,7 @@ test('a started worker can be stopped cleanly', async () => {
 });
 
 
-test('large textual tool output is shortened inline without requiring a third fetch', async () => {
+test('large textual tool output is preserved in retrievable text artifacts with an inline preview', async () => {
   const longText = 'Header line\\n' + 'A'.repeat(18000) + '\\n' + 'λ🙂'.repeat(8000);
   const request = {
     protocol: PROTOCOL,
@@ -646,14 +681,85 @@ test('large textual tool output is shortened inline without requiring a third fe
     await bridge.start();
     await waitFor(() => fake.files.has('bridge/results/req-large-output.json'));
     const record = decode(fake.files.get('bridge/results/req-large-output.json'));
-    assert.equal(record.status, 'partial');
-    assert.equal(record.output_truncated, true);
-    assert.equal(record.artifacts.length, 0, 'ordinary tool output must not require a third fetch');
+    assert.equal(record.status, 'completed', 'the operation completed and the full output was archived');
+    assert.equal(record.output_truncated, true, 'the inline field is only a preview');
     const inline = record.result.result.content;
-    assert.match(inline, /OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED/);
-    assert.match(inline, /Do not infer a safety block/);
+    assert.match(inline, /OUTPUT EXTERNALIZED/);
+    assert.match(inline, /Read every listed part in ascending part order/);
     assert.ok(Buffer.byteLength(inline, 'utf8') <= 32 * 1024 + 256);
-    assert.equal([...fake.files.keys()].some(path => path.startsWith('bridge/artifacts/req-large-output/')), false);
+    const refs = record.artifacts.filter(item => item.kind === 'tool_output_part' && item.field === 'output.result.content');
+    assert.ok(refs.length >= 1, 'the result must include a retrievable artifact reference');
+    const recovered = refs.sort((a, b) => a.part - b.part).map(ref => {
+      const artifact = fake.files.get(ref.path);
+      assert.ok(artifact, 'full output artifact must exist: ' + ref.path);
+      return Buffer.from(artifact.content, 'base64').toString('utf8');
+    }).join('');
+    assert.equal(recovered, longText, 'artifact text must preserve every original byte');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('mailbox cleanup removes only old terminal request groups and associated artifacts', async () => {
+  const oldDate = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+  const recentDate = new Date().toISOString();
+  function request(id, createdAt) {
+    return { protocol: PROTOCOL, request_id: id, created_at: createdAt, tool: 'project_status', args: {} };
+  }
+  function result(id, completedAt) {
+    return { protocol: RESULT_PROTOCOL, request_id: id, tool: 'project_status', status: 'completed',
+      output_truncated: false, created_at: oldDate, completed_at: completedAt, result: { ok: true, result: { id } }, artifacts: [], artifact_errors: [] };
+  }
+  function claim(id, status, completedAt) {
+    return { protocol: 'chatgpt-local-repo-claim/v1', request_id: id, worker_id: 'test',
+      tool: 'project_status', status, claimed_at: oldDate, completed_at: completedAt, result: { ok: true } };
+  }
+  const initial = [
+    ['bridge/requests/req-cleanup-old.json', request('req-cleanup-old', oldDate)],
+    ['bridge/results/req-cleanup-old.json', result('req-cleanup-old', oldDate)],
+    ['bridge/claims/req-cleanup-old.json', claim('req-cleanup-old', 'completed', oldDate)],
+    ['bridge/artifacts/req-cleanup-old/report.txt', 'old report artifact'],
+    ['bridge/artifacts/req-cleanup-old-batch-output-001.json', { request_id: 'req-cleanup-old', steps: [] }],
+    ['bridge/requests/req-cleanup-recent.json', request('req-cleanup-recent', recentDate)],
+    ['bridge/results/req-cleanup-recent.json', result('req-cleanup-recent', recentDate)],
+    ['bridge/claims/req-cleanup-recent.json', claim('req-cleanup-recent', 'completed', recentDate)],
+    ['bridge/requests/req-cleanup-processing.json', request('req-cleanup-processing', oldDate)],
+    ['bridge/results/req-cleanup-processing.json', result('req-cleanup-processing', oldDate)],
+    ['bridge/claims/req-cleanup-processing.json', claim('req-cleanup-processing', 'processing', oldDate)]
+  ];
+  const fake = fakeGitHub({ initial });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true, result: {} }),
+    intervalMs: 5000,
+    cleanupIntervalMs: 1000,
+    cleanupScanLimit: 100,
+    cleanupRecordLimit: 25
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => !fake.files.has('bridge/requests/req-cleanup-old.json'), 5000);
+    for (const path of [
+      'bridge/results/req-cleanup-old.json',
+      'bridge/claims/req-cleanup-old.json',
+      'bridge/artifacts/req-cleanup-old/report.txt',
+      'bridge/artifacts/req-cleanup-old-batch-output-001.json'
+    ]) assert.equal(fake.files.has(path), false, 'eligible mailbox record/artifact should be cleaned: ' + path);
+    for (const path of [
+      'bridge/requests/req-cleanup-recent.json',
+      'bridge/results/req-cleanup-recent.json',
+      'bridge/claims/req-cleanup-recent.json',
+      'bridge/requests/req-cleanup-processing.json',
+      'bridge/results/req-cleanup-processing.json',
+      'bridge/claims/req-cleanup-processing.json',
+      'bridge/state/windows-app.json'
+    ]) assert.equal(fake.files.has(path), true, 'recent, active/nonterminal, or state files must be preserved: ' + path);
+    const cleanupCalls = fake.calls.filter(call => call.path === '/repos/test-owner/test-repo/git/trees' && call.method === 'POST');
+    assert.equal(cleanupCalls.length, 1, 'all eligible deletions should be committed atomically in one Git tree transaction');
+    assert.ok(decode(fake.files.get('bridge/state/windows-app.json')).mailbox_cleanup);
   } finally {
     await bridge.stop();
   }
@@ -935,15 +1041,23 @@ test('oversized non-batch results are compacted into a bounded partial result', 
     await bridge.start();
     await waitFor(() => fake.files.has('bridge/results/req-structured-result.json'));
     const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
-    assert.equal(result.status, 'partial');
+    assert.equal(result.status, 'completed', 'the complete result JSON was archived');
     assert.equal(result.output_truncated, true);
     assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 850 * 1024);
-    assert.equal(result.artifacts.length, 0, 'normal results must remain self-contained');
-    const compactEntries = result.result.result.entries;
-    assert.equal(compactEntries.length, entries.length);
-    assert.match(compactEntries[0].detail, /shortened to fit the two-operation result limit/);
-    assert.match(compactEntries[599].detail, /shortened to fit the two-operation result limit/);
-    assert.equal([...fake.files.keys()].some(path => path.startsWith('bridge/artifacts/req-structured-result/')), false);
+    assert.match(result.output_note, /concatenate UTF-8 parts in ascending part order/);
+    const refs = result.artifacts.filter(item => item.kind === 'complete_result_part');
+    assert.ok(refs.length >= 2, 'large structured output should be split into retrievable fallback parts');
+    const completeJson = refs.sort((a, b) => a.part - b.part).map(ref => {
+      const artifact = fake.files.get(ref.path);
+      assert.ok(artifact, 'complete result part must exist: ' + ref.path);
+      return Buffer.from(artifact.content, 'base64').toString('utf8');
+    }).join('');
+    const reconstructed = JSON.parse(completeJson);
+    const completeEntries = reconstructed.result.result.entries;
+    assert.equal(completeEntries.length, entries.length);
+    assert.equal(completeEntries[0].detail, entries[0].detail);
+    assert.equal(completeEntries[599].detail, entries[599].detail);
+    assert.ok(!completeJson.includes('shortened to fit the two-operation result limit'));
   } finally {
     await bridge.stop();
   }
