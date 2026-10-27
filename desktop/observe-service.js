@@ -209,14 +209,21 @@ function createObserveService(deps = {}) {
       lastError = '';
       if (timer !== null) clearIntervalImpl(timer);
       timer = setIntervalImpl(() => { void captureOnce(); }, SAMPLE_INTERVAL_MS);
-      // Publish the enabled state immediately, then capture the first frame.
-      try { await publish(true); } catch (error) {
+      // Serialize the initial status write with any frame publication.
+      publishInFlight = true;
+      try {
+        await publish(true);
+        publishedSequence = sequence;
+      } catch (error) {
         lastError = safeText(error && error.message || error, 500);
         enabled = false;
         if (timer !== null) clearIntervalImpl(timer);
         timer = null;
         throw error;
+      } finally {
+        publishInFlight = false;
       }
+      if (sequence > publishedSequence) void publishLatestWhenDue();
       void captureOnce();
       return status();
     }
