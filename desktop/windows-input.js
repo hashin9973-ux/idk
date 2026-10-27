@@ -275,7 +275,8 @@ function createWindowsInputController(options = {}) {
     const startedAt = Date.now();
     try {
       const requestedWait = operations.reduce((total, op) => total + (op.type === 'wait' ? op.ms : 0), 0);
-      await runLowLevel(operations, Math.max(8000, Math.min(30000, requestedWait + 5000)));
+      if (requestedWait > 20000) throw new Error('Total wait time in one input sequence cannot exceed 20,000 ms. Split it into shorter observe-act batches.');
+      await runLowLevel(operations, Math.max(8000, requestedWait + 5000));
       for (const update of heldUpdates) scheduleHeld(update);
       return {
         status: 'input_completed', actions_executed: requestedActions,
