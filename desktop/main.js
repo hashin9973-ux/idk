@@ -29,7 +29,7 @@ const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./colab-direct-service');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
-const STATUS_SIZE = { width: 360, height: 266 };
+const STATUS_SIZE = { width: 360, height: 318 };
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
