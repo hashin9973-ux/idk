@@ -161,7 +161,8 @@ function createRepositoryBridge(deps) {
     publishContextOnStart = false,
     cleanupIntervalMs = DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS,
     cleanupScanLimit = MAX_MAILBOX_CLEANUP_SCAN,
-    cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS
+    cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS,
+    requestReconciliationIntervalMs = 60_000
   } = deps;
 
   const workerId = randomUUID();
@@ -183,6 +184,7 @@ function createRepositoryBridge(deps) {
   const inMemoryClaims = new Set();
   let knownResultFiles = null;
   let lastRequestCommitSha = null;
+  let lastRequestTreeReconcileAt = 0;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
   let contextRefreshInFlight = false;
@@ -1664,14 +1666,20 @@ function createRepositoryBridge(deps) {
             .map(file => file.name)
             .filter(name => name.endsWith('.json')));
           lastRequestCommitSha = requestCommitSha;
+          lastRequestTreeReconcileAt = Date.now();
         } else {
-          // The request directory is now large enough that Contents API listing
-          // exceeds GitHubAuth's 1 MiB limit. One small path-filtered commit query
-          // detects new requests; read the folder tree only when that cursor moves.
+          // The path-filtered commit query is the fast path, not the only way
+          // to discover new work. Periodically reconcile the compact Git tree in
+          // case the cursor endpoint or a cached/ref view fails to expose a new
+          // request commit. This stays bounded to one mailbox folder and avoids
+          // Contents API listings of the full historical request directory.
           const requestCommitSha = await latestRequestCommitSha();
-          if (requestCommitSha !== lastRequestCommitSha) {
+          const reconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || 60_000);
+          const reconciliationDue = Date.now() - lastRequestTreeReconcileAt >= reconciliationInterval;
+          if (requestCommitSha !== lastRequestCommitSha || reconciliationDue) {
             files = await listFolder('bridge/requests');
             lastRequestCommitSha = requestCommitSha;
+            lastRequestTreeReconcileAt = Date.now();
           } else {
             files = [];
           }
