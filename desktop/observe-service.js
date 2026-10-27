@@ -227,6 +227,7 @@ function createObserveService(deps = {}) {
     frames = [];
     lastFingerprint = '';
     lastError = '';
+    while (publishInFlight) await sleep(50);
     // Clear live context on GitHub. GitHub's prior commit history may still contain old snapshots.
     await publish(false);
     frames = [];
@@ -242,7 +243,10 @@ function createObserveService(deps = {}) {
     frames = [];
     lastFingerprint = '';
     if (wasEnabled) {
-      try { await publish(false); } catch (error) { lastError = safeText(error && error.message || error, 500); }
+      try {
+        while (publishInFlight) await sleep(50);
+        await publish(false);
+      } catch (error) { lastError = safeText(error && error.message || error, 500); }
     }
     disposed = true;
   }
