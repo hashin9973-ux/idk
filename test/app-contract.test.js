@@ -313,6 +313,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes("const DIAGNOSTIC_LOG_NAME = 'startup-crash.log'"));
   assert.ok(main.includes("process.on('uncaughtException'"));
   assert.ok(main.includes("process.on('unhandledRejection'"));
+  const unhandledRejectionStart = main.indexOf("process.on('unhandledRejection'");
+  const unhandledRejectionEnd = main.indexOf("\n});", unhandledRejectionStart) + 4;
+  assert.doesNotMatch(main.slice(unhandledRejectionStart, unhandledRejectionEnd), /app\.exit\(/);
   assert.ok(main.includes("contents.on('render-process-gone'"));
   assert.ok(main.includes("app.on('child-process-gone'"));
   assert.ok(python.includes('class DirectVisionHandler'));
