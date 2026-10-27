@@ -296,14 +296,17 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('safeTunnelUrl'));
   assert.ok(compatibility.includes("require('./colab-direct-service')"));
   assert.ok(python.includes('cloudflared'));
-  assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
-  assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
-  assert.ok(python.includes('llama-server'));
-  assert.ok(python.includes('cudart-llama-b11913-bin-ubuntu-cuda-12.8-x64.tar.gz'));
-  assert.ok(python.includes('be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e'));
-  assert.doesNotMatch(python, /cmake|nvcc is missing|git clone --depth=1.*llama\.cpp/i);
-  assert.ok(python.includes('"max_tokens": 700'));
-  assert.ok(python.includes('"--parallel", "1"'));
+  assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b"'));
+  assert.ok(python.includes('https://ollama.com/install.sh'));
+  assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
+  assert.ok(python.includes('def run_vision_smoke_test()'));
+  assert.ok(python.includes('"images": [image_b64]'));
+  assert.ok(python.includes('OLLAMA_API + "/api/chat"'));
+  assert.ok(python.includes('model_loaded=True'));
+  assert.ok(python.includes('SETUP_BUDGET_SECONDS = 480'));
+  assert.ok(python.includes('_setup_blocked = True'));
+  assert.ok(python.includes('_desktop_registration_event.wait(timeout=90)'));
+  assert.doesNotMatch(python, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
   assert.ok(python.includes('automatically activates after authenticated desktop registration'));
   const registrationAckStart = python.indexOf('if route == "/registration/ack":');
   const registrationAckEnd = python.indexOf('if route == "/activate":', registrationAckStart);
@@ -355,19 +358,20 @@ test('Colab connection detects the public endpoint copied by the notebook withou
   assert.doesNotMatch(python, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
 });
 
-test('Colab vision notebook uses a checksum-pinned prebuilt CUDA server without compiling in Colab', () => {
+test('Colab vision notebook uses the prebuilt Ollama runtime and verifies multimodal inference', () => {
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const codeCells = notebook.cells.filter(cell => cell.cell_type === 'code');
   assert.equal(codeCells.length, 1, 'the vision notebook has one server code cell');
   const source = codeCells.map(cell => cell.source.join('')).join('\n');
-  assert.match(source, /cudart-llama-b11913-bin-ubuntu-cuda-12\.8-x64\.tar\.gz/);
-  assert.match(source, /be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e/);
-  assert.match(source, /SHA-256 verification/);
-  assert.match(source, /archive\.extractall\(path=extract_dir, filter="data"\)/);
-  assert.match(source, /--mmproj/);
-  assert.match(source, /env=server_env, cwd=str\(server_binary\.parent\)/);
-  assert.doesNotMatch(source, /cmake|nvcc is missing|git clone --depth=1.*llama\.cpp|build_llama_cpp/i);
+  assert.match(source, /OLLAMA_MODEL = "qwen3-vl:4b"/);
+  assert.match(source, /https:\/\/ollama\.com\/install\.sh/);
+  assert.match(source, /OLLAMA_API \+ "\/api\/chat"/);
+  assert.match(source, /"images": \[image_b64\]/);
+  assert.match(source, /def run_vision_smoke_test\(\)/);
+  assert.match(source, /ollama_model_is_loaded\(\)/);
+  assert.match(source, /OLLAMA_MODELS_DIR = Path\("\/content\/ollama-models"\)/);
+  assert.doesNotMatch(source, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
   const readme = read('README.md');
-  assert.match(readme, /prebuilt archive/i);
-  assert.match(readme, /instead of compiling llama\.cpp/i);
+  assert.match(readme, /prebuilt Ollama runtime/i);
+  assert.match(readme, /does not compile llama\.cpp/i);
 });
