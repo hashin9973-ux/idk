@@ -242,7 +242,7 @@ test('Colab serves long vision inference asynchronously through a matching resul
   assert.match(pythonSource, /MAX_ACTIVE_VISION_JOBS = 8/);
   assert.match(pythonSource, /MAX_RETAINED_VISION_RESULTS = 32/);
   assert.match(pythonSource, /current_status == "processing" and current_stage == "queued"/);
-  assert.match(pythonSource, /publish_runtime\\(\\s*"processing", stage="inference"/);
+  assert.match(pythonSource, /publish_runtime\(\s*"processing", stage="inference"/);
   assert.match(pythonSource, /"status": "processing"/);
 });
 
