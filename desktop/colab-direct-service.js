@@ -760,6 +760,15 @@ function createVisionService(deps) {
       } catch {
         accessibility = { available: false, source: 'windows_uia', reason: 'uia_unavailable' };
       }
+      const captureAt = capturedMetadata.captured_at;
+      if (Number.isFinite(captureAt)) {
+        const ageMs = Math.max(0, now() - captureAt);
+        if (accessibility && accessibility.available === true && ageMs > 2500) {
+          accessibility = { available: false, source: 'windows_uia', reason: 'snapshot_too_old_for_frame', age_ms: ageMs };
+        } else if (accessibility && typeof accessibility === 'object') {
+          accessibility = { ...accessibility, age_ms: ageMs };
+        }
+      }
     }
     return {
       bytes,
