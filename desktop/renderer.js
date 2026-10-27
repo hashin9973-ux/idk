@@ -329,14 +329,18 @@
       visionModelDetail.textContent = 'Loaded';
       visionModelDetail.title = String(vision.model || '') + (vision.gpu ? ' on ' + vision.gpu : '');
       visionModelDetail.dataset.state = 'passed';
+    } else if (vision.runtime_fresh === true && vision.enabled === true) {
+      visionModelDetail.textContent = 'Loading…';
+      visionModelDetail.title = String(vision.model || 'Vision model') + ' is active and loading in the connected Colab runtime.';
+      visionModelDetail.dataset.state = 'in_progress';
     } else {
-      visionModelDetail.textContent = 'Not verified / not loaded';
+      visionModelDetail.textContent = 'Not loaded';
       visionModelDetail.title = String(vision.model || 'Vision model') + ' is not confirmed loaded in a live Colab runtime.';
       visionModelDetail.dataset.state = 'not_verified';
     }
 
     if (!visionSetupSnapshot && visionSetupDetail.textContent === 'Not checked') {
-      visionSetupDetail.title = 'Click Setup check to test GitHub sign-in, mailbox reads, the direct Colab tunnel, and model readiness.';
+      visionSetupDetail.title = 'Setup check tests GitHub sign-in, mailbox reads, the direct Colab tunnel, and model readiness. Successful tunnel connection activates vision and begins model loading automatically.';
       visionSetupDetail.dataset.state = 'not_verified';
       visionMailboxDetail.title = 'Mailbox read access is checked by Setup check.';
       visionMailboxDetail.dataset.state = 'not_verified';
@@ -355,7 +359,7 @@
     setCheckDetail(visionMailboxDetail, checks.mailbox);
     if (checks.colab) setCheckDetail(visionColabDetail, checks.colab);
     if (checks.model) setCheckDetail(visionModelDetail, checks.model);
-    visionSetupButton.title = value.note || 'Setup check checks readiness without enabling vision.';
+    visionSetupButton.title = value.note || 'Setup check verifies the authenticated tunnel and model readiness; successful connection automatically activates vision.';
   }
 
   async function refreshVisionStatus() {
@@ -402,7 +406,7 @@
         if (snapshot && snapshot.runtime_fresh === true) {
           stopVisionConnectionWatch();
           visionSetupDetail.textContent = 'Colab connected';
-          visionSetupDetail.title = 'The app received a response from Colab over the authenticated direct HTTPS tunnel. Vision activation and model loading are controlled separately.';
+          visionSetupDetail.title = 'The app received a response from Colab over the authenticated direct HTTPS tunnel. Vision is activated automatically and model loading continues in the background.';
           visionSetupDetail.dataset.state = 'passed';
           void runVisionSetupCheck();
           return;
@@ -467,11 +471,11 @@
         visionColabDetail.textContent = 'Direct tunnel live';
         visionColabDetail.title = result.message || 'The app verified the authenticated HTTPS connection.';
         visionColabDetail.dataset.state = 'passed';
-        visionModelDetail.textContent = result.model_loaded === true ? 'Loaded' : 'Not started';
+        visionModelDetail.textContent = result.model_loaded === true ? 'Loaded' : result.enabled === true ? 'Loading…' : 'Not loaded';
         visionModelDetail.title = result.model_loaded === true
           ? 'The Colab model is loaded.'
-          : 'Connecting does not activate vision or download the model.';
-        visionModelDetail.dataset.state = result.model_loaded === true ? 'passed' : 'not_verified';
+          : result.enabled === true ? 'Vision is active; the model is loading in the background.' : 'Waiting for the authenticated connection to activate vision.';
+        visionModelDetail.dataset.state = result.model_loaded === true ? 'passed' : result.enabled === true ? 'in_progress' : 'not_verified';
         if (isManual) {
           visionEndpointInput.value = '';
           setVisionManualPanelVisible(false);
