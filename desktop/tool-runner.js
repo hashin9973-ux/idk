@@ -1,7 +1,8 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync,spawn}=require('node:child_process');
-const MAX_FILE=1024*1024,MAX_READ_FILE_BYTES=32*1024*1024,MAX_READ_PAGE_BYTES=12*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=128*1024,MAX_RESULTS=150,MAX_MS=120000;
+// Keep complete tool output available for repository artifact externalization; only mark it partial at this per-stream hard ceiling.
+const MAX_FILE=1024*1024,MAX_READ_FILE_BYTES=32*1024*1024,MAX_READ_PAGE_BYTES=12*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=8*1024*1024,MAX_RESULTS=150,MAX_MS=120000;
 const IGNORED=new Set(['.git','node_modules','.venv','venv','dist','build','coverage','.next','.cache','target','bin','obj','__pycache__']);
 function looksSensitiveFile(file){
  const segments=String(file).split(/[\\/]+/).filter(Boolean);
