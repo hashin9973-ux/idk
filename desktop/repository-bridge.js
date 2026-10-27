@@ -27,7 +27,7 @@ const MAX_FILESYSTEM_INDEX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAILBOX_RETENTION_DAYS = 30;
 const DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MAX_MAILBOX_CLEANUP_SCAN = 100;
-const MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS = 10;
+const MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS = 25;
 const MAX_MAILBOX_ARTIFACTS_PER_RECORD = 500;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
@@ -739,7 +739,10 @@ function createRepositoryBridge(deps) {
       let parts;
       try {
         parts = await publishTextArtifactParts(requestId, value, artifactManifest, {
-          prefix, extension: 'txt', field: keyPath, kind: 'tool_output_part'
+          prefix,
+          extension: 'txt',
+          field: keyPath,
+          kind: 'tool_output_part'
         });
       } catch (error) {
         artifactErrors.push({ kind: 'tool_output_artifact', field: keyPath, error: cleanError(error.message) });
@@ -838,7 +841,7 @@ function createRepositoryBridge(deps) {
       !parts.some(segment => segment === '.gitkeep');
   }
 
-  async function commitMailboxDeletions(files, expectedHeadSha) {
+  async function commitMailboxDeletions(files) {
     const unique = new Map();
     for (const item of files) {
       if (!item || !isSafeMailboxCleanupPath(item.path) || typeof item.sha !== 'string' || !item.sha) {
@@ -851,23 +854,42 @@ function createRepositoryBridge(deps) {
     const repoPath = '/repos/' + config.owner + '/' + config.repo;
     const refReadPath = repoPath + '/git/ref/heads/' + config.branch;
     const refUpdatePath = repoPath + '/git/refs/heads/' + config.branch;
-
-    // The cleanup scan records each target's SHA from the same unchanged branch
-    // snapshot. Verify the head once rather than GETting every artifact separately.
-    // The non-force ref update below rejects any commit racing after this check.
-    const refCurrent = await api('GET', refReadPath);
-    const headSha = refCurrent && refCurrent.result && refCurrent.result.object && refCurrent.result.object.sha;
-    if (typeof headSha !== 'string' || !/^[a-f0-9]{40}$/i.test(headSha) || headSha !== expectedHeadSha) {
-      throw new Error('Mailbox branch advanced during cleanup; no files were deleted. The next pass will retry.');
+    const refBefore = await api('GET', refReadPath);
+    const headSha = refBefore && refBefore.result && refBefore.result.object && refBefore.result.object.sha;
+    if (typeof headSha !== 'string' || !/^[a-f0-9]{40}$/i.test(headSha)) {
+      throw new Error('Mailbox cleanup could not resolve the current branch head.');
     }
     const commitRead = await api('GET', repoPath + '/git/commits/' + headSha);
     const baseTreeSha = commitRead && commitRead.result && commitRead.result.tree && commitRead.result.tree.sha;
     if (typeof baseTreeSha !== 'string' || !/^[a-f0-9]{40}$/i.test(baseTreeSha)) {
       throw new Error('Mailbox cleanup could not resolve the current root tree.');
     }
+
+    // Compare every target blob and the branch head before creating a single atomic
+    // deletion commit. Any concurrent change aborts the whole pass; never delete by
+    // filename alone or overwrite a concurrent mailbox write.
+    for (const [relativePath, expectedSha] of unique) {
+      // Artifacts may be plain text, binary, or JSON. Verify their blob SHA using
+      // the raw-content reader instead of assuming every mailbox file is JSON.
+      const current = relativePath.split('/')[1] === 'artifacts'
+        ? await readRemoteContent(relativePath)
+        : await readRemoteFile(relativePath);
+      if (!current || current.sha !== expectedSha) {
+        throw new Error('Mailbox changed during cleanup; no files were deleted. The next pass will retry.');
+      }
+    }
+    const refVerify = await api('GET', refReadPath);
+    if (!refVerify || !refVerify.result || !refVerify.result.object || refVerify.result.object.sha !== headSha) {
+      throw new Error('Mailbox branch advanced during cleanup; no files were deleted. The next pass will retry.');
+    }
     const treeResponse = await api('POST', repoPath + '/git/trees', {
       base_tree: baseTreeSha,
-      tree: [...unique.keys()].map(relativePath => ({ path: relativePath, mode: '100644', type: 'blob', sha: null }))
+      tree: [...unique.keys()].map(relativePath => ({
+        path: relativePath,
+        mode: '100644',
+        type: 'blob',
+        sha: null
+      }))
     });
     const treeSha = treeResponse && treeResponse.result && treeResponse.result.sha;
     if (typeof treeSha !== 'string' || !/^[a-f0-9]{40}$/i.test(treeSha)) {
@@ -894,19 +916,9 @@ function createRepositoryBridge(deps) {
     const sharedState = stateFile && stateFile.value;
     const stateUpdatedAt = sharedState && Date.parse(sharedState.updated_at);
     if (!sharedState || !Number.isFinite(stateUpdatedAt) || Date.now() - stateUpdatedAt > 5 * 60 * 1000 ||
-        sharedState.status !== 'idle' || Number(sharedState.active_count || 0) !== 0 ||
-        Number(sharedState.pending_count || 0) !== 0 ||
+        sharedState.status !== 'idle' || Number(sharedState.active_count || 0) !== 0 || Number(sharedState.pending_count || 0) !== 0 ||
         (Array.isArray(sharedState.active_request_ids) && sharedState.active_request_ids.length > 0)) {
       return { skipped: true, reason: 'shared_worker_state_not_fresh_and_idle' };
-    }
-
-    const configForSnapshot = currentConfig();
-    const repoPathForSnapshot = '/repos/' + configForSnapshot.owner + '/' + configForSnapshot.repo;
-    const refPathForSnapshot = repoPathForSnapshot + '/git/ref/heads/' + configForSnapshot.branch;
-    const snapshotRef = await api('GET', refPathForSnapshot);
-    const snapshotHeadSha = snapshotRef && snapshotRef.result && snapshotRef.result.object && snapshotRef.result.object.sha;
-    if (typeof snapshotHeadSha !== 'string' || !/^[a-f0-9]{40}$/i.test(snapshotHeadSha)) {
-      throw new Error('Mailbox cleanup could not capture a stable branch head.');
     }
 
     const results = (await listFolder('bridge/results'))
@@ -917,6 +929,8 @@ function createRepositoryBridge(deps) {
       mailboxCleanupCursor = null;
       return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
     }
+    // Fetch the artifact root once per maintenance pass. Nested request-scoped files
+    // are listed only for candidates that satisfy the age/status/claim checks.
     const flatArtifactEntries = await listFolder('bridge/artifacts');
     let startIndex = 0;
     if (mailboxCleanupCursor) {
@@ -962,15 +976,16 @@ function createRepositoryBridge(deps) {
         }
       }
       if (artifactsByPath.size > MAX_MAILBOX_ARTIFACTS_PER_RECORD) continue;
+
       const files = [
         { path: 'bridge/requests/' + entry.name, sha: requestRemote.sha },
         { path: 'bridge/results/' + entry.name, sha: resultRemote.sha },
         ...(claimRemote ? [{ path: 'bridge/claims/' + entry.name, sha: claimRemote.sha }] : []),
         ...artifactsByPath.values()
       ];
+      if (files.some(item => !item.sha)) continue;
       const remoteActiveIds = Array.isArray(sharedState.active_request_ids) ? sharedState.active_request_ids : [];
       if (remoteActiveIds.includes(requestId)) continue;
-      if (files.some(item => !item.sha)) continue;
       selected.push({ requestId, files });
     }
     mailboxCleanupCursor = lastExaminedName && results.some(item => item.name > lastExaminedName)
@@ -979,8 +994,13 @@ function createRepositoryBridge(deps) {
 
     const allFiles = selected.flatMap(item => item.files);
     if (!allFiles.length) return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
-    const deletion = await commitMailboxDeletions(allFiles, snapshotHeadSha);
-    return { skipped: false, deletedRecords: selected.length, deletedFiles: deletion.deleted, commitSha: deletion.commitSha || null };
+    const deletion = await commitMailboxDeletions(allFiles);
+    return {
+      skipped: false,
+      deletedRecords: selected.length,
+      deletedFiles: deletion.deleted,
+      commitSha: deletion.commitSha || null
+    };
   }
 
   async function maybeRunMailboxCleanup() {
@@ -988,19 +1008,12 @@ function createRepositoryBridge(deps) {
     mailboxCleanupInFlight = true;
     try {
       const outcome = await cleanupMailboxRecords();
-      if (outcome.skipped) {
-        lastMailboxCleanupAt = Date.now() - Math.max(1000, cleanupIntervalMs) + 60 * 1000;
-        return;
-      }
+      if (outcome.skipped) return;
       lastMailboxCleanupAt = Date.now();
       mailboxCleanupLastRunAt = new Date(lastMailboxCleanupAt).toISOString();
       mailboxCleanupLastDeletedRecords = outcome.deletedRecords || 0;
       mailboxCleanupLastDeletedFiles = outcome.deletedFiles || 0;
       mailboxCleanupLastError = null;
-      if (mailboxCleanupLastDeletedRecords > 0) {
-        // Drain old history at one-minute intervals, but keep every pass bounded.
-        lastMailboxCleanupAt -= Math.max(0, cleanupIntervalMs - 60 * 1000);
-      }
     } catch (error) {
       lastMailboxCleanupAt = Date.now();
       mailboxCleanupLastRunAt = new Date(lastMailboxCleanupAt).toISOString();
@@ -1168,7 +1181,7 @@ function createRepositoryBridge(deps) {
           request_path_template: 'bridge/requests/<request_id>.json',
           result_path_template: 'bridge/results/<same-request-id>.json',
           artifact_path_template: 'bridge/artifacts/<request-id>/<artifact-name>',
-          output_limit_fallback: 'If output_truncated is true, status is partial, or a field contains OUTPUT EXTERNALIZED, fetch the listed artifacts using GitHub MCP before relying on the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the JSON result record, then follow its artifacts manifest. For tool_output_part, fetch all parts for the field and concatenate in ascending part order. If artifacts are missing or artifact_errors is non-empty, retry in bounded pages.',
+          output_limit_fallback: 'If output_truncated is true, a result is partial, a field contains OUTPUT EXTERNALIZED, or the inline result says the repository size limit was exceeded, fetch the listed artifact paths through GitHub MCP before reasoning from the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the full JSON, then follow its artifacts manifest. For tool_output_part, fetch all parts for that field and concatenate in ascending part order. Never report an output complete until all required parts have been read.',
           claim_path_template: 'bridge/claims/<same-request-id>.json',
           worker_state_path: 'bridge/state/windows-app.json',
           request_example: {
@@ -1186,7 +1199,7 @@ function createRepositoryBridge(deps) {
         rejected: 'Only a matching result with status rejected and a concrete error proves that the bridge rejected the request envelope or tool registration. Report the exact reason and correct the request.',
         failed: 'A result with status failed is an execution/tool error. Inspect nested ok, exitCode, timedOut, stdout, stderr, and error. Compiler errors, non-zero builds, missing files, invalid paths, and patch-context mismatches are not automatically safety blocks.',
         cancelled: 'A result with status cancelled means the operation was cancelled or local approval was declined. Check the exact result and current execution_policy.auto_accept_all before describing an approval issue.',
-        partial: 'A partial result or output_truncated flag means inline output is incomplete. Inspect artifact_errors and artifacts first; fetch all referenced files before interpreting the result. For complete_result_part, fetch every listed part, concatenate UTF-8 content in ascending part order to reconstruct the JSON result record, then fetch every artifact it references. For tool_output_part, fetch every part for the relevant field and concatenate in part order. If any part is missing, artifact_errors is non-empty, or no artifact exists for a truncated field, retry the same read/search in smaller bounded pages. Output limits are not safety denials.',
+        partial: 'A partial result or output_truncated flag means inline output is incomplete. Inspect artifact_errors and artifacts first; fetch all referenced files before interpreting the result. If kind=complete_result_part is present, fetch every listed part, concatenate UTF-8 content in ascending part order, parse the reconstructed JSON result record, then fetch every artifact it references. For tool_output_part, fetch every part for the relevant field and concatenate in part order. If there are missing parts, artifact_errors, or no recoverable artifact for a truncated field, retry the same read/search in smaller bounded pages. Output limits are not safety denials.',
         protections: 'Never bypass tool schemas, workspace and symlink boundaries, secret-file protections, privacy rules, or genuine local approval requirements.'
         },
         operating_rules: [
@@ -1210,8 +1223,8 @@ function createRepositoryBridge(deps) {
           'Batch up to 100 known operations in one request. For up to 100 independent, lightweight file operations set maxConcurrency to 100; the default is 32. Output preserves per-step status, and large batches expose result.output_artifacts. Fetch every listed part concurrently, then review/process the results together.',
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
-          'Whenever output_truncated is true, status is partial, or any field contains OUTPUT EXTERNALIZED / OUTPUT ARTIFACT ERROR, inspect result.artifacts and result.artifact_errors immediately. Read every required artifact file with GitHub MCP before interpreting the output. For complete_result_part, fetch all parts, concatenate UTF-8 text in ascending part order, parse the reconstructed JSON, then follow its artifact manifest. For tool_output_part, fetch all parts for the field and concatenate in ascending part order. If artifacts are missing or errors are present, do not claim output is complete; retry in bounded pages or narrower ranges.',
-          'Mailbox retention defaults to 30 days and accepts repositoryBridge.retentionDays from 1 to 365. It runs incrementally only with fresh idle worker state and never removes pending/processing work, non-terminal claims, state/context snapshots or folder markers.',
+          'Whenever output_truncated is true, the status is partial, or any field contains OUTPUT EXTERNALIZED / OUTPUT ARTIFACT ERROR, inspect result.artifacts and result.artifact_errors immediately. Read every required artifact file with GitHub MCP before interpreting the output. For complete_result_part, fetch all parts, concatenate UTF-8 text in ascending part order, parse the reconstructed JSON, and then follow its artifact manifest. For tool_output_part, fetch all parts for the field and concatenate them in ascending part order. If an artifact is unavailable, a part is missing, or artifact_errors is non-empty, do not claim that output is complete; retry in bounded pages or narrower ranges.',
+          'The mailbox retention cleaner runs only while the worker and shared state are fresh and idle. It retains completed records for the configured repositoryBridge.retentionDays (default 30, valid 1–365), and never removes active/pending work, non-terminal claims, state, context, or folder markers.',
           'After creating a request, wait for bridge/results/<same-request-id>.json before treating it as finished or starting dependent work. A request or processing claim is not a result; if the result is missing, inspect windows-app state and the matching claim, then poll again rather than creating duplicates.',
           'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, and stderr. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.'
         ]
@@ -1677,14 +1690,10 @@ function createRepositoryBridge(deps) {
         // Dispatch immediately after the request directory read. Publishing a
         // heartbeat is maintenance work and must not add a round trip to pickup.
         dispatchPendingRequests();
-        // State publication must not delay request dispatch or make start() wait for
-        // GitHub. Cleanup starts only after that publication has completed, so it
-        // cannot mistake a missing/stale state record for an idle worker.
-        void publishState(firstPoll).then(() => {
-          if (pendingCount === 0 && requestTasks.size === 0 && pendingRequestQueue.length === 0) {
-            void maybeRunMailboxCleanup();
-          }
-        });
+        await publishState(firstPoll);
+        if (pendingCount === 0 && requestTasks.size === 0 && pendingRequestQueue.length === 0) {
+          void maybeRunMailboxCleanup();
+        }
 
         const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
         const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);
