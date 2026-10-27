@@ -1,0 +1,29 @@
+name: Validate Colab vision notebook
+
+on:
+  push:
+    paths:
+      - "vision/vision_worker.ipynb"
+      - "scripts/validate_vision_notebook.py"
+      - ".github/workflows/validate-vision-notebook.yml"
+  pull_request:
+    paths:
+      - "vision/vision_worker.ipynb"
+      - "scripts/validate_vision_notebook.py"
+      - ".github/workflows/validate-vision-notebook.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Parse notebook JSON and Python source
+        run: python scripts/validate_vision_notebook.py
