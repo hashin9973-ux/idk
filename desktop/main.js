@@ -28,6 +28,7 @@ const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./colab-direct-service');
 const { createWindowsInputController } = require('./windows-input');
+const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
@@ -1082,6 +1083,7 @@ if (!hasInstanceLock) {
           getWorkspaceRoot,
           inputControl: windowsInputController,
           captureScreenshot: captureDesktopScreenshot,
+          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot,
           encodeJpeg: encodeVisionJpeg,
           openColabNotebook: url => openInBrowserAndYield(url),
           readClipboardText: () => clipboard.readText(),
