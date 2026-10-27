@@ -187,6 +187,20 @@ async function openAndPublishEndpoint(f, endpoint = ENDPOINT) {
   return waitForConnected(f.service);
 }
 
+test('Colab vision notebook uses a 16,384-token context and reports the configured window', () => {
+  const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
+  const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
+  const pythonSource = (notebook.cells || [])
+    .filter(cell => cell.cell_type === 'code' && Array.isArray(cell.source))
+    .map(cell => cell.source.join(''))
+    .join('\n');
+
+  assert.match(pythonSource, /VISION_CONTEXT_TOKENS = 16384/);
+  assert.match(pythonSource, /"num_ctx": VISION_CONTEXT_TOKENS/);
+  assert.doesNotMatch(pythonSource, /"num_ctx": 4096/);
+  assert.match(pythonSource, /"context_window_tokens": VISION_CONTEXT_TOKENS/);
+});
+
 test('endpoint validation accepts only HTTPS Quick Tunnel URLs with a secret path token', () => {
   assert.equal(safeTunnelUrl(ENDPOINT), ENDPOINT);
   assert.deepEqual(parseTunnelEndpoint(ENDPOINT), { url: ENDPOINT, apiKey: API_KEY });
