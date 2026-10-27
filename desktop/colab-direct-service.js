@@ -672,7 +672,10 @@ function createVisionService(deps) {
           protocol: DIRECT_VISION_PROTOCOL, request_id: jobId,
           sha256: screenshot.metadata.sha256, content_type: 'image/jpeg',
           bytes: screenshot.bytes.length, image_base64: screenshot.bytes.toString('base64'),
-          prompt: String(prompt || DEFAULT_PROMPT).slice(0, 2000)
+          prompt: [
+            'Screenshot pixel frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + '; origin (0,0) is the top-left corner, x increases right, y increases down. Report coordinate estimates in this exact frame.',
+            String(prompt || DEFAULT_PROMPT)
+          ].join('\n').slice(0, 2000)
         }
       });
       if (data.request_id !== jobId || data.input_sha256 !== screenshot.metadata.sha256) {
