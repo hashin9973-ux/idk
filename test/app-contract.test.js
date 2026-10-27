@@ -26,7 +26,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
   const styles = read('desktop', 'styles.css');
-  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
+  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(renderer, /GitHub connected/);
@@ -46,6 +46,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.selectWorkspace/);
   assert.match(renderer, /windowsBridge\.getVisionStatus/);
   assert.match(renderer, /windowsBridge\.connectColab/);
+  assert.match(renderer, /windowsBridge\.setVisionManualPanel/);
+  assert.match(renderer, /visionManualPanel\.addEventListener\('submit'/);
+  assert.match(renderer, /connectColab\(endpointUrl\)/);
   assert.match(renderer, /windowsBridge\.checkVisionSetup/);
   assert.match(renderer, /runVisionSetupCheck/);
   assert.match(renderer, /Vision: ready/);
@@ -91,6 +94,8 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /height: 348/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
+  assert.match(main, /'app:vision-manual-panel'/);
+  assert.match(main, /VISION_MANUAL_HEIGHT = 452/);
   assert.match(main, /'app:vision-setup-check'/);
   assert.match(main, /const mailboxCheck = await visionService\.setupCheck\(githubState\)/);
   assert.match(main, /mailboxCheck\.checks\.mailbox\.status !== 'passed'/);
@@ -115,7 +120,7 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
@@ -274,6 +279,8 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('input_sha256'));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
+  assert.ok(vision.includes('async function connectColab(endpointText'));
+  assert.ok(vision.includes("connectPublicEndpoint(endpoint.url, 'manual')"));
   assert.ok(vision.includes('async function watchClipboardForEndpoint'));
   assert.ok(vision.includes('parseTunnelEndpoint'));
   assert.ok(vision.includes('safeTunnelUrl'));
@@ -307,6 +314,10 @@ test('Colab connection detects the public endpoint copied by the notebook withou
   assert.match(python, /PUBLIC_VISION_ENDPOINT=/);
   assert.match(python, /navigator\.clipboard\.writeText/);
   assert.match(python, /Copy endpoint for Windows Bridge/);
+  assert.match(python, /document\.createElement\("textarea"\)/);
+  assert.match(python, /Clipboard copy was blocked\. The endpoint is selected/);
+  assert.match(python, /Paste URL in Windows Repository Bridge/);
+  assert.match(main, /'app:vision-manual-panel'/);
   assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
   assert.doesNotMatch(python, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
