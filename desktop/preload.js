@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   getVisionStatus: () => ipcRenderer.invoke('app:vision-status'),
   getObserveStatus: () => ipcRenderer.invoke('app:observe-status'),
   setObserveEnabled: enabled => ipcRenderer.invoke('app:observe-toggle', enabled),
+  setObserveFps: fps => ipcRenderer.invoke('app:observe-fps', fps),
   connectColab: endpointUrl => ipcRenderer.invoke('app:vision-connect-colab', endpointUrl),
   setVisionManualPanel: visible => ipcRenderer.invoke('app:vision-manual-panel', visible),
   checkVisionSetup: () => ipcRenderer.invoke('app:vision-setup-check'),
