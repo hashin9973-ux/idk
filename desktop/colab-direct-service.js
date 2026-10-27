@@ -177,7 +177,7 @@ function createVisionService(deps) {
       return {
         ...stateFromRemote({ ...health, enabled: true, status: health.model_loaded ? 'ready' : 'starting',
           stage: health.model_loaded ? (health.stage || 'ready') : 'activation',
-          message: health.model_loaded ? 'Colab is connected and the vision model is ready.' : 'Colab is connected. Vision is active; model loading is running in the background.' }),
+          message: health.model_loaded ? 'Colab is connected and the vision model is ready.' : 'Colab is connected. Vision setup/model download is running in the background.' }),
         connected: true,
         opened: false,
         manually_entered: source === 'manual',
@@ -185,7 +185,7 @@ function createVisionService(deps) {
         notebook_url: COLAB_NOTEBOOK_URL,
         message: health.model_loaded
           ? 'Colab is connected and the vision model is ready.'
-          : 'Colab is connected and vision has been activated automatically. Model loading continues in the background; computer(action=status) reports progress.'
+          : 'Colab is connected and vision has been activated automatically. Ollama setup/model download continues in the background; computer(action=status) reports progress.'
       };
     } catch (error) {
       if (attemptId === connectionAttemptSequence && colabConnection === candidate) {
@@ -320,13 +320,13 @@ function createVisionService(deps) {
             notebook_url: COLAB_NOTEBOOK_URL,
             message: activated.model_loaded
               ? 'Colab is connected and the vision model is ready.'
-              : 'Colab is connected. Vision is active and model loading continues in the background.'
+              : 'Colab is connected. Vision is active while Ollama setup/model download continues in the background.'
           };
         }
         return {
           ...state, connected: true, opened: false, vision_activated: true,
           notebook_url: COLAB_NOTEBOOK_URL,
-          message: 'Colab is connected and vision is enabled; the model is loaded and ready.'
+          message: 'Colab is connected and vision is enabled; Qwen3-VL 4B is downloaded and ready for screenshot analysis. The first screenshot may take longer while Ollama warms up.'
         };
       }
       const opened = await openColabIfNeeded();
@@ -457,7 +457,7 @@ function createVisionService(deps) {
         ...state,
         status: state.model_loaded ? (state.enabled ? 'ready' : state.status) : (['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status) ? state.status : 'starting'),
         enabled: true, model_reload_requested: false, notebook_url: COLAB_NOTEBOOK_URL,
-        message: state.message || 'Colab accepted activation. Ollama setup/model download and the multimodal smoke test are starting.',
+        message: state.message || 'Colab accepted activation. Ollama setup and model download are starting.',
         manual_steps: manualSteps(state.status)
       };
     } catch (error) {
@@ -468,7 +468,7 @@ function createVisionService(deps) {
   function manualSteps(status) {
     const common = [
       'Keep the Colab notebook tab open with its worker cell running. Screenshots and reports travel through the authenticated HTTPS tunnel; Colab does not need a GitHub token or Colab Secret.',
-      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to the temporary local disk in Colab. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress and the vision smoke-test result.'
+      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to the temporary local disk in Colab. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress. Startup does not run inference on a synthetic image, so the first real screenshot request may take longer while Ollama loads the model into GPU memory.'
     ];
     if (status === 'gpu_unavailable') return ['Select a Colab GPU runtime if one is offered; free GPU access is not guaranteed.', ...common];
     if (status === 'needs_authentication') return ['Complete any Google Colab runtime authorization requested in the Colab tab.', ...common];
@@ -491,8 +491,8 @@ function createVisionService(deps) {
         runtime_alive: before.runtime_alive === true, runtime_kept_alive: true,
         in_progress_request_id: before.active_request_id || null,
         in_progress_may_finish: Boolean(before.active_request_id),
-        message: 'Future screenshot requests are disabled. The Colab runtime, tunnel, and loaded model are left running.',
-        next_step: 'Call computer(action=enable) to re-enable requests; the loaded model should be reused.'
+        message: 'Future screenshot requests are disabled. The Colab runtime, tunnel, and downloaded model cache are left running.',
+        next_step: 'Call computer(action=enable) to re-enable requests; the downloaded model will be reused, though the first screenshot may need warm-up.'
       };
     } catch (error) {
       return { status: 'error', error: messageOf(error), runtime_shutdown_attempted: false };
@@ -528,12 +528,12 @@ function createVisionService(deps) {
     if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
     else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
     else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
-    if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The Ollama Qwen3-VL vision model is loaded and its image smoke test has passed in the connected Colab runtime.' };
+    if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'Ollama is healthy and Qwen3-VL 4B is downloaded in the connected Colab runtime. The first real screenshot request may take longer while Ollama loads the model into GPU memory.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and Ollama is installing/downloading the model or running its image smoke test. Keep the Colab cell running and check status again.' };
-    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
+    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and Ollama is installing or downloading the model. Keep the Colab cell running and check status again.' };
+    else checks.model = { status: 'not_verified', message: 'The model is not ready yet. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
     checks.vision = state.enabled
-      ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the model is loaded.' : 'Vision is enabled; model setup is still in progress.' }
+      ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and Qwen3-VL 4B is downloaded and ready for inference.' : 'Vision is enabled; model setup is still in progress.' }
       : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
     const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
     const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
@@ -543,7 +543,7 @@ function createVisionService(deps) {
     if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
     if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
-    if (checks.model.status === 'in_progress') next_steps.push('Vision is already active. The model is warming up; check computer(action=status) again once loading progresses.');
+    if (checks.model.status === 'in_progress') next_steps.push('Vision is already active. Ollama setup/model download is still in progress; check computer(action=status) again for progress.');
     else if (checks.model.status !== 'passed') next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Use computer(action=enable) only to retry activation if status shows inactive.');
     if (checks.vision.status === 'disabled') next_steps.push('The runtime is connected but inactive. Call computer(action=enable) to retry activation.');
     return {
@@ -731,7 +731,7 @@ function createVisionService(deps) {
       if (previous) return previous.result || waitForJob(jobId, safeWaitMs(args.waitMs));
       const state = await queryRuntime();
       if (!state.runtime_fresh || !state.enabled || !state.model_loaded || state.status !== 'ready') {
-        return { ...state, request_id: jobId, error: 'Colab is not connected, activated, and model-loaded. No screenshot was captured or sent.', next_step: 'Call computer(action=enable) and wait until computer(action=status) reports ready.' };
+        return { ...state, request_id: jobId, error: 'Colab is not connected, activated, and model-ready. No screenshot was captured or sent.', next_step: 'Call computer(action=enable) and wait until computer(action=status) reports ready.' };
       }
       const screenshot = await prepareScreenshot(args, jobId);
       const job = { request_id: jobId, metadata: screenshot.metadata, createdAt: new Date(now()).toISOString(), result: null };

@@ -299,7 +299,10 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b"'));
   assert.ok(python.includes('https://ollama.com/install.sh'));
   assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
-  assert.ok(python.includes('def run_vision_smoke_test()'));
+  assert.ok(!python.includes('def run_vision_smoke_test()'));
+  assert.ok(!python.includes('vision_smoke_test'));
+  assert.ok(python.includes('No startup image inference was run'));
+  assert.ok(python.includes('ollama_model_is_downloaded()'));
   assert.ok(python.includes('"images": [image_b64]'));
   assert.ok(python.includes('OLLAMA_API + "/api/chat"'));
   assert.ok(python.includes('model_loaded=True'));
@@ -358,7 +361,7 @@ test('Colab connection detects the public endpoint copied by the notebook withou
   assert.doesNotMatch(python, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
 });
 
-test('Colab vision notebook uses the prebuilt Ollama runtime and verifies multimodal inference', () => {
+test('Colab vision notebook becomes ready after model download without startup image inference', () => {
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const codeCells = notebook.cells.filter(cell => cell.cell_type === 'code');
   assert.equal(codeCells.length, 1, 'the vision notebook has one server code cell');
@@ -367,8 +370,9 @@ test('Colab vision notebook uses the prebuilt Ollama runtime and verifies multim
   assert.match(source, /https:\/\/ollama\.com\/install\.sh/);
   assert.match(source, /OLLAMA_API \+ "\/api\/chat"/);
   assert.match(source, /"images": \[image_b64\]/);
-  assert.match(source, /def run_vision_smoke_test\(\)/);
-  assert.match(source, /ollama_model_is_loaded\(\)/);
+  assert.doesNotMatch(source, /run_vision_smoke_test|vision_smoke_test|blue-square vision check|generated test image/i);
+  assert.match(source, /ollama_model_is_downloaded\(\)/);
+  assert.match(source, /No startup image inference was run/);
   assert.match(source, /OLLAMA_MODELS_DIR = Path\("\/content\/ollama-models"\)/);
   assert.doesNotMatch(source, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
   const readme = read('README.md');
