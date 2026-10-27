@@ -26,7 +26,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
   const styles = read('desktop', 'styles.css');
-  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
+  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(renderer, /GitHub connected/);
@@ -45,6 +45,10 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
   assert.match(renderer, /windowsBridge\.selectWorkspace/);
   assert.match(renderer, /windowsBridge\.getVisionStatus/);
+  assert.match(renderer, /windowsBridge\.getObserveStatus/);
+  assert.match(renderer, /windowsBridge\.setObserveEnabled/);
+  assert.match(main, /createObserveService/);
+  assert.match(main, /fingerprintDesktopScreenshot/);
   assert.match(renderer, /windowsBridge\.connectColab/);
   assert.match(renderer, /windowsBridge\.setVisionManualPanel/);
   assert.match(renderer, /visionManualPanel\.addEventListener\('submit'/);
