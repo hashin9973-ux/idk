@@ -593,7 +593,7 @@ test('setup check keeps GitHub mailbox verification separate and requires no Col
 });
 
 test('successful Colab connection activates the model automatically and supports batched local input with observation', async t => {
-  const f = fixture();
+  const f = fixture({ analyzeDelayMs: 50 });
   t.after(() => f.service.dispose());
   const connected = await f.service.connectColab(ENDPOINT);
   assert.equal(connected.connected, true);
@@ -623,6 +623,33 @@ test('successful Colab connection activates the model automatically and supports
   assert.equal(f.inputCalls[0].frame.height, 360);
   assert.equal(f.inputCalls[0].frame.source, 'desktop');
   assert.equal(f.inputCalls[0].steps.length, 2);
+
+  const analysisCallsBeforeFast = f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length;
+  const fastSequence = await f.service.inputAction({
+    action: 'sequence', mode: 'fast',
+    steps: [{ type: 'press', key: 'ENTER' }]
+  }, 'computer-fast-sequence');
+  assert.equal(fastSequence.status, 'input_completed');
+  assert.equal(fastSequence.interaction_mode, 'fast');
+  assert.equal(fastSequence.observation, undefined, 'fast mode skips follow-up vision unless explicitly requested');
+  assert.equal(f.inputCalls[1].steps.length, 1);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, analysisCallsBeforeFast,
+    'fast mode should not create another Colab inference round trip by default');
+
+  const pendingSequence = await f.service.inputAction({
+    action: 'sequence', mode: 'fast', observe: true, waitMs: 0,
+    steps: [{ type: 'press', key: 'ESC' }]
+  }, 'computer-cccccccccccccccccccccccc');
+  assert.equal(pendingSequence.status, 'input_completed');
+  assert.equal(pendingSequence.observation.status, 'inference_in_progress');
+  assert.ok(pendingSequence.observation.request_id);
+  assert.match(pendingSequence.message, /same request_id/);
+  assert.match(pendingSequence.message, /do not repeat it/);
+  const resumedObservation = await f.service.wait({
+    request_id: pendingSequence.observation.request_id, waitMs: 1000
+  });
+  assert.equal(resumedObservation.status, 'report_available');
+  assert.equal(resumedObservation.request_id, pendingSequence.observation.request_id);
 
   const stopped = await f.service.inputAction({ action: 'stop_control' });
   assert.equal(stopped.status, 'control_stopped');

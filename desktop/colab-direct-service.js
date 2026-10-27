@@ -1015,6 +1015,7 @@ function createVisionService(deps) {
     }
     const inputTypes = new Set(['click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up']);
     const sequence = action === 'sequence';
+    const fastMode = args.mode === 'fast';
     const steps = sequence ? args.steps : inputTypes.has(action) ? [{ ...args, type: action }] : null;
     if (!Array.isArray(steps)) return { status: 'error', error: 'Unsupported computer input action.' };
     const coordinateActions = new Set(['click', 'move', 'drag', 'scroll', 'mouse_down', 'mouse_up']);
@@ -1028,10 +1029,13 @@ function createVisionService(deps) {
     }
     if (controlSessionActive) armControlSessionExpiry();
     const result = await inputControl.run(steps, latestScreenFrame);
-    if (!sequence || args.observe === false) {
+    const shouldObserveAfterSequence = sequence && (args.observe === true || (args.observe !== false && !fastMode));
+    if (!shouldObserveAfterSequence) {
       return {
-        ...result, action, control_active: controlSessionActive,
-        message: 'Input executed on the local Windows desktop. Coordinates use the most recent desktop screenshot frame.'
+        ...result, action, interaction_mode: fastMode ? 'fast' : 'normal', control_active: controlSessionActive,
+        message: fastMode && sequence
+          ? 'Fast input batch completed without waiting for post-action vision inference. Continue directly from the latest observation; take a new screenshot only when the next action depends on changed screen state.'
+          : 'Input executed on the local Windows desktop. Coordinates use the most recent desktop screenshot frame.'
       };
     }
     const observation = await analyzeScreenshot({
@@ -1040,12 +1044,22 @@ function createVisionService(deps) {
       waitMs: args.waitMs,
       region: args.region
     }, callId);
+    let observationMessage;
+    if (observation && observation.status === 'report_available') {
+      observationMessage = 'Input sequence completed and a fresh visual observation is available.';
+    } else if (observation && ['inference_in_progress', 'pending', 'processing'].includes(observation.status) && observation.request_id) {
+      observationMessage = 'Input sequence completed; follow-up observation is still pending. Call computer(action=wait) with the same request_id (' +
+        observation.request_id + '). The input batch already ran; do not repeat it.';
+    } else if (observation && observation.status === 'error') {
+      observationMessage = 'Input sequence completed on local Windows, but follow-up observation failed: ' +
+        String(observation.error || 'Unknown observation error') + '. The input batch already ran; do not repeat it.';
+    } else {
+      observationMessage = 'Input sequence completed on local Windows, but no usable follow-up observation was returned. The input batch already ran; do not repeat it. Check the observation status before deciding the next action.';
+    }
     return {
-      ...result, action, control_active: controlSessionActive,
+      ...result, action, interaction_mode: fastMode ? 'fast' : 'normal', control_active: controlSessionActive,
       observation,
-      message: observation && observation.status === 'report_available'
-        ? 'Input sequence completed and a fresh visual observation is available.'
-        : 'Input sequence completed; the requested follow-up observation is not yet ready. Use computer(action=wait) with its request_id if one was returned.'
+      message: observationMessage
     };
   }
 

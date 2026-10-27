@@ -43,6 +43,28 @@ button { font: inherit; cursor: pointer; }
 button.status-row:hover:not(:disabled) { background: rgba(255,255,255,.045); }
 button.status-row:disabled { cursor: default; }
 .worker-row { cursor: default; color: #d6e0eb; }
+#observe-row[aria-pressed="true"] #observe-status { color: var(--accent); }
+#observe-row[aria-pressed="true"] #observe-dot { box-shadow: 0 0 7px rgba(89,210,166,.35); }
+.observe-fps-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 25px;
+  padding: 0 8px;
+  color: var(--muted);
+  -webkit-app-region: no-drag;
+}
+.observe-fps-row select {
+  width: 110px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid rgba(135,149,166,.45);
+  border-radius: 5px;
+  background: rgba(0,0,0,.24);
+  color: var(--text);
+  font: inherit;
+}
+.observe-fps-row select:disabled { opacity: .6; }
 .github-status-row { gap: 8px; }
 .github-status-row .status-label { flex: 1; min-width: 0; }
 .vision-row { gap: 7px; }

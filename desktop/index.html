@@ -28,6 +28,21 @@
       <span id="workspace-status" class="status-label">Workspace: checking…</span>
     </button>
 
+    <button id="observe-row" class="status-row" type="button" aria-label="Toggle Observe mode" aria-pressed="false" title="Observe the desktop at the selected sampling rate and publish changed context to the private GitHub mailbox. Turning off clears the live context files.">
+      <span id="observe-dot" class="status-dot waiting" aria-hidden="true"></span>
+      <span id="observe-status" class="status-label">Observe: OFF</span>
+    </button>
+    <div class="observe-fps-row">
+      <label for="observe-fps">Observe FPS</label>
+      <select id="observe-fps" name="observeFps" aria-label="Observe sampling frequency">
+        <option value="0.5">0.5 fps</option>
+        <option value="1">1 fps</option>
+        <option value="2" selected>2 fps (default)</option>
+        <option value="4">4 fps</option>
+        <option value="8">8 fps</option>
+      </select>
+    </div>
+
     <button id="auto-accept-row" class="status-row" type="button" aria-label="Toggle automatic approval" aria-pressed="false" title="Click to enable automatic approval for all local operations. Enabling requires confirmation.">
       <span id="auto-accept-dot" class="status-dot waiting" aria-hidden="true"></span>
       <span id="auto-accept-status" class="status-label">Auto-accept everything: OFF</span>

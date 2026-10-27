@@ -568,6 +568,11 @@ test('computer uses familiar actions in one tool and gates visual side effects',
     const catalog = await bridge.runTool('get_capabilities', {}, 'req-computer-catalog');
     const names = catalog.result.tools.map(item => item.name);
     assert.ok(names.includes('computer'));
+    const computer = catalog.result.tools.find(item => item.name === 'computer');
+    assert.deepEqual(computer.parameters.properties.mode.enum, ['normal', 'fast']);
+    assert.match(computer.description, /fast interaction mode/i);
+    assert.match(computer.parameters.properties.action.description, /immediately/i);
+    assert.match(computer.parameters.properties.observe.description, /mode=fast.*skips/i);
     assert.equal(names.some(name => /^vision_/.test(name)), false);
     assert.deepEqual(calls, ['status', 'enable', 'screenshot', 'disable']);
   } finally {

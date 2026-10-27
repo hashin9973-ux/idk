@@ -5,6 +5,7 @@ const { spawn, execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const execFileAsync = promisify(execFile);
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const {
   app,
   BrowserWindow,
@@ -30,6 +31,7 @@ const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = requir
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
+const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -93,7 +95,7 @@ app.on('child-process-gone', (_event, details) => {
 });
 appendDiagnosticLog('startup', 'Main process loaded; pid=' + process.pid);
 
-const STATUS_SIZE = { width: 360, height: 348 };
+const STATUS_SIZE = { width: 360, height: 402 };
 const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
@@ -115,6 +117,7 @@ let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
+let observeService = null;
 let windowsInputController = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
@@ -498,6 +501,22 @@ async function captureDesktopScreenshot() {
   };
 }
 
+function fingerprintDesktopScreenshot(captured) {
+  if (!captured || !Buffer.isBuffer(captured.bytes) || !captured.bytes.length) {
+    throw new Error('Observe received an empty screenshot.');
+  }
+  const image = nativeImage.createFromBuffer(captured.bytes);
+  if (!image || image.isEmpty()) throw new Error('Observe could not decode the captured screenshot.');
+  const size = image.getSize();
+  if (!size.width || !size.height) throw new Error('Observe screenshot has invalid dimensions.');
+  // Downsample the full image before hashing. This catches small UI changes better than
+  // sparse point sampling while keeping per-frame CPU and memory work bounded.
+  const thumbnail = image.resize({ width: 64, height: 36, quality: 'good' });
+  const bitmap = thumbnail.toBitmap();
+  if (!bitmap || bitmap.length < 64 * 36 * 4) throw new Error('Observe screenshot thumbnail is invalid.');
+  return crypto.createHash('sha256').update(bitmap.subarray(0, 64 * 36 * 4)).digest('hex');
+}
+
 function encodeVisionJpeg(input) {
   if (!Buffer.isBuffer(input) || input.length === 0) throw new Error('Image conversion requires non-empty bytes.');
   const original = nativeImage.createFromBuffer(input);
@@ -728,6 +747,37 @@ function registerIpc() {
     return githubAuth
       ? githubAuth.getState()
       : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+  });
+  ipcMain.handle('app:observe-status', event => {
+    assertLocalUi(event, 'index.html');
+    return observeService ? observeService.status() : { enabled: false, status: 'unavailable', error: 'Observe service is unavailable.' };
+  });
+  ipcMain.handle('app:observe-toggle', async (event, enabled) => {
+    assertLocalUi(event, 'index.html');
+    if (typeof enabled !== 'boolean') throw new Error('Observe toggle must be a boolean.');
+    if (!observeService) throw new Error('Observe service is unavailable.');
+    const githubState = githubAuth ? await githubAuth.getState() : { authenticated: false };
+    if (enabled && !githubState.authenticated) throw new Error('Sign in to GitHub before enabling Observe mode.');
+    return observeService.setEnabled(enabled);
+  });
+  ipcMain.handle('app:observe-fps', async (event, fps) => {
+    assertLocalUi(event, 'index.html');
+    if (!observeService) throw new Error('Observe service is unavailable.');
+    try {
+      const state = await observeService.setFps(fps);
+      settings.observeFps = state.fps ?? DEFAULT_SAMPLE_FPS;
+      persistSettings();
+      return state;
+    } catch (error) {
+      // setFps can apply the local timer before its mailbox status update fails.
+      // Persist the actual running value so the selector and next startup agree.
+      const state = observeService.status();
+      if (Number.isFinite(state.fps)) {
+        settings.observeFps = state.fps;
+        persistSettings();
+      }
+      throw error;
+    }
   });
   ipcMain.handle('app:vision-status', async event => {
     assertLocalUi(event, 'index.html');
@@ -1090,6 +1140,16 @@ if (!hasInstanceLock) {
           readClipboardText: () => clipboard.readText(),
           publishWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
         });
+        observeService = createObserveService({
+          githubAuth,
+          getSampleFps: () => settings.observeFps ?? DEFAULT_SAMPLE_FPS,
+          captureScreenshot: captureDesktopScreenshot,
+          fingerprintScreenshot: fingerprintDesktopScreenshot,
+          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot
+        });
+        void observeService.clearStaleContext().catch(error => {
+          appendDiagnosticLog('observe-stale-context-clear-failed', error);
+        });
         toolBridge = createToolBridge({
           dialog,
           getMainWindow: () => mainWindow,
@@ -1178,15 +1238,18 @@ app.on('before-quit', event => {
     tray.destroy();
     tray = null;
   }
-  if (!finishingVisionDispose && (visionService || windowsInputController)) {
+  if (!finishingVisionDispose && (observeService || visionService || windowsInputController)) {
     event.preventDefault();
     finishingVisionDispose = true;
-    const dispose = visionService && typeof visionService.dispose === 'function'
-      ? visionService.dispose()
-      : windowsInputController && typeof windowsInputController.dispose === 'function'
-        ? windowsInputController.dispose()
-        : Promise.resolve();
-    Promise.resolve(dispose).catch(() => {}).finally(() => app.quit());
+    const disposals = [];
+    if (observeService && typeof observeService.dispose === 'function') {
+      disposals.push(observeService.dispose());
+      observeService = null;
+    }
+    if (visionService && typeof visionService.dispose === 'function') disposals.push(visionService.dispose());
+    else if (windowsInputController && typeof windowsInputController.dispose === 'function') disposals.push(windowsInputController.dispose());
+    Promise.allSettled(disposals).finally(() => app.quit());
+    return;
   }
 });
 
