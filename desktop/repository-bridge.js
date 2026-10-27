@@ -24,6 +24,11 @@ const MAX_INLINE_TEXT_BYTES = 32 * 1024;
 const MAX_ARTIFACT_PART_BYTES = 256 * 1024;
 const MAX_WORKSPACE_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_FILESYSTEM_INDEX_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAILBOX_RETENTION_DAYS = 30;
+const DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const MAX_MAILBOX_CLEANUP_SCAN = 100;
+const MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS = 10;
+const MAX_MAILBOX_ARTIFACTS_PER_RECORD = 500;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 const BLOCKED_TOOLS = new Set(['github_api', 'github_status']);
@@ -52,7 +57,11 @@ function validateConfig(input) {
       branch.includes('..') || branch.includes('//') || !/^[A-Za-z0-9_.\/-]+$/.test(branch)) {
     throw new Error('Branch must be a valid simple branch name.');
   }
-  return { owner, repo, branch, allowPublicMailbox: config.allowPublicMailbox === true };
+  const configuredRetentionDays = Number(config.retentionDays);
+  const retentionDays = Number.isInteger(configuredRetentionDays) && configuredRetentionDays >= 1 && configuredRetentionDays <= 365
+    ? configuredRetentionDays
+    : DEFAULT_MAILBOX_RETENTION_DAYS;
+  return { owner, repo, branch, allowPublicMailbox: config.allowPublicMailbox === true, retentionDays };
 }
 
 function validateRequest(requestId, request) {
@@ -149,7 +158,10 @@ function createRepositoryBridge(deps) {
     onState = () => {},
     intervalMs = DEFAULT_INTERVAL_MS,
     contextRefreshIntervalMs = DEFAULT_CONTEXT_REFRESH_MS,
-    publishContextOnStart = false
+    publishContextOnStart = false,
+    cleanupIntervalMs = DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS,
+    cleanupScanLimit = MAX_MAILBOX_CLEANUP_SCAN,
+    cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS
   } = deps;
 
   const workerId = randomUUID();
@@ -174,6 +186,13 @@ function createRepositoryBridge(deps) {
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
   let contextRefreshInFlight = false;
+  let mailboxCleanupInFlight = false;
+  let lastMailboxCleanupAt = 0;
+  let mailboxCleanupCursor = null;
+  let mailboxCleanupLastRunAt = null;
+  let mailboxCleanupLastDeletedRecords = 0;
+  let mailboxCleanupLastDeletedFiles = 0;
+  let mailboxCleanupLastError = null;
 
   function currentConfig() {
     const settings = getSettings() || {};
@@ -216,6 +235,13 @@ function createRepositoryBridge(deps) {
       repo: config.repo,
       branch: config.branch,
       allowPublicMailbox: config.allowPublicMailbox,
+      mailboxRetentionDays: config.retentionDays,
+      mailboxCleanup: {
+        lastRunAt: mailboxCleanupLastRunAt,
+        lastDeletedRecords: mailboxCleanupLastDeletedRecords,
+        lastDeletedFiles: mailboxCleanupLastDeletedFiles,
+        lastError: mailboxCleanupLastError
+      },
       publicRepository,
       workerId,
       lastPollAt,
@@ -371,7 +397,15 @@ function createRepositoryBridge(deps) {
       last_error: lastError || null,
       workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
       context_path: 'bridge/context/latest.json',
-      artifact_root: 'bridge/artifacts/'
+      artifact_root: 'bridge/artifacts/',
+      mailbox_cleanup: {
+        retention_days: currentConfig().retentionDays,
+        interval_ms: cleanupIntervalMs,
+        last_run_at: mailboxCleanupLastRunAt,
+        last_deleted_records: mailboxCleanupLastDeletedRecords,
+        last_deleted_files: mailboxCleanupLastDeletedFiles,
+        last_error: mailboxCleanupLastError
+      }
     };
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
     // Reserve the refresh window before network I/O so overlapping polls don't
@@ -621,7 +655,7 @@ function createRepositoryBridge(deps) {
     const parts = [];
     for (let index = 0; index < groups.length; index++) {
       const partNumber = index + 1;
-      const relativePath = 'bridge/artifacts/' + requestId + '-batch-output-' + String(partNumber).padStart(3, '0') + '.json';
+      const relativePath = 'bridge/artifacts/' + requestId + '/batch-output-' + String(partNumber).padStart(3, '0') + '.json';
       const payload = {
         protocol: 'chatgpt-local-batch-output/v1',
         request_id: requestId,
@@ -669,15 +703,51 @@ function createRepositoryBridge(deps) {
     };
   }
 
+  async function publishTextArtifactParts(requestId, content, artifactManifest, options = {}) {
+    const text = String(content);
+    const chunks = splitUtf8Text(text, MAX_ARTIFACT_PART_BYTES - 1024);
+    const prefix = safeArtifactName(options.prefix || 'output', 'output');
+    const extension = safeArtifactName(options.extension || 'txt', 'txt').replace(/^\.+/, '');
+    const parts = [];
+    for (let index = 0; index < chunks.length; index++) {
+      const partNumber = index + 1;
+      const suffix = chunks.length > 1 ? '-part-' + String(partNumber).padStart(3, '0') : '';
+      const fileName = prefix + suffix + '.' + extension;
+      const relativePath = 'bridge/artifacts/' + requestId + '/' + fileName;
+      const saved = await writeRemoteContent(relativePath, chunks[index], '[local bridge] publish complete tool output artifact');
+      const ref = {
+        kind: options.kind || 'tool_output_part',
+        path: relativePath,
+        bytes: saved.bytes,
+        sha256: saved.sha256,
+        field: options.field || 'output',
+        media_type: options.mediaType || 'text/plain; charset=utf-8',
+        part: partNumber,
+        total_parts: chunks.length,
+        ...(chunks.length > 1 ? { concatenate_in_part_order: true } : {})
+      };
+      artifactManifest.push(ref);
+      parts.push(ref);
+    }
+    return parts;
+  }
+
   async function externalizeLargeText(requestId, value, artifactManifest, artifactErrors, keyPath = 'output') {
     if (typeof value === 'string') {
       if (Buffer.byteLength(value, 'utf8') <= MAX_INLINE_TEXT_BYTES) return value;
-      // Keep normal tool calls to one request file plus one result file. Do not force
-      // ChatGPT to fetch a third artifact just to inspect ordinary tool output.
-      const chunks = splitUtf8Text(value, Math.floor(MAX_INLINE_TEXT_BYTES / 2));
-      const first = chunks[0] || '';
-      const last = chunks.length > 1 ? chunks[chunks.length - 1] : '';
-      return first + '\n\n[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED. Do not infer a safety block from truncation. Check exitCode/status/stderr; for listings, retry in stable pages using Sort-Object plus Select-Object -Skip/-First until all entries are retrieved.]\n\n' + last;
+      const prefix = 'output-' + createHash('sha256').update(keyPath).digest('hex').slice(0, 12);
+      let parts;
+      try {
+        parts = await publishTextArtifactParts(requestId, value, artifactManifest, {
+          prefix, extension: 'txt', field: keyPath, kind: 'tool_output_part'
+        });
+      } catch (error) {
+        artifactErrors.push({ kind: 'tool_output_artifact', field: keyPath, error: cleanError(error.message) });
+        return value.slice(0, 1100) + '\n\n[OUTPUT ARTIFACT ERROR: the full value could not be completely published. Inspect result.artifact_errors; do not treat this preview as complete. Retry the operation in bounded pages.]\n\n' + value.slice(-350);
+      }
+      const locations = parts.map(part => part.path + ' (part ' + part.part + '/' + part.total_parts + ')');
+      return value.slice(0, 1100) + '\n\n[OUTPUT EXTERNALIZED: this preview is incomplete. The full UTF-8 text is stored in repository artifact(s): ' +
+        locations.join(', ') + '. Read every listed part in ascending part order and concatenate them before interpreting the output.]\n\n' + value.slice(-350);
     }
     if (Array.isArray(value)) {
       const output = [];
@@ -759,6 +829,191 @@ function createRepositoryBridge(deps) {
     if (output.status === 'completed') output.status = 'partial';
     return output;
   }
+  function isSafeMailboxCleanupPath(relativePath) {
+    const value = String(relativePath || '');
+    const parts = value.split('/');
+    if (parts.length < 3 || parts[0] !== 'bridge' ||
+        parts.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) return false;
+    return ['requests', 'results', 'claims', 'artifacts'].includes(parts[1]) &&
+      !parts.some(segment => segment === '.gitkeep');
+  }
+
+  async function commitMailboxDeletions(files, expectedHeadSha) {
+    const unique = new Map();
+    for (const item of files) {
+      if (!item || !isSafeMailboxCleanupPath(item.path) || typeof item.sha !== 'string' || !item.sha) {
+        throw new Error('Mailbox cleanup encountered an unsafe path or missing file SHA.');
+      }
+      unique.set(item.path, item.sha);
+    }
+    if (!unique.size) return { deleted: 0 };
+    const config = currentConfig();
+    const repoPath = '/repos/' + config.owner + '/' + config.repo;
+    const refReadPath = repoPath + '/git/ref/heads/' + config.branch;
+    const refUpdatePath = repoPath + '/git/refs/heads/' + config.branch;
+
+    // The cleanup scan records each target's SHA from the same unchanged branch
+    // snapshot. Verify the head once rather than GETting every artifact separately.
+    // The non-force ref update below rejects any commit racing after this check.
+    const refCurrent = await api('GET', refReadPath);
+    const headSha = refCurrent && refCurrent.result && refCurrent.result.object && refCurrent.result.object.sha;
+    if (typeof headSha !== 'string' || !/^[a-f0-9]{40}$/i.test(headSha) || headSha !== expectedHeadSha) {
+      throw new Error('Mailbox branch advanced during cleanup; no files were deleted. The next pass will retry.');
+    }
+    const commitRead = await api('GET', repoPath + '/git/commits/' + headSha);
+    const baseTreeSha = commitRead && commitRead.result && commitRead.result.tree && commitRead.result.tree.sha;
+    if (typeof baseTreeSha !== 'string' || !/^[a-f0-9]{40}$/i.test(baseTreeSha)) {
+      throw new Error('Mailbox cleanup could not resolve the current root tree.');
+    }
+    const treeResponse = await api('POST', repoPath + '/git/trees', {
+      base_tree: baseTreeSha,
+      tree: [...unique.keys()].map(relativePath => ({ path: relativePath, mode: '100644', type: 'blob', sha: null }))
+    });
+    const treeSha = treeResponse && treeResponse.result && treeResponse.result.sha;
+    if (typeof treeSha !== 'string' || !/^[a-f0-9]{40}$/i.test(treeSha)) {
+      throw new Error('GitHub did not return the cleanup tree SHA.');
+    }
+    const commitResponse = await api('POST', repoPath + '/git/commits', {
+      message: '[local bridge] retention cleanup of completed mailbox records',
+      tree: treeSha,
+      parents: [headSha]
+    });
+    const commitSha = commitResponse && commitResponse.result && commitResponse.result.sha;
+    if (typeof commitSha !== 'string' || !/^[a-f0-9]{40}$/i.test(commitSha)) {
+      throw new Error('GitHub did not return the cleanup commit SHA.');
+    }
+    await api('PATCH', refUpdatePath, { sha: commitSha, force: false });
+    return { deleted: unique.size, commitSha };
+  }
+
+  async function cleanupMailboxRecords() {
+    if (!running || activeRequestIds.size || requestTasks.size || pendingRequestQueue.length) {
+      return { skipped: true, reason: 'worker_not_idle' };
+    }
+    const stateFile = await readRemoteFile('bridge/state/windows-app.json');
+    const sharedState = stateFile && stateFile.value;
+    const stateUpdatedAt = sharedState && Date.parse(sharedState.updated_at);
+    if (!sharedState || !Number.isFinite(stateUpdatedAt) || Date.now() - stateUpdatedAt > 5 * 60 * 1000 ||
+        sharedState.status !== 'idle' || Number(sharedState.active_count || 0) !== 0 ||
+        Number(sharedState.pending_count || 0) !== 0 ||
+        (Array.isArray(sharedState.active_request_ids) && sharedState.active_request_ids.length > 0)) {
+      return { skipped: true, reason: 'shared_worker_state_not_fresh_and_idle' };
+    }
+
+    const configForSnapshot = currentConfig();
+    const repoPathForSnapshot = '/repos/' + configForSnapshot.owner + '/' + configForSnapshot.repo;
+    const refPathForSnapshot = repoPathForSnapshot + '/git/ref/heads/' + configForSnapshot.branch;
+    const snapshotRef = await api('GET', refPathForSnapshot);
+    const snapshotHeadSha = snapshotRef && snapshotRef.result && snapshotRef.result.object && snapshotRef.result.object.sha;
+    if (typeof snapshotHeadSha !== 'string' || !/^[a-f0-9]{40}$/i.test(snapshotHeadSha)) {
+      throw new Error('Mailbox cleanup could not capture a stable branch head.');
+    }
+
+    const results = (await listFolder('bridge/results'))
+      .filter(item => item && item.type === 'file' && typeof item.name === 'string' && item.name.endsWith('.json') &&
+        SAFE_ID.test(item.name.slice(0, -5)))
+      .sort((left, right) => left.name.localeCompare(right.name));
+    if (!results.length) {
+      mailboxCleanupCursor = null;
+      return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
+    }
+    const flatArtifactEntries = await listFolder('bridge/artifacts');
+    let startIndex = 0;
+    if (mailboxCleanupCursor) {
+      startIndex = results.findIndex(item => item.name > mailboxCleanupCursor);
+      if (startIndex < 0) startIndex = 0;
+    }
+    const scanLimit = Math.max(1, Math.min(MAX_MAILBOX_CLEANUP_SCAN, Number(cleanupScanLimit) || MAX_MAILBOX_CLEANUP_SCAN));
+    const recordLimit = Math.max(1, Math.min(MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS, Number(cleanupRecordLimit) || MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS));
+    const cutoff = Date.now() - currentConfig().retentionDays * 24 * 60 * 60 * 1000;
+    const selected = [];
+    let examined = 0;
+    let lastExaminedName = null;
+
+    for (let index = startIndex; index < results.length && examined < scanLimit && selected.length < recordLimit; index++) {
+      const entry = results[index];
+      examined++;
+      lastExaminedName = entry.name;
+      const requestId = entry.name.slice(0, -5);
+      if (activeRequestIds.has(requestId) || inFlightRequestIds.has(requestId) ||
+          requestTasks.has(requestId) || pendingRequestQueueSet.has(requestId + '.json')) continue;
+      const resultRemote = await readRemoteFile('bridge/results/' + entry.name);
+      if (!resultRemote || (entry.sha && resultRemote.sha !== entry.sha)) continue;
+      const resultRecord = resultRemote.value;
+      if (!resultRecord || resultRecord.request_id !== requestId ||
+          !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(resultRecord.status)) continue;
+      const completedAt = Date.parse(resultRecord.completed_at || '');
+      if (!Number.isFinite(completedAt) || completedAt >= cutoff) continue;
+
+      const requestRemote = await readRemoteFile('bridge/requests/' + entry.name);
+      if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId) continue;
+      const claimRemote = await readRemoteFile('bridge/claims/' + entry.name);
+      if (claimRemote && (!claimRemote.value || claimRemote.value.status !== 'completed')) continue;
+
+      const legacyArtifactPrefix = requestId + '-batch-output-';
+      const flatArtifacts = flatArtifactEntries.filter(item => item && item.type === 'file' &&
+        typeof item.name === 'string' && item.name.startsWith(legacyArtifactPrefix) &&
+        /^\d{3}\.json$/.test(item.name.slice(legacyArtifactPrefix.length)));
+      const nestedArtifacts = await listFolder('bridge/artifacts/' + requestId);
+      const artifactsByPath = new Map();
+      for (const artifact of [...flatArtifacts, ...nestedArtifacts]) {
+        if (artifact && isSafeMailboxCleanupPath(artifact.path) && typeof artifact.sha === 'string') {
+          artifactsByPath.set(artifact.path, { path: artifact.path, sha: artifact.sha });
+        }
+      }
+      if (artifactsByPath.size > MAX_MAILBOX_ARTIFACTS_PER_RECORD) continue;
+      const files = [
+        { path: 'bridge/requests/' + entry.name, sha: requestRemote.sha },
+        { path: 'bridge/results/' + entry.name, sha: resultRemote.sha },
+        ...(claimRemote ? [{ path: 'bridge/claims/' + entry.name, sha: claimRemote.sha }] : []),
+        ...artifactsByPath.values()
+      ];
+      const remoteActiveIds = Array.isArray(sharedState.active_request_ids) ? sharedState.active_request_ids : [];
+      if (remoteActiveIds.includes(requestId)) continue;
+      if (files.some(item => !item.sha)) continue;
+      selected.push({ requestId, files });
+    }
+    mailboxCleanupCursor = lastExaminedName && results.some(item => item.name > lastExaminedName)
+      ? lastExaminedName
+      : null;
+
+    const allFiles = selected.flatMap(item => item.files);
+    if (!allFiles.length) return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
+    const deletion = await commitMailboxDeletions(allFiles, snapshotHeadSha);
+    return { skipped: false, deletedRecords: selected.length, deletedFiles: deletion.deleted, commitSha: deletion.commitSha || null };
+  }
+
+  async function maybeRunMailboxCleanup() {
+    if (!running || mailboxCleanupInFlight || Date.now() - lastMailboxCleanupAt < Math.max(1000, cleanupIntervalMs)) return;
+    mailboxCleanupInFlight = true;
+    try {
+      const outcome = await cleanupMailboxRecords();
+      if (outcome.skipped) {
+        lastMailboxCleanupAt = Date.now() - Math.max(1000, cleanupIntervalMs) + 60 * 1000;
+        return;
+      }
+      lastMailboxCleanupAt = Date.now();
+      mailboxCleanupLastRunAt = new Date(lastMailboxCleanupAt).toISOString();
+      mailboxCleanupLastDeletedRecords = outcome.deletedRecords || 0;
+      mailboxCleanupLastDeletedFiles = outcome.deletedFiles || 0;
+      mailboxCleanupLastError = null;
+      if (mailboxCleanupLastDeletedRecords > 0) {
+        // Drain old history at one-minute intervals, but keep every pass bounded.
+        lastMailboxCleanupAt -= Math.max(0, cleanupIntervalMs - 60 * 1000);
+      }
+    } catch (error) {
+      lastMailboxCleanupAt = Date.now();
+      mailboxCleanupLastRunAt = new Date(lastMailboxCleanupAt).toISOString();
+      mailboxCleanupLastDeletedRecords = 0;
+      mailboxCleanupLastDeletedFiles = 0;
+      mailboxCleanupLastError = cleanError(error.message);
+    } finally {
+      mailboxCleanupInFlight = false;
+      if (running) void publishState(true);
+      announce();
+    }
+  }
+
   function contextComparable(value) {
     if (Array.isArray(value)) return value.map(contextComparable);
     if (!isPlainObject(value)) return value;
@@ -912,6 +1167,8 @@ function createRepositoryBridge(deps) {
           protocol: PROTOCOL,
           request_path_template: 'bridge/requests/<request_id>.json',
           result_path_template: 'bridge/results/<same-request-id>.json',
+          artifact_path_template: 'bridge/artifacts/<request-id>/<artifact-name>',
+          output_limit_fallback: 'If output_truncated is true, status is partial, or a field contains OUTPUT EXTERNALIZED, fetch the listed artifacts using GitHub MCP before relying on the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the JSON result record, then follow its artifacts manifest. For tool_output_part, fetch all parts for the field and concatenate in ascending part order. If artifacts are missing or artifact_errors is non-empty, retry in bounded pages.',
           claim_path_template: 'bridge/claims/<same-request-id>.json',
           worker_state_path: 'bridge/state/windows-app.json',
           request_example: {
@@ -929,7 +1186,7 @@ function createRepositoryBridge(deps) {
         rejected: 'Only a matching result with status rejected and a concrete error proves that the bridge rejected the request envelope or tool registration. Report the exact reason and correct the request.',
         failed: 'A result with status failed is an execution/tool error. Inspect nested ok, exitCode, timedOut, stdout, stderr, and error. Compiler errors, non-zero builds, missing files, invalid paths, and patch-context mismatches are not automatically safety blocks.',
         cancelled: 'A result with status cancelled means the operation was cancelled or local approval was declined. Check the exact result and current execution_policy.auto_accept_all before describing an approval issue.',
-        partial: 'A partial result or output_truncated flag means output was shortened; it does not by itself mean the operation was blocked.',
+        partial: 'A partial result or output_truncated flag means inline output is incomplete. Inspect artifact_errors and artifacts first; fetch all referenced files before interpreting the result. For complete_result_part, fetch every listed part, concatenate UTF-8 content in ascending part order to reconstruct the JSON result record, then fetch every artifact it references. For tool_output_part, fetch every part for the relevant field and concatenate in part order. If any part is missing, artifact_errors is non-empty, or no artifact exists for a truncated field, retry the same read/search in smaller bounded pages. Output limits are not safety denials.',
         protections: 'Never bypass tool schemas, workspace and symlink boundaries, secret-file protections, privacy rules, or genuine local approval requirements.'
         },
         operating_rules: [
@@ -953,7 +1210,8 @@ function createRepositoryBridge(deps) {
           'Batch up to 100 known operations in one request. For up to 100 independent, lightweight file operations set maxConcurrency to 100; the default is 32. Output preserves per-step status, and large batches expose result.output_artifacts. Fetch every listed part concurrently, then review/process the results together.',
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
-          'Ordinary tool results are self-contained in their matching result file; large outputs may be shortened instead of requiring a third artifact fetch.',
+          'Whenever output_truncated is true, status is partial, or any field contains OUTPUT EXTERNALIZED / OUTPUT ARTIFACT ERROR, inspect result.artifacts and result.artifact_errors immediately. Read every required artifact file with GitHub MCP before interpreting the output. For complete_result_part, fetch all parts, concatenate UTF-8 text in ascending part order, parse the reconstructed JSON, then follow its artifact manifest. For tool_output_part, fetch all parts for the field and concatenate in ascending part order. If artifacts are missing or errors are present, do not claim output is complete; retry in bounded pages or narrower ranges.',
+          'Mailbox retention defaults to 30 days and accepts repositoryBridge.retentionDays from 1 to 365. It runs incrementally only with fresh idle worker state and never removes pending/processing work, non-terminal claims, state/context snapshots or folder markers.',
           'After creating a request, wait for bridge/results/<same-request-id>.json before treating it as finished or starting dependent work. A request or processing claim is not a result; if the result is missing, inspect windows-app state and the matching claim, then poll again rather than creating duplicates.',
           'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, and stderr. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.'
         ]
@@ -1205,8 +1463,13 @@ function createRepositoryBridge(deps) {
     const safeReport = await externalizeLargeText(requestId, reportForInline, artifactManifest, artifactErrors);
     const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
       safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
-    const outputWasShortened = JSON.stringify(safeReport).includes('[OUTPUT SHORTENED TO KEEP THIS RESULT SELF-CONTAINED.') ||
-      JSON.stringify(safeReport).includes('shortened to fit the two-operation result limit');
+    const serializedSafeReport = JSON.stringify(safeReport);
+    const outputWasShortened = serializedSafeReport.includes('[OUTPUT EXTERNALIZED:') ||
+      serializedSafeReport.includes('[OUTPUT ARTIFACT ERROR:') ||
+      serializedSafeReport.includes('truncatedForMailbox') ||
+      serializedSafeReport.includes('OUTPUT TRUNCATED before mailbox publication') ||
+      serializedSafeReport.includes('shortened to fit the two-operation result limit') ||
+      /"(?:stdout_truncated|stderr_truncated|_bridge_truncated)"\s*:\s*true/.test(serializedSafeReport);
     if (uploadedArtifact) {
       artifactManifest.unshift({
         kind: 'uploaded_workspace_file',
@@ -1222,7 +1485,7 @@ function createRepositoryBridge(deps) {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
-      status: safeReport && safeReport.ok ? (artifactErrors.length || outputWasShortened ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
+      status: safeReport && safeReport.ok ? (artifactErrors.length || /truncatedForMailbox|OUTPUT TRUNCATED before mailbox publication|shortened to fit the two-operation result limit|"(?:stdout_truncated|stderr_truncated|_bridge_truncated)"\s*:\s*true/.test(serializedSafeReport) ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
       output_truncated: outputWasShortened,
       created_at: remote.value.created_at,
       completed_at: new Date().toISOString(),
@@ -1241,7 +1504,50 @@ function createRepositoryBridge(deps) {
       artifact_errors: artifactErrors
     };
     if (Buffer.byteLength(JSON.stringify(resultRecord), 'utf8') > MAX_RESULT_BYTES) {
-      resultRecord = compactRecordForInlineResult(resultRecord);
+      const fullResultText = JSON.stringify(resultRecord, null, 2) + '\n';
+      let fullResultParts = [];
+      const errorsBeforeArchive = artifactErrors.length;
+      try {
+        fullResultParts = await publishTextArtifactParts(requestId, fullResultText, artifactManifest, {
+          prefix: 'complete-result-json',
+          extension: 'txt',
+          field: 'result_record',
+          kind: 'complete_result_part',
+          mediaType: 'application/json; charset=utf-8'
+        });
+      } catch (error) {
+        artifactErrors.push({ kind: 'complete_result_archive', error: cleanError(error.message) });
+      }
+      if (fullResultParts.length && artifactErrors.length === errorsBeforeArchive) {
+        resultRecord = {
+          protocol: RESULT_PROTOCOL,
+          request_id: requestId,
+          tool: request.tool,
+          status: resultRecord.status === 'partial' ? 'partial' : 'completed',
+          output_truncated: true,
+          created_at: resultRecord.created_at,
+          completed_at: resultRecord.completed_at,
+          timing_ms: resultRecord.timing_ms,
+          output_note: 'The inline result exceeded the repository size limit. This is an index only. Fetch every artifact with kind complete_result_part, concatenate UTF-8 parts in ascending part order to reconstruct the full JSON result record, then read the artifact paths in that record before interpreting output. Do not infer success or failure from this index alone.',
+          result: { ok: Boolean(safeReport && safeReport.ok), note: 'Complete JSON result record is preserved in the complete_result_part artifacts.' },
+          artifacts: fullResultParts,
+          artifact_errors: artifactErrors
+        };
+      } else {
+        resultRecord = {
+          protocol: RESULT_PROTOCOL,
+          request_id: requestId,
+          tool: request.tool,
+          status: 'partial',
+          output_truncated: true,
+          created_at: resultRecord.created_at,
+          completed_at: resultRecord.completed_at,
+          output_note: 'The result exceeded the inline repository limit and its complete-result archive could not be confirmed. This is incomplete output, not a safety denial. Inspect artifact_errors and repeat in bounded pages or narrower sections.',
+          result: { ok: Boolean(safeReport && safeReport.ok), note: 'Full output preservation failed; do not treat the inline preview as complete.' },
+          artifacts: artifactManifest.slice(0, 80),
+          artifact_errors: artifactErrors.slice(0, 20)
+        };
+      }
     }
 
     // Store the completed result in the claim journal before publishing the
@@ -1371,7 +1677,14 @@ function createRepositoryBridge(deps) {
         // Dispatch immediately after the request directory read. Publishing a
         // heartbeat is maintenance work and must not add a round trip to pickup.
         dispatchPendingRequests();
-        void publishState(firstPoll);
+        // State publication must not delay request dispatch or make start() wait for
+        // GitHub. Cleanup starts only after that publication has completed, so it
+        // cannot mistake a missing/stale state record for an idle worker.
+        void publishState(firstPoll).then(() => {
+          if (pendingCount === 0 && requestTasks.size === 0 && pendingRequestQueue.length === 0) {
+            void maybeRunMailboxCleanup();
+          }
+        });
 
         const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
         const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);

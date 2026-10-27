@@ -46,8 +46,8 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   github_api: ['method', 'path', 'body', 'query']
 });
 
-// Preserve complete local tool output for inline results or batch-output artifact bundles.
-const MAX_RESULT_CHARS = 4 * 1024 * 1024;
+// Mailbox result publication owns size fallback and artifact preservation. Do not truncate
+// local tool output here: an early cut loses data before the repository bridge can archive it.
 const MAX_BATCH_STEPS = 100;
 const MAX_BATCH_CONCURRENCY = 100;
 const DEFAULT_BATCH_CONCURRENCY = 32;
@@ -91,7 +91,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   computer: 'Native local computer tool for the real Windows workspace. Inspect current state with screenshot before acting when the screen state matters; it returns windows-vision-context/v1 with the active app/window, meaningful screen regions, readable text, control relationships, focus/cursor, OCR evidence, Windows UI Automation bounds when exposed, and explicit uncertainty. For closer inspection, pass region=[left,top,right,bottom] in the latest screenshot JPEG pixel frame; the model sees that crop but returned boxes are mapped back to the original full-frame coordinates. Use only coordinates from the matching current screenshot; accessibility-grounded bounds are preferred when their label/role matches, while visual-only positions are unverified estimates. After state changes, take a fresh screenshot or use sequence with observe=true. Connect activates vision and starts model loading; status reports readiness. All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab. sequence batches up to 50 inputs. start_control enables a control session without per-action approval; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
-  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large aggregate outputs are bundled as mailbox artifacts; fetch all listed parts concurrently and review them together. Stop launching later steps after a failure by default.'
+  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
@@ -608,23 +608,10 @@ function createToolBridge(deps) {
   }
 
   function boundedResult(value) {
-    let serialized = JSON.stringify(value);
-    if (serialized.length <= MAX_RESULT_CHARS) return value;
-    if (value && typeof value === 'object') {
-      const trimmed = { ...value, truncatedForMailbox: true };
-      for (const key of ['content', 'stdout', 'stderr', 'text', 'patch', 'diff']) {
-        if (typeof trimmed[key] === 'string' && trimmed[key].length > 10000) {
-          trimmed[key] = trimmed[key].slice(0, 10000) + '\n[OUTPUT TRUNCATED before mailbox publication. This is not a safety denial; inspect status/exitCode/stderr. For listings, request smaller stable-sorted pages using Select-Object -Skip/-First.]';
-        }
-      }
-      serialized = JSON.stringify(trimmed);
-      if (serialized.length <= MAX_RESULT_CHARS) return trimmed;
-    }
-    return {
-      truncatedForMailbox: true,
-      message: 'Tool output exceeded the repository return limit. This is incomplete output, not evidence of a safety block. Retry with smaller stable-sorted pages, a narrower query, or a file section.',
-      preview: serialized.slice(0, MAX_RESULT_CHARS - 300)
-    };
+    // Keep the entire local result until repository-bridge.js has a chance to publish
+    // oversized strings and full-result fallbacks under bridge/artifacts/<request_id>/.
+    // Tool-specific output bounds remain responsible for truly unbounded processes.
+    return value;
   }
 
   async function executeLocalTool(root, tool, args, requestId) {
@@ -677,7 +664,7 @@ function createToolBridge(deps) {
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
           catalog_version: 2,
-          rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts and shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
+          rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts, shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. Whenever output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch referenced artifacts with GitHub MCP and concatenate numbered parts in order. For complete_result_part, reconstruct the JSON result before following its artifact manifest. If artifacts are missing or artifact_errors is non-empty, retry the read/search in bounded pages; truncation is not evidence of a safety block. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
       }
