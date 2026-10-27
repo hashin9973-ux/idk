@@ -181,7 +181,7 @@
 
   function summarizeVisionFailure(value) {
     const error = String(value || '');
-    const http = error.match(/HTTP\\s+(\\d{3})/i);
+    const http = error.match(/HTTP\s+(\d{3})/i);
     if (http && http[1] === '530') {
       return 'HTTP 530 from Cloudflare. This tunnel is offline; rerun the Colab server cell to get a fresh URL.';
     }
@@ -218,8 +218,8 @@
       message = 'Connected to Colab. Vision is OFF; the model has not been activated or downloaded.';
       state = 'passed';
     } else {
-      const lastAttempt = sourceMessage.match(/Last detection attempt:\\s*([\\s\\S]*)$/i);
-      const failure = lastAttempt ? lastAttempt[1] : watchError || (/failed|HTTP \\d{3}|malformed JSON|timed out|fetch failed/i.test(sourceMessage) ? sourceMessage : '');
+      const lastAttempt = sourceMessage.match(/Last detection attempt:\s*([\s\S]*)$/i);
+      const failure = lastAttempt ? lastAttempt[1] : watchError || (/failed|HTTP \d{3}|malformed JSON|timed out|fetch failed/i.test(sourceMessage) ? sourceMessage : '');
       if (failure && (status === 'waiting_for_endpoint' || vision.endpoint_watch_active === true)) {
         message = 'Connection attempt failed; still watching. ' + summarizeVisionFailure(failure);
         state = 'failed';
@@ -242,7 +242,7 @@
       }
     }
     visionMessage.textContent = message;
-    visionMessage.title = [sourceMessage, watchError].filter(Boolean).join('\\n') || message;
+    visionMessage.title = [sourceMessage, watchError].filter(Boolean).join('\n') || message;
     visionMessage.dataset.state = state;
   }
 
@@ -293,7 +293,7 @@
       visionColabDetail.title = String(vision.message || '');
       visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error'].includes(status) ? 'action_required' : 'passed';
     } else {
-      const endpointFailure = /Last detection attempt:|HTTP \\d{3}|malformed JSON|fetch failed|timed out|failed/i.test(String(vision.message || '')) ||
+      const endpointFailure = /Last detection attempt:|HTTP \d{3}|malformed JSON|fetch failed|timed out|failed/i.test(String(vision.message || '')) ||
         Boolean(vision.endpoint_watch_error);
       if (status === 'checking_endpoint' || vision.endpoint_test_in_progress === true) {
         visionColabDetail.textContent = 'Testing HTTPS + registration…';
