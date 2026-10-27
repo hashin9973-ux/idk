@@ -48,7 +48,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.checkVisionSetup/);
   assert.match(renderer, /runVisionSetupCheck/);
   assert.match(renderer, /Vision: ready/);
-  assert.match(renderer, /Endpoint copied\\. Testing the direct HTTPS health response/);
+  assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
   assert.doesNotMatch(renderer, /No direct Colab response yet/);
