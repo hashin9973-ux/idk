@@ -704,6 +704,20 @@ function createVisionService(deps) {
     };
   }
 
+  function validateFocusRegion(region, width, height) {
+    if (region === undefined || region === null) return null;
+    if (!Array.isArray(region) || region.length !== 4 ||
+        !region.every(value => Number.isInteger(value) && Number.isFinite(value))) {
+      throw new Error('region must be [left, top, right, bottom] pixel edges from the latest screenshot.');
+    }
+    const [left, top, right, bottom] = region;
+    if (left < 0 || top < 0 || right > width || bottom > height ||
+        right <= left || bottom <= top || right - left < 48 || bottom - top < 48) {
+      throw new Error('region must be an in-frame rectangle at least 48×48 pixels. Use screenshot-frame pixel coordinates.');
+    }
+    return [left, top, right, bottom];
+  }
+
   async function prepareScreenshot(args, requestId) {
     let raw;
     let sourceName;
@@ -745,6 +759,7 @@ function createVisionService(deps) {
       ? capturedMetadata.screen_width : Number.isInteger(capturedMetadata.width) && capturedMetadata.width > 0 ? capturedMetadata.width : width;
     const screenHeight = Number.isInteger(capturedMetadata.screen_height) && capturedMetadata.screen_height > 0
       ? capturedMetadata.screen_height : Number.isInteger(capturedMetadata.height) && capturedMetadata.height > 0 ? capturedMetadata.height : height;
+    const focusRegion = validateFocusRegion(args.region, width, height);
     if (source === 'desktop' && Number.isInteger(width) && Number.isInteger(height)) {
       latestScreenFrame = { width, height };
     }
@@ -777,6 +792,7 @@ function createVisionService(deps) {
         ...(sourcePath ? { workspace_path: sourcePath } : {}),
         content_type: 'image/jpeg', width, height,
         screen_width: screenWidth || null, screen_height: screenHeight || null,
+        ...(focusRegion ? { region_px: focusRegion } : {}),
         accessibility,
         coordinate_system: source === 'desktop' ? 'JPEG screenshot pixels, origin top-left; local mouse inputs are scaled from this frame' : null,
         jpeg_quality: encoded && encoded.quality || null,
@@ -810,6 +826,7 @@ function createVisionService(deps) {
             width_px: screenshot.metadata.screen_width, height_px: screenshot.metadata.screen_height,
             coordinate_space: 'physical_screen_px'
           },
+          ...(screenshot.metadata.region_px ? { region_px: screenshot.metadata.region_px } : {}),
           accessibility: screenshot.metadata.accessibility,
           prompt: [
             'Screenshot frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + ' px. Origin top-left; x right; y down.',
@@ -942,7 +959,8 @@ function createVisionService(deps) {
     const observation = await analyzeScreenshot({
       source: 'desktop',
       prompt: typeof args.prompt === 'string' && args.prompt.trim() ? args.prompt : DEFAULT_PROMPT,
-      waitMs: args.waitMs
+      waitMs: args.waitMs,
+      region: args.region
     }, callId);
     return {
       ...result, action, control_active: controlSessionActive,
