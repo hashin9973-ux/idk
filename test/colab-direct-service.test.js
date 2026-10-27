@@ -624,6 +624,18 @@ test('successful Colab connection activates the model automatically and supports
   assert.equal(f.inputCalls[0].frame.source, 'desktop');
   assert.equal(f.inputCalls[0].steps.length, 2);
 
+  const analysisCallsBeforeFast = f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length;
+  const fastSequence = await f.service.inputAction({
+    action: 'sequence', mode: 'fast',
+    steps: [{ type: 'press', key: 'ENTER' }]
+  }, 'computer-fast-sequence');
+  assert.equal(fastSequence.status, 'input_completed');
+  assert.equal(fastSequence.interaction_mode, 'fast');
+  assert.equal(fastSequence.observation, undefined, 'fast mode skips follow-up vision unless explicitly requested');
+  assert.equal(f.inputCalls[1].steps.length, 1);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, analysisCallsBeforeFast,
+    'fast mode should not create another Colab inference round trip by default');
+
   const stopped = await f.service.inputAction({ action: 'stop_control' });
   assert.equal(stopped.status, 'control_stopped');
   assert.equal(f.service.isControlSessionActive(), false);
