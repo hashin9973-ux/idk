@@ -109,6 +109,32 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       return { method, path: base, query: undefined, body: undefined, url: 'https://api.github.com' + base };
     }
 
+    const treePrefix = base + '/git/trees/';
+    if (pathValue.startsWith(treePrefix)) {
+      const treeRef = pathValue.slice(treePrefix.length);
+      if (method !== 'GET' || input.body !== undefined || input.query !== undefined ||
+          (treeRef !== branch && !/^[a-f0-9]{40}$/i.test(treeRef))) {
+        throw new Error('Git tree reads must use the configured branch or a valid tree SHA without extra query parameters.');
+      }
+      return { method, path: pathValue, query: undefined, body: undefined, url: 'https://api.github.com' + pathValue };
+    }
+
+    if (pathValue === base + '/commits') {
+      const query = input.query;
+      const keys = query && typeof query === 'object' && !Array.isArray(query) ? Object.keys(query).sort() : [];
+      if (method !== 'GET' || input.body !== undefined ||
+          keys.join(',') !== 'path,per_page,sha' ||
+          query.sha !== branch || query.path !== 'bridge/requests' ||
+          query.per_page !== 1) {
+        throw new Error('Commit polling is limited to the latest commit touching bridge/requests on the configured branch.');
+      }
+      return {
+        method, path: pathValue, query: undefined, body: undefined,
+        url: 'https://api.github.com' + pathValue +
+          '?sha=' + encodeURIComponent(branch) + '&path=bridge%2Frequests&per_page=1'
+      };
+    }
+
     const prefix = base + '/contents/';
     if (!pathValue.startsWith(prefix)) throw new Error('GitHub route is outside the configured repository mailbox.');
     relative = pathValue.slice(prefix.length);
