@@ -30,7 +30,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
-  assert.match(html, /title="Observe the desktop at 2 fps/);
+  assert.match(html, /title="Observe the desktop at the selected sampling rate/);
   assert.match(html, /value="2" selected>2 fps \(default\)/);
   assert.match(renderer, /GitHub connected/);
   assert.match(renderer, /Sign in to GitHub/);
