@@ -78,7 +78,13 @@ function fixture(options = {}) {
         authorization: init.headers && init.headers.Authorization,
         body
       });
-      if (route === '/health') return response(200, { ...state, heartbeat_at: new Date().toISOString() });
+      if (route === '/health') {
+        if (options.healthDelayMs) await new Promise(resolve => setTimeout(resolve, options.healthDelayMs));
+        if (options.healthStatus) {
+          return { ok: false, status: options.healthStatus, json: async () => { throw new Error('non-JSON tunnel error page'); } };
+        }
+        return response(200, { ...state, heartbeat_at: new Date().toISOString() });
+      }
       if (route === '/registration/ack') {
         if (options.failRegistrationAck) return response(503, { protocol: DIRECT_VISION_PROTOCOL, error: 'test HTTPS acknowledgement failure' });
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, desktop_registered: true });
@@ -203,6 +209,43 @@ test('the app refuses a clipboard endpoint that does not contain the secret path
   const status = await f.service.status();
   assert.equal(status.connection_registered, false);
   assert.equal(f.calls.some(call => call.type === 'direct_http'), false);
+});
+
+test('status exposes the endpoint-validation phase while the HTTPS request is in flight', async t => {
+  const f = fixture({ healthDelayMs: 100 });
+  t.after(() => f.service.dispose());
+  await f.service.connectColab();
+  f.setClipboard(ENDPOINT);
+  const deadline = Date.now() + 1000;
+  let checking = null;
+  while (Date.now() < deadline) {
+    const status = await f.service.status();
+    if (status.status === 'checking_endpoint') { checking = status; break; }
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.ok(checking, 'status should report endpoint validation while it is running');
+  assert.equal(checking.endpoint_test_in_progress, true);
+  assert.match(checking.message, /Testing the authenticated HTTPS health response/);
+  const connected = await waitForConnected(f.service);
+  assert.equal(connected.connection_registered, true);
+});
+
+test('status reports the real HTTP status when the Colab tunnel returns a non-JSON error page', async t => {
+  const f = fixture({ healthStatus: 530 });
+  t.after(() => f.service.dispose());
+  await f.service.connectColab();
+  f.setClipboard(ENDPOINT);
+  const deadline = Date.now() + 1500;
+  let status;
+  while (Date.now() < deadline) {
+    status = await f.service.status();
+    if (status.message && /HTTP 530/.test(status.message)) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(status && /HTTP 530/.test(status.message), 'the failed endpoint check should surface HTTP 530');
+  assert.equal(status.endpoint_watch_active, true);
+  assert.equal(status.runtime_fresh, false);
+  assert.match(status.message, /Last detection attempt:.*HTTP 530/);
 });
 
 test('connection fails safely when the server-to-server acknowledgement is unsuccessful', async t => {

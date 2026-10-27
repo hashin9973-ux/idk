@@ -22,6 +22,7 @@
   const visionMailboxDetail = byId('vision-mailbox-detail');
   const visionColabDetail = byId('vision-colab-detail');
   const visionModelDetail = byId('vision-model-detail');
+  const visionMessage = byId('vision-message');
   const minimizeButton = byId('minimize');
   const quitButton = byId('quit');
 
@@ -178,14 +179,84 @@
     element.dataset.state = status;
   }
 
+  function summarizeVisionFailure(value) {
+    const error = String(value || '');
+    const http = error.match(/HTTP\s+(\d{3})/i);
+    if (http && http[1] === '530') {
+      return 'HTTP 530 from Cloudflare. This tunnel is offline; rerun the Colab server cell to get a fresh URL.';
+    }
+    if (http) return 'Colab returned HTTP ' + http[1] + '. The direct connection failed; see the status tooltip for details.';
+    if (/malformed JSON|non-JSON response/i.test(error)) {
+      return 'The tunnel returned an error page instead of the health response. Rerun the Colab server cell.';
+    }
+    if (/timeout|timed out|aborted/i.test(error)) return 'The Colab endpoint timed out. The app will retry while it watches for a fresh URL.';
+    if (/fetch failed|network|ENOTFOUND|ECONN|socket/i.test(error)) return 'Could not reach the Colab tunnel. Check that the notebook cell is still running, then rerun it.';
+    return error.length > 170 ? error.slice(0, 167) + '…' : error;
+  }
+
+  function renderVisionMessage(vision) {
+    if (!visionMessage) return;
+    const status = String(vision.status || 'unavailable');
+    const sourceMessage = String(vision.message || vision.error || '');
+    const watchError = String(vision.endpoint_watch_error || '');
+    let message = '';
+    let state = 'not_verified';
+
+    if (vision.endpoint_test_in_progress === true || status === 'checking_endpoint') {
+      message = 'Endpoint copied. Testing the direct HTTPS health response and registration acknowledgement…';
+      state = 'in_progress';
+    } else if (vision.runtime_fresh === true && ['needs_authentication', 'gpu_unavailable', 'error'].includes(status)) {
+      message = 'Colab is connected, but needs attention: ' + summarizeVisionFailure(sourceMessage);
+      state = 'failed';
+    } else if (vision.runtime_fresh === true && vision.model_loaded === true && vision.enabled === true && status === 'ready') {
+      message = 'Connected and ready. Vision is ON; screenshot analysis can run.';
+      state = 'passed';
+    } else if (vision.runtime_fresh === true && vision.enabled === true) {
+      message = 'Connected to Colab. Vision is ON; model setup/loading is still in progress.';
+      state = 'in_progress';
+    } else if (vision.runtime_fresh === true) {
+      message = 'Connected to Colab. Vision is OFF; the model has not been activated or downloaded.';
+      state = 'passed';
+    } else {
+      const lastAttempt = sourceMessage.match(/Last detection attempt:\s*([\s\S]*)$/i);
+      const failure = lastAttempt ? lastAttempt[1] : watchError || (/failed|HTTP \d{3}|malformed JSON|timed out|fetch failed/i.test(sourceMessage) ? sourceMessage : '');
+      if (failure && (status === 'waiting_for_endpoint' || vision.endpoint_watch_active === true)) {
+        message = 'Connection attempt failed; still watching. ' + summarizeVisionFailure(failure);
+        state = 'failed';
+      } else if (status === 'waiting_for_endpoint' || vision.endpoint_watch_active === true) {
+        message = 'Waiting for the notebook URL. Run “Start the direct Colab vision server”; this line will change when the app tests it.';
+        state = 'in_progress';
+      } else if (vision.connection_registered === true) {
+        message = 'The endpoint was detected, but Colab is not responding: ' + summarizeVisionFailure(sourceMessage || 'No live HTTPS response.');
+        state = 'failed';
+      } else if (watchError || status === 'error' || status === 'disconnected') {
+        message = watchError
+          ? 'Connection failed. ' + summarizeVisionFailure(watchError)
+          : status === 'error'
+            ? 'Connection failed. ' + summarizeVisionFailure(sourceMessage || 'The app returned an error.')
+            : 'Not connected. Click Connect Colab, then run the notebook server cell.';
+        state = watchError || status === 'error' ? 'failed' : 'not_verified';
+      } else {
+        message = 'Not connected. Click Connect Colab, then run the notebook server cell.';
+        state = 'not_verified';
+      }
+    }
+    visionMessage.textContent = message;
+    visionMessage.title = [sourceMessage, watchError].filter(Boolean).join('\n') || message;
+    visionMessage.dataset.state = state;
+  }
+
   function renderVisionStatus(state) {
     const vision = state || {};
     const status = String(vision.status || 'unavailable');
+    renderVisionMessage(vision);
     const labels = {
       ready: 'Vision: ready',
       inactive: vision.runtime_fresh === true ? 'Colab connected · vision off' : 'Vision: inactive',
       starting: 'Vision: starting',
       waiting_for_runtime: 'Colab: waiting for connection',
+      waiting_for_endpoint: 'Colab: waiting for URL',
+      checking_endpoint: 'Colab: testing HTTPS…',
       inference_in_progress: 'Vision: analyzing',
       report_available: 'Vision: report available',
       disconnected: 'Vision: disconnected',
@@ -222,16 +293,28 @@
       visionColabDetail.title = String(vision.message || '');
       visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error'].includes(status) ? 'action_required' : 'passed';
     } else {
-      if (visionConnectWatchDeadline && Date.now() < visionConnectWatchDeadline) {
-        visionColabDetail.textContent = 'Waiting for the direct Colab connection';
-        visionColabDetail.title = 'Run the notebook cell. The app watches the clipboard for the public endpoint and connects automatically; no app-link handoff, Local Network permission or Colab Secret is needed.';
-        visionColabDetail.dataset.state = 'action_required';
+      const endpointFailure = /Last detection attempt:|HTTP \d{3}|malformed JSON|fetch failed|timed out|failed/i.test(String(vision.message || '')) ||
+        Boolean(vision.endpoint_watch_error);
+      if (status === 'checking_endpoint' || vision.endpoint_test_in_progress === true) {
+        visionColabDetail.textContent = 'Testing HTTPS + registration…';
+        visionColabDetail.title = String(vision.message || 'The app is testing the copied endpoint now.');
+        visionColabDetail.dataset.state = 'in_progress';
+      } else if (status === 'waiting_for_endpoint' || vision.endpoint_watch_active === true) {
+        visionColabDetail.textContent = endpointFailure ? 'Endpoint failed; retrying' : 'Waiting for notebook URL';
+        visionColabDetail.title = String(vision.message || vision.endpoint_watch_error || 'Run the server cell to create a fresh endpoint.');
+        visionColabDetail.dataset.state = endpointFailure ? 'failed' : 'in_progress';
+      } else if (vision.connection_registered === true) {
+        visionColabDetail.textContent = 'Tunnel not responding';
+        visionColabDetail.title = String(vision.message || 'The endpoint was detected earlier but does not answer now.');
+        visionColabDetail.dataset.state = 'failed';
+      } else if (vision.endpoint_watch_error || status === 'error') {
+        visionColabDetail.textContent = 'Connection failed';
+        visionColabDetail.title = String(vision.endpoint_watch_error || vision.message || vision.error || 'The app could not connect to Colab.');
+        visionColabDetail.dataset.state = 'failed';
       } else {
-        visionColabDetail.textContent = vision.runtime_status
-          ? 'No fresh Colab response (' + String(vision.runtime_status).replace(/_/g, ' ') + ')'
-          : 'No direct Colab response yet';
-        visionColabDetail.title = String(vision.message || 'Colab sign-in/runtime has not been verified.');
-        visionColabDetail.dataset.state = status === 'error' || status === 'disconnected' ? 'failed' : 'not_verified';
+        visionColabDetail.textContent = 'Not connected';
+        visionColabDetail.title = String(vision.message || 'Click Connect Colab, then run the notebook server cell.');
+        visionColabDetail.dataset.state = 'not_verified';
       }
     }
 
@@ -303,8 +386,20 @@
           void runVisionSetupCheck();
           return;
         }
+        if (snapshot && snapshot.endpoint_watch_active !== true && snapshot.status !== 'checking_endpoint') {
+          stopVisionConnectionWatch();
+          return;
+        }
       } catch (error) {
-        visionColabDetail.title = 'The app could not refresh the direct Colab connection: ' + String(error && error.message || error);
+        const message = String(error && error.message || error);
+        visionColabDetail.textContent = 'Status check failed';
+        visionColabDetail.title = message;
+        visionColabDetail.dataset.state = 'failed';
+        if (visionMessage) {
+          visionMessage.textContent = 'Could not refresh the Colab status: ' + summarizeVisionFailure(message);
+          visionMessage.title = message;
+          visionMessage.dataset.state = 'failed';
+        }
       }
       scheduleVisionConnectionCheck();
     }, 5000);
@@ -339,7 +434,8 @@
         visionSetupDetail.textContent = 'Waiting for Colab';
         visionSetupDetail.title = result.message || 'Open the notebook, connect a runtime if needed, and run the server cell. Then click Connect Windows Bridge and approve opening the Windows app.';
         visionSetupDetail.dataset.state = 'in_progress';
-        visionColabDetail.textContent = 'Run notebook cell';
+        renderVisionStatus(result);
+        visionColabDetail.textContent = 'Waiting for notebook URL';
         visionColabDetail.title = result.message || 'The app is watching for the public endpoint copied by the notebook.';
         visionColabDetail.dataset.state = 'action_required';
         visionModelDetail.textContent = 'Not started';
