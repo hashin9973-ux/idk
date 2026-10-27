@@ -30,8 +30,9 @@ def main():
         "Ollama Qwen3-VL 4B model": 'OLLAMA_MODEL = "qwen3-vl:4b"',
         "Ollama native chat API": 'OLLAMA_API + "/api/chat"',
         "vision image payload": '"images": [image_b64]',
-        "real image smoke test": "def run_vision_smoke_test()",
-        "readiness requires loaded model": "ollama_model_is_loaded()",
+        "model download is checked": "if not ollama_model_is_downloaded():",
+        "readiness based on healthy API and downloaded weights": 'requests.get(OLLAMA_API + "/api/version", timeout=2).ok and ollama_model_is_downloaded()',
+        "no startup image inference": "No startup image inference was run",
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": "timeout=bounded_setup_timeout(420), env=server_env",
         "visible setup timing": "stage_elapsed_seconds",
@@ -51,6 +52,10 @@ def main():
         "nvcc",
         "drive.mount(",
         "/v1/chat/completions",
+        "def run_vision_smoke_test()",
+        "vision_smoke_test",
+        "blue-square vision check",
+        "generated test image",
     )
     for needle in forbidden:
         if needle in code:
