@@ -38,7 +38,7 @@ function createVisionReport(width, height) {
       uncertainties: ['Small text may be unreadable.']
     },
     regions: [{ id: 'r1', label: 'main window', purpose: 'Primary visible interface', bbox_1000: [0, 0, 1000, 1000], bbox_px: [0, 0, width, height] }],
-    text_spans: [{ text: 'Test window', region_id: 'r1', kind: 'heading', bbox_1000: [10, 10, 200, 80], bbox_px: [Math.floor(width * 0.01), Math.floor(height * 0.01), Math.floor(width * 0.2), Math.floor(height * 0.2)] }],
+    text_spans: [{ text: 'Test window', region_id: 'r1', kind: 'heading', bbox_1000: [10, 10, 200, 80], bbox_px: [Math.floor(width * 0.01), Math.floor(height * 0.01), Math.floor(width * 0.2), Math.floor(height * 0.08)] }],
     controls: [{
       id: 'c1', label: 'OK', role: 'button', region_id: 'r1', bbox_1000: [100, 100, 250, 180],
       bbox_px: [Math.floor(width * 0.1), Math.floor(height * 0.1), Math.floor(width * 0.25), Math.floor(height * 0.18)],
@@ -378,7 +378,7 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.protocol, DIRECT_VISION_PROTOCOL);
   assert.equal(analyzeCall.body.sha256, result.input_sha256);
   assert.ok(typeof analyzeCall.body.image_base64 === 'string');
-  assert.match(analyzeCall.body.prompt, /Screenshot pixel frame: 640x360/);
+  assert.match(analyzeCall.body.prompt, /Screenshot frame: 640x360/);
   assert.equal(result.input_image.width, 640);
   assert.equal(result.input_image.height, 360);
   const report = JSON.parse(result.report);
