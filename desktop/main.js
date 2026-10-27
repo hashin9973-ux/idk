@@ -1230,15 +1230,14 @@ app.on('before-quit', event => {
     void observeService.dispose().catch(() => {});
     observeService = null;
   }
-  if (!finishingVisionDispose && (visionService || windowsInputController)) {
+  if (!finishingVisionDispose && (visionService || windowsInputController || observeService)) {
     event.preventDefault();
     finishingVisionDispose = true;
-    const dispose = visionService && typeof visionService.dispose === 'function'
-      ? visionService.dispose()
-      : windowsInputController && typeof windowsInputController.dispose === 'function'
-        ? windowsInputController.dispose()
-        : Promise.resolve();
-    Promise.resolve(dispose).catch(() => {}).finally(() => app.quit());
+    const disposals = [];
+    if (observeService && typeof observeService.dispose === 'function') disposals.push(observeService.dispose());
+    if (visionService && typeof visionService.dispose === 'function') disposals.push(visionService.dispose());
+    else if (windowsInputController && typeof windowsInputController.dispose === 'function') disposals.push(windowsInputController.dispose());
+    Promise.allSettled(disposals).finally(() => app.quit());
   }
 });
 
