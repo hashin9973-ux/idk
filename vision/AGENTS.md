@@ -14,7 +14,7 @@ The Colab notebook is the authenticated visual-analysis backend for the Windows 
 ## Fast visual context
 - Prefer concise responses with actionable pixel-coordinate boxes and center points; include the screenshot frame dimensions from the desktop service. Use confidence/uncertainty for ambiguous targets rather than claiming pixel-perfect model perception.
 - Keep screenshot size under the existing direct HTTPS request limit. Use a shorter generation budget and reasonable context size for fast visual state checks. Preserve request ID and screenshot SHA-256 matching, and do not send duplicate inference when a job is pending.
-- Cache compiled server binaries/shared libraries and model files on the existing Google Drive cache where safe, then restore the executable to local runtime storage before execution. If cache restoration fails or required server flags are unavailable, fail clearly rather than silently executing an invalid binary.
+- Do not compile llama.cpp in a Colab runtime. Download the pinned official `ggml-org/llama.cpp` CUDA 12.8 release archive `cudart-llama-b11913-bin-ubuntu-cuda-12.8-x64.tar.gz`, verify SHA-256 `be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e`, and cache the compressed archive on the existing Google Drive model cache. Extract it to local `/content` storage for execution; check the executable's required CLI flags and resolve bundled shared libraries. `nvcc`, CMake, and a source checkout are not prerequisites. Fail clearly if download/checksum/extraction/CLI validation fails.
 - The notebook only performs visual inference. Mouse/keyboard input is executed locally by the Windows app and never sent to Colab.
 
 ## Security and user control
