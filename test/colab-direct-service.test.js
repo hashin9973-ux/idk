@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const {
   createVisionService,
   DIRECT_VISION_PROTOCOL,
+  validateVisionContext,
   safeTunnelUrl,
   safeApiKey,
   parseTunnelEndpoint
@@ -21,6 +22,37 @@ const serviceTestCalls = new WeakMap();
 function response(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }
+
+function createVisionReport(width, height) {
+  return {
+    schema_version: 'windows-vision-context/v1',
+    frame: { width_px: width, height_px: height, coordinate_space: 'screenshot_jpeg_px', origin: 'top-left' },
+    scene: {
+      summary: 'A test window is visible.',
+      active_application: 'Test window',
+      window_title: 'Test window',
+      screen_type: 'desktop',
+      current_state: 'Idle test screen.',
+      visible_dialogs: [],
+      task_relevant_facts: ['The primary test window is visible.'],
+      uncertainties: ['Small text may be unreadable.']
+    },
+    regions: [{ id: 'r1', label: 'main window', purpose: 'Primary visible interface', bbox_1000: [0, 0, 1000, 1000], bbox_px: [0, 0, width, height] }],
+    text_spans: [{ text: 'Test window', region_id: 'r1', kind: 'heading', bbox_1000: [10, 10, 200, 80], bbox_px: [Math.floor(width * 0.01), Math.floor(height * 0.01), Math.floor(width * 0.2), Math.floor(height * 0.2)] }],
+    controls: [{
+      id: 'c1', label: 'OK', role: 'button', region_id: 'r1', bbox_1000: [100, 100, 250, 180],
+      bbox_px: [Math.floor(width * 0.1), Math.floor(height * 0.1), Math.floor(width * 0.25), Math.floor(height * 0.18)],
+      center_px: [999, 999], coordinate_source: 'vision_estimate', state: 'enabled',
+      relation: 'In the main window', targetability: 'clear', position_verification: 'unverified_visual_estimate'
+    }],
+    focused_element: null,
+    cursor: { visible: false, bbox_1000: null, bbox_px: null, location: 'Not confidently visible.' },
+    accessibility: { available: false, source: 'windows_uia', reason: 'not_available', active_window: null, focused_control: null, controls: [], truncated: false, node_count: 0 },
+    ocr: { available: false, method: 'tesseract', reason: 'ocr_unavailable', text_spans: [] },
+    limitations: ['Visual target positions are estimates and have not been independently verified.']
+  };
+}
+
 
 function fixture(options = {}) {
   let state = {
@@ -114,7 +146,7 @@ function fixture(options = {}) {
           model_repository: 'test-model-repo',
           inference_ms: 75,
           completed_at: new Date().toISOString(),
-          report: 'Overview\nA test window is visible.\n\nUncertainty\nSmall text is not legible.'
+          report: JSON.stringify(createVisionReport(640, 360))
         });
       }
       return response(404, { error: 'not found' });
@@ -349,6 +381,17 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.match(analyzeCall.body.prompt, /Screenshot pixel frame: 640x360/);
   assert.equal(result.input_image.width, 640);
   assert.equal(result.input_image.height, 360);
+  const report = JSON.parse(result.report);
+  assert.equal(report.schema_version, 'windows-vision-context/v1');
+  assert.equal(report.frame.width_px, 640);
+  assert.deepEqual(report.controls[0].center_px, [
+    (report.controls[0].bbox_px[0] + report.controls[0].bbox_px[2]) / 2,
+    (report.controls[0].bbox_px[1] + report.controls[0].bbox_px[3]) / 2
+  ], 'centers must be recalculated from the validated bounding boxes');
+  assert.match(analyzeCall.body.prompt, /Screenshot frame: 640x360/);
+  assert.equal(analyzeCall.body.frame.coordinate_space, 'screenshot_jpeg_px');
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.accessibility.available, false);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
 });
 
@@ -439,4 +482,15 @@ test('the desktop uses a clipboard reader only for the explicit Colab connect fl
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
   assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register|wrb_pair_nonce/);
+});
+
+test('structured vision context rejects truncated JSON and mismatched frames', () => {
+  assert.throws(() => validateVisionContext('{"schema_version":"windows-vision-context/v1"', { width_px: 640, height_px: 360 }), /malformed or truncated JSON/i);
+  assert.throws(() => validateVisionContext(JSON.stringify(createVisionReport(320, 180)), { width_px: 640, height_px: 360 }), /does not match the submitted screenshot/i);
+});
+
+test('structured vision context rejects invalid control bounds instead of accepting unreliable coordinates', () => {
+  const report = createVisionReport(640, 360);
+  report.controls[0].bbox_px = [630, 350, 650, 370];
+  assert.throws(() => validateVisionContext(JSON.stringify(report), { width_px: 640, height_px: 360 }), /outside the submitted screenshot frame/i);
 });
