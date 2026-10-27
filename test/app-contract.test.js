@@ -52,6 +52,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.setObserveEnabled/);
   assert.match(renderer, /windowsBridge\.setObserveFps/);
   assert.match(main, /app:observe-fps/);
+  assert.match(main, /clearStaleContext\(\)/);
+  assert.match(main, /Promise\.allSettled\(disposals\)\.finally\(\(\) => app\.quit\(\)\)/);
+  assert.doesNotMatch(main, /void observeService\.dispose\(\)\.catch/);
   assert.match(main, /height: 402/);
   assert.match(main, /createObserveService/);
   assert.match(main, /fingerprintDesktopScreenshot/);
