@@ -216,7 +216,7 @@ const POWERSHELL_RUNNER = [
   "    default { throw ('Unsupported low-level input type: ' + [string]$op.type) }",
   '  }',
   '}',
-  "[Console]::Out.WriteLine('{""ok"":true}')",
+  'Write-Output "OK"',
   '} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }'
 ].join('\n');
 
