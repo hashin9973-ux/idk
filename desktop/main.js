@@ -30,6 +30,7 @@ const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = requir
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
 const STATUS_SIZE = { width: 360, height: 348 };
+const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
@@ -685,7 +686,7 @@ function registerIpc() {
     }
     return visionService.status();
   });
-  ipcMain.handle('app:vision-connect-colab', async event => {
+  ipcMain.handle('app:vision-connect-colab', async (event, endpointUrl) => {
     assertLocalUi(event, 'index.html');
     if (!visionService) {
       return {
@@ -720,7 +721,15 @@ function registerIpc() {
           String(detail || 'Run Setup check and resolve the mailbox access error first.')
       };
     }
-    return visionService.connectColab();
+    return visionService.connectColab(typeof endpointUrl === 'string' ? endpointUrl : '');
+  });
+  ipcMain.handle('app:vision-manual-panel', (event, visible) => {
+    assertLocalUi(event, 'index.html');
+    const expanded = visible === true;
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setSize(STATUS_SIZE.width, expanded ? VISION_MANUAL_HEIGHT : STATUS_SIZE.height);
+    }
+    return { expanded };
   });
   ipcMain.handle('app:vision-setup-check', async event => {
     assertLocalUi(event, 'index.html');

@@ -157,6 +157,38 @@ test('endpoint validation accepts only HTTPS Quick Tunnel URLs with a secret pat
   assert.equal(safeApiKey('short'), false);
 });
 
+test('manual endpoint paste connects directly without opening Colab or using the clipboard', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const result = await f.service.connectColab(ENDPOINT);
+  assert.equal(result.connected, true);
+  assert.equal(result.manually_entered, true);
+  assert.equal(result.connection_registered, true);
+  assert.equal(result.status, 'inactive');
+  assert.equal(result.model_loaded, false);
+  assert.equal(result.endpoint_watch_active, false);
+  assert.equal(f.calls.some(call => call.type === 'opened_colab'), false);
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/health'));
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'));
+});
+
+test('manual endpoint paste accepts the printed PUBLIC_VISION_ENDPOINT line and rejects other hosts', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const result = await f.service.connectColab('PUBLIC_VISION_ENDPOINT=' + ENDPOINT);
+  assert.equal(result.connected, true);
+  assert.equal(result.manually_entered, true);
+  assert.equal(f.calls.some(call => call.type === 'opened_colab'), false);
+
+  const invalid = fixture();
+  t.after(() => invalid.service.dispose());
+  const rejected = await invalid.service.connectColab('https://example.com/' + API_KEY);
+  assert.equal(rejected.status, 'error');
+  assert.equal(rejected.connected, false);
+  assert.match(rejected.message, /not a valid Colab endpoint/);
+  assert.equal(invalid.calls.some(call => call.type === 'direct_http'), false);
+});
+
 test('Connect Colab watches the clipboard and connects when the notebook copies its public endpoint', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());

@@ -47,6 +47,9 @@ button.status-row:disabled { cursor: default; }
 .github-status-row .status-label { flex: 1; min-width: 0; }
 .vision-row { gap: 7px; }
 .vision-row .status-label { flex: 1; min-width: 0; }
+.vision-row .vision-action { min-width: 53px; }
+.vision-row #vision-signin { min-width: 80px; }
+.vision-row #vision-setup-check { min-width: 67px; }
 .vision-action {
   min-width: 53px;
   height: 23px;
@@ -55,6 +58,37 @@ button.status-row:disabled { cursor: default; }
   font-size: 9px;
 }
 .vision-action:last-child { min-width: 67px; }
+.vision-manual-panel {
+  display: grid;
+  gap: 5px;
+  margin: 7px 5px 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255,255,255,.025);
+  color: var(--muted);
+  font-size: 10px;
+  -webkit-app-region: no-drag;
+}
+.vision-manual-panel[hidden] { display: none; }
+.vision-manual-panel label { font-weight: 600; color: var(--text); }
+.vision-manual-panel input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  border: 1px solid rgba(135,149,166,.5);
+  border-radius: 5px;
+  background: rgba(0,0,0,.24);
+  color: var(--text);
+  font: 10px/1.35 Consolas, "Cascadia Code", monospace;
+  outline: none;
+}
+.vision-manual-panel input:focus { border-color: var(--accent); }
+.vision-manual-controls { display: flex; gap: 6px; }
+.vision-manual-controls .status-action { flex: 1; height: 25px; margin: 0; }
+.vision-manual-controls .secondary-action { min-width: 64px; }
+.vision-manual-help { margin: 0; font-size: 9px; line-height: 12px; overflow-wrap: anywhere; }
 .vision-details {
   display: grid;
   gap: 3px;
