@@ -74,6 +74,7 @@ function createVisionService(deps) {
   let endpointWatch = null;
   let endpointWatchPromise = null;
   let endpointWatchError = '';
+  let endpointWatchAttemptInProgress = false;
   let visionEnabled = false;
   let disposed = false;
   const jobs = new Map();
@@ -149,6 +150,7 @@ function createVisionService(deps) {
       }
       visionEnabled = health.enabled === true;
       endpointWatchError = '';
+      endpointWatchAttemptInProgress = false;
       endpointWatch = null;
       return {
         ...stateFromRemote(health),
@@ -189,10 +191,14 @@ function createVisionService(deps) {
           if (endpoint && (endpoint.url !== lastAttemptedUrl || now() - lastAttemptAt >= 5000)) {
             lastAttemptedUrl = endpoint.url;
             lastAttemptAt = now();
+            endpointWatchAttemptInProgress = true;
+            endpointWatchError = '';
             try {
               await connectPublicEndpoint(endpoint.url);
+              endpointWatchAttemptInProgress = false;
               return;
             } catch (error) {
+              endpointWatchAttemptInProgress = false;
               endpointWatchError = messageOf(error);
             }
           }
@@ -206,8 +212,10 @@ function createVisionService(deps) {
         }
       }
     } catch (error) {
+      endpointWatchAttemptInProgress = false;
       endpointWatchError = messageOf(error);
     } finally {
+      endpointWatchAttemptInProgress = false;
       if (endpointWatch === watch) endpointWatchPromise = null;
     }
   }
@@ -293,7 +301,14 @@ function createVisionService(deps) {
         redirect: 'error'
       });
       let data;
-      try { data = await response.json(); } catch { throw new Error('Colab returned malformed JSON for ' + route + '.'); }
+      try {
+        data = await response.json();
+      } catch {
+        if (!response.ok) {
+          throw new Error('Colab direct endpoint returned HTTP ' + response.status + ' (non-JSON response).');
+        }
+        throw new Error('Colab returned malformed JSON for ' + route + '.');
+      }
       if (!response.ok) throw new Error('Colab direct endpoint returned HTTP ' + response.status + ': ' + String(data.error || data.message || 'request failed').slice(0, 600));
       if (data.protocol && data.protocol !== DIRECT_VISION_PROTOCOL &&
           !(route === '/analyze' && data.protocol === RESULT_PROTOCOL)) {
@@ -467,23 +482,53 @@ function createVisionService(deps) {
   }
 
   async function status() {
+    if (endpointWatch && endpointWatch.active && endpointWatchAttemptInProgress) {
+      return {
+        status: 'checking_endpoint',
+        enabled: false,
+        runtime_fresh: false,
+        runtime_alive: false,
+        connection_registered: false,
+        model_loaded: false,
+        endpoint_watch_active: true,
+        endpoint_test_in_progress: true,
+        endpoint_watch_error: '',
+        notebook_url: COLAB_NOTEBOOK_URL,
+        transport: 'direct_https_tunnel',
+        message: 'A new Colab endpoint was detected. Testing the authenticated HTTPS health response and registration acknowledgement.'
+      };
+    }
     const remote = await queryRuntime();
     if (!colabConnection && endpointWatch && endpointWatch.active) {
       return {
         ...remote,
         status: 'waiting_for_endpoint',
         endpoint_watch_active: true,
+        endpoint_test_in_progress: false,
+        endpoint_watch_error: endpointWatchError || '',
         connection_registered: false,
         enabled: false,
         model_loaded: false,
         message: endpointWatchError
           ? 'Waiting for the Colab endpoint. Last detection attempt: ' + endpointWatchError
-          : 'The Windows app is watching the clipboard for the public HTTPS URL printed by the Colab notebook.'
+          : 'Waiting for the notebook to copy its public HTTPS endpoint. Run the server cell; the app will test the URL automatically.'
+      };
+    }
+    if (!colabConnection && endpointWatch && !endpointWatch.active && endpointWatchError) {
+      return {
+        ...remote,
+        endpoint_watch_active: false,
+        endpoint_test_in_progress: false,
+        endpoint_watch_error: endpointWatchError,
+        notebook_url: COLAB_NOTEBOOK_URL,
+        transport: 'direct_https_tunnel',
+        message: 'The Colab connection attempt failed: ' + endpointWatchError
       };
     }
     return {
       ...remote,
       endpoint_watch_active: Boolean(endpointWatch && endpointWatch.active),
+      endpoint_test_in_progress: false,
       endpoint_watch_error: endpointWatchError || '',
       notebook_url: COLAB_NOTEBOOK_URL,
       transport: 'direct_https_tunnel',
