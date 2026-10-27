@@ -12,6 +12,9 @@
   const workspaceDot = byId('workspace-dot');
   const workspaceLabel = byId('workspace-status');
   const autoAcceptRow = byId('auto-accept-row');
+  const observeRow = byId('observe-row');
+  const observeDot = byId('observe-dot');
+  const observeLabel = byId('observe-status');
   const autoAcceptDot = byId('auto-accept-dot');
   const autoAcceptLabel = byId('auto-accept-status');
   const visionDot = byId('vision-dot');
@@ -37,6 +40,8 @@
   let authTimer = null;
   let loginCode = '';
   let autoAcceptAll = false;
+  let observeBusy = false;
+  let observeEnabled = false;
   let workspaceBusy = false;
   let visionBusy = false;
   let visionSetupSnapshot = null;
@@ -125,6 +130,51 @@
       : 'Click to choose a different workspace folder or drive. ') +
       (details.length ? details.join(' | ') : 'No workspace selected yet.');
     setDot(workspaceDot, workspace.syncError ? 'error' : index.running ? 'online' : 'waiting');
+  }
+
+  function renderObserveStatus(state) {
+    const value = state || {};
+    observeEnabled = value.enabled === true;
+    observeRow.setAttribute('aria-pressed', String(observeEnabled));
+    observeLabel.textContent = observeEnabled
+      ? 'Observe: ON · ' + Number(value.frame_count || 0) + '/10 frames'
+      : 'Observe: OFF';
+    const details = [
+      'Sampling at 4 fps; only changed screen fingerprints trigger context updates.',
+      'Live context is published to the private GitHub mailbox at most once per second.',
+      observeEnabled ? 'Status: ' + String(value.status || 'watching') : 'Live context is cleared when Observe is turned off.',
+      value.last_capture_at ? 'Last capture: ' + value.last_capture_at : '',
+      value.last_publish_at ? 'Last publish: ' + value.last_publish_at : '',
+      value.error ? 'Error: ' + value.error : ''
+    ].filter(Boolean);
+    observeRow.title = details.join('\n');
+    setDot(observeDot, observeEnabled ? (value.error ? 'error' : 'online') : 'waiting');
+  }
+
+  async function refreshObserveStatus() {
+    try {
+      renderObserveStatus(await window.windowsBridge.getObserveStatus());
+    } catch (error) {
+      observeRow.title = 'Observe status unavailable: ' + String(error && error.message || error);
+      setDot(observeDot, 'error');
+    }
+  }
+
+  async function toggleObserve() {
+    if (observeBusy) return;
+    observeBusy = true;
+    observeRow.disabled = true;
+    observeLabel.textContent = observeEnabled ? 'Observe: turning off…' : 'Observe: starting…';
+    try {
+      const state = await window.windowsBridge.setObserveEnabled(!observeEnabled);
+      renderObserveStatus(state);
+    } catch (error) {
+      observeRow.title = 'Could not change Observe mode: ' + String(error && error.message || error);
+      await refreshObserveStatus();
+    } finally {
+      observeBusy = false;
+      observeRow.disabled = false;
+    }
   }
 
   async function chooseWorkspace() {
@@ -542,6 +592,7 @@
       const result = await window.windowsBridge.checkVisionSetup();
       renderVisionSetup(result);
       await refreshVisionStatus();
+    await refreshObserveStatus();
     } catch (error) {
       renderVisionSetup({
         status: 'failed',
@@ -665,6 +716,7 @@
   });
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
+  observeRow.addEventListener('click', () => { void toggleObserve(); });
   visionSignInButton.addEventListener('click', () => { void connectColab(); });
   visionPasteButton.addEventListener('click', () => {
     setVisionManualPanelVisible(visionManualPanel.hidden);
@@ -702,4 +754,5 @@
 
   refreshState();
   window.setInterval(refreshState, 15000);
+  window.setInterval(refreshObserveStatus, 1000);
 })();
