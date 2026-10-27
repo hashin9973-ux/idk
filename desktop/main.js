@@ -508,24 +508,13 @@ function fingerprintDesktopScreenshot(captured) {
   const image = nativeImage.createFromBuffer(captured.bytes);
   if (!image || image.isEmpty()) throw new Error('Observe could not decode the captured screenshot.');
   const size = image.getSize();
-  const bitmap = image.toBitmap();
-  if (!size.width || !size.height || !bitmap || bitmap.length < size.width * size.height * 4) {
-    throw new Error('Observe screenshot bitmap has invalid dimensions.');
-  }
-  // A small spatial sample detects meaningful visual changes cheaply and ignores most encoder noise.
-  const sample = Buffer.alloc(32 * 18 * 3);
-  let offset = 0;
-  for (let y = 0; y < 18; y += 1) {
-    const py = Math.min(size.height - 1, Math.floor((y + 0.5) * size.height / 18));
-    for (let x = 0; x < 32; x += 1) {
-      const px = Math.min(size.width - 1, Math.floor((x + 0.5) * size.width / 32));
-      const source = (py * size.width + px) * 4;
-      sample[offset++] = bitmap[source];
-      sample[offset++] = bitmap[source + 1];
-      sample[offset++] = bitmap[source + 2];
-    }
-  }
-  return crypto.createHash('sha256').update(sample).digest('hex');
+  if (!size.width || !size.height) throw new Error('Observe screenshot has invalid dimensions.');
+  // Downsample the full image before hashing. This catches small UI changes better than
+  // sparse point sampling while keeping per-frame CPU and memory work bounded.
+  const thumbnail = image.resize({ width: 64, height: 36, quality: 'good' });
+  const bitmap = thumbnail.toBitmap();
+  if (!bitmap || bitmap.length < 64 * 36 * 4) throw new Error('Observe screenshot thumbnail is invalid.');
+  return crypto.createHash('sha256').update(bitmap.subarray(0, 64 * 36 * 4)).digest('hex');
 }
 
 function encodeVisionJpeg(input) {
