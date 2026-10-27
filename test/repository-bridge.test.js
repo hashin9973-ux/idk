@@ -36,6 +36,12 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
   }
   const calls = [];
+  const treePathsBySha = new Map();
+  function treeShaForPath(relativePath) {
+    const sha = 'fake-tree-' + Buffer.from(relativePath || '/').toString('hex');
+    treePathsBySha.set(sha, relativePath || '');
+    return sha;
+  }
   const githubAuth = {
     getState: async () => ({ authenticated: true, login: 'worker-test' }),
     requestApi: async ({ method, path, body, query }) => {
@@ -43,8 +49,45 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
       if (method === 'GET' && path === '/repos/test-owner/test-repo') {
         return { status: 200, result: { private: privateRepo } };
       }
-      const match = path.match(/^\/repos\/test-owner\/test-repo\/contents\/(.+)$/);
-      if (!match) throw new Error('Unexpected API path: ' + path);
+      if (method === 'GET' && path === '/repos/test-owner/test-repo/commits') {
+        assert.deepEqual(query, { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 1 });
+        const requestPaths = [...files.keys()]
+          .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
+          .sort();
+        return {
+          status: 200,
+          result: requestPaths.length
+            ? [{ sha: 'fake-request-commit-' + requestPaths.length }]
+            : []
+        };
+      }
+      const treeMatch = path.match(/^\\/repos\\/test-owner\\/test-repo\\/git\\/trees\\/(.+)$/);
+      if (method === 'GET' && treeMatch) {
+        const treeRef = treeMatch[1];
+        const treePath = treeRef === 'bridge-mailbox' ? '' : treePathsBySha.get(treeRef);
+        if (treePath === undefined) throw new Error('Not Found (404)');
+        const prefix = treePath ? treePath + '/' : '';
+        const children = new Map();
+        for (const [filePath, value] of files) {
+          if (!filePath.startsWith(prefix)) continue;
+          const remainder = filePath.slice(prefix.length);
+          if (!remainder) continue;
+          const child = remainder.split('/')[0];
+          const childPath = prefix + child;
+          const isFile = files.has(childPath);
+          children.set(child, {
+            path: child,
+            type: isFile ? 'blob' : 'tree',
+            sha: isFile ? files.get(childPath).sha : treeShaForPath(childPath),
+            ...(isFile ? { size: Buffer.from(value.content || '', 'base64').length } : {})
+          });
+        }
+        return {
+          status: 200,
+          result: { sha: treeShaForPath(treePath), tree: [...children.values()], truncated: false }
+        };
+      }
+      const match = path.match(/^\\/repos\\/test-owner\\/test-repo\\/contents\\/(.+)$/);      if (!match) throw new Error('Unexpected API path: ' + path);
       const rel = match[1];
       if (method === 'GET') {
         const exact = files.get(rel);
@@ -86,7 +129,10 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
       throw new Error('Unexpected method: ' + method);
     }
   };
-  return { githubAuth, files, calls };
+  return {
+    githubAuth, files, calls,
+    treeRef: relativePath => treeShaForPath(relativePath)
+  };
 }
 
 function settingsFixture(allowPublicMailbox = false) {
