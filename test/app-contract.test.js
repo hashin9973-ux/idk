@@ -268,7 +268,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(bridge.includes("enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up', 'sequence']"));
   assert.ok(bridge.includes("requiresApproval: ['connect', 'enable', 'start_control'].includes(args.action)"));
   assert.ok(bridge.includes('service.inputAction(args, requestId)'));
-  assert.ok(bridge.includes("steps: {\n      type: 'array'"));
+  assert.ok(bridge.includes("Ordered local mouse/keyboard inputs, up to 50 steps"));
   assert.ok(bridge.includes('function computerServiceCall'));
   assert.doesNotMatch(bridge, /name: 'vision_(?:activate|deactivate|status|analyze_screenshot|wait)'/);
   assert.ok(main.includes("require('./colab-direct-service')"));
