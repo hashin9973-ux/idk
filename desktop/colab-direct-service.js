@@ -17,7 +17,8 @@ const DEFAULT_WAIT_MS = 15000;
 const MAX_WAIT_MS = 120000;
 const DIRECT_TIMEOUT_MS = 360000;
 const PAIRING_NONCE_TTL_MS = 10 * 60 * 1000;
-const DEFAULT_PROMPT = 'Fast computer-use observation. Return a concise, structured report, not a long essay. State the visible screen/application/game state first. Use this screenshot coordinate frame: origin (0,0) at top-left, x increases right, y increases down, pixel dimensions are supplied in metadata. For each actionable target, give label, approximate bounding box [left,top,right,bottom], center [x,y], and confidence; never invent precise geometry when unclear. Transcribe only important visible text and report visible controls, cursor, player/target/status HUD, errors, and uncertainty. Distinguish observed facts from estimates. Do not infer unseen state or perform general reasoning.';
+const VISION_CONTEXT_SCHEMA = 'windows-vision-context/v1';
+const DEFAULT_PROMPT = 'Observe the current desktop as a working computer environment. Identify the active application and its state, group the screen into meaningful regions, transcribe important visible text, explain relationships between controls and their containing region, and list the most task-relevant interactive targets. Coordinates are screenshot-frame pixel coordinates; prefer Windows UI Automation evidence when available and otherwise label visual estimates as unverified. Preserve uncertainty and do not assume hidden state. Observation only: do not click, type, or otherwise interact.';
 
 function messageOf(error) {
   return String(error && error.message || error || 'Unknown vision error').slice(0, 1600);
@@ -26,6 +27,87 @@ function messageOf(error) {
 function validJobId(value) {
   return typeof value === 'string' && /^computer-[a-f0-9]{24}$/.test(value);
 }
+
+function validateBoundingBox(item, label, frame, required = false) {
+  if (!item || typeof item !== 'object') throw new Error(label + ' must be an object.');
+  const box = item.bbox_px;
+  if (box === null && !required) return item;
+  if (!Array.isArray(box) || box.length !== 4 || !box.every(Number.isFinite)) {
+    if (!required && box === undefined) return item;
+    throw new Error(label + ' has no valid bbox_px; the coordinate report was rejected.');
+  }
+  const [left, top, right, bottom] = box;
+  if (left < 0 || top < 0 || right > frame.width_px || bottom > frame.height_px ||
+      right <= left || bottom <= top) {
+    throw new Error(label + ' has a bounding box outside the submitted screenshot frame.');
+  }
+  item.bbox_px = box.map(value => Math.round(value * 100) / 100);
+  item.center_px = [
+    Math.round(((left + right) / 2) * 100) / 100,
+    Math.round(((top + bottom) / 2) * 100) / 100
+  ];
+  if (Array.isArray(item.bbox_1000) && item.bbox_1000.length === 4 &&
+      item.bbox_1000.every(value => Number.isFinite(value) && value >= 0 && value <= 1000)) {
+    // Preserve normalized coordinates as the model's estimate; pixel centers are always calculated locally.
+  } else if (item.coordinate_source === 'vision_estimate') {
+    throw new Error(label + ' has malformed bbox_1000 normalized coordinates.');
+  }
+  return item;
+}
+
+function validateVisionContext(reportText, expectedFrame) {
+  if (typeof reportText !== 'string' || !reportText.trim()) throw new Error('Vision returned an empty context report.');
+  let report;
+  try {
+    report = JSON.parse(reportText);
+  } catch {
+    throw new Error('Vision returned malformed or truncated JSON. The report was rejected rather than marked complete.');
+  }
+  if (!report || typeof report !== 'object' || Array.isArray(report) ||
+      report.schema_version !== VISION_CONTEXT_SCHEMA) {
+    throw new Error('Vision report schema is missing or unsupported.');
+  }
+  const frame = report.frame;
+  if (!frame || frame.width_px !== expectedFrame.width_px || frame.height_px !== expectedFrame.height_px ||
+      frame.coordinate_space !== 'screenshot_jpeg_px' || frame.origin !== 'top-left') {
+    throw new Error('Vision report frame does not match the submitted screenshot. Coordinates were rejected.');
+  }
+  if (!report.scene || typeof report.scene !== 'object' ||
+      typeof report.scene.summary !== 'string' || !report.scene.summary.trim() ||
+      typeof report.scene.screen_type !== 'string' ||
+      !Array.isArray(report.regions) || !Array.isArray(report.text_spans) ||
+      !Array.isArray(report.controls)) {
+    throw new Error('Vision context is missing required scene, region, text, or control fields.');
+  }
+  if (report.regions.length > 10 || report.text_spans.length > 32 || report.controls.length > 16) {
+    throw new Error('Vision report exceeds the bounded context size and was rejected.');
+  }
+  report.regions.forEach((item, index) => validateBoundingBox(item, 'region ' + (index + 1), frame, false));
+  report.text_spans.forEach((item, index) => validateBoundingBox(item, 'text span ' + (index + 1), frame, false));
+  report.controls.forEach((item, index) => {
+    if (!item || typeof item.label !== 'string' || typeof item.role !== 'string') {
+      throw new Error('Control ' + (index + 1) + ' is missing its label or role.');
+    }
+    validateBoundingBox(item, 'control ' + (index + 1), frame, true);
+    item.coordinate_source = item.coordinate_source === 'windows_uia' ? 'windows_uia' : 'vision_estimate';
+    if (item.coordinate_source === 'vision_estimate') item.position_verification = 'unverified_visual_estimate';
+  });
+  if (!report.accessibility || typeof report.accessibility.available !== 'boolean' ||
+      !Array.isArray(report.accessibility.controls)) {
+    throw new Error('Vision report has no accessibility evidence status.');
+  }
+  if (report.accessibility.controls.length > 80) throw new Error('Accessibility evidence exceeds the size limit.');
+  report.accessibility.controls.forEach((item, index) =>
+    validateBoundingBox(item, 'accessibility control ' + (index + 1), frame, true));
+  if (!report.ocr || typeof report.ocr.available !== 'boolean' || !Array.isArray(report.ocr.text_spans)) {
+    throw new Error('Vision report has no OCR evidence status.');
+  }
+  if (report.ocr.text_spans.length > 40) throw new Error('OCR evidence exceeds the size limit.');
+  report.ocr.text_spans.forEach((item, index) =>
+    validateBoundingBox(item, 'OCR text span ' + (index + 1), frame, true));
+  return JSON.stringify(report);
+}
+
 
 function safeApiKey(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{40,100}$/.test(value);
@@ -57,6 +139,7 @@ function createVisionService(deps) {
     getSettings,
     getWorkspaceRoot,
     captureScreenshot,
+    getAccessibleSnapshot,
     encodeJpeg,
     openColabNotebook,
     readClipboardText,
@@ -612,10 +695,12 @@ function createVisionService(deps) {
     let raw;
     let sourceName;
     let sourcePath = null;
+    let capturedMetadata = {};
     const source = args.source || 'desktop';
     if (source === 'desktop') {
       if (typeof captureScreenshot !== 'function') throw new Error('Desktop screenshot capture is unavailable.');
       const captured = await captureScreenshot();
+      capturedMetadata = captured && typeof captured === 'object' ? captured : {};
       raw = Buffer.isBuffer(captured) ? captured : captured && captured.bytes;
       sourceName = captured && captured.filename || 'desktop-screenshot';
       if (!Buffer.isBuffer(raw)) throw new Error('Desktop screenshot capture returned no image bytes.');
@@ -643,8 +728,25 @@ function createVisionService(deps) {
     if (bytes.length > MAX_SCREENSHOT_BYTES) throw new Error('Screenshot could not be compressed below the 600 KiB direct Colab transfer limit.');
     const width = encoded && encoded.width || null;
     const height = encoded && encoded.height || null;
+    const screenWidth = Number.isInteger(capturedMetadata.screen_width) && capturedMetadata.screen_width > 0
+      ? capturedMetadata.screen_width : Number.isInteger(capturedMetadata.width) && capturedMetadata.width > 0 ? capturedMetadata.width : width;
+    const screenHeight = Number.isInteger(capturedMetadata.screen_height) && capturedMetadata.screen_height > 0
+      ? capturedMetadata.screen_height : Number.isInteger(capturedMetadata.height) && capturedMetadata.height > 0 ? capturedMetadata.height : height;
     if (source === 'desktop' && Number.isInteger(width) && Number.isInteger(height)) {
       latestScreenFrame = { width, height };
+    }
+    let accessibility = { available: false, source: 'windows_uia', reason: source === 'desktop' ? 'not_configured' : 'not_live_desktop' };
+    if (source === 'desktop' && typeof getAccessibleSnapshot === 'function' &&
+        Number.isInteger(screenWidth) && Number.isInteger(screenHeight) &&
+        Number.isInteger(width) && Number.isInteger(height)) {
+      try {
+        accessibility = await getAccessibleSnapshot({
+          screen: { width: screenWidth, height: screenHeight },
+          frame: { width, height }
+        }) || accessibility;
+      } catch {
+        accessibility = { available: false, source: 'windows_uia', reason: 'uia_unavailable' };
+      }
     }
     return {
       bytes,
@@ -652,7 +754,9 @@ function createVisionService(deps) {
         request_id: requestId, source, source_name: sourceName,
         ...(sourcePath ? { workspace_path: sourcePath } : {}),
         content_type: 'image/jpeg', width, height,
-        coordinate_system: source === 'desktop' ? 'pixels, origin top-left; coordinates refer to this JPEG frame' : null,
+        screen_width: screenWidth || null, screen_height: screenHeight || null,
+        accessibility,
+        coordinate_system: source === 'desktop' ? 'JPEG screenshot pixels, origin top-left; local mouse inputs are scaled from this frame' : null,
         jpeg_quality: encoded && encoded.quality || null,
         bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex')
       }
@@ -676,10 +780,19 @@ function createVisionService(deps) {
           protocol: DIRECT_VISION_PROTOCOL, request_id: jobId,
           sha256: screenshot.metadata.sha256, content_type: 'image/jpeg',
           bytes: screenshot.bytes.length, image_base64: screenshot.bytes.toString('base64'),
+          frame: {
+            width_px: screenshot.metadata.width, height_px: screenshot.metadata.height,
+            coordinate_space: 'screenshot_jpeg_px', origin: 'top-left'
+          },
+          screen: {
+            width_px: screenshot.metadata.screen_width, height_px: screenshot.metadata.screen_height,
+            coordinate_space: 'physical_screen_px'
+          },
+          accessibility: screenshot.metadata.accessibility,
           prompt: [
-            'Screenshot pixel frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + '; origin (0,0) is the top-left corner, x increases right, y increases down. Report coordinate estimates in this exact frame.',
+            'Screenshot frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + ' px. Origin top-left; x right; y down.',
             String(prompt || DEFAULT_PROMPT)
-          ].join('\n').slice(0, 2000)
+          ].join('\n').slice(0, 1400)
         }
       });
       if (data.request_id !== jobId || data.input_sha256 !== screenshot.metadata.sha256) {
@@ -688,14 +801,18 @@ function createVisionService(deps) {
       if (data.status !== 'completed' || typeof data.report !== 'string' || !data.report.trim()) {
         throw new Error(String(data.error || 'Colab returned no complete vision report.'));
       }
+      const validatedReport = validateVisionContext(data.report, {
+        width_px: screenshot.metadata.width, height_px: screenshot.metadata.height
+      });
       job.result = {
         status: 'report_available', analysis_completed: true, request_id: jobId,
         model: data.model || MODEL_FILE, model_repository: data.model_repository || MODEL_ID,
+        report_schema_version: VISION_CONTEXT_SCHEMA,
         created_at: job.createdAt, completed_at: data.completed_at || new Date(now()).toISOString(),
         inference_ms: Number.isFinite(data.inference_ms) ? data.inference_ms : now() - started,
         input_image: screenshot.metadata, input_sha256: data.input_sha256,
-        report: data.report.slice(0, 30000), result_protocol: RESULT_PROTOCOL,
-        evidence_policy: 'The model report describes visible evidence only. ChatGPT should perform the reasoning and preserve uncertainty.',
+        report: validatedReport, result_protocol: RESULT_PROTOCOL,
+        evidence_policy: 'Structured perception evidence only. Windows UI Automation bounds are system-derived; visual-only target bounds are explicitly unverified. ChatGPT decides actions and verifies outcomes using a fresh observation.',
         report_transport: 'direct Colab HTTPS response, returned by the app through its normal GitHub mailbox result'
       };
     } catch (error) {
@@ -829,12 +946,12 @@ function createVisionService(deps) {
     activate, deactivate, status, setupCheck, connectColab, connectPublicEndpoint, analyzeScreenshot, wait, inputAction,
     isControlSessionActive: () => controlSessionActive,
     dispose,
-    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
+    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, VISION_CONTEXT_SCHEMA, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
 }
 
 module.exports = {
   createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL,
-  MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, validJobId,
+  MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, VISION_CONTEXT_SCHEMA, validateVisionContext, validateBoundingBox, validJobId,
   safeTunnelUrl, safeApiKey, parseTunnelEndpoint
 };
