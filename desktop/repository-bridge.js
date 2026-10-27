@@ -1677,10 +1677,14 @@ function createRepositoryBridge(deps) {
         // Dispatch immediately after the request directory read. Publishing a
         // heartbeat is maintenance work and must not add a round trip to pickup.
         dispatchPendingRequests();
-        await publishState(firstPoll);
-        if (pendingCount === 0 && requestTasks.size === 0 && pendingRequestQueue.length === 0) {
-          void maybeRunMailboxCleanup();
-        }
+        // State publication must not delay request dispatch or make start() wait for
+        // GitHub. Cleanup starts only after that publication has completed, so it
+        // cannot mistake a missing/stale state record for an idle worker.
+        void publishState(firstPoll).then(() => {
+          if (pendingCount === 0 && requestTasks.size === 0 && pendingRequestQueue.length === 0) {
+            void maybeRunMailboxCleanup();
+          }
+        });
 
         const currentWorkspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
         const contextExpired = Date.now() - lastContextRefreshAt >= Math.max(60000, contextRefreshIntervalMs);
