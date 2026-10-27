@@ -35,6 +35,12 @@ function fixture(options = {}) {
   };
   let clipboardText = options.initialClipboard || '';
   const calls = [];
+  const inputCalls = [];
+  const inputControl = {
+    run: async (steps, frame) => { inputCalls.push({ steps, frame }); return { status: 'input_completed', actions_executed: steps.length, coordinate_frame: frame }; },
+    releaseAll: async () => ({ released: 0 }),
+    dispose: async () => {}
+  };
   const githubAuth = {
     async requestApi(input) {
       calls.push(input);
@@ -59,6 +65,7 @@ function fixture(options = {}) {
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
+    inputControl,
     clipboardPollIntervalMs: options.clipboardPollIntervalMs || 5,
     clipboardWatchTimeoutMs: options.clipboardWatchTimeoutMs || 2000,
     pollIntervalMs: 10,
@@ -115,7 +122,7 @@ function fixture(options = {}) {
   });
   serviceTestCalls.set(service, calls);
   return {
-    service, calls,
+    service, calls, inputCalls,
     getState: () => state,
     setState: patch => { state = { ...state, ...patch }; },
     setClipboard: value => { clipboardText = value; },
@@ -164,12 +171,16 @@ test('manual endpoint paste connects directly without opening Colab or using the
   assert.equal(result.connected, true);
   assert.equal(result.manually_entered, true);
   assert.equal(result.connection_registered, true);
-  assert.equal(result.status, 'inactive');
-  assert.equal(result.model_loaded, false);
+  assert.equal(result.status, 'starting');
+  assert.equal(result.enabled, true);
+  assert.equal(result.vision_activated, true);
+  assert.equal(result.model_loaded, false, 'connect returns promptly while model loading continues');
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate' && call.method === 'POST'));
   assert.equal(result.endpoint_watch_active, false);
   assert.equal(f.calls.some(call => call.type === 'opened_colab'), false);
   assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/health'));
   assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'));
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'));
 });
 
 test('manual endpoint paste accepts the printed PUBLIC_VISION_ENDPOINT line and rejects other hosts', async t => {
@@ -194,8 +205,9 @@ test('Connect Colab watches the clipboard and connects when the notebook copies 
   t.after(() => f.service.dispose());
   const status = await openAndPublishEndpoint(f);
   assert.equal(status.connection_registered, true);
-  assert.equal(status.status, 'inactive');
-  assert.equal(status.model_loaded, false);
+  assert.equal(status.status, 'ready');
+  assert.equal(status.enabled, true);
+  assert.equal(status.model_loaded, true);
   assert.equal(status.transport, 'direct_https_tunnel');
   assert.equal(f.service.constants.COLAB_NOTEBOOK_URL, 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb');
   assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/health' && call.method === 'GET'));
@@ -345,8 +357,40 @@ test('setup check keeps GitHub mailbox verification separate and requires no Col
   assert.equal(result.checks.github.status, 'passed');
   assert.equal(result.checks.mailbox.status, 'passed');
   assert.equal(result.checks.colab.status, 'passed');
-  assert.equal(result.checks.model.status, 'not_verified');
+  assert.equal(result.checks.model.status, 'passed');
   assert.ok(result.next_steps.every(step => !/QDQWG_TOKEN|Colab Secret|fine-grained token/i.test(step)));
+});
+
+test('successful Colab connection activates the model automatically and supports batched local input with observation', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const connected = await f.service.connectColab(ENDPOINT);
+  assert.equal(connected.connected, true);
+  assert.equal(connected.enabled, true);
+  assert.equal(connected.vision_activated, true);
+  assert.equal(connected.model_loaded, false);
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'));
+
+  const started = await f.service.inputAction({ action: 'start_control' }, 'control-1');
+  assert.equal(started.status, 'control_ready');
+  assert.equal(f.service.isControlSessionActive(), true);
+  const sequence = await f.service.inputAction({
+    action: 'sequence',
+    steps: [
+      { type: 'hotkey', keys: ['CTRL', 'S'] },
+      { type: 'click', x: 120, y: 80, button: 'right' }
+    ],
+    observe: true,
+    waitMs: 1000
+  }, 'computer-bbbbbbbbbbbbbbbbbbbbbbbb');
+  assert.equal(sequence.status, 'input_completed');
+  assert.equal(sequence.observation.status, 'report_available');
+  assert.deepEqual(f.inputCalls[0].frame, { width: 1920, height: 1080 });
+  assert.equal(f.inputCalls[0].steps.length, 2);
+
+  const stopped = await f.service.inputAction({ action: 'stop_control' });
+  assert.equal(stopped.status, 'control_stopped');
+  assert.equal(f.service.isControlSessionActive(), false);
 });
 
 test('notebook output clipboard-copy JavaScript parses and contains a direct endpoint, not an app-link handoff', () => {
