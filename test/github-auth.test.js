@@ -256,6 +256,31 @@ test('repository API allows only the configured mailbox contents routes', async 
     if (target === 'https://api.github.com/repos/example/private-repo') {
       return response({ private: true });
     }
+    const treeBase = 'https://api.github.com/repos/example/private-repo/git/trees/';
+    if (target === treeBase + 'bridge-mailbox') {
+      return response({
+        sha: '1111111111111111111111111111111111111111',
+        truncated: false,
+        tree: [{ path: 'bridge', type: 'tree', sha: '2222222222222222222222222222222222222222' }]
+      });
+    }
+    if (target === treeBase + '2222222222222222222222222222222222222222') {
+      return response({
+        sha: '2222222222222222222222222222222222222222',
+        truncated: false,
+        tree: [{ path: 'requests', type: 'tree', sha: '3333333333333333333333333333333333333333' }]
+      });
+    }
+    if (target === treeBase + '3333333333333333333333333333333333333333') {
+      return response({
+        sha: '3333333333333333333333333333333333333333',
+        truncated: false,
+        tree: [{ path: 'req-test.json', type: 'blob', sha: '4444444444444444444444444444444444444444', size: 120 }]
+      });
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1') {
+      return response([{ sha: '5555555555555555555555555555555555555555' }]);
+    }
     if (target.startsWith('https://api.github.com/repos/example/private-repo/contents/')) {
       if ((options.method || 'GET') === 'PUT') return response({ content: { sha: '0123456789abcdef0123456789abcdef01234567' } }, 201);
       return response([{ name: 'req-test.json', type: 'file' }]);
@@ -275,6 +300,40 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox')));
   const readCall = calls.find(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox'));
   assert.equal(readCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
+
+  const rootTree = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/git/trees/bridge-mailbox'
+  });
+  assert.equal(rootTree.result.tree[0].sha, '2222222222222222222222222222222222222222');
+  const bridgeTree = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/git/trees/2222222222222222222222222222222222222222'
+  });
+  assert.equal(bridgeTree.result.tree[0].sha, '3333333333333333333333333333333333333333');
+  const requestsTree = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/git/trees/3333333333333333333333333333333333333333'
+  });
+  assert.equal(requestsTree.result.tree[0].path, 'req-test.json');
+  assert.ok(calls.some(call => call.url === 'https://api.github.com/repos/example/private-repo/git/trees/bridge-mailbox'));
+  const latestRequestCommit = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/commits',
+    query: { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 1 }
+  });
+  assert.equal(latestRequestCommit.result[0].sha, '5555555555555555555555555555555555555555');
+  assert.ok(calls.some(call => call.url.endsWith('/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1')));
+
+  await assert.rejects(auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/git/trees/other-branch'
+  }), /configured branch or a valid tree SHA/i);
+  await assert.rejects(auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/commits',
+    query: { sha: 'other-branch', path: 'bridge/requests', per_page: 1 }
+  }), /limited to the latest commit touching bridge\/requests/i);
 
   const resultPayload = {
     protocol: 'chatgpt-local-repo-result/v1',
