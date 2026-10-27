@@ -763,10 +763,21 @@ function registerIpc() {
   ipcMain.handle('app:observe-fps', async (event, fps) => {
     assertLocalUi(event, 'index.html');
     if (!observeService) throw new Error('Observe service is unavailable.');
-    const state = await observeService.setFps(fps);
-    settings.observeFps = state.fps || DEFAULT_SAMPLE_FPS;
-    persistSettings();
-    return state;
+    try {
+      const state = await observeService.setFps(fps);
+      settings.observeFps = state.fps ?? DEFAULT_SAMPLE_FPS;
+      persistSettings();
+      return state;
+    } catch (error) {
+      // setFps can apply the local timer before its mailbox status update fails.
+      // Persist the actual running value so the selector and next startup agree.
+      const state = observeService.status();
+      if (Number.isFinite(state.fps)) {
+        settings.observeFps = state.fps;
+        persistSettings();
+      }
+      throw error;
+    }
   });
   ipcMain.handle('app:vision-status', async event => {
     assertLocalUi(event, 'index.html');
