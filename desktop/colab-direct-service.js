@@ -457,7 +457,7 @@ function createVisionService(deps) {
         ...state,
         status: state.model_loaded ? (state.enabled ? 'ready' : state.status) : (['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status) ? state.status : 'starting'),
         enabled: true, model_reload_requested: false, notebook_url: COLAB_NOTEBOOK_URL,
-        message: state.message || 'Colab accepted activation. Ollama setup/model download and the multimodal smoke test are starting.',
+        message: state.message || 'Colab accepted activation. Ollama setup and model download are starting.',
         manual_steps: manualSteps(state.status)
       };
     } catch (error) {
@@ -468,7 +468,7 @@ function createVisionService(deps) {
   function manualSteps(status) {
     const common = [
       'Keep the Colab notebook tab open with its worker cell running. Screenshots and reports travel through the authenticated HTTPS tunnel; Colab does not need a GitHub token or Colab Secret.',
-      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to the temporary local disk in Colab. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress and the vision smoke-test result.'
+      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to the temporary local disk in Colab. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress. Startup does not run inference on a synthetic image, so the first real screenshot request may take longer while Ollama loads the model into GPU memory.'
     ];
     if (status === 'gpu_unavailable') return ['Select a Colab GPU runtime if one is offered; free GPU access is not guaranteed.', ...common];
     if (status === 'needs_authentication') return ['Complete any Google Colab runtime authorization requested in the Colab tab.', ...common];
@@ -528,10 +528,10 @@ function createVisionService(deps) {
     if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
     else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
     else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
-    if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The Ollama Qwen3-VL vision model is loaded and its image smoke test has passed in the connected Colab runtime.' };
+    if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'Ollama is healthy and Qwen3-VL 4B is downloaded in the connected Colab runtime. The first real screenshot request may take longer while Ollama loads the model into GPU memory.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and Ollama is installing/downloading the model or running its image smoke test. Keep the Colab cell running and check status again.' };
-    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
+    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and Ollama is installing or downloading the model. Keep the Colab cell running and check status again.' };
+    else checks.model = { status: 'not_verified', message: 'The model is not ready yet. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
     checks.vision = state.enabled
       ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the model is loaded.' : 'Vision is enabled; model setup is still in progress.' }
       : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
