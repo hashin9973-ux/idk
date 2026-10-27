@@ -468,7 +468,7 @@ function createVisionService(deps) {
   function manualSteps(status) {
     const common = [
       'Keep the Colab notebook tab open with its worker cell running. Screenshots and reports travel through the authenticated HTTPS tunnel; Colab does not need a GitHub token or Colab Secret.',
-      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to Colab's temporary local disk. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress and the vision smoke-test result.'
+      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to the temporary local disk in Colab. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress and the vision smoke-test result.'
     ];
     if (status === 'gpu_unavailable') return ['Select a Colab GPU runtime if one is offered; free GPU access is not guaranteed.', ...common];
     if (status === 'needs_authentication') return ['Complete any Google Colab runtime authorization requested in the Colab tab.', ...common];
