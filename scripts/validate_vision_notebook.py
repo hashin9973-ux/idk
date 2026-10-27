@@ -105,7 +105,7 @@ def main():
     required = {
         "Ollama Qwen3-VL 4B instruct model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
         "Ollama native chat API": 'OLLAMA_API + "/api/chat"',
-        "vision image payload": '"images": [image_b64]',
+        "vision image payload": '"images": [model_image_b64]',
         "thinking disabled for concise vision output": '"think": False',
         "structured JSON output": '"format": "json"',
         "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"',
