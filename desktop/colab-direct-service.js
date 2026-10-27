@@ -822,7 +822,7 @@ function createVisionService(deps) {
         data = await directRequest('/result/' + jobId, { timeoutMs: 10000 });
       } catch (error) {
         const message = messageOf(error);
-        if (!/HTTP (?:408|425|429|5\\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED/i.test(message)) {
+        if (!/HTTP (?:408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED/i.test(message)) {
           throw error;
         }
         lastTransientError = message;
