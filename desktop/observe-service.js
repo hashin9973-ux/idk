@@ -56,6 +56,11 @@ function createObserveService(deps = {}) {
   let sampleFps = (() => {
     try { return normalizeSampleFps(getSampleFps()); } catch { return DEFAULT_SAMPLE_FPS; }
   })();
+  let startupCleanupPromise = null;
+
+  async function waitForStartupCleanup() {
+    if (startupCleanupPromise) await startupCleanupPromise.catch(() => {});
+  }
 
   function status() {
     return {
@@ -231,6 +236,7 @@ function createObserveService(deps = {}) {
   }
 
   async function setFps(value) {
+    await waitForStartupCleanup();
     const nextFps = normalizeSampleFps(value);
     if (disposed) throw new Error('Observe service has been disposed.');
     if (nextFps === sampleFps) return status();
@@ -259,6 +265,7 @@ function createObserveService(deps = {}) {
   }
 
   async function setEnabled(value) {
+    await waitForStartupCleanup();
     if (typeof value !== 'boolean') throw new Error('Observe state must be a boolean.');
     if (disposed) throw new Error('Observe service has been disposed.');
     if (value === enabled) return status();
@@ -307,8 +314,46 @@ function createObserveService(deps = {}) {
     return status();
   }
 
+  async function clearStaleContext() {
+    if (startupCleanupPromise) return startupCleanupPromise;
+    startupCleanupPromise = (async () => {
+      if (enabled || disposed || !githubAuth || typeof githubAuth.requestApi !== 'function') return status();
+      const path = '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json';
+      try {
+        const response = await githubAuth.requestApi({ method: 'GET', path, query: { ref: 'bridge-mailbox' } });
+        const record = response && response.result;
+        if (!record || typeof record.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(record.sha)) {
+          throw new Error('GitHub returned an invalid Observe context file record.');
+        }
+        currentSha = record.sha;
+        let payload = null;
+        try {
+          const raw = Buffer.from(String(record.content || ''), 'base64').toString('utf8');
+          payload = JSON.parse(raw);
+        } catch {}
+        const hasLiveContext = !payload || payload.enabled === true ||
+          (Array.isArray(payload.frames) && payload.frames.length > 0) ||
+          (Number(payload.frame_count) || 0) > 0;
+        if (hasLiveContext) {
+          frames = [];
+          pendingCapture = null;
+          lastFingerprint = '';
+          await publish(false);
+          lastError = '';
+        }
+        return status();
+      } catch (error) {
+        if (/GitHub HTTP 404: Not Found/i.test(String(error && error.message || error))) return status();
+        lastError = safeText(error && error.message || error || 'Could not clear stale Observe context', 500);
+        throw error;
+      }
+    })();
+    return startupCleanupPromise;
+  }
+
   async function dispose() {
     if (disposed) return;
+    await waitForStartupCleanup();
     const wasEnabled = enabled;
     observeEpoch += 1;
     enabled = false;
@@ -326,7 +371,7 @@ function createObserveService(deps = {}) {
     disposed = true;
   }
 
-  return { status, setEnabled, setFps, dispose };
+  return { status, setEnabled, setFps, clearStaleContext, dispose };
 }
 
 module.exports = { createObserveService, OBSERVE_PROTOCOL, DEFAULT_SAMPLE_FPS, OBSERVE_FPS_OPTIONS, SAMPLE_INTERVAL_MS, PUBLISH_INTERVAL_MS, FRAME_LIMIT, intervalForFps };
