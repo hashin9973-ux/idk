@@ -27,7 +27,7 @@ const MAX_FILESYSTEM_INDEX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_MAILBOX_RETENTION_DAYS = 30;
 const DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MAX_MAILBOX_CLEANUP_SCAN = 100;
-const MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS = 25;
+const MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS = 10;
 const MAX_MAILBOX_ARTIFACTS_PER_RECORD = 500;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
@@ -838,7 +838,7 @@ function createRepositoryBridge(deps) {
       !parts.some(segment => segment === '.gitkeep');
   }
 
-  async function commitMailboxDeletions(files) {
+  async function commitMailboxDeletions(files, expectedHeadSha) {
     const unique = new Map();
     for (const item of files) {
       if (!item || !isSafeMailboxCleanupPath(item.path) || typeof item.sha !== 'string' || !item.sha) {
@@ -851,27 +851,19 @@ function createRepositoryBridge(deps) {
     const repoPath = '/repos/' + config.owner + '/' + config.repo;
     const refReadPath = repoPath + '/git/ref/heads/' + config.branch;
     const refUpdatePath = repoPath + '/git/refs/heads/' + config.branch;
-    const refBefore = await api('GET', refReadPath);
-    const headSha = refBefore && refBefore.result && refBefore.result.object && refBefore.result.object.sha;
-    if (typeof headSha !== 'string' || !/^[a-f0-9]{40}$/i.test(headSha)) {
-      throw new Error('Mailbox cleanup could not resolve the current branch head.');
+
+    // The cleanup scan records each target's SHA from the same unchanged branch
+    // snapshot. Verify the head once rather than GETting every artifact separately.
+    // The non-force ref update below rejects any commit racing after this check.
+    const refCurrent = await api('GET', refReadPath);
+    const headSha = refCurrent && refCurrent.result && refCurrent.result.object && refCurrent.result.object.sha;
+    if (typeof headSha !== 'string' || !/^[a-f0-9]{40}$/i.test(headSha) || headSha !== expectedHeadSha) {
+      throw new Error('Mailbox branch advanced during cleanup; no files were deleted. The next pass will retry.');
     }
     const commitRead = await api('GET', repoPath + '/git/commits/' + headSha);
     const baseTreeSha = commitRead && commitRead.result && commitRead.result.tree && commitRead.result.tree.sha;
     if (typeof baseTreeSha !== 'string' || !/^[a-f0-9]{40}$/i.test(baseTreeSha)) {
       throw new Error('Mailbox cleanup could not resolve the current root tree.');
-    }
-    for (const [relativePath, expectedSha] of unique) {
-      const current = relativePath.split('/')[1] === 'artifacts'
-        ? await readRemoteContent(relativePath)
-        : await readRemoteFile(relativePath);
-      if (!current || current.sha !== expectedSha) {
-        throw new Error('Mailbox changed during cleanup; no files were deleted. The next pass will retry.');
-      }
-    }
-    const refVerify = await api('GET', refReadPath);
-    if (!refVerify || !refVerify.result || !refVerify.result.object || refVerify.result.object.sha !== headSha) {
-      throw new Error('Mailbox branch advanced during cleanup; no files were deleted. The next pass will retry.');
     }
     const treeResponse = await api('POST', repoPath + '/git/trees', {
       base_tree: baseTreeSha,
@@ -906,6 +898,15 @@ function createRepositoryBridge(deps) {
         Number(sharedState.pending_count || 0) !== 0 ||
         (Array.isArray(sharedState.active_request_ids) && sharedState.active_request_ids.length > 0)) {
       return { skipped: true, reason: 'shared_worker_state_not_fresh_and_idle' };
+    }
+
+    const configForSnapshot = currentConfig();
+    const repoPathForSnapshot = '/repos/' + configForSnapshot.owner + '/' + configForSnapshot.repo;
+    const refPathForSnapshot = repoPathForSnapshot + '/git/ref/heads/' + configForSnapshot.branch;
+    const snapshotRef = await api('GET', refPathForSnapshot);
+    const snapshotHeadSha = snapshotRef && snapshotRef.result && snapshotRef.result.object && snapshotRef.result.object.sha;
+    if (typeof snapshotHeadSha !== 'string' || !/^[a-f0-9]{40}$/i.test(snapshotHeadSha)) {
+      throw new Error('Mailbox cleanup could not capture a stable branch head.');
     }
 
     const results = (await listFolder('bridge/results'))
@@ -978,7 +979,7 @@ function createRepositoryBridge(deps) {
 
     const allFiles = selected.flatMap(item => item.files);
     if (!allFiles.length) return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
-    const deletion = await commitMailboxDeletions(allFiles);
+    const deletion = await commitMailboxDeletions(allFiles, snapshotHeadSha);
     return { skipped: false, deletedRecords: selected.length, deletedFiles: deletion.deleted, commitSha: deletion.commitSha || null };
   }
 
