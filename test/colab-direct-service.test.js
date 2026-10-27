@@ -399,6 +399,15 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
 });
 
+test('coordinate input refuses to act without a live desktop screenshot frame', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const result = await f.service.inputAction({ action: 'click', x: 100, y: 100 }, 'computer-111111111111111111111111');
+  assert.equal(result.status, 'error');
+  assert.match(result.error, /fresh live desktop screenshot/i);
+  assert.equal(f.inputCalls.length, 0, 'no local input should be sent without a live screenshot frame');
+});
+
 test('focused screenshot observation crops only within the screenshot frame and keeps the output frame explicit', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
