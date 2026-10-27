@@ -18,6 +18,11 @@
   const visionLabel = byId('vision-status');
   const visionSignInButton = byId('vision-signin');
   const visionSetupButton = byId('vision-setup-check');
+  const visionPasteButton = byId('vision-paste-url');
+  const visionManualPanel = byId('vision-manual-panel');
+  const visionEndpointInput = byId('vision-endpoint-url');
+  const visionEndpointConnectButton = byId('vision-endpoint-connect');
+  const visionEndpointCancelButton = byId('vision-endpoint-cancel');
   const visionSetupDetail = byId('vision-setup-detail');
   const visionMailboxDetail = byId('vision-mailbox-detail');
   const visionColabDetail = byId('vision-colab-detail');
@@ -427,32 +432,61 @@
     scheduleVisionConnectionCheck();
   }
 
-  async function connectColab() {
+  function setVisionManualPanelVisible(visible) {
+    const expanded = visible === true;
+    visionManualPanel.hidden = !expanded;
+    visionPasteButton.setAttribute('aria-expanded', String(expanded));
+    visionPasteButton.textContent = expanded ? 'Hide URL' : 'Paste URL';
+    void window.windowsBridge.setVisionManualPanel(expanded).catch(() => {});
+    if (expanded) {
+      window.setTimeout(() => {
+        if (!visionManualPanel.hidden) visionEndpointInput.focus();
+      }, 0);
+    }
+  }
+
+  async function connectColab(endpointUrl) {
+    const isManual = typeof endpointUrl === 'string' && endpointUrl.trim().length > 0;
     if (visionBusy) return;
     visionBusy = true;
     visionSignInButton.disabled = true;
-    visionSignInButton.textContent = 'Connecting…';
+    visionSignInButton.textContent = isManual ? 'Checking URL…' : 'Connecting…';
+    if (isManual) {
+      visionEndpointConnectButton.disabled = true;
+      visionEndpointConnectButton.textContent = 'Verifying…';
+    }
+    let result = null;
     try {
-      const result = await window.windowsBridge.connectColab();
+      result = await window.windowsBridge.connectColab(isManual ? endpointUrl.trim() : undefined);
       if (result && result.connected === true) {
+        stopVisionConnectionWatch();
         renderVisionStatus(result);
         visionSetupDetail.textContent = 'Colab connected';
-        visionSetupDetail.title = result.message || 'Colab responded through the direct HTTPS tunnel.';
+        visionSetupDetail.title = result.message || 'Colab responded through the direct authenticated HTTPS endpoint.';
         visionSetupDetail.dataset.state = 'passed';
         visionColabDetail.textContent = 'Direct tunnel live';
-        visionColabDetail.title = result.message || 'The app is connected to Colab through the authenticated HTTPS tunnel.';
+        visionColabDetail.title = result.message || 'The app verified the authenticated HTTPS connection.';
         visionColabDetail.dataset.state = 'passed';
+        visionModelDetail.textContent = result.model_loaded === true ? 'Loaded' : 'Not started';
+        visionModelDetail.title = result.model_loaded === true
+          ? 'The Colab model is loaded.'
+          : 'Connecting does not activate vision or download the model.';
+        visionModelDetail.dataset.state = result.model_loaded === true ? 'passed' : 'not_verified';
+        if (isManual) {
+          visionEndpointInput.value = '';
+          setVisionManualPanelVisible(false);
+        }
         void window.windowsBridge.checkVisionSetup().then(renderVisionSetup).catch(() => {});
       } else if (result && result.status === 'waiting_for_runtime') {
         visionLabel.textContent = 'Colab: waiting for connection';
         visionLabel.title = result.message || 'Waiting for a direct Colab connection.';
         setDot(visionDot, 'waiting');
         visionSetupDetail.textContent = 'Waiting for Colab';
-        visionSetupDetail.title = result.message || 'Open the notebook, connect a runtime if needed, and run the server cell. Then click Connect Windows Bridge and approve opening the Windows app.';
+        visionSetupDetail.title = result.message || 'Open the notebook, connect a runtime if needed, and run the server cell.';
         visionSetupDetail.dataset.state = 'in_progress';
         renderVisionStatus(result);
         visionColabDetail.textContent = 'Waiting for notebook URL';
-        visionColabDetail.title = result.message || 'The app is watching for the public endpoint copied by the notebook.';
+        visionColabDetail.title = result.message || 'The app is watching for the endpoint. You can paste it manually too.';
         visionColabDetail.dataset.state = 'action_required';
         visionModelDetail.textContent = 'Not started';
         visionModelDetail.title = 'Connecting to Colab does not activate vision or download the model.';
@@ -466,6 +500,12 @@
         visionColabDetail.textContent = result && result.status === 'action_required' ? 'Sign in to GitHub first' : 'Not connected';
         visionColabDetail.title = message;
         visionColabDetail.dataset.state = result && result.status === 'action_required' ? 'action_required' : 'failed';
+        if (result) renderVisionStatus(result);
+        if (isManual && visionMessage) {
+          visionMessage.textContent = 'Could not connect using that URL. ' + String(message);
+          visionMessage.title = String(message);
+          visionMessage.dataset.state = 'failed';
+        }
       }
     } catch (error) {
       const message = String(error && error.message || error);
@@ -475,13 +515,19 @@
       visionColabDetail.textContent = 'Not connected';
       visionColabDetail.title = message;
       visionColabDetail.dataset.state = 'failed';
+      if (visionMessage) {
+        visionMessage.textContent = 'Connection failed. ' + message;
+        visionMessage.title = message;
+        visionMessage.dataset.state = 'failed';
+      }
     } finally {
       visionBusy = false;
       visionSignInButton.disabled = false;
       visionSignInButton.textContent = 'Connect Colab';
+      visionEndpointConnectButton.disabled = false;
+      visionEndpointConnectButton.textContent = 'Connect using URL';
     }
   }
-
 
   async function runVisionSetupCheck() {
     if (visionBusy) return;
@@ -616,6 +662,24 @@
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   visionSignInButton.addEventListener('click', () => { void connectColab(); });
+  visionPasteButton.addEventListener('click', () => {
+    setVisionManualPanelVisible(visionManualPanel.hidden);
+  });
+  visionEndpointCancelButton.addEventListener('click', () => {
+    visionEndpointInput.value = '';
+    setVisionManualPanelVisible(false);
+  });
+  visionManualPanel.addEventListener('submit', event => {
+    event.preventDefault();
+    const endpointUrl = visionEndpointInput.value.trim();
+    if (!endpointUrl) {
+      visionMessage.textContent = 'Paste the complete Colab endpoint URL from the running notebook cell.';
+      visionMessage.dataset.state = 'action_required';
+      visionEndpointInput.focus();
+      return;
+    }
+    void connectColab(endpointUrl);
+  });
   visionSetupButton.addEventListener('click', () => { void runVisionSetupCheck(); });
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
