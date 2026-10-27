@@ -68,6 +68,7 @@ function fixture(options = {}) {
   let clipboardText = options.initialClipboard || '';
   const calls = [];
   const inputCalls = [];
+  const asyncResults = new Map();
   const inputControl = {
     run: async (steps, frame) => { inputCalls.push({ steps, frame }); return { status: 'input_completed', actions_executed: steps.length, coordinate_frame: frame }; },
     releaseAll: async () => ({ released: 0 }),
@@ -140,8 +141,23 @@ function fixture(options = {}) {
         state = { ...state, status: 'inactive', enabled: false };
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: false, runtime_kept_alive: true });
       }
+      if (route.startsWith('/result/')) {
+        const requestId = route.slice('/result/'.length);
+        const pending = asyncResults.get(requestId);
+        if (!pending) return response(404, { error: 'unknown test result request' });
+        if (Date.now() < pending.readyAt) {
+          return response(202, {
+            protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, status: 'processing',
+            input_sha256: pending.result.input_sha256, poll_after_ms: 5
+          });
+        }
+        return response(200, pending.result);
+      }
       if (route === '/analyze') {
-        return response(200, {
+        if (options.analyzeDelayMs) {
+          await new Promise(resolve => setTimeout(resolve, options.analyzeDelayMs));
+        }
+        const result = {
           protocol: 'chatgpt-colab-vision-result/v1',
           request_id: body.request_id,
           status: 'completed',
@@ -151,7 +167,18 @@ function fixture(options = {}) {
           inference_ms: 75,
           completed_at: new Date().toISOString(),
           report: JSON.stringify(createVisionReport(640, 360))
-        });
+        };
+        if (options.asyncAnalyze) {
+          asyncResults.set(body.request_id, {
+            readyAt: Date.now() + (options.asyncAnalyzeDelayMs || 35),
+            result
+          });
+          return response(202, {
+            protocol: DIRECT_VISION_PROTOCOL, request_id: body.request_id, status: 'processing',
+            input_sha256: body.sha256, poll_after_ms: 5
+          });
+        }
+        return response(200, result);
       }
       return response(404, { error: 'not found' });
     }
@@ -199,6 +226,21 @@ test('Colab vision notebook uses a 16,384-token context and reports the configur
   assert.match(pythonSource, /"num_ctx": VISION_CONTEXT_TOKENS/);
   assert.doesNotMatch(pythonSource, /"num_ctx": 4096/);
   assert.match(pythonSource, /"context_window_tokens": VISION_CONTEXT_TOKENS/);
+});
+
+test('Colab serves long vision inference asynchronously through a matching result ID', () => {
+  const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
+  const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
+  const pythonSource = (notebook.cells || [])
+    .filter(cell => cell.cell_type === 'code' && Array.isArray(cell.source))
+    .map(cell => cell.source.join(''))
+    .join('\\n');
+
+  assert.match(pythonSource, /def _run_vision_job\\(body\\):/);
+  assert.match(pythonSource, /route is not None and route\\.startswith\\("\\/result\\/"\\)/);
+  assert.match(pythonSource, /threading\\.Thread\\([\\s\\S]*target=_run_vision_job/);
+  assert.match(pythonSource, /MAX_VISION_JOBS = 8/);
+  assert.match(pythonSource, /"status": "processing"/);
 });
 
 test('endpoint validation accepts only HTTPS Quick Tunnel URLs with a secret path token', () => {
@@ -411,6 +453,41 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.frame.width_px, 640);
   assert.equal(analyzeCall.body.accessibility.available, false);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
+});
+
+test('a screenshot wait timeout returns pending and the same request ID can be resumed', async t => {
+  const f = fixture({ analyzeDelayMs: 80 });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-pending-timeout');
+  const requestId = 'computer-999999999999999999999999';
+
+  const pending = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, requestId);
+  assert.equal(pending.status, 'inference_in_progress');
+  assert.equal(pending.pending, true);
+  assert.equal(pending.request_id, requestId);
+  assert.ok(pending.input_image && pending.input_image.sha256);
+
+  await new Promise(resolve => setTimeout(resolve, 100));
+  const completed = await f.service.wait({ request_id: requestId, waitMs: 1000 });
+  assert.equal(completed.status, 'report_available');
+  assert.equal(completed.request_id, requestId);
+});
+
+test('asynchronous Colab inference is polled by the same ID and returns a validated report', async t => {
+  const f = fixture({ asyncAnalyze: true, asyncAnalyzeDelayMs: 40 });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-async-analysis');
+  const requestId = 'computer-888888888888888888888888';
+
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, requestId);
+  assert.equal(result.status, 'report_available');
+  assert.equal(result.request_id, requestId);
+  assert.equal(result.input_sha256, result.input_image.sha256);
+  assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/result/' + requestId));
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, 1,
+    'the screenshot is submitted exactly once even when polling');
 });
 
 test('coordinate input refuses to act without a live desktop screenshot frame', async t => {
