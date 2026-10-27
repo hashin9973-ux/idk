@@ -331,7 +331,7 @@ test('batch runs independent steps concurrently and preserves request-order resu
   }
 });
 
-test('batch accepts task-sized workflows beyond twenty steps in one bridge request', async () => {
+test('batch accepts 100 steps and runs 100 independent operations concurrently', async () => {
   const root = fixture();
   try {
     const bridge = createToolBridge({
@@ -341,12 +341,33 @@ test('batch accepts task-sized workflows beyond twenty steps in one bridge reque
       localTools,
       githubAuth: {}
     });
-    const steps = Array.from({ length: 25 }, (_, i) => ({ id: 'status' + i, tool: 'project_status', args: {} }));
-    const result = await bridge.runTool('batch', { steps }, 'req-batch-25-step');
+    let active = 0;
+    let maximumActive = 0;
+    const concurrentTools = {
+      ...localTools,
+      async executeTool(workspaceRoot, tool, args) {
+        active++;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        active--;
+        return { tool, completed: true };
+      }
+    };
+    const concurrentBridge = createToolBridge({
+      dialog: { showMessageBox: async () => { throw new Error('read-only project status should not prompt'); } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools: concurrentTools,
+      githubAuth: {}
+    });
+    const steps = Array.from({ length: 100 }, (_, i) => ({ id: 'status' + i, tool: 'project_status', args: {} }));
+    const result = await concurrentBridge.runTool('batch', { steps, maxConcurrency: 100 }, 'req-batch-100-step');
     assert.equal(result.ok, true, result.error || 'larger batch failed');
-    assert.equal(result.result.completed_steps, 25);
-    assert.equal(result.result.requested_steps, 25);
-    assert.equal(result.result.steps.length, 25);
+    assert.equal(result.result.completed_steps, 100);
+    assert.equal(result.result.requested_steps, 100);
+    assert.equal(result.result.steps.length, 100);
+    assert.equal(result.result.max_concurrency, 100);
+    assert.equal(maximumActive, 100, '100 independent operations should be active concurrently when requested');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -403,9 +424,9 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     assert.equal(result.status, 'success');
     assert.equal(result.result.tool_calling.catalog_version, 1);
     assert.equal(batch.parameters.properties.steps.type, 'array');
-    assert.equal(batch.parameters.properties.steps.maxItems, 50);
-    assert.equal(batch.parameters.properties.maxConcurrency.default, 4);
-    assert.equal(batch.parameters.properties.maxConcurrency.maximum, 8);
+    assert.equal(batch.parameters.properties.steps.maxItems, 100);
+    assert.equal(batch.parameters.properties.maxConcurrency.default, 32);
+    assert.equal(batch.parameters.properties.maxConcurrency.maximum, 100);
     assert.ok(batch.parameters.properties.steps.items.properties.tool.enum.includes('read_file'));
     assert.equal(batch.parameters.properties.steps.items.properties.tool.enum.includes('batch'), false);
     assert.deepEqual(write.parameters.required, ['path', 'content']);
