@@ -998,8 +998,10 @@ function createRepositoryBridge(deps) {
       mailboxCleanupLastDeletedFiles = outcome.deletedFiles || 0;
       mailboxCleanupLastError = null;
       if (mailboxCleanupLastDeletedRecords > 0) {
-        // Drain old history at one-minute intervals, but keep every pass bounded.
-        lastMailboxCleanupAt -= Math.max(0, cleanupIntervalMs - 60 * 1000);
+        // Drain old history hourly at most, but keep every pass bounded. The worker
+        // already polls GitHub frequently; avoid approaching its API rate limit while
+        // steadily clearing an expired backlog.
+        lastMailboxCleanupAt -= Math.max(0, cleanupIntervalMs - 60 * 60 * 1000);
       }
     } catch (error) {
       lastMailboxCleanupAt = Date.now();
