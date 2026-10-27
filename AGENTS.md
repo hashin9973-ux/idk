@@ -11,6 +11,14 @@ Keep changes within the requested scope. Do not modify a game, save, installed m
 - The local tool catalog and fresh `get_agent_context` output are authoritative for the installed worker's capabilities and workspace mode. Avoid assuming a tool, parameter, install path, version, or feature exists without inspecting it.
 - Discover facts available from the user's Windows environment (installed-app metadata, paths, manifests, configuration, logs, project files) before asking the user. Ask only for intent/preferences that cannot be discovered safely.
 
+## Actually use available parallelism
+
+- Do not serialize independent operations merely because each tool returns an output. When the interface permits it, launch independent read-only GitHub/file queries concurrently in the same assistant turn.
+- For local Windows work, put known independent operations in one `batch` request. The current schema accepts 1–50 steps and `maxConcurrency` from 1 to 8 (default 4); choose a higher value for genuinely independent reads and checks instead of silently accepting serial execution.
+- Bootstrap with fresh `get_agent_context` when current worker state, workspace boundaries, or the registered catalog matters. After that dependency is satisfied, batch the independent discovery work. Use result references or serial execution only where inputs depend on previous results, operations conflict, or side effects require ordering.
+- The Windows mailbox dispatcher currently permits up to 10 independent requests in flight. This is a measured/configured concurrency ceiling, not a guarantee that every ChatGPT turn will parallelize calls: actively choose parallel calls when safe, and report when a platform or unavailable worker prevents real execution.
+- Never parallelize conflicting writes, overlapping installs, shared Git mutations, or operations whose prior side effects have not been reconciled.
+
 ## Preserve the Windows workspace boundary
 - The selected workspace can be a folder or a whole drive, but a whole-drive workspace must only be selected after the app's explicit confirmation. Never change the selected workspace automatically.
 - In drive-root mode, background indexing is intentionally shallow. Inspect the root, then browse relevant subdirectories with targeted tools instead of crawling the entire drive.
@@ -44,6 +52,14 @@ The only public computer interface is the single `computer` tool with `status`, 
 - Follow the existing JavaScript/Electron stack, code style, dependency versions, and established module boundaries. Prefer focused, tested changes over broad rewrites.
 - Add or update regression tests for behavioral changes, especially workspace path boundaries, request/result protocol behavior, approval policy, authentication, and UI/app contracts.
 - Run `npm run check` and `npm test` for code changes. Run `npm run dist:win` when an installer build is requested or necessary to validate packaging. Inspect exit codes, actual output, generated artifacts, and the final diff; a passing syntax check alone does not prove the end-to-end Windows workflow.
+
+### Automatic Windows installation after successful app implementations
+- When source-code changes in this repository pass `npm run check` and `npm test`, the Windows packaging workflow succeeds, and a downloadable release asset is published, continue through installation on the user's actual Windows machine during the same task unless the user explicitly says not to install.
+- Before downloading or starting an installer, inspect the fresh worker heartbeat, the matching status/claim/result of any prior install operation, current installed app markers, and active installer processes. Never start a second installer/download while an earlier installation may still be running.
+- Verify the exact release asset size and SHA-256 against GitHub release metadata before executing it. Do not use fire-and-forget/deferred installers as proof of completion; capture the installer exit code and then independently verify the installed package contains the expected build markers, the executable/process state, and a fresh worker heartbeat/result.
+- If an installation can restart or stop the worker and its result is lost, do not replay blindly. Reconcile the same request and inspect process/install logs first. If the worker is stale or unreachable, report the evidence and stop short of claiming installation; a published installer link is not an installed build.
+- Documentation-only edits that do not change the app executable do not need a redundant install merely because CI publishes another identical app build.
+
 - Do not claim CI, installer, live OAuth, Windows smoke tests, Colab inference, or end-to-end behavior passed unless those checks actually ran and support the claim.
 
 ## Instruction hierarchy
