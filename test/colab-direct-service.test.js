@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const {
   createVisionService,
   DIRECT_VISION_PROTOCOL,
+  validateVisionContext,
   safeTunnelUrl,
   safeApiKey,
   parseTunnelEndpoint
@@ -21,6 +22,37 @@ const serviceTestCalls = new WeakMap();
 function response(status, payload) {
   return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }
+
+function createVisionReport(width, height) {
+  return {
+    schema_version: 'windows-vision-context/v1',
+    frame: { width_px: width, height_px: height, coordinate_space: 'screenshot_jpeg_px', origin: 'top-left' },
+    scene: {
+      summary: 'A test window is visible.',
+      active_application: 'Test window',
+      window_title: 'Test window',
+      screen_type: 'desktop',
+      current_state: 'Idle test screen.',
+      visible_dialogs: [],
+      task_relevant_facts: ['The primary test window is visible.'],
+      uncertainties: ['Small text may be unreadable.']
+    },
+    regions: [{ id: 'r1', label: 'main window', purpose: 'Primary visible interface', bbox_1000: [0, 0, 1000, 1000], bbox_px: [0, 0, width, height] }],
+    text_spans: [{ text: 'Test window', region_id: 'r1', kind: 'heading', bbox_1000: [10, 10, 200, 80], bbox_px: [Math.floor(width * 0.01), Math.floor(height * 0.01), Math.floor(width * 0.2), Math.floor(height * 0.08)] }],
+    controls: [{
+      id: 'c1', label: 'OK', role: 'button', region_id: 'r1', bbox_1000: [100, 100, 250, 180],
+      bbox_px: [Math.floor(width * 0.1), Math.floor(height * 0.1), Math.floor(width * 0.25), Math.floor(height * 0.18)],
+      center_px: [999, 999], coordinate_source: 'vision_estimate', state: 'enabled',
+      relation: 'In the main window', targetability: 'clear', position_verification: 'unverified_visual_estimate'
+    }],
+    focused_element: null,
+    cursor: { visible: false, bbox_1000: null, bbox_px: null, location: 'Not confidently visible.' },
+    accessibility: { available: false, source: 'windows_uia', reason: 'not_available', active_window: null, focused_control: null, controls: [], truncated: false, node_count: 0 },
+    ocr: { available: false, method: 'tesseract', reason: 'ocr_unavailable', text_spans: [] },
+    limitations: ['Visual target positions are estimates and have not been independently verified.']
+  };
+}
+
 
 function fixture(options = {}) {
   let state = {
@@ -61,7 +93,11 @@ function fixture(options = {}) {
     githubAuth,
     getSettings: () => ({ repositoryBridge: { owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' } }),
     getWorkspaceRoot: () => '',
-    captureScreenshot: async () => ({ bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png' }),
+    captureScreenshot: async () => ({
+      bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png',
+      ...(Number.isFinite(options.capturedAt) ? { captured_at: options.capturedAt } : {})
+    }),
+    getAccessibleSnapshot: options.getAccessibleSnapshot,
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
@@ -114,7 +150,7 @@ function fixture(options = {}) {
           model_repository: 'test-model-repo',
           inference_ms: 75,
           completed_at: new Date().toISOString(),
-          report: 'Overview\nA test window is visible.\n\nUncertainty\nSmall text is not legible.'
+          report: JSON.stringify(createVisionReport(640, 360))
         });
       }
       return response(404, { error: 'not found' });
@@ -346,10 +382,108 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.protocol, DIRECT_VISION_PROTOCOL);
   assert.equal(analyzeCall.body.sha256, result.input_sha256);
   assert.ok(typeof analyzeCall.body.image_base64 === 'string');
-  assert.match(analyzeCall.body.prompt, /Screenshot pixel frame: 640x360/);
+  assert.match(analyzeCall.body.prompt, /Screenshot frame: 640x360/);
   assert.equal(result.input_image.width, 640);
   assert.equal(result.input_image.height, 360);
+  const report = JSON.parse(result.report);
+  assert.equal(report.schema_version, 'windows-vision-context/v1');
+  assert.equal(report.frame.width_px, 640);
+  assert.deepEqual(report.controls[0].center_px, [
+    (report.controls[0].bbox_px[0] + report.controls[0].bbox_px[2]) / 2,
+    (report.controls[0].bbox_px[1] + report.controls[0].bbox_px[3]) / 2
+  ], 'centers must be recalculated from the validated bounding boxes');
+  assert.match(analyzeCall.body.prompt, /Screenshot frame: 640x360/);
+  assert.equal(analyzeCall.body.frame.coordinate_space, 'screenshot_jpeg_px');
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.accessibility.available, false);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
+});
+
+test('coordinate input refuses to act without a live desktop screenshot frame', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const result = await f.service.inputAction({ action: 'click', x: 100, y: 100 }, 'computer-111111111111111111111111');
+  assert.equal(result.status, 'error');
+  assert.match(result.error, /fresh live desktop screenshot/i);
+  assert.equal(f.inputCalls.length, 0, 'no local input should be sent without a live screenshot frame');
+});
+
+test('focused screenshot observation crops only within the screenshot frame and keeps the output frame explicit', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-focused-observation');
+  const result = await f.service.analyzeScreenshot({
+    source: 'desktop',
+    region: [80, 40, 400, 300],
+    prompt: 'Inspect the dialog and describe the important controls.'
+  }, 'computer-eeeeeeeeeeeeeeeeeeeeeeee');
+  assert.equal(result.status, 'report_available');
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.deepEqual(analyzeCall.body.region_px, [80, 40, 400, 300]);
+  assert.match(analyzeCall.body.prompt, /Original screenshot frame: 640x360/);
+  assert.match(analyzeCall.body.prompt, /Return normalized boxes relative to the image shown/);
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.frame.height_px, 360);
+});
+
+test('focused observation rejects an invalid or too-small crop before uploading', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-invalid-focused-observation');
+  const result = await f.service.analyzeScreenshot({
+    source: 'desktop', region: [0, 0, 20, 20]
+  }, 'computer-ffffffffffffffffffffffff');
+  assert.equal(result.status, 'error');
+  assert.match(result.error, /at least 48×48 pixels/i);
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/analyze'), false);
+});
+
+test('fresh Windows accessibility bounds are sent with the exact screenshot frame', async t => {
+  const f = fixture({
+    getAccessibleSnapshot: async ({ screen, frame }) => ({
+      available: true, source: 'windows_uia',
+      active_window: { title: 'Test app', process_id: 42, bbox_px: [0, 0, frame.width, frame.height], bbox_1000: [0, 0, 1000, 1000] },
+      focused_control: null,
+      controls: [{
+        id: 'uia-1', label: 'OK', role: 'Button', enabled: true, focused: false,
+        bbox_px: [100, 100, 200, 140], bbox_1000: [156, 278, 313, 389],
+        center_px: [150, 120], source: 'windows_uia', grounding: 'windows_accessibility_bounds'
+      }],
+      truncated: false, node_count: 4,
+      received_screen: screen, received_frame: frame
+    })
+  });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-uia-analysis');
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-cccccccccccccccccccccccc');
+  assert.equal(result.status, 'report_available');
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.equal(analyzeCall.body.accessibility.available, true);
+  assert.equal(analyzeCall.body.accessibility.controls[0].source, 'windows_uia');
+  assert.deepEqual(analyzeCall.body.accessibility.controls[0].bbox_px, [100, 100, 200, 140]);
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.frame.height_px, 360);
+});
+
+test('stale accessibility snapshots are not attached to a newer screenshot', async t => {
+  const f = fixture({
+    capturedAt: Date.now() - 6000,
+    getAccessibleSnapshot: async ({ frame }) => ({
+      available: true, active_window: null, focused_control: null, controls: [],
+      truncated: false, node_count: 0, frame
+    })
+  });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-stale-uia-analysis');
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-dddddddddddddddddddddddd');
+  assert.equal(result.status, 'report_available');
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.equal(analyzeCall.body.accessibility.available, false);
+  assert.equal(analyzeCall.body.accessibility.reason, 'snapshot_too_old_for_frame');
 });
 
 test('setup check keeps GitHub mailbox verification separate and requires no Colab secret', async t => {
@@ -374,6 +508,9 @@ test('successful Colab connection activates the model automatically and supports
   assert.equal(connected.model_loaded, false);
   assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'));
 
+  const initialObservation = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-aaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(initialObservation.status, 'report_available');
+
   const started = await f.service.inputAction({ action: 'start_control' }, 'control-1');
   assert.equal(started.status, 'control_ready');
   assert.equal(f.service.isControlSessionActive(), true);
@@ -388,7 +525,9 @@ test('successful Colab connection activates the model automatically and supports
   }, 'computer-bbbbbbbbbbbbbbbbbbbbbbbb');
   assert.equal(sequence.status, 'input_completed');
   assert.equal(sequence.observation.status, 'report_available');
-  assert.deepEqual(f.inputCalls[0].frame, { width: 1920, height: 1080 });
+  assert.equal(f.inputCalls[0].frame.width, 640);
+  assert.equal(f.inputCalls[0].frame.height, 360);
+  assert.equal(f.inputCalls[0].frame.source, 'desktop');
   assert.equal(f.inputCalls[0].steps.length, 2);
 
   const stopped = await f.service.inputAction({ action: 'stop_control' });
@@ -439,4 +578,15 @@ test('the desktop uses a clipboard reader only for the explicit Colab connect fl
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
   assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register|wrb_pair_nonce/);
+});
+
+test('structured vision context rejects truncated JSON and mismatched frames', () => {
+  assert.throws(() => validateVisionContext('{"schema_version":"windows-vision-context/v1"', { width_px: 640, height_px: 360 }), /malformed or truncated JSON/i);
+  assert.throws(() => validateVisionContext(JSON.stringify(createVisionReport(320, 180)), { width_px: 640, height_px: 360 }), /does not match the submitted screenshot/i);
+});
+
+test('structured vision context rejects invalid control bounds instead of accepting unreliable coordinates', () => {
+  const report = createVisionReport(640, 360);
+  report.controls[0].bbox_px = [630, 350, 650, 370];
+  assert.throws(() => validateVisionContext(JSON.stringify(report), { width_px: 640, height_px: 360 }), /outside the submitted screenshot frame/i);
 });

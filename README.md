@@ -190,3 +190,13 @@ Connecting and running the notebook does not download the model until the Window
 For a screenshot, the app captures and compresses one image (maximum 600 KiB), sends it directly to the authenticated Colab HTTPS endpoint, and verifies the returned request ID and screenshot SHA-256. The vision report returns directly to the app and is published as the normal GitHub mailbox tool result; the screenshot and the vision-specific output are not uploaded as separate `bridge/vision` repository files. The public tunnel is protected by a high-entropy bearer key, and only the specific health, activation, deactivation, and analysis routes are exposed. Do not share the tunnel URL or notebook output with others.
 
 `computer(action=disable)` prevents new screenshot requests but intentionally leaves the Colab runtime, tunnel, and loaded model running. If the runtime disconnects or expires, rerun the notebook cell to establish a new tunnel, then use `computer(action=connect)` or check `computer(action=status)`. A screenshot result can be pending; in that case use `computer(action=wait)` with the returned request ID.
+
+
+### Structured desktop perception (Colab vision)
+
+The optional Colab vision service returns `windows-vision-context/v1`: a live, structured view of the screenshot rather than a free-form caption. It includes active application and screen state, meaningful regions and their relationships, important visible text, focused/cursor state, task-relevant controls, uncertainty, OCR text boxes, and Windows UI Automation evidence when available.
+
+Coordinates are tied to the exact JPEG screenshot frame. Windows UI Automation bounds are labeled separately from visual estimates; pixel rectangles are validated and center points are computed locally rather than trusted from the model. Malformed JSON, generation-limit exhaustion, invalid boxes, inconsistent normalized/pixel geometry, or frame mismatches produce a failed analysis instead of a false success. OCR is optional and bounded; if unavailable, the report marks that explicitly. Vision is observation-only—the Windows app remains responsible for local input and should capture a fresh screenshot after state-changing actions.
+
+
+Focused observation is supported by `computer(action=screenshot, region=[left, top, right, bottom])` or the follow-up observation of a `sequence`. Region edges are screenshot-frame pixels. The service crops for closer inspection, maps returned boxes back into the original full screenshot frame, and rejects out-of-frame or too-small regions. The region argument is optional; the normal whole-screen observation remains the default.
