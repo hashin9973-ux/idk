@@ -226,8 +226,8 @@ test('worker executes a request once, writes the actual result, claim and heartb
   }
 });
 
-test('worker executes independent mailbox requests concurrently with a bounded limit', async () => {
-  const requests = Array.from({ length: 15 }, (_, index) => ({
+test('worker drains queued mailbox requests without a folder re-read for every completion', async () => {
+  const requests = Array.from({ length: 40 }, (_, index) => ({
     protocol: PROTOCOL,
     request_id: 'req-parallel-' + String(index + 1).padStart(2, '0'),
     created_at: new Date().toISOString(),
@@ -254,14 +254,80 @@ test('worker executes independent mailbox requests concurrently with a bounded l
   });
   try {
     await bridge.start();
+    const requestFolderGetsAtDispatch = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/requests').length;
     await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
-    assert.equal(executions, 15);
-    assert.equal(maximumActive, 10, 'the mailbox worker should use its configured ten-request concurrency');
+    await new Promise(resolve => setTimeout(resolve, 25));
+    const requestFolderGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/requests').length;
+    assert.equal(executions, 40);
+    assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
+    assert.equal(requestFolderGetsAfterDrain, requestFolderGetsAtDispatch, 'request completion should dispatch queued work without another Contents API folder listing');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
       assert.equal(result.status, 'completed');
       assert.equal(result.result.result.id, request.request_id);
     }
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('large batch outputs are preserved in bounded artifacts with an inline index', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-batch-output-bundle',
+    created_at: new Date().toISOString(),
+    tool: 'batch',
+    args: { steps: [{ id: 'placeholder', tool: 'project_status', args: {} }] }
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + request.request_id + '.json', request]] });
+  const fixture = settingsFixture();
+  const steps = Array.from({ length: 80 }, (_, index) => ({
+    id: 'step' + String(index + 1).padStart(3, '0'),
+    tool: 'read_file',
+    call_id: 'req-batch-output-bundle-step' + index,
+    ok: true,
+    status: 'success',
+    result: {
+      path: 'file-' + index + '.txt',
+      content: String(index).padStart(3, '0') + 'x'.repeat(11997),
+      bytes: 12000,
+      sha256: 'abc123',
+      totalLines: 1
+    }
+  }));
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({
+      ok: true,
+      result: { steps, completed_steps: steps.length, skipped_steps: 0, requested_steps: steps.length, max_concurrency: 100 }
+    }),
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'), 10000);
+    const record = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(record.status, 'completed');
+    assert.equal(record.output_truncated, false);
+    const result = record.result.result;
+    assert.equal(result.output_bundled, true);
+    assert.equal(result.steps.length, 80);
+    assert.ok(result.steps.every(step => step.output_in_artifact === true));
+    assert.ok(result.output_artifacts.length >= 2, 'large output should split into Contents-API-safe parts');
+    const allSteps = [];
+    for (const ref of result.output_artifacts) {
+      const entry = fake.files.get(ref.path);
+      assert.ok(entry, 'artifact part was published: ' + ref.path);
+      const part = decode(entry);
+      assert.equal(part.protocol, 'chatgpt-local-batch-output/v1');
+      assert.equal(part.request_id, request.request_id);
+      allSteps.push(...part.steps);
+    }
+    assert.equal(allSteps.length, 80);
+    assert.equal(allSteps[0].result.content.length, 12000);
+    assert.ok(allSteps[79].result.content.endsWith('x'));
   } finally {
     await bridge.stop();
   }
@@ -743,8 +809,8 @@ test('environment refresh publishes one compact agent entry and refreshes after 
   }
 });
 
-test('oversized structured results are compacted into one partial result instead of requiring artifact fetches', async () => {
-  const entries = Array.from({ length: 600 }, (_, index) => ({
+test('oversized non-batch results are compacted into a bounded partial result', async () => {
+  const entries = Array.from({ length: 1800 }, (_, index) => ({
     id: index,
     detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
   }));
@@ -770,7 +836,7 @@ test('oversized structured results are compacted into one partial result instead
     const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
     assert.equal(result.status, 'partial');
     assert.equal(result.output_truncated, true);
-    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 90 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 850 * 1024);
     assert.equal(result.artifacts.length, 0, 'normal results must remain self-contained');
     const compactEntries = result.result.result.entries;
     assert.equal(compactEntries.length, entries.length);

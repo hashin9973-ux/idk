@@ -146,7 +146,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(bridge, /bridge\/results\//);
   assert.match(bridge, /bridge\/claims\//);
   assert.match(bridge, /bridge\/state\/windows-app\.json/);
-  assert.match(bridge, /DEFAULT_INTERVAL_MS = 2000/);
+  assert.match(bridge, /DEFAULT_INTERVAL_MS = 1000/);
   assert.match(bridge, /needs_manual_recovery/);
   assert.match(bridge, /publishState/);
   assert.match(bridge, /allowPublicMailbox/);
