@@ -82,7 +82,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     const method = String(input.method || 'GET').toUpperCase();
     const pathValue = input.path;
-    if (!['GET', 'PUT', 'POST', 'PATCH'].includes(method)) throw new Error('The repository bridge only permits approved mailbox GET/PUT and narrowly scoped retention-cleanup Git-data operations.');
+    if (!['GET', 'PUT', 'POST', 'PATCH'].includes(method)) throw new Error('The repository bridge only permits GitHub GET and PUT for mailbox contents, plus narrowly scoped retention-cleanup Git-data operations.');
     if (typeof pathValue !== 'string' || !pathValue.startsWith('/') || pathValue.includes('\\') ||
         pathValue.includes('%') || pathValue.includes('?') || pathValue.includes('#')) {
       throw new Error('Invalid GitHub repository API path.');
