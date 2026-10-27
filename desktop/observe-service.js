@@ -3,8 +3,20 @@
 const crypto = require('node:crypto');
 
 const OBSERVE_PROTOCOL = 'chatgpt-windows-observe-context/v1';
-const SAMPLE_INTERVAL_MS = 250;
+const DEFAULT_SAMPLE_FPS = 2;
+const OBSERVE_FPS_OPTIONS = Object.freeze([0.5, 1, 2, 4, 8]);
+const SAMPLE_INTERVAL_MS = 1000 / DEFAULT_SAMPLE_FPS;
 const PUBLISH_INTERVAL_MS = 1000;
+
+function normalizeSampleFps(value) {
+  const fps = Number(value);
+  if (!OBSERVE_FPS_OPTIONS.includes(fps)) throw new Error('Observe FPS must be one of: ' + OBSERVE_FPS_OPTIONS.join(', ') + '.');
+  return fps;
+}
+
+function intervalForFps(value) {
+  return Math.round(1000 / normalizeSampleFps(value));
+}
 const FRAME_LIMIT = 10;
 const MAX_CONTEXT_BYTES = 180000;
 
@@ -18,6 +30,7 @@ function createObserveService(deps = {}) {
     captureScreenshot,
     fingerprintScreenshot,
     getAccessibleSnapshot,
+    getSampleFps = () => DEFAULT_SAMPLE_FPS,
     now = () => Date.now(),
     setIntervalImpl = setInterval,
     clearIntervalImpl = clearInterval,
@@ -40,12 +53,16 @@ function createObserveService(deps = {}) {
   let lastCaptureAt = null;
   let lastChangeAt = null;
   let skippedSamples = 0;
+  let sampleFps = (() => {
+    try { return normalizeSampleFps(getSampleFps()); } catch { return DEFAULT_SAMPLE_FPS; }
+  })();
 
   function status() {
     return {
       enabled,
       status: disposed ? 'disposed' : !enabled ? 'off' : lastError ? 'attention' : inFlight ? 'capturing' : 'watching',
-      fps: 4,
+      fps: sampleFps,
+      sample_interval_ms: intervalForFps(sampleFps),
       frame_count: frames.length,
       sequence,
       last_capture_at: lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
@@ -67,7 +84,7 @@ function createObserveService(deps = {}) {
       protocol: OBSERVE_PROTOCOL,
       enabled: enabledValue,
       updated_at: new Date(now()).toISOString(),
-      sample_fps: 4,
+      sample_fps: sampleFps,
       frame_count: enabledValue ? frames.length : 0,
       frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
       status: enabledValue ? 'observing' : 'off',
@@ -197,6 +214,34 @@ function createObserveService(deps = {}) {
     }
   }
 
+  async function setFps(value) {
+    const nextFps = normalizeSampleFps(value);
+    if (disposed) throw new Error('Observe service has been disposed.');
+    if (nextFps === sampleFps) return status();
+    sampleFps = nextFps;
+    if (timer !== null) {
+      clearIntervalImpl(timer);
+      timer = null;
+    }
+    if (enabled) timer = setIntervalImpl(() => { void captureOnce(); }, intervalForFps(sampleFps));
+    if (enabled) {
+      while (publishInFlight) await sleep(50);
+      publishInFlight = true;
+      try {
+        const published = await publish(true);
+        publishedSequence = published.frames.length ? published.frames[published.frames.length - 1].sequence : 0;
+        lastError = '';
+      } catch (error) {
+        lastError = safeText(error && error.message || error || 'Observe FPS publish failed', 500);
+        throw error;
+      } finally {
+        publishInFlight = false;
+        if (enabled && !disposed && sequence > publishedSequence) void publishLatestWhenDue();
+      }
+    }
+    return status();
+  }
+
   async function setEnabled(value) {
     if (typeof value !== 'boolean') throw new Error('Observe state must be a boolean.');
     if (disposed) throw new Error('Observe service has been disposed.');
@@ -212,7 +257,7 @@ function createObserveService(deps = {}) {
       publishedSequence = 0;
       lastError = '';
       if (timer !== null) clearIntervalImpl(timer);
-      timer = setIntervalImpl(() => { void captureOnce(); }, SAMPLE_INTERVAL_MS);
+      timer = setIntervalImpl(() => { void captureOnce(); }, intervalForFps(sampleFps));
       // Serialize the initial status write with any frame publication.
       publishInFlight = true;
       try {
@@ -265,7 +310,7 @@ function createObserveService(deps = {}) {
     disposed = true;
   }
 
-  return { status, setEnabled, dispose };
+  return { status, setEnabled, setFps, dispose };
 }
 
-module.exports = { createObserveService, OBSERVE_PROTOCOL, SAMPLE_INTERVAL_MS, PUBLISH_INTERVAL_MS, FRAME_LIMIT };
+module.exports = { createObserveService, OBSERVE_PROTOCOL, DEFAULT_SAMPLE_FPS, OBSERVE_FPS_OPTIONS, SAMPLE_INTERVAL_MS, PUBLISH_INTERVAL_MS, FRAME_LIMIT, intervalForFps };
