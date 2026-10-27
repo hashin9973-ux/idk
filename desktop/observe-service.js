@@ -103,8 +103,8 @@ function createObserveService(deps = {}) {
       const delay = PUBLISH_INTERVAL_MS - (now() - lastPublishedAt);
       if (delay > 0) await sleep(delay);
       if (!enabled || disposed) return;
-      await publish(true);
-      publishedSequence = sequence;
+      const published = await publish(true);
+      publishedSequence = published.frames.length ? published.frames[published.frames.length - 1].sequence : 0;
       lastError = '';
     } catch (error) {
       lastError = safeText(error && error.message || error || 'Observe publish failed', 500);
@@ -216,8 +216,8 @@ function createObserveService(deps = {}) {
       // Serialize the initial status write with any frame publication.
       publishInFlight = true;
       try {
-        await publish(true);
-        publishedSequence = sequence;
+        const published = await publish(true);
+        publishedSequence = published.frames.length ? published.frames[published.frames.length - 1].sequence : 0;
       } catch (error) {
         lastError = safeText(error && error.message || error, 500);
         enabled = false;
