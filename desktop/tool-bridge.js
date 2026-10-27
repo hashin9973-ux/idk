@@ -188,7 +188,7 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
         }, required: ['type'], additionalProperties: false
       }
     },
-    observe: { type: 'boolean', description: 'For sequence, capture and analyze a fresh screenshot afterward.', default: true },
+    observe: { type: 'boolean', description: 'For sequence, capture/analyze a fresh screenshot after actions. In normal mode, defaults to true. In mode=fast, skips automatic follow-up vision unless explicitly true.' },
     frameWidth: { type: 'integer', minimum: 1, maximum: 20000 }, frameHeight: { type: 'integer', minimum: 1, maximum: 20000 }
   },
   list_dir: { path: { description: 'Directory to list, relative to the selected workspace. Defaults to . (workspace root).', default: '.' } },
