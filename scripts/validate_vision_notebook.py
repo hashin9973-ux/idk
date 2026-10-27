@@ -33,7 +33,7 @@ def main():
         "real image smoke test": "def run_vision_smoke_test()",
         "readiness requires loaded model": "ollama_model_is_loaded()",
         "authenticated direct API": "class DirectVisionHandler(",
-        "bounded model download": 'timeout=900, env=server_env',
+        "bounded model download": "timeout=bounded_setup_timeout(420), env=server_env",
         "visible setup timing": "stage_elapsed_seconds",
         "bounded setup budget": "SETUP_BUDGET_SECONDS = 480",
         "no automatic retries after setup failure": "_setup_blocked = True",
