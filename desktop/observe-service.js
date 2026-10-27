@@ -100,6 +100,22 @@ function createObserveService(deps = {}) {
       content = JSON.stringify(payload);
     }
     const path = '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json';
+    // The SHA is process-local. After an app restart, fetch the current blob SHA before
+    // updating an existing Contents API file; a missing file is the only create case.
+    if (!currentSha) {
+      try {
+        const existing = await githubAuth.requestApi({
+          method: 'GET', path, query: { ref: 'bridge-mailbox' }
+        });
+        const existingSha = existing && existing.result && existing.result.sha;
+        if (typeof existingSha !== 'string' || !/^[a-f0-9]{40}$/i.test(existingSha)) {
+          throw new Error('GitHub returned no valid blob SHA for the existing Observe context file.');
+        }
+        currentSha = existingSha;
+      } catch (error) {
+        if (!/GitHub HTTP 404: Not Found/i.test(String(error && error.message || error))) throw error;
+      }
+    }
     const body = {
       message: enabledValue ? '[observe] update live screen context' : '[observe] clear live screen context',
       content: Buffer.from(content, 'utf8').toString('base64'),
