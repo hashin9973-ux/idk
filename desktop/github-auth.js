@@ -82,7 +82,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     const method = String(input.method || 'GET').toUpperCase();
     const pathValue = input.path;
-    if (!['GET', 'PUT'].includes(method)) throw new Error('The repository bridge only permits GitHub GET and PUT requests.');
+    if (!['GET', 'PUT', 'POST', 'PATCH'].includes(method)) throw new Error('The repository bridge only permits approved mailbox GET/PUT and narrowly scoped retention-cleanup Git-data operations.');
     if (typeof pathValue !== 'string' || !pathValue.startsWith('/') || pathValue.includes('\\') ||
         pathValue.includes('%') || pathValue.includes('?') || pathValue.includes('#')) {
       throw new Error('Invalid GitHub repository API path.');
@@ -133,6 +133,71 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
         url: 'https://api.github.com' + pathValue +
           '?sha=' + encodeURIComponent(branch) + '&path=bridge%2Frequests&per_page=1'
       };
+    }
+
+    const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
+    const cleanupMessage = '[local bridge] retention cleanup of completed mailbox records';
+    const validCleanupPath = value => {
+      if (typeof value !== 'string') return false;
+      const parts = value.split('/');
+      if (parts.some(part => !part || part === '.' || part === '..')) return false;
+      const requestName = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/;
+      if (parts.length === 3 && ['requests', 'results', 'claims'].includes(parts[1]) &&
+          parts[0] === 'bridge' && requestName.test(parts[2])) return true;
+      if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
+          /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}-batch-output-\d{3}\.json$/.test(parts[2])) return true;
+      if (parts.length === 4 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
+          /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(parts[2]) &&
+          /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(parts[3])) return true;
+      return false;
+    };
+    const gitRefReadPath = base + '/git/ref/heads/' + branch;
+    if (pathValue === gitRefReadPath) {
+      if (method !== 'GET' || input.body !== undefined || input.query !== undefined) {
+        throw new Error('Retention cleanup may only read the configured mailbox branch reference.');
+      }
+      return { method, path: pathValue, query: undefined, body: undefined, url: 'https://api.github.com' + pathValue };
+    }
+    const gitCommitPrefix = base + '/git/commits/';
+    if (pathValue.startsWith(gitCommitPrefix)) {
+      const sha = pathValue.slice(gitCommitPrefix.length);
+      if (method !== 'GET' || !validSha(sha) || input.body !== undefined || input.query !== undefined) {
+        throw new Error('Retention cleanup may only read a Git commit by its full SHA.');
+      }
+      return { method, path: pathValue, query: undefined, body: undefined, url: 'https://api.github.com' + pathValue };
+    }
+    if (pathValue === base + '/git/trees') {
+      const body = input.body;
+      if (method !== 'POST' || input.query !== undefined || !body || typeof body !== 'object' ||
+          Array.isArray(body) || Object.keys(body).sort().join(',') !== 'base_tree,tree' ||
+          !validSha(body.base_tree) || !Array.isArray(body.tree) || body.tree.length < 1 || body.tree.length > 1000 ||
+          body.tree.some(entry => !entry || typeof entry !== 'object' || Array.isArray(entry) ||
+            Object.keys(entry).sort().join(',') !== 'mode,path,sha,type' ||
+            entry.mode !== '100644' || entry.type !== 'blob' || entry.sha !== null ||
+            !validCleanupPath(entry.path))) {
+        throw new Error('Git tree writes are limited to bounded deletions of eligible mailbox request/result/claim/artifact files.');
+      }
+      return { method, path: pathValue, query: undefined, body, url: 'https://api.github.com' + pathValue };
+    }
+    if (pathValue === base + '/git/commits') {
+      const body = input.body;
+      if (method !== 'POST' || input.query !== undefined || !body || typeof body !== 'object' ||
+          Array.isArray(body) || Object.keys(body).sort().join(',') !== 'message,parents,tree' ||
+          body.message !== cleanupMessage || !validSha(body.tree) || !Array.isArray(body.parents) ||
+          body.parents.length !== 1 || !validSha(body.parents[0])) {
+        throw new Error('Git commits are limited to a single-parent mailbox retention-cleanup commit.');
+      }
+      return { method, path: pathValue, query: undefined, body, url: 'https://api.github.com' + pathValue };
+    }
+    const gitRefUpdatePath = base + '/git/refs/heads/' + branch;
+    if (pathValue === gitRefUpdatePath) {
+      const body = input.body;
+      if (method !== 'PATCH' || input.query !== undefined || !body || typeof body !== 'object' ||
+          Array.isArray(body) || Object.keys(body).sort().join(',') !== 'force,sha' ||
+          body.force !== false || !validSha(body.sha)) {
+        throw new Error('Mailbox cleanup may only advance the configured branch reference without force.');
+      }
+      return { method, path: pathValue, query: undefined, body, url: 'https://api.github.com' + pathValue };
     }
 
     const prefix = base + '/contents/';
