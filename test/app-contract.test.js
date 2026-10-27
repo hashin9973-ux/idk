@@ -304,7 +304,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('"--parallel", "1"'));
   assert.ok(python.includes('automatically activates after authenticated desktop registration'));
   assert.ok(python.includes('class DirectVisionHandler'));
-  assert.ok(bridge.includes('origin top-left'));
+  assert.ok(bridge.includes('origin at top-left'));
   assert.ok(python.includes('display_public_endpoint'));
   assert.ok(python.includes('PUBLIC_VISION_ENDPOINT='));
   assert.ok(python.includes('navigator.clipboard.writeText'));
