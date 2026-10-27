@@ -350,7 +350,7 @@
   function renderVisionSetup(snapshot) {
     visionSetupSnapshot = snapshot || {};
     const value = visionSetupSnapshot;
-    const summaryStatus = value.status === 'ready' ? 'passed' : value.status === 'failed' ? 'failed' : 'action_required';
+    const summaryStatus = value.status === 'ready' ? 'passed' : value.status === 'failed' ? 'failed' : value.status === 'loading' ? 'in_progress' : 'action_required';
     setCheckDetail(visionSetupDetail, {
       status: summaryStatus,
       message: (value.status || 'unknown') + (value.next_steps && value.next_steps.length ? '\n' + value.next_steps.join('\n') : '')
