@@ -47,6 +47,9 @@ button.status-row:disabled { cursor: default; }
 .github-status-row .status-label { flex: 1; min-width: 0; }
 .vision-row { gap: 7px; }
 .vision-row .status-label { flex: 1; min-width: 0; }
+.vision-row .vision-action { min-width: 53px; }
+.vision-row #vision-signin { min-width: 80px; }
+.vision-row #vision-setup-check { min-width: 67px; }
 .vision-action {
   min-width: 53px;
   height: 23px;
