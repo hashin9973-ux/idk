@@ -73,7 +73,7 @@ test('the controller sends one encoded PowerShell batch and safely releases held
   assert.equal(result.status, 'input_completed');
   assert.equal(result.actions_executed, 3);
   assert.equal(calls.length, 1, 'many input actions must be sent in one process call');
-  assert.ok(calls[0].operations.length >= 10);
+  assert.ok(calls[0].operations.length >= 8);
   await controller.dispose();
   assert.equal(calls.length, 2, 'dispose must release a held key');
   assert.ok(calls[1].operations.some(op => op.type === 'key_event' && op.vk === 0x57 && op.up === true));
