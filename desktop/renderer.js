@@ -15,6 +15,7 @@
   const observeRow = byId('observe-row');
   const observeDot = byId('observe-dot');
   const observeLabel = byId('observe-status');
+  const observeFpsSelect = byId('observe-fps');
   const autoAcceptDot = byId('auto-accept-dot');
   const autoAcceptLabel = byId('auto-accept-status');
   const visionDot = byId('vision-dot');
@@ -135,12 +136,13 @@
   function renderObserveStatus(state) {
     const value = state || {};
     observeEnabled = value.enabled === true;
+    if (observeFpsSelect) observeFpsSelect.value = String(value.fps || 2);
     observeRow.setAttribute('aria-pressed', String(observeEnabled));
     observeLabel.textContent = observeEnabled
       ? 'Observe: ON · ' + Number(value.frame_count || 0) + '/10 frames'
       : 'Observe: OFF';
     const details = [
-      'Sampling at 4 fps; only changed screen fingerprints trigger context updates.',
+      'Sampling at ' + Number(value.fps || 2) + ' fps; only changed screen fingerprints trigger context updates.',
       'Live context is published to the private GitHub mailbox at most once per second.',
       observeEnabled ? 'Status: ' + String(value.status || 'watching') : 'Live context is cleared when Observe is turned off.',
       value.last_capture_at ? 'Last capture: ' + value.last_capture_at : '',
@@ -174,6 +176,20 @@
     } finally {
       observeBusy = false;
       observeRow.disabled = false;
+    }
+  }
+
+  async function changeObserveFps() {
+    if (!observeFpsSelect || observeFpsSelect.disabled) return;
+    const requestedFps = Number(observeFpsSelect.value);
+    observeFpsSelect.disabled = true;
+    try {
+      renderObserveStatus(await window.windowsBridge.setObserveFps(requestedFps));
+    } catch (error) {
+      observeFpsSelect.title = 'Could not change Observe FPS: ' + String(error && error.message || error);
+      await refreshObserveStatus();
+    } finally {
+      observeFpsSelect.disabled = false;
     }
   }
 
@@ -717,6 +733,7 @@
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   observeRow.addEventListener('click', () => { void toggleObserve(); });
+  observeFpsSelect.addEventListener('change', () => { void changeObserveFps(); });
   visionSignInButton.addEventListener('click', () => { void connectColab(); });
   visionPasteButton.addEventListener('click', () => {
     setVisionManualPanelVisible(visionManualPanel.hidden);
