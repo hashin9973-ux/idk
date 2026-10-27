@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeSnapshotForFrame, rectForFrame } = require('../desktop/windows-uia');
+const { captureWindowsUiAutomationSnapshot, normalizeSnapshotForFrame, rectForFrame } = require('../desktop/windows-uia');
 
 test('UI Automation bounds are mapped to the screenshot frame and their centers are derived by code', () => {
   const result = normalizeSnapshotForFrame({
@@ -43,4 +43,32 @@ test('text inputs never expose their accessible name or contents in the UIA cont
   assert.equal(result.controls.length, 1);
   assert.equal(result.controls[0].label, 'Text input (value not read)');
   assert.equal(result.controls[0].label.includes('token value'), false);
+});
+
+
+test('PowerShell UI Automation capture executes and serializes a bounded snapshot on Windows', {
+  skip: process.platform !== 'win32'
+}, async () => {
+  const result = await captureWindowsUiAutomationSnapshot({
+    screen: { width: 1920, height: 1080 },
+    frame: { width: 960, height: 540 }
+  });
+
+  assert.equal(result.available, true, 'the real PowerShell/UI Automation capture must return valid JSON');
+  assert.equal(result.source, 'windows_uia');
+  assert.equal(result.coordinate_space, 'screenshot_jpeg_px');
+  assert.ok(Array.isArray(result.controls));
+  assert.ok(result.controls.length <= 80);
+
+  for (const control of result.controls) {
+    assert.ok(Array.isArray(control.bbox_px));
+    assert.equal(control.bbox_px.length, 4);
+    const [left, top, right, bottom] = control.bbox_px;
+    assert.ok(left >= 0 && left < right && right <= 960);
+    assert.ok(top >= 0 && top < bottom && bottom <= 540);
+    assert.deepEqual(control.center_px, [
+      (left + right) / 2,
+      (top + bottom) / 2
+    ]);
+  }
 });
