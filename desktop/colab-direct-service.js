@@ -537,7 +537,8 @@ function createVisionService(deps) {
       : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
     const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
     const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
-    const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed;
+    const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
+      checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
     const next_steps = [];
     if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
     if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
