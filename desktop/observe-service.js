@@ -20,7 +20,8 @@ function createObserveService(deps = {}) {
     getAccessibleSnapshot,
     now = () => Date.now(),
     setIntervalImpl = setInterval,
-    clearIntervalImpl = clearInterval
+    clearIntervalImpl = clearInterval,
+    sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
   } = deps;
 
   let enabled = false;
@@ -142,7 +143,7 @@ function createObserveService(deps = {}) {
       // Coalesce bursts of visual changes. Capture samples at 4 fps, but publish at most once per second.
       const delay = PUBLISH_INTERVAL_MS - (now() - lastPublishedAt);
       if (delay > 0) {
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await sleep(delay);
         if (!enabled || disposed) return;
       }
       await publish(true);
@@ -193,10 +194,15 @@ function createObserveService(deps = {}) {
 
   async function dispose() {
     if (disposed) return;
+    const wasEnabled = enabled;
+    enabled = false;
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
-    enabled = false;
     frames = [];
+    lastFingerprint = '';
+    if (wasEnabled) {
+      try { await publish(false); } catch (error) { lastError = safeText(error && error.message || error, 500); }
+    }
     disposed = true;
   }
 
