@@ -248,6 +248,19 @@ test('status reports the real HTTP status when the Colab tunnel returns a non-JS
   assert.match(status.message, /Last detection attempt:.*HTTP 530/);
 });
 
+test('the clipboard watcher reports an actionable timeout and stops watching', async t => {
+  const f = fixture({ clipboardWatchTimeoutMs: 35, clipboardPollIntervalMs: 5 });
+  t.after(() => f.service.dispose());
+  const result = await f.service.connectColab();
+  assert.equal(result.endpoint_watch_active, true);
+  await new Promise(resolve => setTimeout(resolve, 80));
+  const status = await f.service.status();
+  assert.equal(status.endpoint_watch_active, false);
+  assert.equal(status.endpoint_test_in_progress, false);
+  assert.match(status.message, /Timed out waiting for the notebook to copy its public HTTPS endpoint/);
+  assert.match(status.message, /Rerun the cell/i);
+});
+
 test('connection fails safely when the server-to-server acknowledgement is unsuccessful', async t => {
   const f = fixture({ failRegistrationAck: true });
   t.after(() => f.service.dispose());
