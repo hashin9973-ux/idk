@@ -58,6 +58,7 @@ let filesystemIndexMonitor = null;
 let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
+let finishingVisionDispose = false;
 let pendingGitHubCliLogin = null;
 let ipcRegistered = false;
 let appInitializationError = '';
@@ -1109,10 +1110,15 @@ app.on('before-quit', event => {
     tray.destroy();
     tray = null;
   }
-  if (visionService && typeof visionService.dispose === 'function') {
-    void visionService.dispose().catch(() => {});
-  } else if (windowsInputController && typeof windowsInputController.dispose === 'function') {
-    void windowsInputController.dispose().catch(() => {});
+  if (!finishingVisionDispose && (visionService || windowsInputController)) {
+    event.preventDefault();
+    finishingVisionDispose = true;
+    const dispose = visionService && typeof visionService.dispose === 'function'
+      ? visionService.dispose()
+      : windowsInputController && typeof windowsInputController.dispose === 'function'
+        ? windowsInputController.dispose()
+        : Promise.resolve();
+    Promise.resolve(dispose).catch(() => {}).finally(() => app.quit());
   }
 });
 
