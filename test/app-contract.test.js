@@ -25,6 +25,7 @@ test('packaging includes the native Windows worker and mailbox implementation', 
 test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
+  const styles = read('desktop', 'styles.css');
   for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
@@ -51,6 +52,12 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
+  assert.match(renderer, /21 \\* 60 \\* 1000/);
+  assert.match(renderer, /The Colab connection check timed out/);
+  assert.match(renderer, /screenshot analysis is disabled, but the model remains loaded/);
+  assert.match(styles, /max-height: 68px;/);
+  assert.match(styles, /overflow-y: auto;/);
+  assert.doesNotMatch(styles, /\\.vision-message\\s*\\{[^}]*overflow:\\s*hidden/);
   assert.doesNotMatch(renderer, /No direct Colab response yet/);
   assert.match(renderer, /Setup check/);
   assert.match(renderer, /Workspace: /);
@@ -81,7 +88,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
-  assert.match(main, /height: 318/);
+  assert.match(main, /height: 348/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
   assert.match(main, /'app:vision-setup-check'/);
