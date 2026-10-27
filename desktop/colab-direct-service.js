@@ -1044,12 +1044,22 @@ function createVisionService(deps) {
       waitMs: args.waitMs,
       region: args.region
     }, callId);
+    let observationMessage;
+    if (observation && observation.status === 'report_available') {
+      observationMessage = 'Input sequence completed and a fresh visual observation is available.';
+    } else if (observation && ['inference_in_progress', 'pending', 'processing'].includes(observation.status) && observation.request_id) {
+      observationMessage = 'Input sequence completed; follow-up observation is still pending. Call computer(action=wait) with the same request_id (' +
+        observation.request_id + '). The input batch already ran; do not repeat it.';
+    } else if (observation && observation.status === 'error') {
+      observationMessage = 'Input sequence completed on local Windows, but follow-up observation failed: ' +
+        String(observation.error || 'Unknown observation error') + '. The input batch already ran; do not repeat it.';
+    } else {
+      observationMessage = 'Input sequence completed on local Windows, but no usable follow-up observation was returned. The input batch already ran; do not repeat it. Check the observation status before deciding the next action.';
+    }
     return {
       ...result, action, interaction_mode: fastMode ? 'fast' : 'normal', control_active: controlSessionActive,
       observation,
-      message: observation && observation.status === 'report_available'
-        ? 'Input sequence completed and a fresh visual observation is available.'
-        : 'Input sequence completed; the requested follow-up observation is not yet ready. Use computer(action=wait) with its request_id if one was returned.'
+      message: observationMessage
     };
   }
 
