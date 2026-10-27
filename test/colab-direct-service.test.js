@@ -508,6 +508,9 @@ test('successful Colab connection activates the model automatically and supports
   assert.equal(connected.model_loaded, false);
   assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'));
 
+  const initialObservation = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-aaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(initialObservation.status, 'report_available');
+
   const started = await f.service.inputAction({ action: 'start_control' }, 'control-1');
   assert.equal(started.status, 'control_ready');
   assert.equal(f.service.isControlSessionActive(), true);
@@ -522,7 +525,9 @@ test('successful Colab connection activates the model automatically and supports
   }, 'computer-bbbbbbbbbbbbbbbbbbbbbbbb');
   assert.equal(sequence.status, 'input_completed');
   assert.equal(sequence.observation.status, 'report_available');
-  assert.deepEqual(f.inputCalls[0].frame, { width: 1920, height: 1080 });
+  assert.equal(f.inputCalls[0].frame.width, 640);
+  assert.equal(f.inputCalls[0].frame.height, 360);
+  assert.equal(f.inputCalls[0].frame.source, 'desktop');
   assert.equal(f.inputCalls[0].steps.length, 2);
 
   const stopped = await f.service.inputAction({ action: 'stop_control' });
