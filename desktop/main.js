@@ -31,7 +31,7 @@ const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = requir
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
-const { createObserveService } = require('./observe-service');
+const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -95,7 +95,7 @@ app.on('child-process-gone', (_event, details) => {
 });
 appendDiagnosticLog('startup', 'Main process loaded; pid=' + process.pid);
 
-const STATUS_SIZE = { width: 360, height: 374 };
+const STATUS_SIZE = { width: 360, height: 402 };
 const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
@@ -760,6 +760,14 @@ function registerIpc() {
     if (enabled && !githubState.authenticated) throw new Error('Sign in to GitHub before enabling Observe mode.');
     return observeService.setEnabled(enabled);
   });
+  ipcMain.handle('app:observe-fps', async (event, fps) => {
+    assertLocalUi(event, 'index.html');
+    if (!observeService) throw new Error('Observe service is unavailable.');
+    const state = await observeService.setFps(fps);
+    settings.observeFps = state.fps || DEFAULT_SAMPLE_FPS;
+    persistSettings();
+    return state;
+  });
   ipcMain.handle('app:vision-status', async event => {
     assertLocalUi(event, 'index.html');
     if (!visionService) {
@@ -1123,6 +1131,7 @@ if (!hasInstanceLock) {
         });
         observeService = createObserveService({
           githubAuth,
+          getSampleFps: () => settings.observeFps ?? DEFAULT_SAMPLE_FPS,
           captureScreenshot: captureDesktopScreenshot,
           fingerprintScreenshot: fingerprintDesktopScreenshot,
           getAccessibleSnapshot: captureWindowsUiAutomationSnapshot
