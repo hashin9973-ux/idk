@@ -36,9 +36,20 @@
     <div id="vision-row" class="status-row vision-row" role="group" aria-label="Colab vision controls">
       <span id="vision-dot" class="status-dot waiting" aria-hidden="true"></span>
       <span id="vision-status" class="status-label" title="Live Colab vision status">Vision: checking…</span>
-      <button id="vision-signin" class="status-action vision-action" type="button" aria-label="Connect the Colab vision worker" title="Open Colab if needed, then wait for a live runtime heartbeat from the shared mailbox">Connect Colab</button>
+      <button id="vision-signin" class="status-action vision-action" type="button" aria-label="Connect the Colab vision worker" title="Open Colab if needed and automatically detect its URL">Connect Colab</button>
+      <button id="vision-paste-url" class="status-action vision-action" type="button" aria-label="Paste Colab endpoint URL" aria-expanded="false" aria-controls="vision-manual-panel">Paste URL</button>
       <button id="vision-setup-check" class="status-action vision-action" type="button" aria-label="Check vision setup">Setup check</button>
     </div>
+
+    <form id="vision-manual-panel" class="vision-manual-panel" hidden>
+      <label for="vision-endpoint-url">Colab endpoint URL</label>
+      <input id="vision-endpoint-url" name="endpointUrl" type="text" maxlength="4096" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://….trycloudflare.com/…" />
+      <div class="vision-manual-controls">
+        <button id="vision-endpoint-connect" class="status-action" type="submit">Connect using URL</button>
+        <button id="vision-endpoint-cancel" class="status-action secondary-action" type="button">Cancel</button>
+      </div>
+      <p class="vision-manual-help">Paste the complete PUBLIC_VISION_ENDPOINT from the running Colab cell. The long path is a temporary secret; keep it private. The app verifies the endpoint before connecting. Vision stays off until enabled.</p>
+    </form>
 
     <section id="vision-details" class="vision-details" aria-label="Vision setup details" aria-live="polite">
       <div class="vision-detail"><span class="vision-detail-label">Setup</span><span id="vision-setup-detail" class="vision-detail-value">Not checked</span></div>
