@@ -239,7 +239,8 @@ test('Colab serves long vision inference asynchronously through a matching resul
   assert.match(pythonSource, /def _run_vision_job\(body\):/);
   assert.match(pythonSource, /route is not None and route\.startswith\("\/result\/"\)/);
   assert.match(pythonSource, /threading\.Thread\([\s\S]*target=_run_vision_job/);
-  assert.match(pythonSource, /MAX_VISION_JOBS = 8/);
+  assert.match(pythonSource, /MAX_ACTIVE_VISION_JOBS = 8/);
+  assert.match(pythonSource, /MAX_RETAINED_VISION_RESULTS = 32/);
   assert.match(pythonSource, /"status": "processing"/);
 });
 
