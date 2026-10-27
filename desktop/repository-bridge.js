@@ -170,6 +170,7 @@ function createRepositoryBridge(deps) {
   let lastStatePublishAt = 0;
   const inMemoryClaims = new Set();
   let knownResultFiles = null;
+  let lastRequestCommitSha = null;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
   let contextRefreshInFlight = false;
@@ -188,6 +189,20 @@ function createRepositoryBridge(deps) {
       throw new Error('Unsafe mailbox path.');
     }
     return '/repos/' + config.owner + '/' + config.repo + '/contents/' + parts.join('/');
+  }
+
+  function apiTreePath(treeRef) {
+    const config = currentConfig();
+    const value = String(treeRef || '');
+    if (value !== config.branch && !/^[a-f0-9]{40}$/i.test(value)) {
+      throw new Error('Unsafe Git tree reference.');
+    }
+    return '/repos/' + config.owner + '/' + config.repo + '/git/trees/' + value;
+  }
+
+  function apiCommitsPath() {
+    const config = currentConfig();
+    return '/repos/' + config.owner + '/' + config.repo + '/commits';
   }
 
   function stateSnapshot() {
@@ -240,16 +255,64 @@ function createRepositoryBridge(deps) {
     }
   }
 
+  async function readRemoteTree(treeRef) {
+    const response = await api('GET', apiTreePath(treeRef));
+    const tree = response && response.result;
+    if (!tree || !Array.isArray(tree.tree)) throw new Error('GitHub returned an unexpected Git tree format.');
+    if (tree.truncated === true) throw new Error('GitHub truncated the mailbox Git tree listing.');
+    return tree;
+  }
+
   async function listFolder(relativePath) {
     const config = currentConfig();
+    const segments = String(relativePath || '').split('/');
+    if (segments.length < 2 || segments[0] !== 'bridge' ||
+        segments.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) {
+      throw new Error('Unsafe mailbox folder path.');
+    }
+
+    // Contents API directory responses include several URLs per file and exceed
+    // the 1 MiB response cap once the request/result history grows. Traverse
+    // tree SHAs without recursion, then list only the target directory's entries.
     try {
-      const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
-      if (!Array.isArray(response.result)) throw new Error('Mailbox folder listing was not an array.');
-      return response.result.filter(item => item && item.type === 'file' && typeof item.name === 'string');
+      let tree = await readRemoteTree(config.branch);
+      for (const segment of segments) {
+        const directory = tree.tree.find(item => item && item.type === 'tree' && item.path === segment);
+        if (!directory) return [];
+        if (typeof directory.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(directory.sha)) {
+          throw new Error('GitHub returned an invalid tree SHA for mailbox directory ' + segment + '.');
+        }
+        tree = await readRemoteTree(directory.sha);
+      }
+      return tree.tree
+        .filter(item => item && item.type === 'blob' && typeof item.path === 'string')
+        .map(item => ({
+          name: item.path,
+          path: relativePath + '/' + item.path,
+          type: 'file',
+          sha: item.sha,
+          size: item.size
+        }));
     } catch (error) {
       if (isNotFound(error)) return [];
       throw error;
     }
+  }
+
+  async function latestRequestCommitSha() {
+    const config = currentConfig();
+    const response = await api('GET', apiCommitsPath(), null, {
+      sha: config.branch,
+      path: 'bridge/requests',
+      per_page: 1
+    });
+    if (!Array.isArray(response.result)) throw new Error('GitHub returned an unexpected request-commit listing.');
+    if (response.result.length === 0) return null;
+    const sha = response.result[0] && response.result[0].sha;
+    if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/i.test(sha)) {
+      throw new Error('GitHub returned an invalid request-commit SHA.');
+    }
+    return sha;
   }
 
   async function writeRemoteJson(relativePath, value, existingSha = null, createOnly = false) {
@@ -1270,8 +1333,9 @@ function createRepositoryBridge(deps) {
       try {
         let files;
         if (knownResultFiles === null) {
-          // Load the historical result index only once at startup. Re-fetching
-          // the growing results folder every poll doubles request traffic.
+          // Capture the request-commit cursor before listing. If a new request
+          // arrives during the listing, the next poll still detects its commit.
+          const requestCommitSha = await latestRequestCommitSha();
           const [requestFiles, resultFiles] = await Promise.all([
             listFolder('bridge/requests'),
             listFolder('bridge/results')
@@ -1280,8 +1344,18 @@ function createRepositoryBridge(deps) {
           knownResultFiles = new Set(resultFiles
             .map(file => file.name)
             .filter(name => name.endsWith('.json')));
+          lastRequestCommitSha = requestCommitSha;
         } else {
-          files = await listFolder('bridge/requests');
+          // The request directory is now large enough that Contents API listing
+          // exceeds GitHubAuth's 1 MiB limit. One small path-filtered commit query
+          // detects new requests; read the folder tree only when that cursor moves.
+          const requestCommitSha = await latestRequestCommitSha();
+          if (requestCommitSha !== lastRequestCommitSha) {
+            files = await listFolder('bridge/requests');
+            lastRequestCommitSha = requestCommitSha;
+          } else {
+            files = [];
+          }
         }
         const sorted = files
           .map(file => file.name)
