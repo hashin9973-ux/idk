@@ -26,7 +26,8 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
   const styles = read('desktop', 'styles.css');
-  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
+  const main = read('desktop', 'main.js');
+  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(renderer, /GitHub connected/);
@@ -47,6 +48,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.getVisionStatus/);
   assert.match(renderer, /windowsBridge\.getObserveStatus/);
   assert.match(renderer, /windowsBridge\.setObserveEnabled/);
+  assert.match(renderer, /windowsBridge\.setObserveFps/);
+  assert.match(main, /app:observe-fps/);
+  assert.match(main, /height: 402/);
   assert.match(main, /createObserveService/);
   assert.match(main, /fingerprintDesktopScreenshot/);
   assert.match(renderer, /windowsBridge\.connectColab/);
@@ -268,7 +272,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   const compatibility = read('desktop', 'vision-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
-  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight']"));
+  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode']"));
   assert.match(bridge, /Native local computer tool for the real Windows workspace/);
   assert.match(bridge, /returned boxes are mapped back to the original full-frame coordinates/);
   assert.match(bridge, /All click\/move\/drag\/scroll\/key\/mouse inputs execute on local Windows, not in Colab/);
