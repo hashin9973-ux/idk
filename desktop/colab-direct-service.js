@@ -475,7 +475,7 @@ function createVisionService(deps) {
       }
       if (!response.ok) throw new Error('Colab direct endpoint returned HTTP ' + response.status + ': ' + String(data.error || data.message || 'request failed').slice(0, 600));
       if (data.protocol && data.protocol !== DIRECT_VISION_PROTOCOL &&
-          !(route === '/analyze' && data.protocol === RESULT_PROTOCOL)) {
+          !((route === '/analyze' || /^\/result\/computer-[a-f0-9]{24}$/.test(route)) && data.protocol === RESULT_PROTOCOL)) {
         throw new Error('Colab response protocol did not match the direct vision protocol.');
       }
       if (route === '/health') connection.lastHealthAt = now();
@@ -813,13 +813,53 @@ function createVisionService(deps) {
     return value;
   }
 
+  async function waitForRemoteResult(jobId, expectedHash) {
+    const deadline = now() + DIRECT_TIMEOUT_MS;
+    let lastTransientError = '';
+    while (now() < deadline) {
+      let data;
+      try {
+        data = await directRequest('/result/' + jobId, { timeoutMs: 10000 });
+      } catch (error) {
+        const message = messageOf(error);
+        if (!/HTTP (?:408|425|429|5\\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED/i.test(message)) {
+          throw error;
+        }
+        lastTransientError = message;
+        await sleep(1000);
+        continue;
+      }
+      if (data.request_id !== jobId) {
+        throw new Error('The Colab result poll returned a different request ID; the output was rejected.');
+      }
+      if (data.protocol === DIRECT_VISION_PROTOCOL && data.status === 'processing') {
+        if (data.input_sha256 !== expectedHash) {
+          throw new Error('The Colab pending response did not match the submitted screenshot SHA-256; the output was rejected.');
+        }
+        lastTransientError = '';
+        const retryDelay = Number.isInteger(data.poll_after_ms) ? Math.max(250, Math.min(1500, data.poll_after_ms)) : 750;
+        await sleep(retryDelay);
+        continue;
+      }
+      if (data.protocol !== RESULT_PROTOCOL || !['completed', 'failed'].includes(data.status)) {
+        throw new Error('Colab returned an unsupported or incomplete vision result.');
+      }
+      if (data.input_sha256 !== expectedHash) {
+        throw new Error('The Colab result SHA-256 did not match the submitted screenshot; the output was rejected.');
+      }
+      return data;
+    }
+    throw new Error('Timed out waiting for Colab vision inference to finish.' +
+      (lastTransientError ? ' Last transient error: ' + lastTransientError : ''));
+  }
+
   async function performInference(jobId, screenshot, prompt) {
     const job = jobs.get(jobId);
     if (!job) return;
     const started = now();
     try {
-      const data = await directRequest('/analyze', {
-        method: 'POST', timeoutMs: DIRECT_TIMEOUT_MS,
+      const submitted = await directRequest('/analyze', {
+        method: 'POST', timeoutMs: 20000,
         body: {
           protocol: DIRECT_VISION_PROTOCOL, request_id: jobId,
           sha256: screenshot.metadata.sha256, content_type: 'image/jpeg',
@@ -846,8 +886,22 @@ function createVisionService(deps) {
           ].join('\n').slice(0, 1400)
         }
       });
-      if (data.request_id !== jobId || data.input_sha256 !== screenshot.metadata.sha256) {
-        throw new Error('The Colab response did not match the submitted request ID and screenshot SHA-256; the output was rejected.');
+      let data = submitted;
+      if (submitted.request_id !== jobId) {
+        throw new Error('The Colab response did not match the screenshot request ID; the output was rejected.');
+      }
+      if (submitted.protocol === DIRECT_VISION_PROTOCOL && submitted.status === 'processing') {
+        if (submitted.input_sha256 !== screenshot.metadata.sha256) {
+          throw new Error('The Colab acknowledgement did not match the submitted screenshot SHA-256; the output was rejected.');
+        }
+        data = await waitForRemoteResult(jobId, screenshot.metadata.sha256);
+      }
+      if (data.protocol !== RESULT_PROTOCOL || data.request_id !== jobId ||
+          data.input_sha256 !== screenshot.metadata.sha256) {
+        throw new Error('The Colab result did not match the submitted request ID and screenshot SHA-256; the output was rejected.');
+      }
+      if (data.status === 'failed') {
+        throw new Error(String(data.error || 'Colab vision inference failed.'));
       }
       if (data.status !== 'completed' || typeof data.report !== 'string' || !data.report.trim()) {
         throw new Error(String(data.error || 'Colab returned no complete vision report.'));
@@ -875,14 +929,17 @@ function createVisionService(deps) {
   async function waitForJob(jobId, waitMs) {
     const duration = safeWaitMs(waitMs);
     const deadline = now() + duration;
+    const job = jobs.get(jobId);
+    if (!job) return { status: 'error', request_id: jobId, error: 'No local screenshot job with this ID exists in the current app session. If the app restarted, submit a new screenshot request.' };
     while (true) {
-      const job = jobs.get(jobId);
-      if (!job) return { status: 'error', request_id: jobId, error: 'No local screenshot job with this ID exists in the current app session. If the app restarted, submit a new screenshot request.' };
-      if (job.result) return job.result;
+      const currentJob = jobs.get(jobId);
+      if (!currentJob) return { status: 'error', request_id: jobId, error: 'The local screenshot job disappeared before it completed.' };
+      if (currentJob.result) return currentJob.result;
       if (now() >= deadline) break;
       await sleep(Math.min(pollIntervalMs, Math.max(1, deadline - now())));
     }
     const current = await queryRuntime();
+    if (job.result) return job.result;
     return {
       status: 'inference_in_progress', request_id: jobId, pending: true,
       wait_timeout_ms: duration, runtime_status: current.runtime_status || current.status,
