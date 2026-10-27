@@ -30,6 +30,65 @@ const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = requir
 const { createWindowsInputController } = require('./windows-input');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 
+const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
+
+function appendDiagnosticLog(kind, detail) {
+  let userData;
+  try {
+    userData = app.getPath('userData');
+  } catch {
+    userData = process.env.APPDATA || process.env.LOCALAPPDATA || process.cwd();
+  }
+  const filename = path.join(userData, 'logs', DIAGNOSTIC_LOG_NAME);
+  let message;
+  try {
+    message = detail instanceof Error
+      ? String(detail.stack || detail.message || detail)
+      : typeof detail === 'string' ? detail : JSON.stringify(detail);
+  } catch {
+    message = String(detail);
+  }
+  message = String(message || '').replace(
+    /https:\/\/[a-z0-9-]+\.trycloudflare\.com\/[A-Za-z0-9_-]{40,100}/gi,
+    '[REDACTED_COLAB_ENDPOINT]'
+  ).slice(0, 12000);
+  try {
+    fs.mkdirSync(path.dirname(filename), { recursive: true });
+    fs.appendFileSync(filename, '[' + new Date().toISOString() + '] ' + String(kind) + ': ' + message + '\n', 'utf8');
+  } catch {
+    // Diagnostics must never become a second startup failure.
+  }
+}
+
+process.on('uncaughtException', error => {
+  appendDiagnosticLog('uncaughtException', error);
+  console.error('Fatal Windows Repository Bridge main-process exception:', error);
+  setImmediate(() => app.exit(1));
+});
+
+process.on('unhandledRejection', reason => {
+  appendDiagnosticLog('unhandledRejection', reason);
+  console.error('Unhandled Windows Repository Bridge rejection:', reason);
+  // Preserve Node's fatal-unhandled-rejection behavior, but persist the cause first.
+  setImmediate(() => app.exit(1));
+});
+
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('render-process-gone', (_event, details) => {
+    appendDiagnosticLog('render-process-gone', details);
+  });
+  contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (isMainFrame) appendDiagnosticLog('main-frame-load-failed', {
+      errorCode, errorDescription, validatedURL, isMainFrame
+    });
+  });
+});
+
+app.on('child-process-gone', (_event, details) => {
+  appendDiagnosticLog('child-process-gone', details);
+});
+appendDiagnosticLog('startup', 'Main process loaded; pid=' + process.pid);
+
 const STATUS_SIZE = { width: 360, height: 348 };
 const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
@@ -959,6 +1018,7 @@ if (!hasInstanceLock) {
   app.on('second-instance', showMainWindow);
 
   app.whenReady().then(() => {
+    appendDiagnosticLog('startup', 'Electron app ready; version=' + app.getVersion() + '; packaged=' + app.isPackaged);
     app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
     settings = loadSettings();
     const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
@@ -1046,6 +1106,7 @@ if (!hasInstanceLock) {
         });
       } catch (error) {
         appInitializationError = 'Local worker services could not initialize: ' + String(error && error.message || error);
+        appendDiagnosticLog('worker-services-initialization-failed', error);
         console.error(appInitializationError);
       }
     }
@@ -1071,6 +1132,7 @@ if (!hasInstanceLock) {
     }
   }).catch(error => {
     const message = String(error && error.stack || error && error.message || error || 'Unknown startup error');
+    appendDiagnosticLog('startup-failed', message);
     console.error('Windows Repository Bridge startup failed:', message);
     if (!settings || typeof settings !== 'object') settings = {};
     try { if (!ipcRegistered) registerIpc(); } catch (ipcError) { console.error('Could not register desktop actions:', ipcError); }
