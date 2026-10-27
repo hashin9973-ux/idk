@@ -312,6 +312,22 @@ test('repository API allows only the configured mailbox contents routes', async 
     query: { ref: 'bridge-mailbox' }
   });
   assert.deepEqual(listing.result, [{ name: 'req-test.json', type: 'file' }]);
+
+  const legacyArtifactRead = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/artifacts/req-test-batch-output-001.json',
+    query: { ref: 'bridge-mailbox' }
+  });
+  assert.deepEqual(legacyArtifactRead.result, [{ name: 'req-test.json', type: 'file' }]);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/artifacts/req-test-batch-output-001.json',
+    body: {
+      message: '[local bridge] should not create legacy flat artifacts',
+      content: Buffer.from('no').toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  }), /only permitted for mailbox file records/i);
   assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox')));
   const readCall = calls.find(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox'));
   assert.equal(readCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
