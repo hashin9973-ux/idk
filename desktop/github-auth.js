@@ -214,6 +214,9 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'vision' &&
         ['control.json', 'runtime.json'].includes(parts[2])) {
       kind = parts[2] === 'control.json' ? 'vision-control' : 'vision-runtime';
+    } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
+        /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}-batch-output-\d{3}\.json$/.test(parts[2])) {
+      kind = 'legacy-artifact';
     } else if (parts.length === 3 && allowedFolders.has(parts.slice(0, 2).join('/')) &&
         (parts[2] === '.gitkeep' || /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.json$/.test(parts[2]))) {
       kind = 'file';
@@ -222,9 +225,6 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
         /^vision-[a-f0-9]{24}\.(json|txt)$/.test(parts[3]) &&
         (parts[2] === 'reports' ? parts[3].endsWith('.txt') : parts[3].endsWith('.json'))) {
       kind = parts[2] === 'reports' ? 'vision-report' : 'vision-record';
-    } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
-        /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}-batch-output-\d{3}\.json$/.test(parts[2])) {
-      kind = 'legacy-artifact';
     } else if (parts.length === 4 && parts[0] === 'bridge' && parts[1] === 'artifacts' &&
         /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(parts[2]) &&
         /^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$/.test(parts[3])) {
