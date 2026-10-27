@@ -614,10 +614,10 @@ function createToolBridge(deps) {
                 ? 'Normally runs automatically for workspace-relative paths; secret-like paths still require native Windows approval.'
                 : 'No approval dialog is normally required; the app still validates paths and arguments.'
         }));
-        output.catalog_version = 1;
+        output.catalog_version = 2;
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
-          catalog_version: 1,
+          catalog_version: 2,
           rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts and shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
@@ -825,7 +825,7 @@ function createToolBridge(deps) {
       instruction_files: instructionFiles,
       tool_catalog: {
         protocol: capabilities.protocol,
-        catalog_version: 1,
+        catalog_version: 2,
         tools: capabilities.tools,
         tool_calling: capabilities.tool_calling
       },
