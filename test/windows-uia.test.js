@@ -46,15 +46,17 @@ test('text inputs never expose their accessible name or contents in the UIA cont
 });
 
 
-test('PowerShell UI Automation capture executes and serializes a bounded snapshot on Windows', {
-  skip: process.platform !== 'win32'
+test('PowerShell UI Automation capture executes and serializes a bounded snapshot on an interactive Windows desktop', {
+  // GitHub-hosted Windows agents are unattended and may not expose a real foreground desktop.
+  // Keep this passive integration test available for local Windows validation without clicking or typing.
+  skip: process.platform !== 'win32' || process.env.GITHUB_ACTIONS === 'true'
 }, async () => {
   const result = await captureWindowsUiAutomationSnapshot({
     screen: { width: 1920, height: 1080 },
     frame: { width: 960, height: 540 }
   });
 
-  assert.equal(result.available, true, 'the real PowerShell/UI Automation capture must return valid JSON');
+  assert.equal(result.available, true, 'PowerShell/UI Automation capture must return valid JSON: ' + JSON.stringify(result));
   assert.equal(result.source, 'windows_uia');
   assert.equal(result.coordinate_space, 'screenshot_jpeg_px');
   assert.ok(Array.isArray(result.controls));
