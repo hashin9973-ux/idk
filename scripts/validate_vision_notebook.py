@@ -23,6 +23,7 @@ def validate_context_helpers(code):
         "normalize_model_box",
         "normalize_accessibility",
         "analysis_box_from_full_pixels",
+        "bounded_image_dimensions",
         "normalized_accessibility_hints",
         "map_model_boxes_to_original",
         "normalize_model_report",
@@ -34,6 +35,25 @@ def validate_context_helpers(code):
         raise SystemExit("FAIL: isolated context helpers missing: " + ", ".join(sorted(missing)))
     namespace = {"math": math, "json": json}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "<vision-context-helpers>", "exec"), namespace)
+
+    bounded_dimensions = namespace["bounded_image_dimensions"]
+    resize_cases = [
+        ((1920, 1080, 1280), (1280, 720)),
+        ((1280, 720, 1280), (1280, 720)),
+        ((720, 1000, 1280), (720, 1000)),
+        ((3840, 2160, 1024), (1024, 576)),
+    ]
+    for args, expected in resize_cases:
+        actual = bounded_dimensions(*args)
+        if actual != expected:
+            raise SystemExit(f"FAIL: bounded image dimensions {args} -> {actual}, expected {expected}")
+    try:
+        bounded_dimensions(0, 1080, 1280)
+    except ValueError:
+        pass
+    else:
+        raise SystemExit("FAIL: bounded image dimensions accepted zero width")
+    print("PASS: model image dimensions fit the edge budget without changing aspect ratio")
 
     map_boxes = namespace["map_model_boxes_to_original"]
     normalize_report = namespace["normalize_model_report"]
@@ -106,6 +126,9 @@ def main():
         "Ollama Qwen3-VL 4B instruct model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
         "Ollama native chat API": 'OLLAMA_API + "/api/chat"',
         "vision image payload": '"images": [model_image_b64]',
+        "bounded model image dimensions": "MODEL_MAX_EDGE = 1280",
+        "aspect-preserving model image resize": "bounded_image_dimensions(",
+        "model image resize metadata": '"resized": model_image_resized',
         "thinking disabled for concise vision output": '"think": False',
         "structured JSON output": '"format": "json"',
         "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"',
