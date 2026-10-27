@@ -34,6 +34,7 @@ function createObserveService(deps = {}) {
   let lastPublishedAt = 0;
   let lastError = '';
   let sequence = 0;
+  let observeEpoch = 0;
   let frames = [];
   let currentSha = null;
   let lastCaptureAt = null;
@@ -127,6 +128,7 @@ function createObserveService(deps = {}) {
         const item = pendingCapture;
         pendingCapture = null;
         const captured = item.captured;
+        if (item.epoch !== observeEpoch) continue;
         const screen = {
           width: Number(captured.screen_width || captured.width) || 0,
           height: Number(captured.screen_height || captured.height) || 0,
@@ -140,7 +142,7 @@ function createObserveService(deps = {}) {
         } catch (error) {
           accessibility = { available: false, source: 'windows_uia', reason: safeText(error && error.message || error, 120) };
         }
-        if (!enabled || disposed) break;
+        if (!enabled || disposed || item.epoch !== observeEpoch) break;
         const frame = {
           sequence: ++sequence,
           captured_at: new Date(item.capturedAt).toISOString(),
@@ -186,7 +188,7 @@ function createObserveService(deps = {}) {
       lastChangeAt = capturedAt;
       // If UI Automation is still processing, keep only the newest changed frame.
       // Sampling itself remains independent and continues at the 250 ms cadence.
-      pendingCapture = { captured, capturedAt, fingerprint };
+      pendingCapture = { captured, capturedAt, fingerprint, epoch: observeEpoch };
     } catch (error) {
       lastError = safeText(error && error.message || error || 'Observe capture failed', 500);
     } finally {
@@ -199,6 +201,8 @@ function createObserveService(deps = {}) {
     if (typeof value !== 'boolean') throw new Error('Observe state must be a boolean.');
     if (disposed) throw new Error('Observe service has been disposed.');
     if (value === enabled) return status();
+    observeEpoch += 1;
+    pendingCapture = null;
     if (value) {
       if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('Sign in to GitHub before enabling Observe mode.');
       enabled = true;
@@ -232,6 +236,7 @@ function createObserveService(deps = {}) {
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
     frames = [];
+    pendingCapture = null;
     lastFingerprint = '';
     lastError = '';
     while (publishInFlight) await sleep(50);
@@ -244,7 +249,9 @@ function createObserveService(deps = {}) {
   async function dispose() {
     if (disposed) return;
     const wasEnabled = enabled;
+    observeEpoch += 1;
     enabled = false;
+    pendingCapture = null;
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
     frames = [];
