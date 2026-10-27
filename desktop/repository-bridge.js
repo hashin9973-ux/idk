@@ -358,7 +358,23 @@ function createRepositoryBridge(deps) {
       const response = await api('PUT', apiPath(relativePath), body);
       return { ok: true, sha: response.result && response.result.content && response.result.content.sha };
     } catch (error) {
-      if (createOnly && isConflict(error)) return { ok: false, conflict: true };
+      if (createOnly && isConflict(error)) {
+        // GitHub can return HTTP 422 for causes other than an already-existing
+        // file. Treat it as a create-only conflict only if the exact target can
+        // be read back; otherwise surface the original write failure so result
+        // publication is retried/reported instead of marking a missing result
+        // as present in the in-memory result index.
+        let existing;
+        try {
+          existing = await readRemoteFile(relativePath);
+        } catch (verifyError) {
+          throw new Error(
+            'Create-only write for ' + relativePath + ' returned a conflict, but the existing file could not be verified: ' +
+            cleanError(verifyError.message)
+          );
+        }
+        if (existing) return { ok: false, conflict: true, sha: existing.sha };
+      }
       throw error;
     }
   }
