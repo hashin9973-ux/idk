@@ -399,6 +399,36 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
 });
 
+test('focused screenshot observation crops only within the screenshot frame and keeps the output frame explicit', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-focused-observation');
+  const result = await f.service.analyzeScreenshot({
+    source: 'desktop',
+    region: [80, 40, 400, 300],
+    prompt: 'Inspect the dialog and describe the important controls.'
+  }, 'computer-eeeeeeeeeeeeeeeeeeeeeeee');
+  assert.equal(result.status, 'report_available');
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.deepEqual(analyzeCall.body.region_px, [80, 40, 400, 300]);
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.frame.height_px, 360);
+});
+
+test('focused observation rejects an invalid or too-small crop before uploading', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-invalid-focused-observation');
+  const result = await f.service.analyzeScreenshot({
+    source: 'desktop', region: [0, 0, 20, 20]
+  }, 'computer-ffffffffffffffffffffffff');
+  assert.equal(result.status, 'inference_failed');
+  assert.match(result.error, /at least 48×48 pixels/i);
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/analyze'), false);
+});
+
 test('fresh Windows accessibility bounds are sent with the exact screenshot frame', async t => {
   const f = fixture({
     getAccessibleSnapshot: async ({ screen, frame }) => ({
