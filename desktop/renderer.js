@@ -215,7 +215,9 @@
       message = 'Connected to Colab. Vision is ON; model setup/loading is still in progress.';
       state = 'in_progress';
     } else if (vision.runtime_fresh === true) {
-      message = 'Connected to Colab. Vision is OFF; the model has not been activated or downloaded.';
+      message = vision.model_loaded === true
+        ? 'Connected to Colab. Vision is OFF; screenshot analysis is disabled, but the model remains loaded.'
+        : 'Connected to Colab. Vision is OFF; the model has not been activated or downloaded.';
       state = 'passed';
     } else {
       const lastAttempt = sourceMessage.match(/Last detection attempt:\s*([\s\S]*)$/i);
@@ -369,7 +371,21 @@
     if (!visionConnectWatchDeadline) return;
     if (Date.now() >= visionConnectWatchDeadline) {
       stopVisionConnectionWatch();
-      void runVisionSetupCheck();
+      const message = 'The Colab connection check timed out. The app stopped waiting for this attempt; click Connect Colab to try again.';
+      visionLabel.textContent = 'Colab: connection timed out';
+      visionLabel.title = message;
+      setDot(visionDot, 'error');
+      visionSetupDetail.textContent = 'Connection timed out';
+      visionSetupDetail.title = message;
+      visionSetupDetail.dataset.state = 'failed';
+      visionColabDetail.textContent = 'Connection timed out';
+      visionColabDetail.title = message;
+      visionColabDetail.dataset.state = 'failed';
+      if (visionMessage) {
+        visionMessage.textContent = message;
+        visionMessage.title = message;
+        visionMessage.dataset.state = 'failed';
+      }
       return;
     }
     if (visionConnectWatchTimer !== null) window.clearTimeout(visionConnectWatchTimer);
@@ -407,7 +423,7 @@
 
   function startVisionConnectionWatch() {
     stopVisionConnectionWatch();
-    visionConnectWatchDeadline = Date.now() + 120000;
+    visionConnectWatchDeadline = Date.now() + 21 * 60 * 1000;
     scheduleVisionConnectionCheck();
   }
 
