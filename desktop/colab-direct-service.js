@@ -42,6 +42,19 @@ function validateBoundingBox(item, label, frame, required = false) {
     throw new Error(label + ' has a bounding box outside the submitted screenshot frame.');
   }
   item.bbox_px = box.map(value => Math.round(value * 100) / 100);
+  if (Array.isArray(item.bbox_1000)) {
+    if (item.bbox_1000.length !== 4 ||
+        !item.bbox_1000.every(value => Number.isFinite(value) && value >= 0 && value <= 1000)) {
+      throw new Error(label + ' has malformed normalized coordinates.');
+    }
+    const normalizedFromPixels = [
+      left / frame.width_px * 1000, top / frame.height_px * 1000,
+      right / frame.width_px * 1000, bottom / frame.height_px * 1000
+    ];
+    if (item.bbox_1000.some((value, index) => Math.abs(value - normalizedFromPixels[index]) > Math.max(3, 1000 / Math.min(frame.width_px, frame.height_px) * 2))) {
+      throw new Error(label + ' has pixel and normalized boxes that disagree.');
+    }
+  }
   item.center_px = [
     Math.round(((left + right) / 2) * 100) / 100,
     Math.round(((top + bottom) / 2) * 100) / 100
@@ -82,7 +95,7 @@ function validateVisionContext(reportText, expectedFrame) {
   if (report.regions.length > 10 || report.text_spans.length > 32 || report.controls.length > 16) {
     throw new Error('Vision report exceeds the bounded context size and was rejected.');
   }
-  report.regions.forEach((item, index) => validateBoundingBox(item, 'region ' + (index + 1), frame, false));
+  report.regions.forEach((item, index) => validateBoundingBox(item, 'region ' + (index + 1), frame, true));
   report.text_spans.forEach((item, index) => validateBoundingBox(item, 'text span ' + (index + 1), frame, false));
   report.controls.forEach((item, index) => {
     if (!item || typeof item.label !== 'string' || typeof item.role !== 'string') {
