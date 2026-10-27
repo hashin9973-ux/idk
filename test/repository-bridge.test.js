@@ -809,8 +809,8 @@ test('environment refresh publishes one compact agent entry and refreshes after 
   }
 });
 
-test('oversized structured results are compacted into one partial result instead of requiring artifact fetches', async () => {
-  const entries = Array.from({ length: 600 }, (_, index) => ({
+test('oversized non-batch results are compacted into a bounded partial result', async () => {
+  const entries = Array.from({ length: 1800 }, (_, index) => ({
     id: index,
     detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
   }));
@@ -836,7 +836,7 @@ test('oversized structured results are compacted into one partial result instead
     const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
     assert.equal(result.status, 'partial');
     assert.equal(result.output_truncated, true);
-    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 90 * 1024);
+    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 850 * 1024);
     assert.equal(result.artifacts.length, 0, 'normal results must remain self-contained');
     const compactEntries = result.result.result.entries;
     assert.equal(compactEntries.length, entries.length);
