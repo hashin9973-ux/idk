@@ -52,12 +52,12 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
-  assert.match(renderer, /21 \\* 60 \\* 1000/);
+  assert.match(renderer, /21 \* 60 \* 1000/);
   assert.match(renderer, /The Colab connection check timed out/);
   assert.match(renderer, /screenshot analysis is disabled, but the model remains loaded/);
   assert.match(styles, /max-height: 68px;/);
   assert.match(styles, /overflow-y: auto;/);
-  assert.doesNotMatch(styles, /\\.vision-message\\s*\\{[^}]*overflow:\\s*hidden/);
+  assert.doesNotMatch(styles, /\.vision-message\s*\{[^}]*overflow:\s*hidden/);
   assert.doesNotMatch(renderer, /No direct Colab response yet/);
   assert.match(renderer, /Setup check/);
   assert.match(renderer, /Workspace: /);
