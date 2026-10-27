@@ -273,6 +273,58 @@ test('worker executes a request once, writes the actual result, claim and heartb
   }
 });
 
+test('large historical mailbox folders are listed with bounded Git trees, not Contents API', async () => {
+  const initial = [];
+  const count = 900;
+  for (let index = 1; index <= count; index++) {
+    const id = 'req-historical-' + String(index).padStart(4, '0');
+    initial.push(['bridge/requests/' + id + '.json', {
+      protocol: PROTOCOL,
+      request_id: id,
+      created_at: '2026-10-27T00:00:00.000Z',
+      tool: 'project_status',
+      args: {}
+    }]);
+    initial.push(['bridge/results/' + id + '.json', {
+      protocol: RESULT_PROTOCOL,
+      request_id: id,
+      status: 'completed',
+      completed_at: '2026-10-27T00:00:01.000Z',
+      result: { ok: true, result: { historical: true } }
+    }]);
+  }
+  const fake = fakeGitHub({ initial });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => { executions++; return { ok: true }; },
+    intervalMs: 5000
+  });
+
+  try {
+    const started = await bridge.start();
+    assert.equal(started.running, true);
+    assert.equal(executions, 0, 'historical requests with matching results must never be rerun');
+    assert.equal(bridge.getState().lastError, '');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests')
+    ), 'the worker must list the compact request-directory tree');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/results')
+    ), 'the worker must build its historical result index from the compact result-directory tree');
+    assert.equal(fake.calls.some(call =>
+      call.method === 'GET' &&
+      ['/repos/test-owner/test-repo/contents/bridge/requests', '/repos/test-owner/test-repo/contents/bridge/results'].includes(call.path)
+    ), false, 'large mailbox folders must never use the Contents API directory endpoint');
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test('worker drains queued mailbox requests without a folder re-read for every completion', async () => {
   const requests = Array.from({ length: 40 }, (_, index) => ({
     protocol: PROTOCOL,
