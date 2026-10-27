@@ -761,7 +761,13 @@ function createVisionService(deps) {
       ? capturedMetadata.screen_height : Number.isInteger(capturedMetadata.height) && capturedMetadata.height > 0 ? capturedMetadata.height : height;
     const focusRegion = validateFocusRegion(args.region, width, height);
     if (source === 'desktop' && Number.isInteger(width) && Number.isInteger(height)) {
-      latestScreenFrame = { width, height };
+      latestScreenFrame = {
+        width, height, source: 'desktop',
+        capturedAt: Number.isFinite(capturedMetadata.captured_at) ? capturedMetadata.captured_at : now()
+      };
+    } else {
+      // A file image cannot establish where controls are on the live desktop.
+      latestScreenFrame = null;
     }
     let accessibility = { available: false, source: 'windows_uia', reason: source === 'desktop' ? 'not_configured' : 'not_live_desktop' };
     if (source === 'desktop' && typeof getAccessibleSnapshot === 'function' &&
@@ -954,6 +960,15 @@ function createVisionService(deps) {
     const sequence = action === 'sequence';
     const steps = sequence ? args.steps : inputTypes.has(action) ? [{ ...args, type: action }] : null;
     if (!Array.isArray(steps)) return { status: 'error', error: 'Unsupported computer input action.' };
+    const coordinateActions = new Set(['click', 'move', 'drag', 'scroll', 'mouse_down', 'mouse_up']);
+    if (steps.some(step => step && coordinateActions.has(step.type)) &&
+        (!latestScreenFrame || latestScreenFrame.source !== 'desktop')) {
+      return {
+        status: 'error',
+        error: 'Coordinate-based input needs a fresh live desktop screenshot first. A workspace image does not establish live Windows screen coordinates.',
+        next_step: 'Call computer(action=screenshot, source=desktop), then use coordinates from that report.'
+      };
+    }
     if (controlSessionActive) armControlSessionExpiry();
     const result = await inputControl.run(steps, latestScreenFrame);
     if (!sequence || args.observe === false) {
