@@ -27,9 +27,11 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
-        "Ollama Qwen3-VL 4B model": 'OLLAMA_MODEL = "qwen3-vl:4b"',
+        "Ollama Qwen3-VL 4B instruct model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
         "Ollama native chat API": 'OLLAMA_API + "/api/chat"',
         "vision image payload": '"images": [image_b64]',
+        "thinking disabled for concise vision output": '"think": False',
+        "diagnostics for empty final answer": "no final message.content; diagnostics=",
         "model download is checked": "if not ollama_model_is_downloaded():",
         "readiness based on healthy API and downloaded weights": 'requests.get(OLLAMA_API + "/api/version", timeout=2).ok and ollama_model_is_downloaded()',
         "no startup image inference": "No startup image inference was run",

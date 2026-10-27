@@ -296,7 +296,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('safeTunnelUrl'));
   assert.ok(compatibility.includes("require('./colab-direct-service')"));
   assert.ok(python.includes('cloudflared'));
-  assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b"'));
+  assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
+  assert.ok(python.includes('"think": False'));
+  assert.ok(python.includes('no final message.content; diagnostics='));
   assert.ok(python.includes('https://ollama.com/install.sh'));
   assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
   assert.ok(!python.includes('def run_vision_smoke_test()'));
@@ -366,7 +368,9 @@ test('Colab vision notebook becomes ready after model download without startup i
   const codeCells = notebook.cells.filter(cell => cell.cell_type === 'code');
   assert.equal(codeCells.length, 1, 'the vision notebook has one server code cell');
   const source = codeCells.map(cell => cell.source.join('')).join('\n');
-  assert.match(source, /OLLAMA_MODEL = "qwen3-vl:4b"/);
+  assert.match(source, /OLLAMA_MODEL = "qwen3-vl:4b-instruct"/);
+  assert.match(source, /"think": False/);
+  assert.match(source, /no final message\.content; diagnostics=/);
   assert.match(source, /https:\/\/ollama\.com\/install\.sh/);
   assert.match(source, /OLLAMA_API \+ "\/api\/chat"/);
   assert.match(source, /"images": \[image_b64\]/);
