@@ -38,7 +38,7 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
   const calls = [];
   const treePathsBySha = new Map();
   function treeShaForPath(relativePath) {
-    const sha = 'fake-tree-' + Buffer.from(relativePath || '/').toString('hex');
+    const sha = require('node:crypto').createHash('sha1').update(relativePath || '/').digest('hex');
     treePathsBySha.set(sha, relativePath || '');
     return sha;
   }
@@ -57,7 +57,7 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
         return {
           status: 200,
           result: requestPaths.length
-            ? [{ sha: 'fake-request-commit-' + requestPaths.length }]
+            ? [{ sha: String(requestPaths.length).padStart(40, '0') }]
             : []
         };
       }
