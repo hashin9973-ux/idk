@@ -27,6 +27,8 @@ function createObserveService(deps = {}) {
   let enabled = false;
   let timer = null;
   let inFlight = false;
+  let publishInFlight = false;
+  let publishedSequence = 0;
   let disposed = false;
   let lastFingerprint = '';
   let lastPublishedAt = 0;
@@ -93,6 +95,27 @@ function createObserveService(deps = {}) {
     return payload;
   }
 
+  async function publishLatestWhenDue() {
+    if (publishInFlight || !enabled || disposed || sequence <= publishedSequence) return;
+    publishInFlight = true;
+    try {
+      const delay = PUBLISH_INTERVAL_MS - (now() - lastPublishedAt);
+      if (delay > 0) await sleep(delay);
+      if (!enabled || disposed) return;
+      await publish(true);
+      publishedSequence = sequence;
+      lastError = '';
+    } catch (error) {
+      lastError = safeText(error && error.message || error || 'Observe publish failed', 500);
+    } finally {
+      publishInFlight = false;
+      if (enabled && !disposed && sequence > publishedSequence) {
+        // Coalesce changes that arrived while the last GitHub update was in flight.
+        void publishLatestWhenDue();
+      }
+    }
+  }
+
   async function captureOnce() {
     if (!enabled || disposed || inFlight) {
       skippedSamples += 1;
@@ -140,14 +163,8 @@ function createObserveService(deps = {}) {
       frames.push(frame);
       if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
 
-      // Coalesce bursts of visual changes. Capture samples at 4 fps, but publish at most once per second.
-      const delay = PUBLISH_INTERVAL_MS - (now() - lastPublishedAt);
-      if (delay > 0) {
-        await sleep(delay);
-        if (!enabled || disposed) return;
-      }
-      await publish(true);
-      lastError = '';
+      // Do not block the 4 fps sampling loop on GitHub network latency.
+      void publishLatestWhenDue();
     } catch (error) {
       lastError = safeText(error && error.message || error || 'Observe capture failed', 500);
     } finally {
@@ -165,6 +182,7 @@ function createObserveService(deps = {}) {
       lastFingerprint = '';
       frames = [];
       sequence = 0;
+      publishedSequence = 0;
       lastError = '';
       if (timer !== null) clearIntervalImpl(timer);
       timer = setIntervalImpl(() => { void captureOnce(); }, SAMPLE_INTERVAL_MS);
