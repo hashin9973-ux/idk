@@ -530,20 +530,23 @@ function createVisionService(deps) {
     else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
     if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The vision model and projector are loaded in the connected Colab runtime.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Call computer(action=enable) when visual analysis is needed.' };
+    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and the model/projector are loading in the background. Keep the Colab cell running and check status again.' };
+    else checks.model = { status: 'not_verified', message: 'The model is not loaded. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
     checks.vision = state.enabled
       ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the model is loaded.' : 'Vision is enabled; model setup is still in progress.' }
       : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
     const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
     const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
+    const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed;
     const next_steps = [];
-    if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal ChatGPT tool requests and results.');
+    if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
     if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
-    if (checks.model.status !== 'passed') next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Check computer(action=status) for loading progress; use computer(action=enable) only to retry activation if status shows inactive.');
+    if (checks.model.status === 'in_progress') next_steps.push('Vision is already active. The model is warming up; check computer(action=status) again once loading progresses.');
+    else if (checks.model.status !== 'passed') next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Use computer(action=enable) only to retry activation if status shows inactive.');
     if (checks.vision.status === 'disabled') next_steps.push('The runtime is connected but inactive. Call computer(action=enable) to retry activation.');
     return {
-      status: passed ? 'ready' : failed ? 'failed' : 'action_required',
+      status: passed ? 'ready' : failed ? 'failed' : loading ? 'loading' : 'action_required',
       checked_at: checkedAt, notebook_url: COLAB_NOTEBOOK_URL, checks, next_steps,
       note: 'The tunnel URL and random bearer key are held only in app/notebook memory for the current runtime. Screenshot bytes and vision reports bypass GitHub; the report returns through the app’s normal bridge result.'
     };
