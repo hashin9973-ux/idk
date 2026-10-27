@@ -256,6 +256,21 @@ test('repository API allows only the configured mailbox contents routes', async 
     if (target === 'https://api.github.com/repos/example/private-repo') {
       return response({ private: true });
     }
+    if (target === 'https://api.github.com/repos/example/private-repo/git/ref/heads/bridge-mailbox') {
+      return response({ ref: 'refs/heads/bridge-mailbox', object: { sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } });
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/git/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa') {
+      return response({ sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', tree: { sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }, parents: [] });
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/git/trees' && options.method === 'POST') {
+      return response({ sha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }, 201);
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/git/commits' && options.method === 'POST') {
+      return response({ sha: 'cccccccccccccccccccccccccccccccccccccccc' }, 201);
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/git/refs/heads/bridge-mailbox' && options.method === 'PATCH') {
+      return response({ ref: 'refs/heads/bridge-mailbox', object: { sha: 'cccccccccccccccccccccccccccccccccccccccc' } });
+    }
     const treeBase = 'https://api.github.com/repos/example/private-repo/git/trees/';
     if (target === treeBase + 'bridge-mailbox') {
       return response({
@@ -297,6 +312,22 @@ test('repository API allows only the configured mailbox contents routes', async 
     query: { ref: 'bridge-mailbox' }
   });
   assert.deepEqual(listing.result, [{ name: 'req-test.json', type: 'file' }]);
+
+  const legacyArtifactRead = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/artifacts/req-test-batch-output-001.json',
+    query: { ref: 'bridge-mailbox' }
+  });
+  assert.deepEqual(legacyArtifactRead.result, [{ name: 'req-test.json', type: 'file' }]);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/artifacts/req-test-batch-output-001.json',
+    body: {
+      message: '[local bridge] should not create legacy flat artifacts',
+      content: Buffer.from('no').toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  }), /only permitted for mailbox file records/i);
   assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox')));
   const readCall = calls.find(call => call.url.endsWith('/contents/bridge/requests?ref=bridge-mailbox'));
   assert.equal(readCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
@@ -324,6 +355,65 @@ test('repository API allows only the configured mailbox contents routes', async 
   });
   assert.equal(latestRequestCommit.result[0].sha, '5555555555555555555555555555555555555555');
   assert.ok(calls.some(call => call.url.endsWith('/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1')));
+
+  const headSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const treeSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const commitSha = 'cccccccccccccccccccccccccccccccccccccccc';
+  const ref = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/git/ref/heads/bridge-mailbox'
+  });
+  assert.equal(ref.result.object.sha, headSha);
+  const commitRead = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/git/commits/' + headSha
+  });
+  assert.equal(commitRead.result.tree.sha, treeSha);
+  const treeWrite = await auth.requestApi({
+    method: 'POST',
+    path: '/repos/example/private-repo/git/trees',
+    body: {
+      base_tree: treeSha,
+      tree: [{ path: 'bridge/results/req-test.json', mode: '100644', type: 'blob', sha: null }]
+    }
+  });
+  assert.equal(treeWrite.result.sha, treeSha);
+  const cleanupCommit = await auth.requestApi({
+    method: 'POST',
+    path: '/repos/example/private-repo/git/commits',
+    body: {
+      message: '[local bridge] retention cleanup of completed mailbox records',
+      tree: treeSha,
+      parents: [headSha]
+    }
+  });
+  assert.equal(cleanupCommit.result.sha, commitSha);
+  const refUpdate = await auth.requestApi({
+    method: 'PATCH',
+    path: '/repos/example/private-repo/git/refs/heads/bridge-mailbox',
+    body: { sha: commitSha, force: false }
+  });
+  assert.equal(refUpdate.result.object.sha, commitSha);
+  assert.ok(calls.some(call => call.options.method === 'POST' && call.url.endsWith('/git/trees')));
+  assert.ok(calls.some(call => call.options.method === 'PATCH' && call.url.endsWith('/git/refs/heads/bridge-mailbox')));
+  await assert.rejects(auth.requestApi({
+    method: 'POST',
+    path: '/repos/example/private-repo/git/trees',
+    body: {
+      base_tree: treeSha,
+      tree: [{ path: 'bridge/state/windows-app.json', mode: '100644', type: 'blob', sha: null }]
+    }
+  }), /bounded deletions/i);
+  await assert.rejects(auth.requestApi({
+    method: 'PATCH',
+    path: '/repos/example/private-repo/git/refs/heads/bridge-mailbox',
+    body: { sha: commitSha, force: true }
+  }), /without force/i);
+  await assert.rejects(auth.requestApi({
+    method: 'POST',
+    path: '/repos/example/private-repo/git/commits',
+    body: { message: 'arbitrary commit', tree: treeSha, parents: [headSha] }
+  }), /single-parent mailbox retention-cleanup commit/i);
 
   await assert.rejects(auth.requestApi({
     method: 'GET',
