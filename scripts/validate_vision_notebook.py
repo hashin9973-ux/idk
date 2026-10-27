@@ -37,6 +37,7 @@ def main():
         "visible setup timing": "stage_elapsed_seconds",
         "bounded setup budget": "SETUP_BUDGET_SECONDS = 480",
         "no automatic retries after setup failure": "_setup_blocked = True",
+        "bounded desktop registration wait": "_desktop_registration_event.wait(timeout=90)",
     }
     for label, needle in required.items():
         if needle not in code:
