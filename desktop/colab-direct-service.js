@@ -1015,6 +1015,7 @@ function createVisionService(deps) {
     }
     const inputTypes = new Set(['click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up']);
     const sequence = action === 'sequence';
+    const fastMode = args.mode === 'fast';
     const steps = sequence ? args.steps : inputTypes.has(action) ? [{ ...args, type: action }] : null;
     if (!Array.isArray(steps)) return { status: 'error', error: 'Unsupported computer input action.' };
     const coordinateActions = new Set(['click', 'move', 'drag', 'scroll', 'mouse_down', 'mouse_up']);
@@ -1028,10 +1029,13 @@ function createVisionService(deps) {
     }
     if (controlSessionActive) armControlSessionExpiry();
     const result = await inputControl.run(steps, latestScreenFrame);
-    if (!sequence || args.observe === false) {
+    const shouldObserveAfterSequence = sequence && (args.observe === true || (args.observe !== false && !fastMode));
+    if (!shouldObserveAfterSequence) {
       return {
-        ...result, action, control_active: controlSessionActive,
-        message: 'Input executed on the local Windows desktop. Coordinates use the most recent desktop screenshot frame.'
+        ...result, action, interaction_mode: fastMode ? 'fast' : 'normal', control_active: controlSessionActive,
+        message: fastMode && sequence
+          ? 'Fast input batch completed without waiting for post-action vision inference. Continue directly from the latest observation; take a new screenshot only when the next action depends on changed screen state.'
+          : 'Input executed on the local Windows desktop. Coordinates use the most recent desktop screenshot frame.'
       };
     }
     const observation = await analyzeScreenshot({
@@ -1041,7 +1045,7 @@ function createVisionService(deps) {
       region: args.region
     }, callId);
     return {
-      ...result, action, control_active: controlSessionActive,
+      ...result, action, interaction_mode: fastMode ? 'fast' : 'normal', control_active: controlSessionActive,
       observation,
       message: observation && observation.status === 'report_available'
         ? 'Input sequence completed and a fresh visual observation is available.'
