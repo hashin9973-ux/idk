@@ -29,7 +29,7 @@ async function waitFor(predicate, timeoutMs = 3000) {
   }
 }
 
-function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
+function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null } = {}) {
   const files = new Map();
   let nextSha = 1;
   for (const [path, value] of initial) {
@@ -91,9 +91,11 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
           .sort();
         return {
           status: 200,
-          result: requestPaths.length
-            ? [{ sha: String(requestPaths.length).padStart(40, '0') }]
-            : []
+          result: requestCommitShaOverride
+            ? [{ sha: requestCommitShaOverride }]
+            : requestPaths.length
+              ? [{ sha: String(requestPaths.length).padStart(40, '0') }]
+              : []
         };
       }
       const treePrefix = '/repos/test-owner/test-repo/git/trees/';
@@ -357,6 +359,59 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
       call.method === 'GET' &&
       ['/repos/test-owner/test-repo/contents/bridge/requests', '/repos/test-owner/test-repo/contents/bridge/results'].includes(call.path)
     ), false, 'large mailbox folders must never use the Contents API directory endpoint');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('periodic request-tree reconciliation finds new requests when the commit cursor is stale', async () => {
+  const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      return { ok: true, result: { id, tool } };
+    },
+    intervalMs: 5000,
+    requestReconciliationIntervalMs: 1
+  });
+
+  try {
+    await bridge.start();
+    const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
+    const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
+    const request = {
+      protocol: PROTOCOL,
+      request_id: 'req-cursor-stale-reconcile',
+      created_at: new Date().toISOString(),
+      tool: 'project_status',
+      args: {}
+    };
+    const requestPath = 'bridge/requests/' + request.request_id + '.json';
+    fake.files.set(requestPath, {
+      name: request.request_id + '.json',
+      path: requestPath,
+      type: 'file',
+      encoding: 'base64',
+      content: encode(request),
+      sha: 'sha-injected-stale-cursor-request'
+    });
+
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await bridge.pollOnce();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+
+    assert.equal(executions, 1, 'the new request should execute exactly once');
+    assert.ok(
+      fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length > initialTreeReads,
+      'a due reconciliation must re-read the bounded request tree even when the commit cursor is unchanged'
+    );
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(result.status, 'completed');
+    assert.equal(result.request_id, request.request_id);
   } finally {
     await bridge.stop();
   }
