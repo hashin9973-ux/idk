@@ -93,7 +93,11 @@ function fixture(options = {}) {
     githubAuth,
     getSettings: () => ({ repositoryBridge: { owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' } }),
     getWorkspaceRoot: () => '',
-    captureScreenshot: async () => ({ bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png' }),
+    captureScreenshot: async () => ({
+      bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png',
+      ...(Number.isFinite(options.capturedAt) ? { captured_at: options.capturedAt } : {})
+    }),
+    getAccessibleSnapshot: options.getAccessibleSnapshot,
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
@@ -393,6 +397,52 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.frame.width_px, 640);
   assert.equal(analyzeCall.body.accessibility.available, false);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
+});
+
+test('fresh Windows accessibility bounds are sent with the exact screenshot frame', async t => {
+  const f = fixture({
+    getAccessibleSnapshot: async ({ screen, frame }) => ({
+      available: true, source: 'windows_uia',
+      active_window: { title: 'Test app', process_id: 42, bbox_px: [0, 0, frame.width, frame.height], bbox_1000: [0, 0, 1000, 1000] },
+      focused_control: null,
+      controls: [{
+        id: 'uia-1', label: 'OK', role: 'Button', enabled: true, focused: false,
+        bbox_px: [100, 100, 200, 140], bbox_1000: [156, 278, 313, 389],
+        center_px: [150, 120], source: 'windows_uia', grounding: 'windows_accessibility_bounds'
+      }],
+      truncated: false, node_count: 4,
+      received_screen: screen, received_frame: frame
+    })
+  });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-uia-analysis');
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-cccccccccccccccccccccccc');
+  assert.equal(result.status, 'report_available');
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.equal(analyzeCall.body.accessibility.available, true);
+  assert.equal(analyzeCall.body.accessibility.controls[0].source, 'windows_uia');
+  assert.deepEqual(analyzeCall.body.accessibility.controls[0].bbox_px, [100, 100, 200, 140]);
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.frame.height_px, 360);
+});
+
+test('stale accessibility snapshots are not attached to a newer screenshot', async t => {
+  const f = fixture({
+    capturedAt: Date.now() - 6000,
+    getAccessibleSnapshot: async ({ frame }) => ({
+      available: true, active_window: null, focused_control: null, controls: [],
+      truncated: false, node_count: 0, frame
+    })
+  });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-stale-uia-analysis');
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'computer-dddddddddddddddddddddddd');
+  assert.equal(result.status, 'report_available');
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.equal(analyzeCall.body.accessibility.available, false);
+  assert.equal(analyzeCall.body.accessibility.reason, 'snapshot_too_old_for_frame');
 });
 
 test('setup check keeps GitHub mailbox verification separate and requires no Colab secret', async t => {
