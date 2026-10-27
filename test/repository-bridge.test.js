@@ -61,9 +61,9 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
             : []
         };
       }
-      const treeMatch = path.match(/^\\/repos\\/test-owner\\/test-repo\\/git\\/trees\\/(.+)$/);
-      if (method === 'GET' && treeMatch) {
-        const treeRef = treeMatch[1];
+      const treePrefix = '/repos/test-owner/test-repo/git/trees/';
+      if (method === 'GET' && path.startsWith(treePrefix)) {
+        const treeRef = path.slice(treePrefix.length);
         const treePath = treeRef === 'bridge-mailbox' ? '' : treePathsBySha.get(treeRef);
         if (treePath === undefined) throw new Error('Not Found (404)');
         const prefix = treePath ? treePath + '/' : '';
@@ -87,8 +87,9 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
           result: { sha: treeShaForPath(treePath), tree: [...children.values()], truncated: false }
         };
       }
-      const match = path.match(/^\\/repos\\/test-owner\\/test-repo\\/contents\\/(.+)$/);      if (!match) throw new Error('Unexpected API path: ' + path);
-      const rel = match[1];
+      const contentsPrefix = '/repos/test-owner/test-repo/contents/';
+      if (!path.startsWith(contentsPrefix)) throw new Error('Unexpected API path: ' + path);
+      const rel = path.slice(contentsPrefix.length);
       if (method === 'GET') {
         const exact = files.get(rel);
         if (exact) {
