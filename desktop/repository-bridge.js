@@ -273,8 +273,16 @@ function createRepositoryBridge(deps) {
   }
 
   async function ensureFolders() {
-    for (const folder of ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts']) {
-      const entries = await listFolder(folder);
+    const folders = ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts'];
+    // Folder discovery is read-only, so fetch all six independently instead of
+    // making app startup pay six sequential GitHub round trips.
+    const discovered = await Promise.all(folders.map(async folder => ({
+      folder,
+      entries: await listFolder(folder)
+    })));
+    // Missing folder markers are writes to the shared branch; keep these serial
+    // to avoid unnecessary Contents API commit races during first-time setup.
+    for (const { folder, entries } of discovered) {
       if (entries.length) continue;
       const placeholder = folder + '/.gitkeep';
       const existing = await readRemoteFile(placeholder);
