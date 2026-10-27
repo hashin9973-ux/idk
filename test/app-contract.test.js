@@ -391,7 +391,7 @@ test('Colab vision notebook becomes ready after model download without startup i
   assert.match(source, /no final message\.content; diagnostics=/);
   assert.match(source, /https:\/\/ollama\.com\/install\.sh/);
   assert.match(source, /OLLAMA_API \+ "\/api\/chat"/);
-  assert.match(source, /"images": \[image_b64\]/);
+  assert.match(source, /"images": \[model_image_b64\]/);
   assert.doesNotMatch(source, /run_vision_smoke_test|vision_smoke_test|blue-square vision check|generated test image/i);
   assert.match(source, /ollama_model_is_downloaded\(\)/);
   assert.match(source, /No startup image inference was run/);
