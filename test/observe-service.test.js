@@ -2,10 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createObserveService, OBSERVE_PROTOCOL, FRAME_LIMIT, SAMPLE_INTERVAL_MS } = require('../desktop/observe-service');
+const { createObserveService, OBSERVE_PROTOCOL, FRAME_LIMIT, DEFAULT_SAMPLE_FPS, SAMPLE_INTERVAL_MS } = require('../desktop/observe-service');
 
-test('Observe samples at 4 fps, records changed grounded context, and publishes a rolling ten-frame buffer', async () => {
+test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling ten-frame buffer', async () => {
   let tick = null;
+  let intervalMs = null;
   let fingerprint = 'screen-a';
   const published = [];
   const service = createObserveService({
@@ -32,16 +33,26 @@ test('Observe samples at 4 fps, records changed grounded context, and publishes 
       node_count: 1
     }),
     sleep: async () => {},
-    setIntervalImpl: fn => { tick = fn; return 1; },
+    setIntervalImpl: (fn, ms) => { tick = fn; intervalMs = ms; return 1; },
     clearIntervalImpl: () => {}
   });
 
-  assert.equal(SAMPLE_INTERVAL_MS, 250);
+  assert.equal(DEFAULT_SAMPLE_FPS, 2);
+  assert.equal(SAMPLE_INTERVAL_MS, 500);
   assert.equal((await service.setEnabled(true)).enabled, true);
+  assert.equal(service.status().fps, 2);
+  assert.equal(intervalMs, 500);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.status().frame_count, 1);
   assert.equal(published[0].protocol, OBSERVE_PROTOCOL);
+  assert.equal(published[0].sample_fps, 2);
   assert.equal(published.at(-1).frames[0].active_window.title, 'Browser');
+
+  await service.setFps(4);
+  assert.equal(service.status().fps, 4);
+  assert.equal(intervalMs, 250);
+  assert.equal(published.at(-1).sample_fps, 4);
+  await assert.rejects(service.setFps(3), /one of: 0.5, 1, 2, 4, 8/);
 
   fingerprint = 'screen-b';
   await tick();
