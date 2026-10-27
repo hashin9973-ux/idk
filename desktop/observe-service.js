@@ -116,6 +116,60 @@ function createObserveService(deps = {}) {
     }
   }
 
+  let contextInFlight = false;
+  let pendingCapture = null;
+
+  async function drainChangedCapture() {
+    if (contextInFlight || !pendingCapture || !enabled || disposed) return;
+    contextInFlight = true;
+    try {
+      while (pendingCapture && enabled && !disposed) {
+        const item = pendingCapture;
+        pendingCapture = null;
+        const captured = item.captured;
+        const screen = {
+          width: Number(captured.screen_width || captured.width) || 0,
+          height: Number(captured.screen_height || captured.height) || 0,
+          frame_width: Number(captured.width) || 0,
+          frame_height: Number(captured.height) || 0,
+          display_id: safeText(captured.display_id, 80) || null
+        };
+        let accessibility = { available: false, source: 'windows_uia', reason: 'unavailable' };
+        try {
+          accessibility = await getAccessibleSnapshot({ screen, frame: { width: screen.frame_width, height: screen.frame_height } });
+        } catch (error) {
+          accessibility = { available: false, source: 'windows_uia', reason: safeText(error && error.message || error, 120) };
+        }
+        if (!enabled || disposed) break;
+        const frame = {
+          sequence: ++sequence,
+          captured_at: new Date(item.capturedAt).toISOString(),
+          screen,
+          active_window: accessibility && accessibility.active_window || null,
+          focused_control: accessibility && accessibility.focused_control || null,
+          controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 250) : [],
+          accessibility: {
+            available: accessibility && accessibility.available === true,
+            source: safeText(accessibility && accessibility.source || 'windows_uia', 40),
+            reason: safeText(accessibility && accessibility.reason || '', 120),
+            truncated: accessibility && accessibility.truncated === true,
+            node_count: Number.isFinite(accessibility && accessibility.node_count) ? accessibility.node_count : null
+          },
+          fingerprint: item.fingerprint.slice(0, 64),
+          note: 'UI Automation is grounded evidence. This frame does not contain full pixel-level scene understanding; visual OCR/model enrichment is not yet attached.'
+        };
+        frames.push(frame);
+        if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
+        void publishLatestWhenDue();
+      }
+    } catch (error) {
+      lastError = safeText(error && error.message || error || 'Observe context processing failed', 500);
+    } finally {
+      contextInFlight = false;
+      if (pendingCapture && enabled && !disposed) void drainChangedCapture();
+    }
+  }
+
   async function captureOnce() {
     if (!enabled || disposed || inFlight) {
       skippedSamples += 1;
@@ -124,51 +178,20 @@ function createObserveService(deps = {}) {
     inFlight = true;
     try {
       const captured = await captureScreenshot();
-      lastCaptureAt = Number(captured && captured.captured_at) || now();
+      const capturedAt = Number(captured && captured.captured_at) || now();
+      lastCaptureAt = capturedAt;
       const fingerprint = await fingerprintScreenshot(captured);
       if (!fingerprint || fingerprint === lastFingerprint) return;
       lastFingerprint = fingerprint;
-      lastChangeAt = lastCaptureAt;
-
-      const screen = {
-        width: Number(captured.screen_width || captured.width) || 0,
-        height: Number(captured.screen_height || captured.height) || 0,
-        frame_width: Number(captured.width) || 0,
-        frame_height: Number(captured.height) || 0,
-        display_id: safeText(captured.display_id, 80) || null
-      };
-      let accessibility = { available: false, source: 'windows_uia', reason: 'unavailable' };
-      try {
-        accessibility = await getAccessibleSnapshot({ screen, frame: { width: screen.frame_width, height: screen.frame_height } });
-      } catch (error) {
-        accessibility = { available: false, source: 'windows_uia', reason: safeText(error && error.message || error, 120) };
-      }
-      const frame = {
-        sequence: ++sequence,
-        captured_at: new Date(lastCaptureAt).toISOString(),
-        screen,
-        active_window: accessibility && accessibility.active_window || null,
-        focused_control: accessibility && accessibility.focused_control || null,
-        controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 250) : [],
-        accessibility: {
-          available: accessibility && accessibility.available === true,
-          source: safeText(accessibility && accessibility.source || 'windows_uia', 40),
-          reason: safeText(accessibility && accessibility.reason || '', 120),
-          truncated: accessibility && accessibility.truncated === true,
-          node_count: Number.isFinite(accessibility && accessibility.node_count) ? accessibility.node_count : null
-        },
-        fingerprint: fingerprint.slice(0, 64),
-        note: 'UI Automation is grounded evidence. This frame does not contain full pixel-level scene understanding; visual OCR/model enrichment is not yet attached.'
-      };
-      frames.push(frame);
-      if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
-
-      // Do not block the 4 fps sampling loop on GitHub network latency.
-      void publishLatestWhenDue();
+      lastChangeAt = capturedAt;
+      // If UI Automation is still processing, keep only the newest changed frame.
+      // Sampling itself remains independent and continues at the 250 ms cadence.
+      pendingCapture = { captured, capturedAt, fingerprint };
     } catch (error) {
       lastError = safeText(error && error.message || error || 'Observe capture failed', 500);
     } finally {
       inFlight = false;
+      if (pendingCapture && enabled && !disposed) void drainChangedCapture();
     }
   }
 
