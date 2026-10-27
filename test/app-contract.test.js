@@ -99,7 +99,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
-  assert.match(main, /height: 374/);
+  assert.match(main, /height: 402/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
   assert.match(main, /'app:vision-manual-panel'/);
