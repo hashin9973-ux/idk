@@ -288,7 +288,11 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('activate immediately'));
   assert.ok(vision.includes('async function inputAction(args = {}, callId = null)'));
   assert.ok(vision.includes('latestScreenFrame'));
-  assert.ok(vision.includes('Screenshot pixel frame: '));
+  assert.ok(vision.includes('Screenshot frame: '));
+  assert.ok(main.includes("require('./windows-uia')"));
+  assert.ok(main.includes("getAccessibleSnapshot: captureWindowsUiAutomationSnapshot"));
+  assert.ok(vision.includes("validateVisionContext(data.report"));
+  assert.ok(vision.includes("unverified_visual_estimate"));
   assert.ok(vision.includes('async function connectColab(endpointText'));
   assert.ok(vision.includes("connectPublicEndpoint(endpoint.url, 'manual')"));
   assert.ok(vision.includes('async function watchClipboardForEndpoint'));
@@ -298,7 +302,13 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('cloudflared'));
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
   assert.ok(python.includes('"think": False'));
-  assert.ok(python.includes('no final message.content; diagnostics='));
+  assert.ok(python.includes('"format": "json"'));
+  assert.ok(python.includes('VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"'));
+  assert.ok(python.includes("def extract_ocr_evidence("));
+  assert.ok(python.includes("normalize_model_box"));
+  assert.ok(python.includes("Vision output hit its generation limit."));
+  assert.ok(python.includes("malformed or truncated JSON; the report was rejected."));
+  assert.ok(python.includes('"coordinate_space": "screenshot_jpeg_px"'));
   assert.ok(python.includes('https://ollama.com/install.sh'));
   assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
   assert.ok(!python.includes('def run_vision_smoke_test()'));
