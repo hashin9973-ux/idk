@@ -869,7 +869,11 @@ function createRepositoryBridge(deps) {
     // deletion commit. Any concurrent change aborts the whole pass; never delete by
     // filename alone or overwrite a concurrent mailbox write.
     for (const [relativePath, expectedSha] of unique) {
-      const current = await readRemoteFile(relativePath);
+      // Artifacts may be plain text, binary, or JSON. Verify their blob SHA using
+      // the raw-content reader instead of assuming every mailbox file is JSON.
+      const current = relativePath.split('/')[1] === 'artifacts'
+        ? await readRemoteContent(relativePath)
+        : await readRemoteFile(relativePath);
       if (!current || current.sha !== expectedSha) {
         throw new Error('Mailbox changed during cleanup; no files were deleted. The next pass will retry.');
       }
