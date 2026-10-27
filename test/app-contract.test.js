@@ -299,7 +299,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
   assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
   assert.ok(python.includes('llama-server'));
-  assert.ok(python.includes('llama-cpp-build'));
+  assert.ok(python.includes('cudart-llama-b11913-bin-ubuntu-cuda-12.8-x64.tar.gz'));
+  assert.ok(python.includes('be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e'));
+  assert.doesNotMatch(python, /cmake|nvcc is missing|git clone --depth=1.*llama\.cpp/i);
   assert.ok(python.includes('"max_tokens": 700'));
   assert.ok(python.includes('"--parallel", "1"'));
   assert.ok(python.includes('automatically activates after authenticated desktop registration'));
