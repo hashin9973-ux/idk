@@ -309,11 +309,11 @@ function createVisionService(deps) {
         endpoint_watch_active: Boolean(opened.watching),
         vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
         message: opened.watching
-          ? 'The app is watching the Windows clipboard for the random public HTTPS endpoint produced by the Colab notebook. Run the server cell; it copies the endpoint automatically, and the app connects as soon as it detects it. If clipboard write is blocked, click Copy endpoint in the notebook output. No app-link handoff is needed.'
+          ? 'The app is watching the Windows clipboard for the random public HTTPS endpoint from Colab. Run the server cell; if automatic detection keeps waiting, click Paste URL in this app and paste the complete PUBLIC_VISION_ENDPOINT line from the notebook output. The app verifies the endpoint over authenticated HTTPS. Vision remains off.'
           : opened.throttled
-            ? 'The app is already watching for a public endpoint or recently opened the notebook. Run the server cell in Colab; the Windows app will detect the endpoint automatically.'
+            ? 'The app is already watching for a public endpoint or recently opened the notebook. Run the server cell in Colab; click Paste URL here if automatic detection does not work.'
             : 'The app could not start watching for the notebook endpoint.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'The notebook copies the public endpoint and the app detects it automatically. Vision remains off until explicitly enabled.']
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'If clipboard auto-detection fails, copy the full PUBLIC_VISION_ENDPOINT line and paste it using Paste URL in this app. The endpoint is a temporary secret; keep it private. Vision remains off until explicitly enabled.']
       };
     } catch (error) {
       return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
