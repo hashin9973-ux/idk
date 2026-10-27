@@ -46,8 +46,11 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   github_api: ['method', 'path', 'body', 'query']
 });
 
-// Preserve complete local tool output for the repository bridge to externalize into artifact files.
+// Preserve complete local tool output for inline results or batch-output artifact bundles.
 const MAX_RESULT_CHARS = 4 * 1024 * 1024;
+const MAX_BATCH_STEPS = 100;
+const MAX_BATCH_CONCURRENCY = 100;
+const DEFAULT_BATCH_CONCURRENCY = 32;
 const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clone']);
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
@@ -88,7 +91,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   computer: 'Use this single computer tool only when visual inspection is requested or materially helpful. action=status checks readiness; connect opens Colab but does not load the model; enable loads screenshot understanding and may download several GB; disable prevents new screenshots but keeps the runtime alive; screenshot captures the Windows desktop or a workspace image after the model is ready; wait checks an existing screenshot request.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
-  batch: 'Execute 1–50 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for their source step. Each step gets its own result and follows the current local approval setting. Stop launching later steps after a failure by default.'
+  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large aggregate outputs are bundled as mailbox artifacts; fetch all listed parts concurrently and review them together. Stop launching later steps after a failure by default.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
@@ -134,13 +137,13 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   regex: { type: 'boolean', description: 'Interpret query as a regular expression. Defaults to false.', default: false },
   caseSensitive: { type: 'boolean', description: 'Use case-sensitive matching. Defaults to false.', default: false },
   stopOnError: { type: 'boolean', description: 'Stop launching queued batch steps after a failure; already-running independent steps may finish. Defaults to true.', default: true },
-  maxConcurrency: { type: 'integer', description: 'Maximum independent steps to execute at once (1–8). Defaults to 4. Steps using $ref wait for the referenced earlier step.', minimum: 1, maximum: 8, default: 4 },
+  maxConcurrency: { type: 'integer', description: 'Maximum independent steps to execute at once (1–100). Defaults to 32. Use 100 for large, lightweight, independent file operations; conflicting paths and shell, tests, and Git mutations are automatically ordered.', minimum: 1, maximum: 100, default: 32 },
   paths: { type: 'array', description: 'Optional list of workspace-relative paths. When set, limits the operation to those paths.', items: { type: 'string' }, maxItems: 100 },
   items: { type: 'array', description: 'Plan steps as strings or objects containing step and optional status.', maxItems: 30, items: { anyOf: [
     { type: 'string', maxLength: 1000 },
     { type: 'object', properties: { step: { type: 'string', maxLength: 1000 }, status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] } }, required: ['step'], additionalProperties: false }
   ] } },
-  steps: { type: 'array', description: 'Ordered local tool calls (up to 50). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 50 },
+  steps: { type: 'array', description: 'Ordered local tool calls (up to 100). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 100 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   computer: {
@@ -177,8 +180,8 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
-      description: '1–50 calls. Independent calls run concurrently (default limit 4); a {"$ref":"stepId.result.content"} value makes a step wait for that earlier step. Each step follows the current local approval setting.',
-      minItems: 1, maxItems: 50,
+      description: '1–100 calls. Independent calls run concurrently (default limit 32; maximum 100); a {"$ref":"stepId.result.content"} value makes a step wait for that earlier step. File/path conflicts and shell/tests/Git mutations are ordered automatically. Each step follows the current local approval setting.',
+      minItems: 1, maxItems: 100,
       items: {
         type: 'object',
         properties: {
@@ -289,14 +292,14 @@ function createToolBridge(deps) {
   }
 
   function validateBatchArgs(args) {
-    if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > 50) {
-      throw new Error('batch.steps must contain between 1 and 50 tool steps.');
+    if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > MAX_BATCH_STEPS) {
+      throw new Error('batch.steps must contain between 1 and ' + MAX_BATCH_STEPS + ' tool steps.');
     }
     if (args.stopOnError !== undefined && typeof args.stopOnError !== 'boolean') {
       throw new Error('batch.stopOnError must be a boolean.');
     }
-    if (args.maxConcurrency !== undefined && (!Number.isInteger(args.maxConcurrency) || args.maxConcurrency < 1 || args.maxConcurrency > 8)) {
-      throw new Error('batch.maxConcurrency must be an integer from 1 to 8.');
+    if (args.maxConcurrency !== undefined && (!Number.isInteger(args.maxConcurrency) || args.maxConcurrency < 1 || args.maxConcurrency > MAX_BATCH_CONCURRENCY)) {
+      throw new Error('batch.maxConcurrency must be an integer from 1 to ' + MAX_BATCH_CONCURRENCY + '.');
     }
     const ids = new Set();
     for (const [index, step] of args.steps.entries()) {
@@ -615,7 +618,7 @@ function createToolBridge(deps) {
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
           catalog_version: 1,
-          rule: 'Submit multiple steps in one request. Independent operations run concurrently up to maxConcurrency; file/path conflicts and unknown-side-effect operations preserve request order. $ref arguments wait for their source step. For shell/run_tests, each step returns only after the foreground process exits or a timeout result is created; inspect exitCode, timedOut, stdout, and stderr before any dependent action.',
+          rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts and shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
       }
@@ -649,7 +652,7 @@ function createToolBridge(deps) {
     const taskById = new Map();
     const outcomeById = new Map();
     const steps = args.steps;
-    const concurrency = Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : 4;
+    const concurrency = Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : DEFAULT_BATCH_CONCURRENCY;
     const stopOnError = args.stopOnError !== false;
     let active = 0;
     const waiters = [];
