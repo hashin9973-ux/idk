@@ -126,3 +126,42 @@ test('Observe reads the existing blob SHA after an app restart before updating i
   assert.deepEqual(writes.slice(0, 3), ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]);
   await secondAppSession.dispose();
 });
+
+
+test('startup cleanup clears a stale live Observe document without enabling sampling', async () => {
+  let payload = {
+    protocol: OBSERVE_PROTOCOL, enabled: true, sample_fps: 4,
+    frame_count: 1, frames: [{ sequence: 1, active_window: { title: 'Old window' } }]
+  };
+  let currentSha = 'a'.repeat(40);
+  const writes = [];
+  const githubAuth = {
+    requestApi: async input => {
+      assert.equal(input.path, '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json');
+      if (input.method === 'GET') {
+        assert.deepEqual(input.query, { ref: 'bridge-mailbox' });
+        return { status: 200, result: {
+          sha: currentSha,
+          content: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
+        } };
+      }
+      assert.equal(input.method, 'PUT');
+      assert.equal(input.body.sha, currentSha);
+      const next = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
+      writes.push(next);
+      payload = next;
+      currentSha = String.fromCharCode(currentSha.charCodeAt(0) + 1).repeat(40);
+      return { status: 200, result: { content: { sha: currentSha } } };
+    }
+  };
+  const service = createObserveService({ githubAuth });
+  const state = await service.clearStaleContext();
+  assert.equal(state.enabled, false);
+  assert.equal(state.fps, 2);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].enabled, false);
+  assert.equal(writes[0].frame_count, 0);
+  assert.deepEqual(writes[0].frames, []);
+  assert.equal(writes[0].sample_fps, 2);
+  await service.dispose();
+});
