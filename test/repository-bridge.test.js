@@ -36,6 +36,12 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
   }
   const calls = [];
+  const treePathsBySha = new Map();
+  function treeShaForPath(relativePath) {
+    const sha = require('node:crypto').createHash('sha1').update(relativePath || '/').digest('hex');
+    treePathsBySha.set(sha, relativePath || '');
+    return sha;
+  }
   const githubAuth = {
     getState: async () => ({ authenticated: true, login: 'worker-test' }),
     requestApi: async ({ method, path, body, query }) => {
@@ -43,9 +49,47 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
       if (method === 'GET' && path === '/repos/test-owner/test-repo') {
         return { status: 200, result: { private: privateRepo } };
       }
-      const match = path.match(/^\/repos\/test-owner\/test-repo\/contents\/(.+)$/);
-      if (!match) throw new Error('Unexpected API path: ' + path);
-      const rel = match[1];
+      if (method === 'GET' && path === '/repos/test-owner/test-repo/commits') {
+        assert.deepEqual(query, { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 1 });
+        const requestPaths = [...files.keys()]
+          .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
+          .sort();
+        return {
+          status: 200,
+          result: requestPaths.length
+            ? [{ sha: String(requestPaths.length).padStart(40, '0') }]
+            : []
+        };
+      }
+      const treePrefix = '/repos/test-owner/test-repo/git/trees/';
+      if (method === 'GET' && path.startsWith(treePrefix)) {
+        const treeRef = path.slice(treePrefix.length);
+        const treePath = treeRef === 'bridge-mailbox' ? '' : treePathsBySha.get(treeRef);
+        if (treePath === undefined) throw new Error('Not Found (404)');
+        const prefix = treePath ? treePath + '/' : '';
+        const children = new Map();
+        for (const [filePath, value] of files) {
+          if (!filePath.startsWith(prefix)) continue;
+          const remainder = filePath.slice(prefix.length);
+          if (!remainder) continue;
+          const child = remainder.split('/')[0];
+          const childPath = prefix + child;
+          const isFile = files.has(childPath);
+          children.set(child, {
+            path: child,
+            type: isFile ? 'blob' : 'tree',
+            sha: isFile ? files.get(childPath).sha : treeShaForPath(childPath),
+            ...(isFile ? { size: Buffer.from(value.content || '', 'base64').length } : {})
+          });
+        }
+        return {
+          status: 200,
+          result: { sha: treeShaForPath(treePath), tree: [...children.values()], truncated: false }
+        };
+      }
+      const contentsPrefix = '/repos/test-owner/test-repo/contents/';
+      if (!path.startsWith(contentsPrefix)) throw new Error('Unexpected API path: ' + path);
+      const rel = path.slice(contentsPrefix.length);
       if (method === 'GET') {
         const exact = files.get(rel);
         if (exact) {
@@ -86,7 +130,10 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
       throw new Error('Unexpected method: ' + method);
     }
   };
-  return { githubAuth, files, calls };
+  return {
+    githubAuth, files, calls,
+    treeRef: relativePath => treeShaForPath(relativePath)
+  };
 }
 
 function settingsFixture(allowPublicMailbox = false) {
@@ -216,11 +263,64 @@ test('worker executes a request once, writes the actual result, claim and heartb
     assert.equal('workspace_name' in state, false, 'shared state does not disclose the local workspace folder name');
     const createCommits = fake.calls.filter(call => call.method === 'PUT');
     assert.ok(createCommits.length >= 5, 'folder markers, claim, result and state are committed');
-    const resultFolderGetsBefore = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/results').length;
+    const resultsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/results');
+    const resultFolderTreeGetsBefore = fake.calls.filter(call => call.method === 'GET' && call.path === resultsTreePath).length;
     await bridge.pollOnce();
-    const resultFolderGetsAfter = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/results').length;
-    assert.equal(resultFolderGetsAfter, resultFolderGetsBefore, 'normal polling should not refetch the growing result folder');
+    const resultFolderTreeGetsAfter = fake.calls.filter(call => call.method === 'GET' && call.path === resultsTreePath).length;
+    assert.equal(resultFolderTreeGetsAfter, resultFolderTreeGetsBefore, 'normal polling must not reload the historical results tree');
     assert.equal(executions, 1, 'cached completed result must not rerun');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('large historical mailbox folders are listed with bounded Git trees, not Contents API', async () => {
+  const initial = [];
+  const count = 900;
+  for (let index = 1; index <= count; index++) {
+    const id = 'req-historical-' + String(index).padStart(4, '0');
+    initial.push(['bridge/requests/' + id + '.json', {
+      protocol: PROTOCOL,
+      request_id: id,
+      created_at: '2026-10-27T00:00:00.000Z',
+      tool: 'project_status',
+      args: {}
+    }]);
+    initial.push(['bridge/results/' + id + '.json', {
+      protocol: RESULT_PROTOCOL,
+      request_id: id,
+      status: 'completed',
+      completed_at: '2026-10-27T00:00:01.000Z',
+      result: { ok: true, result: { historical: true } }
+    }]);
+  }
+  const fake = fakeGitHub({ initial });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => { executions++; return { ok: true }; },
+    intervalMs: 5000
+  });
+
+  try {
+    const started = await bridge.start();
+    assert.equal(started.running, true);
+    assert.equal(executions, 0, 'historical requests with matching results must never be rerun');
+    assert.equal(bridge.getState().lastError, '');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests')
+    ), 'the worker must list the compact request-directory tree');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/results')
+    ), 'the worker must build its historical result index from the compact result-directory tree');
+    assert.equal(fake.calls.some(call =>
+      call.method === 'GET' &&
+      ['/repos/test-owner/test-repo/contents/bridge/requests', '/repos/test-owner/test-repo/contents/bridge/results'].includes(call.path)
+    ), false, 'large mailbox folders must never use the Contents API directory endpoint');
   } finally {
     await bridge.stop();
   }
@@ -254,13 +354,14 @@ test('worker drains queued mailbox requests without a folder re-read for every c
   });
   try {
     await bridge.start();
-    const requestFolderGetsAtDispatch = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/requests').length;
+    const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
+    const requestFolderTreeGetsAtDispatch = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
     await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
     await new Promise(resolve => setTimeout(resolve, 25));
-    const requestFolderGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/requests').length;
+    const requestFolderTreeGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
     assert.equal(executions, 40);
     assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
-    assert.equal(requestFolderGetsAfterDrain, requestFolderGetsAtDispatch, 'request completion should dispatch queued work without another Contents API folder listing');
+    assert.equal(requestFolderTreeGetsAfterDrain, requestFolderTreeGetsAtDispatch, 'request completion should drain queued work without another tree listing when the request-commit cursor is unchanged');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
       assert.equal(result.status, 'completed');
