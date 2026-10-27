@@ -342,7 +342,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes("contents.on('render-process-gone'"));
   assert.ok(main.includes("app.on('child-process-gone'"));
   assert.ok(python.includes('class DirectVisionHandler'));
-  assert.ok(bridge.includes('origin at top-left'));
+  assert.ok(bridge.includes('screenshot JPEG pixel frame'));
+  assert.ok(bridge.includes('accessibility-grounded bounds are preferred'));
+  assert.ok(bridge.includes('All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab'));
   assert.ok(bridge.includes('Optional focused observation crop'));
   assert.ok(vision.includes('region_px: screenshot.metadata.region_px'));
   assert.ok(python.includes('map_model_boxes_to_original(model_report, width, height, region_px)'));
