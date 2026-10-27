@@ -35,6 +35,8 @@ def main():
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": 'timeout=900, env=server_env',
         "visible setup timing": "stage_elapsed_seconds",
+        "bounded setup budget": "SETUP_BUDGET_SECONDS = 480",
+        "no automatic retries after setup failure": "_setup_blocked = True",
     }
     for label, needle in required.items():
         if needle not in code:
