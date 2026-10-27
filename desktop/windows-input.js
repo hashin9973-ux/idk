@@ -284,6 +284,12 @@ function createWindowsInputController(options = {}) {
       };
     } catch (error) {
       try { await releaseAll(); } catch {}
+      // The PowerShell process can fail after sending a key/button down but before its
+      // matching up event. Release every input that this batch may have left held.
+      const emergency = heldUpdates.filter(update => update.down).map(update => update.kind === 'key'
+        ? { type: 'key_event', vk: update.vk, up: true }
+        : { type: 'mouse_event', flags: BUTTONS[update.id].up, data: 0 });
+      try { if (emergency.length) await runLowLevel(emergency); } catch {}
       throw new Error('Windows input failed: ' + String(error && error.message || error));
     }
   }
