@@ -412,6 +412,8 @@ test('focused screenshot observation crops only within the screenshot frame and 
   assert.equal(result.status, 'report_available');
   const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
   assert.deepEqual(analyzeCall.body.region_px, [80, 40, 400, 300]);
+  assert.match(analyzeCall.body.prompt, /Original screenshot frame: 640x360/);
+  assert.match(analyzeCall.body.prompt, /Return normalized boxes relative to the image shown/);
   assert.equal(analyzeCall.body.frame.width_px, 640);
   assert.equal(analyzeCall.body.frame.height_px, 360);
 });
