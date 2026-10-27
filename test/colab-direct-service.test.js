@@ -346,6 +346,9 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.protocol, DIRECT_VISION_PROTOCOL);
   assert.equal(analyzeCall.body.sha256, result.input_sha256);
   assert.ok(typeof analyzeCall.body.image_base64 === 'string');
+  assert.match(analyzeCall.body.prompt, /Screenshot pixel frame: 640x360/);
+  assert.equal(result.input_image.width, 640);
+  assert.equal(result.input_image.height, 360);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
 });
 
