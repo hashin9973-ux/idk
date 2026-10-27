@@ -285,7 +285,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
-  assert.ok(vision.includes('automatic vision activation'));
+  assert.ok(vision.includes('activate immediately'));
   assert.ok(vision.includes('async function inputAction(args = {}, callId = null)'));
   assert.ok(vision.includes('latestScreenFrame'));
   assert.ok(vision.includes('Screenshot pixel frame: '));
@@ -299,12 +299,12 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
   assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
   assert.ok(python.includes('llama-server'));
-  assert.ok(python.includes('llama-server-bin'));
+  assert.ok(python.includes('llama-cpp-build'));
   assert.ok(python.includes('"max_tokens": 700'));
   assert.ok(python.includes('"--parallel", "1"'));
-  assert.ok(python.includes('automatically activates vision'));
+  assert.ok(python.includes('automatically activates after authenticated desktop registration'));
   assert.ok(python.includes('class DirectVisionHandler'));
-  assert.ok(bridge.includes('coordinate-frame'));
+  assert.ok(bridge.includes('origin top-left'));
   assert.ok(python.includes('display_public_endpoint'));
   assert.ok(python.includes('PUBLIC_VISION_ENDPOINT='));
   assert.ok(python.includes('navigator.clipboard.writeText'));
