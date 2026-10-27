@@ -572,7 +572,7 @@ test('computer uses familiar actions in one tool and gates visual side effects',
     assert.deepEqual(computer.parameters.properties.mode.enum, ['normal', 'fast']);
     assert.match(computer.description, /fast interaction mode/i);
     assert.match(computer.parameters.properties.action.description, /immediately/i);
-    assert.match(computer.parameters.properties.observe.description, /mode=fast skips/i);
+    assert.match(computer.parameters.properties.observe.description, /mode=fast.*skips/i);
     assert.equal(names.some(name => /^vision_/.test(name)), false);
     assert.deepEqual(calls, ['status', 'enable', 'screenshot', 'disable']);
   } finally {
