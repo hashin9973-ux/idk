@@ -299,7 +299,10 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b"'));
   assert.ok(python.includes('https://ollama.com/install.sh'));
   assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
-  assert.ok(python.includes('def run_vision_smoke_test()'));
+  assert.ok(!python.includes('def run_vision_smoke_test()'));
+  assert.ok(!python.includes('vision_smoke_test'));
+  assert.ok(python.includes('No startup image inference was run'));
+  assert.ok(python.includes('ollama_model_is_downloaded()'));
   assert.ok(python.includes('"images": [image_b64]'));
   assert.ok(python.includes('OLLAMA_API + "/api/chat"'));
   assert.ok(python.includes('model_loaded=True'));
