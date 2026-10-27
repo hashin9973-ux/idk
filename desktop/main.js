@@ -1147,6 +1147,9 @@ if (!hasInstanceLock) {
           fingerprintScreenshot: fingerprintDesktopScreenshot,
           getAccessibleSnapshot: captureWindowsUiAutomationSnapshot
         });
+        void observeService.clearStaleContext().catch(error => {
+          appendDiagnosticLog('observe-stale-context-clear-failed', error);
+        });
         toolBridge = createToolBridge({
           dialog,
           getMainWindow: () => mainWindow,
@@ -1235,18 +1238,18 @@ app.on('before-quit', event => {
     tray.destroy();
     tray = null;
   }
-  if (observeService) {
-    void observeService.dispose().catch(() => {});
-    observeService = null;
-  }
-  if (!finishingVisionDispose && (visionService || windowsInputController || observeService)) {
+  if (!finishingVisionDispose && (observeService || visionService || windowsInputController)) {
     event.preventDefault();
     finishingVisionDispose = true;
     const disposals = [];
-    if (observeService && typeof observeService.dispose === 'function') disposals.push(observeService.dispose());
+    if (observeService && typeof observeService.dispose === 'function') {
+      disposals.push(observeService.dispose());
+      observeService = null;
+    }
     if (visionService && typeof visionService.dispose === 'function') disposals.push(visionService.dispose());
     else if (windowsInputController && typeof windowsInputController.dispose === 'function') disposals.push(windowsInputController.dispose());
     Promise.allSettled(disposals).finally(() => app.quit());
+    return;
   }
 });
 
