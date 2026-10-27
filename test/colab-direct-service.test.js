@@ -424,7 +424,7 @@ test('focused observation rejects an invalid or too-small crop before uploading'
   const result = await f.service.analyzeScreenshot({
     source: 'desktop', region: [0, 0, 20, 20]
   }, 'computer-ffffffffffffffffffffffff');
-  assert.equal(result.status, 'inference_failed');
+  assert.equal(result.status, 'error');
   assert.match(result.error, /at least 48×48 pixels/i);
   assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/analyze'), false);
 });
