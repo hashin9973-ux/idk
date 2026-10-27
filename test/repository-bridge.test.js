@@ -262,10 +262,11 @@ test('worker executes a request once, writes the actual result, claim and heartb
     assert.equal('workspace_name' in state, false, 'shared state does not disclose the local workspace folder name');
     const createCommits = fake.calls.filter(call => call.method === 'PUT');
     assert.ok(createCommits.length >= 5, 'folder markers, claim, result and state are committed');
-    const resultFolderGetsBefore = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/results').length;
+    const resultsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/results');
+    const resultFolderTreeGetsBefore = fake.calls.filter(call => call.method === 'GET' && call.path === resultsTreePath).length;
     await bridge.pollOnce();
-    const resultFolderGetsAfter = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/results').length;
-    assert.equal(resultFolderGetsAfter, resultFolderGetsBefore, 'normal polling should not refetch the growing result folder');
+    const resultFolderTreeGetsAfter = fake.calls.filter(call => call.method === 'GET' && call.path === resultsTreePath).length;
+    assert.equal(resultFolderTreeGetsAfter, resultFolderTreeGetsBefore, 'normal polling must not reload the historical results tree');
     assert.equal(executions, 1, 'cached completed result must not rerun');
   } finally {
     await bridge.stop();
@@ -300,13 +301,14 @@ test('worker drains queued mailbox requests without a folder re-read for every c
   });
   try {
     await bridge.start();
-    const requestFolderGetsAtDispatch = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/requests').length;
+    const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
+    const requestFolderTreeGetsAtDispatch = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
     await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
     await new Promise(resolve => setTimeout(resolve, 25));
-    const requestFolderGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge/requests').length;
+    const requestFolderTreeGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
     assert.equal(executions, 40);
     assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
-    assert.equal(requestFolderGetsAfterDrain, requestFolderGetsAtDispatch, 'request completion should dispatch queued work without another Contents API folder listing');
+    assert.equal(requestFolderTreeGetsAfterDrain, requestFolderTreeGetsAtDispatch, 'request completion should drain queued work without another tree listing when the request-commit cursor is unchanged');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
       assert.equal(result.status, 'completed');
