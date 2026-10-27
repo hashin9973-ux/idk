@@ -140,7 +140,8 @@ function fakeGitHub({ privateRepo = true, initial = [] } = {}) {
           children.set(child, {
             name: child,
             path: childPath,
-            type: isFile ? 'file' : 'dir'
+            type: isFile ? 'file' : 'dir',
+            ...(isFile ? { sha: files.get(childPath).sha } : {})
           });
         }
         if (children.size) return { status: 200, result: Array.from(children.values()) };
@@ -627,6 +628,9 @@ test('graceful stop waits for the active operation and publishes its result', as
 
   const startPromise = bridge.start();
   await executionStarted;
+  // The tool can start during poll dispatch, just before start() finishes its
+  // heartbeat write. Let that poll return before stop flips the running flag.
+  await new Promise(resolve => setImmediate(resolve));
   let stopResolved = false;
   const stopPromise = bridge.stop().then(state => {
     stopResolved = true;
