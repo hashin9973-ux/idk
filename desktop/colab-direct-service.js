@@ -829,7 +829,13 @@ function createVisionService(deps) {
           ...(screenshot.metadata.region_px ? { region_px: screenshot.metadata.region_px } : {}),
           accessibility: screenshot.metadata.accessibility,
           prompt: [
-            'Screenshot frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + ' px. Origin top-left; x right; y down.',
+            screenshot.metadata.region_px
+              ? 'Original screenshot frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') +
+                ' px, origin top-left. The image shown to the model is the crop [' + screenshot.metadata.region_px.join(', ') +
+                '] in that original frame (' + (screenshot.metadata.region_px[2] - screenshot.metadata.region_px[0]) + 'x' +
+                (screenshot.metadata.region_px[3] - screenshot.metadata.region_px[1]) +
+                ' px). Return normalized boxes relative to the image shown; the server maps them back to the original full frame.'
+              : 'Screenshot frame: ' + String(screenshot.metadata.width || 'unknown') + 'x' + String(screenshot.metadata.height || 'unknown') + ' px. Origin top-left; x right; y down.',
             String(prompt || DEFAULT_PROMPT)
           ].join('\n').slice(0, 1400)
         }
