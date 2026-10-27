@@ -234,11 +234,11 @@ test('Colab serves long vision inference asynchronously through a matching resul
   const pythonSource = (notebook.cells || [])
     .filter(cell => cell.cell_type === 'code' && Array.isArray(cell.source))
     .map(cell => cell.source.join(''))
-    .join('\\n');
+    .join('\n');
 
-  assert.match(pythonSource, /def _run_vision_job\\(body\\):/);
-  assert.match(pythonSource, /route is not None and route\\.startswith\\("\\/result\\/"\\)/);
-  assert.match(pythonSource, /threading\\.Thread\\([\\s\\S]*target=_run_vision_job/);
+  assert.match(pythonSource, /def _run_vision_job\(body\):/);
+  assert.match(pythonSource, /route is not None and route\.startswith\("\/result\/"\)/);
+  assert.match(pythonSource, /threading\.Thread\([\s\S]*target=_run_vision_job/);
   assert.match(pythonSource, /MAX_VISION_JOBS = 8/);
   assert.match(pythonSource, /"status": "processing"/);
 });
@@ -460,13 +460,13 @@ test('a screenshot wait timeout returns pending and the same request ID can be r
   t.after(() => f.service.dispose());
   await openAndPublishEndpoint(f);
   await f.service.activate({}, 'activate-for-pending-timeout');
-  const requestId = 'computer-999999999999999999999999';
 
-  const pending = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, requestId);
+  const pending = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, 'timeout-case');
   assert.equal(pending.status, 'inference_in_progress');
   assert.equal(pending.pending, true);
-  assert.equal(pending.request_id, requestId);
+  assert.match(pending.request_id, /^computer-[a-f0-9]{24}$/);
   assert.ok(pending.input_image && pending.input_image.sha256);
+  const requestId = pending.request_id;
 
   await new Promise(resolve => setTimeout(resolve, 100));
   const completed = await f.service.wait({ request_id: requestId, waitMs: 1000 });
@@ -479,12 +479,12 @@ test('asynchronous Colab inference is polled by the same ID and returns a valida
   t.after(() => f.service.dispose());
   await openAndPublishEndpoint(f);
   await f.service.activate({}, 'activate-for-async-analysis');
-  const requestId = 'computer-888888888888888888888888';
 
-  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, requestId);
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 1000 }, 'async-analysis-case');
   assert.equal(result.status, 'report_available');
-  assert.equal(result.request_id, requestId);
+  assert.match(result.request_id, /^computer-[a-f0-9]{24}$/);
   assert.equal(result.input_sha256, result.input_image.sha256);
+  const requestId = result.request_id;
   assert.ok(f.calls.some(call => call.type === 'direct_http' && call.route === '/result/' + requestId));
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, 1,
     'the screenshot is submitted exactly once even when polling');
