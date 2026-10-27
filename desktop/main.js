@@ -493,7 +493,8 @@ async function captureDesktopScreenshot() {
     height: size.height,
     screen_width: Math.max(1, Math.round(primaryDisplay.size.width * scaleFactor)),
     screen_height: Math.max(1, Math.round(primaryDisplay.size.height * scaleFactor)),
-    display_id: source.display_id || null
+    display_id: source.display_id || null,
+    captured_at: Date.now()
   };
 }
 
