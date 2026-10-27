@@ -29,13 +29,14 @@ async function waitFor(predicate, timeoutMs = 3000) {
   }
 }
 
-function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null } = {}) {
+function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null, falseConflictCreatePaths = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
   for (const [path, value] of initial) {
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
   }
   const calls = [];
+  const falseConflictPaths = new Set(falseConflictCreatePaths);
   let headCommitSha = 'f'.repeat(40);
   let gitObjectCounter = 1;
   const treePathsBySha = new Map();
@@ -151,6 +152,12 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
       }
       if (method === 'PUT') {
         const existing = files.get(rel);
+        // Test double: model a one-time GitHub 422 response even though no target
+        // file was created, to catch false "already exists" conflict handling.
+        if (!existing && !body.sha && falseConflictPaths.has(rel)) {
+          falseConflictPaths.delete(rel);
+          throw new Error('GitHub HTTP 422: Validation Failed');
+        }
         if (existing && !body.sha) throw new Error("Validation Failed: sha wasn't supplied");
         if (existing && body.sha !== existing.sha) throw new Error('sha does not match the current file');
         if (!existing && body.sha) throw new Error('Not Found (404)');
@@ -307,6 +314,54 @@ test('worker executes a request once, writes the actual result, claim and heartb
     const resultFolderTreeGetsAfter = fake.calls.filter(call => call.method === 'GET' && call.path === resultsTreePath).length;
     assert.equal(resultFolderTreeGetsAfter, resultFolderTreeGetsBefore, 'normal polling must not reload the historical results tree');
     assert.equal(executions, 1, 'cached completed result must not rerun');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('create-only HTTP 422 without an existing result is verified and retried', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-result-false-conflict',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const resultPath = 'bridge/results/' + request.request_id + '.json';
+  const fake = fakeGitHub({
+    initial: [['bridge/requests/' + request.request_id + '.json', request]],
+    falseConflictCreatePaths: [resultPath]
+  });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      assert.equal(tool, 'project_status');
+      assert.equal(id, request.request_id);
+      return { ok: true, result: { observed: true } };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has(resultPath));
+    const result = decode(fake.files.get(resultPath));
+    assert.equal(executions, 1, 'the local operation must not run twice while recovering publication');
+    assert.equal(result.request_id, request.request_id);
+    assert.equal(result.status, 'completed');
+    assert.equal(result.result.ok, true);
+    assert.equal(
+      fake.calls.filter(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/' + resultPath).length,
+      1,
+      'a create-only HTTP 422 must read the exact target and must not be treated as success when it is absent'
+    );
+    const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
+    assert.equal(claim.status, 'completed');
+    assert.equal(bridge.getState().lastError, '');
   } finally {
     await bridge.stop();
   }
