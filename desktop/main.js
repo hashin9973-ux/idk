@@ -69,8 +69,11 @@ process.on('uncaughtException', error => {
 process.on('unhandledRejection', reason => {
   appendDiagnosticLog('unhandledRejection', reason);
   console.error('Unhandled Windows Repository Bridge rejection:', reason);
-  // Preserve Node's fatal-unhandled-rejection behavior, but persist the cause first.
-  setImmediate(() => app.exit(1));
+  // An asynchronous background failure is not automatically fatal to the whole desktop app.
+  // Keep the worker alive so the error can be diagnosed and the app can report other status.
+  if (repositoryBridge) {
+    setAutoConnectionStatus('attention', 'A background operation failed unexpectedly. Details were saved to logs/startup-crash.log.');
+  }
 });
 
 app.on('web-contents-created', (_event, contents) => {
