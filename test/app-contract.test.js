@@ -299,7 +299,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('Qwen3VL-8B-Instruct-Q4_K_M.gguf'));
   assert.ok(python.includes('mmproj-Qwen3VL-8B-Instruct-F16.gguf'));
   assert.ok(python.includes('llama-server'));
-  assert.ok(python.includes('llama-cpp-build'));
+  assert.ok(python.includes('cudart-llama-b11913-bin-ubuntu-cuda-12.8-x64.tar.gz'));
+  assert.ok(python.includes('be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e'));
+  assert.doesNotMatch(python, /cmake|nvcc is missing|git clone --depth=1.*llama\.cpp/i);
   assert.ok(python.includes('"max_tokens": 700'));
   assert.ok(python.includes('"--parallel", "1"'));
   assert.ok(python.includes('automatically activates after authenticated desktop registration'));
@@ -351,4 +353,21 @@ test('Colab connection detects the public endpoint copied by the notebook withou
   assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
   assert.doesNotMatch(python, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
+});
+
+test('Colab vision notebook uses a checksum-pinned prebuilt CUDA server without compiling in Colab', () => {
+  const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
+  const codeCells = notebook.cells.filter(cell => cell.cell_type === 'code');
+  assert.equal(codeCells.length, 1, 'the vision notebook has one server code cell');
+  const source = codeCells.map(cell => cell.source.join('')).join('\n');
+  assert.match(source, /cudart-llama-b11913-bin-ubuntu-cuda-12\.8-x64\.tar\.gz/);
+  assert.match(source, /be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e/);
+  assert.match(source, /SHA-256 verification/);
+  assert.match(source, /archive\.extractall\(path=extract_dir, filter="data"\)/);
+  assert.match(source, /--mmproj/);
+  assert.match(source, /env=server_env, cwd=str\(server_binary\.parent\)/);
+  assert.doesNotMatch(source, /cmake|nvcc is missing|git clone --depth=1.*llama\.cpp|build_llama_cpp/i);
+  const readme = read('README.md');
+  assert.match(readme, /prebuilt archive/i);
+  assert.match(readme, /instead of compiling llama\.cpp/i);
 });
