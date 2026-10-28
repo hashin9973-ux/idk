@@ -613,7 +613,7 @@ function parseColabHandoffUri(raw) {
   try {
     const uri = new URL(raw);
     if (uri.protocol !== COLAB_HANDOFF_SCHEME + ':' || uri.hostname !== 'connect-colab' ||
-        (uri.pathname && uri.pathname !== '/') || uri.username || uri.password || uri.hash) return null;
+        (uri.pathname && uri.pathname !== '/') || uri.username || uri.password || uri.port || uri.hash) return null;
     const keys = [...uri.searchParams.keys()];
     if (keys.length !== 1 || keys[0] !== 'endpoint' || uri.searchParams.getAll('endpoint').length !== 1) return null;
     const endpoint = parseTunnelEndpoint(uri.searchParams.get('endpoint'));
