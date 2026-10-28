@@ -5,17 +5,27 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+function buildGaplessPlaybackScript() {
+  const source = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Runtime.InteropServices;\nusing System.Text;\nusing System.Threading;\n\npublic static class BridgeGaplessWaveOut\n{\n    private const uint WaveMapper = 0xFFFFFFFF;\n    private const uint HeaderDone = 0x00000001;\n    private static readonly object QueueLock = new object();\n    private static readonly Queue<string> Commands = new Queue<string>();\n    private static volatile bool EndRequested;\n    private static volatile bool InputClosed;\n    private static string InputError;\n\n    [StructLayout(LayoutKind.Sequential, Pack = 2)]\n    private struct WaveFormatEx\n    {\n        public ushort formatTag;\n        public ushort channels;\n        public uint samplesPerSecond;\n        public uint averageBytesPerSecond;\n        public ushort blockAlign;\n        public ushort bitsPerSample;\n        public ushort extraSize;\n    }\n\n    [StructLayout(LayoutKind.Sequential)]\n    private struct WaveHeader\n    {\n        public IntPtr data;\n        public uint bufferLength;\n        public uint bytesRecorded;\n        public UIntPtr user;\n        public uint flags;\n        public uint loops;\n        public IntPtr next;\n        public UIntPtr reserved;\n    }\n\n    private sealed class WaveChunk\n    {\n        public WaveFormatEx Format;\n        public byte[] Pcm;\n    }\n\n    private sealed class WaveBlock\n    {\n        public int Index;\n        public IntPtr HeaderPointer;\n        public IntPtr DataPointer;\n    }\n\n    [DllImport(\"winmm.dll\")]\n    private static extern uint waveOutOpen(out IntPtr handle, uint deviceId, ref WaveFormatEx format, IntPtr callback, IntPtr instance, uint flags);\n    [DllImport(\"winmm.dll\")]\n    private static extern uint waveOutPrepareHeader(IntPtr handle, IntPtr header, uint headerSize);\n    [DllImport(\"winmm.dll\")]\n    private static extern uint waveOutWrite(IntPtr handle, IntPtr header, uint headerSize);\n    [DllImport(\"winmm.dll\")]\n    private static extern uint waveOutUnprepareHeader(IntPtr handle, IntPtr header, uint headerSize);\n    [DllImport(\"winmm.dll\")]\n    private static extern uint waveOutReset(IntPtr handle);\n    [DllImport(\"winmm.dll\")]\n    private static extern uint waveOutClose(IntPtr handle);\n\n    private static string EncodeError(string message)\n    {\n        return Convert.ToBase64String(Encoding.UTF8.GetBytes(message ?? \"Audio queue error\"));\n    }\n\n    private static void EmitError(string message)\n    {\n        Console.WriteLine(\"ERROR\\t\" + EncodeError(message));\n        Console.Out.Flush();\n    }\n\n    private static void ReadInput()\n    {\n        try\n        {\n            string line;\n            while ((line = Console.ReadLine()) != null)\n            {\n                if (line == \"END\")\n                {\n                    EndRequested = true;\n                    break;\n                }\n                lock (QueueLock) { Commands.Enqueue(line); }\n            }\n        }\n        catch (Exception ex)\n        {\n            InputError = ex.Message;\n            EndRequested = true;\n        }\n        finally\n        {\n            InputClosed = true;\n        }\n    }\n\n    private static bool TryTakeCommand(out string command)\n    {\n        lock (QueueLock)\n        {\n            if (Commands.Count > 0)\n            {\n                command = Commands.Dequeue();\n                return true;\n            }\n        }\n        command = null;\n        return false;\n    }\n\n    private static bool HasCommands()\n    {\n        lock (QueueLock) { return Commands.Count > 0; }\n    }\n\n    private static string WaitForFirstCommand()\n    {\n        string command;\n        while (true)\n        {\n            if (TryTakeCommand(out command)) return command;\n            if (InputClosed) return null;\n            Thread.Sleep(5);\n        }\n    }\n\n    private static void ParseFileCommand(string command, out int index, out string path)\n    {\n        string[] parts = command.Split('\\t');\n        if (parts.Length != 3 || parts[0] != \"FILE\" || !Int32.TryParse(parts[1], out index) || index < 0)\n            throw new InvalidDataException(\"Malformed audio queue command\");\n        path = Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]));\n        if (String.IsNullOrWhiteSpace(path)) throw new InvalidDataException(\"Empty audio file path\");\n    }\n\n    private static WaveChunk ReadWave(string path)\n    {\n        byte[] bytes = File.ReadAllBytes(path);\n        if (bytes.Length < 44 ||\n            Encoding.ASCII.GetString(bytes, 0, 4) != \"RIFF\" ||\n            Encoding.ASCII.GetString(bytes, 8, 4) != \"WAVE\")\n            throw new InvalidDataException(\"Audio chunk is not a valid RIFF/WAVE file\");\n\n        byte[] formatBytes = null;\n        byte[] pcm = null;\n        int offset = 12;\n        while (offset + 8 <= bytes.Length)\n        {\n            string name = Encoding.ASCII.GetString(bytes, offset, 4);\n            uint sizeValue = BitConverter.ToUInt32(bytes, offset + 4);\n            if (sizeValue > Int32.MaxValue) throw new InvalidDataException(\"Audio chunk section is too large\");\n            int size = (int)sizeValue;\n            int dataOffset = offset + 8;\n            if (dataOffset + size > bytes.Length) throw new InvalidDataException(\"Audio chunk contains a truncated WAV section\");\n            if (name == \"fmt \" && formatBytes == null)\n            {\n                if (size < 16) throw new InvalidDataException(\"Audio chunk has a short WAV format section\");\n                formatBytes = new byte[size];\n                Buffer.BlockCopy(bytes, dataOffset, formatBytes, 0, size);\n            }\n            else if (name == \"data\" && pcm == null)\n            {\n                pcm = new byte[size];\n                Buffer.BlockCopy(bytes, dataOffset, pcm, 0, size);\n            }\n            offset = dataOffset + size + (size & 1);\n        }\n        if (formatBytes == null || pcm == null || pcm.Length == 0)\n            throw new InvalidDataException(\"Audio chunk is missing WAV format or PCM data\");\n\n        WaveFormatEx format = new WaveFormatEx();\n        format.formatTag = BitConverter.ToUInt16(formatBytes, 0);\n        format.channels = BitConverter.ToUInt16(formatBytes, 2);\n        format.samplesPerSecond = BitConverter.ToUInt32(formatBytes, 4);\n        format.averageBytesPerSecond = BitConverter.ToUInt32(formatBytes, 8);\n        format.blockAlign = BitConverter.ToUInt16(formatBytes, 12);\n        format.bitsPerSample = BitConverter.ToUInt16(formatBytes, 14);\n        format.extraSize = formatBytes.Length >= 18 ? BitConverter.ToUInt16(formatBytes, 16) : (ushort)0;\n        if (format.formatTag != 1 || format.bitsPerSample != 16 ||\n            (format.channels != 1 && format.channels != 2) ||\n            format.blockAlign != format.channels * 2 ||\n            format.samplesPerSecond == 0 ||\n            pcm.Length % format.blockAlign != 0)\n            throw new InvalidDataException(\"Audio chunk must be aligned 16-bit PCM mono/stereo WAV\");\n        WaveChunk result = new WaveChunk();\n        result.Format = format;\n        result.Pcm = pcm;\n        return result;\n    }\n\n    private static bool SameFormat(WaveFormatEx left, WaveFormatEx right)\n    {\n        return left.formatTag == right.formatTag &&\n            left.channels == right.channels &&\n            left.samplesPerSecond == right.samplesPerSecond &&\n            left.averageBytesPerSecond == right.averageBytesPerSecond &&\n            left.blockAlign == right.blockAlign &&\n            left.bitsPerSample == right.bitsPerSample;\n    }\n\n    private static void QueueWave(IntPtr device, WaveChunk chunk, int index, List<WaveBlock> blocks)\n    {\n        if (chunk.Pcm.Length == 0) throw new InvalidDataException(\"Audio chunk has no PCM samples\");\n        IntPtr dataPointer = Marshal.AllocHGlobal(chunk.Pcm.Length);\n        IntPtr headerPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(WaveHeader)));\n        bool prepared = false;\n        try\n        {\n            Marshal.Copy(chunk.Pcm, 0, dataPointer, chunk.Pcm.Length);\n            WaveHeader header = new WaveHeader();\n            header.data = dataPointer;\n            header.bufferLength = (uint)chunk.Pcm.Length;\n            header.bytesRecorded = 0;\n            header.user = UIntPtr.Zero;\n            header.flags = 0;\n            header.loops = 0;\n            header.next = IntPtr.Zero;\n            header.reserved = UIntPtr.Zero;\n            Marshal.StructureToPtr(header, headerPointer, false);\n            uint headerSize = (uint)Marshal.SizeOf(typeof(WaveHeader));\n            uint result = waveOutPrepareHeader(device, headerPointer, headerSize);\n            if (result != 0) throw new InvalidOperationException(\"Windows audio device could not prepare a PCM buffer (waveOut error \" + result + \")\");\n            prepared = true;\n            result = waveOutWrite(device, headerPointer, headerSize);\n            if (result != 0) throw new InvalidOperationException(\"Windows audio device rejected a PCM buffer (waveOut error \" + result + \")\");\n            WaveBlock block = new WaveBlock();\n            block.Index = index;\n            block.HeaderPointer = headerPointer;\n            block.DataPointer = dataPointer;\n            blocks.Add(block);\n            Console.WriteLine(\"QUEUED\\t\" + index);\n            Console.Out.Flush();\n            headerPointer = IntPtr.Zero;\n            dataPointer = IntPtr.Zero;\n        }\n        finally\n        {\n            if (headerPointer != IntPtr.Zero)\n            {\n                if (prepared) waveOutUnprepareHeader(device, headerPointer, (uint)Marshal.SizeOf(typeof(WaveHeader)));\n                Marshal.FreeHGlobal(headerPointer);\n            }\n            if (dataPointer != IntPtr.Zero) Marshal.FreeHGlobal(dataPointer);\n        }\n    }\n\n    private static void ReapCompleted(IntPtr device, List<WaveBlock> blocks)\n    {\n        uint headerSize = (uint)Marshal.SizeOf(typeof(WaveHeader));\n        for (int index = blocks.Count - 1; index >= 0; index--)\n        {\n            WaveBlock block = blocks[index];\n            WaveHeader header = (WaveHeader)Marshal.PtrToStructure(block.HeaderPointer, typeof(WaveHeader));\n            if ((header.flags & HeaderDone) == 0) continue;\n            if (waveOutUnprepareHeader(device, block.HeaderPointer, headerSize) != 0) continue;\n            Marshal.FreeHGlobal(block.HeaderPointer);\n            Marshal.FreeHGlobal(block.DataPointer);\n            blocks.RemoveAt(index);\n            Console.WriteLine(\"DONE\\t\" + block.Index);\n            Console.Out.Flush();\n        }\n    }\n\n    private static void ReleaseBlocks(IntPtr device, List<WaveBlock> blocks)\n    {\n        uint headerSize = (uint)Marshal.SizeOf(typeof(WaveHeader));\n        foreach (WaveBlock block in blocks)\n        {\n            try { waveOutUnprepareHeader(device, block.HeaderPointer, headerSize); } catch { }\n            try { Marshal.FreeHGlobal(block.HeaderPointer); } catch { }\n            try { Marshal.FreeHGlobal(block.DataPointer); } catch { }\n        }\n        blocks.Clear();\n    }\n\n    public static int Run()\n    {\n        IntPtr device = IntPtr.Zero;\n        bool deviceOpen = false;\n        List<WaveBlock> blocks = new List<WaveBlock>();\n        Thread inputThread = new Thread(ReadInput);\n        inputThread.IsBackground = true;\n        try\n        {\n            inputThread.Start();\n            string firstCommand = WaitForFirstCommand();\n            if (firstCommand == null) throw new InvalidDataException(\"No first audio chunk was provided\");\n            int firstIndex;\n            string firstPath;\n            ParseFileCommand(firstCommand, out firstIndex, out firstPath);\n            if (firstIndex != 0) throw new InvalidDataException(\"First audio chunk index must be zero\");\n            WaveChunk first = ReadWave(firstPath);\n            WaveFormatEx format = first.Format;\n            uint opened = waveOutOpen(out device, WaveMapper, ref format, IntPtr.Zero, IntPtr.Zero, 0);\n            if (opened != 0) throw new InvalidOperationException(\"Windows audio device could not open PCM playback (waveOut error \" + opened + \")\");\n            deviceOpen = true;\n            QueueWave(device, first, 0, blocks);\n            Console.WriteLine(\"STARTED\\t0\");\n            Console.Out.Flush();\n\n            bool streamFailed = false;\n            while (true)\n            {\n                string command;\n                while (TryTakeCommand(out command))\n                {\n                    if (!command.StartsWith(\"FILE\\t\", StringComparison.Ordinal))\n                    {\n                        EmitError(\"Malformed audio queue command\");\n                        streamFailed = true;\n                        EndRequested = true;\n                        continue;\n                    }\n                    if (streamFailed)\n                    {\n                        EmitError(\"Audio queue stopped after an earlier chunk error\");\n                        continue;\n                    }\n                    try\n                    {\n                        int index;\n                        string path;\n                        ParseFileCommand(command, out index, out path);\n                        WaveChunk chunk = ReadWave(path);\n                        if (!SameFormat(format, chunk.Format))\n                            throw new InvalidDataException(\"Piper chunks did not share one PCM format\");\n                        QueueWave(device, chunk, index, blocks);\n                    }\n                    catch (Exception error)\n                    {\n                        EmitError(error.Message);\n                        streamFailed = true;\n                        EndRequested = true;\n                    }\n                }\n                if (InputError != null)\n                {\n                    EmitError(InputError);\n                    InputError = null;\n                    streamFailed = true;\n                    EndRequested = true;\n                }\n                ReapCompleted(device, blocks);\n                if ((EndRequested || InputClosed) && !HasCommands() && blocks.Count == 0) break;\n                Thread.Sleep(5);\n            }\n\n            uint closed = waveOutClose(device);\n            deviceOpen = false;\n            if (closed != 0) throw new InvalidOperationException(\"Windows audio device could not close cleanly (waveOut error \" + closed + \")\");\n            return 0;\n        }\n        catch (Exception error)\n        {\n            EmitError(error.Message);\n            if (deviceOpen)\n            {\n                try { waveOutReset(device); } catch { }\n                Thread.Sleep(20);\n                ReleaseBlocks(device, blocks);\n                try { waveOutClose(device); } catch { }\n            }\n            return 1;\n        }\n    }\n}";
+  return "$ErrorActionPreference = 'Stop'\r\n$source = @'\r\n" + source + "\r\n'@\r\n" +
+    "Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop\r\n" +
+    "if ($env:BRIDGE_GAPLESS_COMPILE_ONLY -eq '1') { Write-Output 'GAPLESS_WAVEOUT_COMPILED'; exit 0 }\r\n" +
+    "[BridgeGaplessWaveOut]::Run()\r\n";
+}
+
 const { normalizeSpeechText, splitSpeechIntoChunks } = require('./speech-text');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
-const VISION_WORKER_API_VERSION = 4;
-const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling']);
+const VISION_WORKER_API_VERSION = 5;
+const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies']);
 const TTS_PROTOCOL = 'piper-libritts-tts/v1';
 const TTS_VOICE = 'en_US-libritts-high';
 const TTS_SPEAKER_ID = 0;
 const MAX_TTS_TEXT_CHARS = 2000;
 const MAX_TTS_AUDIO_BYTES = 25 * 1024 * 1024;
+const MAX_TTS_PREFETCH_CONCURRENCY = 3;
+const TTS_PLAYBACK_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
 const MODEL_ID = 'ollama/qwen3-vl';
@@ -869,52 +879,190 @@ function createVisionService(deps) {
     return value;
   }
 
-  function startAudioPlayback(filePath) {
+  function startAudioPlayback(filePath, onChunkDone = () => {}) {
     if (typeof playAudio === 'function') {
-      let done;
-      try { done = Promise.resolve(playAudio(filePath)); }
-      catch (error) { done = Promise.reject(error); }
-      return { done, stop: () => {} };
+      let firstPlayback;
+      try { firstPlayback = Promise.resolve(playAudio(filePath)); }
+      catch (error) { firstPlayback = Promise.reject(error); }
+      const queued = [];
+      let chain = firstPlayback.then(() => onChunkDone(0));
+      let ended = false;
+      let doneResolve, doneReject;
+      const done = new Promise((resolve, reject) => { doneResolve = resolve; doneReject = reject; });
+      done.catch(() => {});
+      const playback = {
+        started: Promise.resolve(),
+        done,
+        queue(nextPath, index) {
+          if (ended) return Promise.reject(new Error('The audio queue is already closed.'));
+          queued.push({ filePath: nextPath, index });
+          chain = chain.then(() => playAudio(nextPath)).then(() => onChunkDone(index));
+          chain.catch(() => {});
+          return Promise.resolve();
+        },
+        end() {
+          if (ended) return;
+          ended = true;
+          chain.then(doneResolve, doneReject);
+        },
+        stop() {
+          ended = true;
+          chain.catch(() => {});
+          doneReject(new Error('Speech playback was stopped.'));
+        }
+      };
+      return playback;
     }
     if (process.platform !== 'win32') throw new Error('Local WAV playback is supported only on Windows. Use play=false to synthesize without playback.');
-    const escapedPath = String(filePath).replace(/'/g, "''");
-    const script = "$ErrorActionPreference='Stop'; $player=New-Object System.Media.SoundPlayer -ArgumentList '" +
-      escapedPath + "'; try { $player.Load(); $player.PlaySync() } finally { $player.Dispose() }";
+
+    const script = buildGaplessPlaybackScript();
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
     const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
-      windowsHide: true, stdio: ['ignore', 'ignore', 'pipe']
+      windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
     });
+    let stdoutBuffer = '';
     let stderr = '';
+    let fatalError = null;
+    let ended = false;
     let settled = false;
     let timer = null;
-    const done = new Promise((resolve, reject) => {
-      timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try { child.kill(); } catch {}
-        reject(new Error('Windows audio playback timed out for one speech chunk.'));
-      }, 120000);
-      child.stderr.on('data', chunk => {
-        if (stderr.length < 2000) stderr += chunk.toString('utf8').slice(0, 2000 - stderr.length);
-      });
-      child.once('error', error => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.once('close', (code, signal) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (code === 0) resolve();
-        else reject(new Error('Windows audio playback exited with code ' + code + (signal ? ' (' + signal + ')' : '') +
-          (stderr.trim() ? ': ' + stderr.trim().slice(0, 1200) : '.')));
-      });
-    });
-    return { done, stop: () => { try { child.kill(); } catch {} }, pid: child.pid };
-  }
+    const pendingQueue = new Map();
+    let startedResolve, startedReject, startedSettled = false;
+    let doneResolve, doneReject;
+    const startedSignal = new Promise((resolve, reject) => { startedResolve = resolve; startedReject = reject; });
+    const done = new Promise((resolve, reject) => { doneResolve = resolve; doneReject = reject; });
+    startedSignal.catch(() => {});
+    done.catch(() => {});
 
+    function settleQueueError(error) {
+      fatalError = fatalError || error;
+      for (const [index, handlers] of pendingQueue.entries()) {
+        pendingQueue.delete(index);
+        handlers.reject(fatalError);
+      }
+      if (!startedSettled) {
+        startedSettled = true;
+        startedReject(fatalError);
+      }
+    }
+    function handleLine(line) {
+      if (!line) return;
+      const split = line.indexOf('\t');
+      const kind = split < 0 ? line : line.slice(0, split);
+      const value = split < 0 ? '' : line.slice(split + 1);
+      if (kind === 'STARTED') {
+        if (!startedSettled) {
+          startedSettled = true;
+          startedResolve({ index: Number(value) });
+        }
+      } else if (kind === 'QUEUED') {
+        const index = Number(value);
+        const handlers = pendingQueue.get(index);
+        if (handlers) {
+          pendingQueue.delete(index);
+          handlers.resolve();
+        }
+      } else if (kind === 'DONE') {
+        const index = Number(value);
+        try { onChunkDone(index); } catch {}
+      } else if (kind === 'ERROR') {
+        let message = 'Windows audio queue failed.';
+        try { message = Buffer.from(value, 'base64').toString('utf8') || message; } catch {}
+        settleQueueError(new Error(message));
+      }
+    }
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdoutBuffer += chunk;
+      let newline;
+      while ((newline = stdoutBuffer.indexOf('\n')) >= 0) {
+        const line = stdoutBuffer.slice(0, newline).replace(/\r$/, '');
+        stdoutBuffer = stdoutBuffer.slice(newline + 1);
+        handleLine(line);
+      }
+    });
+    child.stderr.on('data', chunk => {
+      if (stderr.length < 2000) stderr += chunk.toString('utf8').slice(0, 2000 - stderr.length);
+    });
+    child.stdin.on('error', error => {
+      if (!ended && !(error && error.code === 'EPIPE')) settleQueueError(error);
+    });
+    child.once('error', error => {
+      settleQueueError(error);
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        doneReject(error);
+      }
+    });
+    child.once('close', (code, signal) => {
+      settled = true;
+      clearTimeout(timer);
+      if (stdoutBuffer) handleLine(stdoutBuffer.replace(/\r$/, ''));
+      const error = fatalError || (code === 0 ? null : new Error('Windows gapless audio player exited with code ' + code +
+        (signal ? ' (' + signal + ')' : '') + (stderr.trim() ? ': ' + stderr.trim().slice(0, 1200) : '.')));
+      if (!startedSettled) {
+        startedSettled = true;
+        startedReject(error || new Error('Windows audio player exited before playback was confirmed.'));
+      }
+      for (const [index, handlers] of pendingQueue.entries()) {
+        pendingQueue.delete(index);
+        handlers.reject(error || new Error('Windows audio player exited before queue acknowledgement.'));
+      }
+      if (error) doneReject(error);
+      else doneResolve();
+    });
+    timer = setTimeout(() => {
+      if (settled) return;
+      const error = new Error('Windows gapless audio playback timed out.');
+      settleQueueError(error);
+      try { child.kill(); } catch {}
+    }, TTS_PLAYBACK_TIMEOUT_MS);
+
+    function queueChunk(nextPath, index) {
+      if (ended || settled) return Promise.reject(new Error('The audio queue is already closed.'));
+      if (pendingQueue.has(index)) return Promise.reject(new Error('Duplicate audio queue index ' + index + '.'));
+      const promise = new Promise((resolve, reject) => pendingQueue.set(index, { resolve, reject }));
+      const path64 = Buffer.from(String(nextPath), 'utf8').toString('base64');
+      try {
+        child.stdin.write('FILE\t' + index + '\t' + path64 + '\n', error => {
+          if (error) {
+            const handlers = pendingQueue.get(index);
+            if (handlers) {
+              pendingQueue.delete(index);
+              handlers.reject(error);
+            }
+          }
+        });
+      } catch (error) {
+        pendingQueue.delete(index);
+        return Promise.reject(error);
+      }
+      promise.catch(() => {});
+      return promise;
+    }
+
+    const initialQueue = queueChunk(filePath, 0);
+    const started = Promise.all([initialQueue, startedSignal]).then(() => ({ started: true }));
+    started.catch(() => {});
+    return {
+      started,
+      done,
+      queue: queueChunk,
+      end() {
+        if (ended || settled) return;
+        ended = true;
+        try { child.stdin.end('END\n'); }
+        catch (error) { settleQueueError(error); try { child.kill(); } catch {} }
+      },
+      stop() {
+        ended = true;
+        try { child.kill(); } catch {}
+      },
+      pid: child.pid
+    };
+  }
   async function playAudioFile(filePath) {
     const player = startAudioPlayback(filePath);
     await player.done;
@@ -926,7 +1074,7 @@ function createVisionService(deps) {
       active_job_id: activeSpeechJobId,
       jobs: Array.from(speechJobs.values()).slice(-8).map(job => ({
         job_id: job.job_id, status: job.status, chunks_total: job.chunks_total,
-        chunks_started: job.chunks_started, chunks_completed: job.chunks_completed,
+        chunks_started: job.chunks_started, chunks_queued: job.chunks_queued, chunks_completed: job.chunks_completed,
         started_at: job.started_at, finished_at: job.finished_at, error: job.error || null
       }))
     };
@@ -937,10 +1085,24 @@ function createVisionService(deps) {
   }
 
   async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
-    const remote = await directRequest('/tts', {
-      method: 'POST', timeoutMs,
-      body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
-    });
+    let remote;
+    try {
+      remote = await directRequest('/tts', {
+        method: 'POST', timeoutMs,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+      });
+    } catch (error) {
+      const message = messageOf(error);
+      const retryable = /Malformed JSON|HTTP (?:408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(message);
+      if (!retryable) throw error;
+      // A disconnect while the notebook is reading the short JSON body is safe to retry:
+      // /tts has no external side effect, and the same immutable ID ties both attempts together.
+      await sleep(120);
+      remote = await directRequest('/tts', {
+        method: 'POST', timeoutMs,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+      });
+    }
     if (remote.protocol !== DIRECT_VISION_PROTOCOL || remote.tts_protocol !== TTS_PROTOCOL ||
         remote.request_id !== requestId || remote.status !== 'completed' ||
         remote.voice !== TTS_VOICE || remote.speaker_id !== TTS_SPEAKER_ID ||
@@ -956,7 +1118,6 @@ function createVisionService(deps) {
     if (remote.audio_sha256 !== actualHash) throw new Error('Piper WAV SHA-256 did not match the returned audio.');
     return { audio, remote, audioHash: actualHash, requestId };
   }
-
   async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
     const generated = await requestTtsAudio(text, requestId, 45000);
     const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
@@ -968,49 +1129,111 @@ function createVisionService(deps) {
     try { await fsImpl.promises.unlink(filePath); } catch {}
   }
 
-  async function continueSpeechJob(job, firstChunk) {
-    let current = firstChunk;
-    try {
-      while (current && !job.cancelRequested) {
-        job.currentPlayback = current.playback;
-        const nextIndex = current.index + 1;
-        let nextPromise = null;
-        if (nextIndex < job.chunks.length) {
-          nextPromise = saveSpeechChunk(job, job.chunks[nextIndex], nextIndex, newTtsRequestId())
-            .then(async value => {
-              if (job.cancelRequested) {
-                await removeSpeechFile(value.filePath);
-                return { value: null };
-              }
-              return { value };
-            }, error => ({ error }));
-        }
-        await current.playback.done;
-        job.chunks_completed += 1;
-        await removeSpeechFile(current.filePath);
-        if (job.cancelRequested) break;
-        if (nextIndex >= job.chunks.length) { current = null; break; }
-        const next = await nextPromise;
-        if (next.error) throw next.error;
-        if (!next.value) break;
-        current = next.value;
-        current.playback = startAudioPlayback(current.filePath);
-        job.currentPlayback = current.playback;
-        job.chunks_started += 1;
+  async function queueRemainingSpeech(job, playback) {
+    const ready = new Map();
+    const running = new Map();
+    let launchIndex = 1;
+    let nextQueueIndex = 1;
+    let failure = null;
+    let failureIndex = Infinity;
+
+    const launch = () => {
+      while (!failure && launchIndex < job.chunks.length && running.size < MAX_TTS_PREFETCH_CONCURRENCY) {
+        const index = launchIndex++;
+        const task = saveSpeechChunk(job, job.chunks[index], index, newTtsRequestId())
+          .then(value => ({ index, value }), error => ({ index, error }));
+        running.set(index, task);
       }
-      job.status = job.cancelRequested ? 'cancelled' : 'completed';
+    };
+
+    launch();
+    while (running.size) {
+      const outcome = await Promise.race(running.values());
+      running.delete(outcome.index);
+      if (outcome.error) {
+        if (outcome.index < failureIndex) {
+          failure = outcome.error;
+          failureIndex = outcome.index;
+        }
+      } else {
+        ready.set(outcome.index, outcome.value);
+      }
+
+      while (ready.has(nextQueueIndex) && nextQueueIndex < failureIndex) {
+        const chunk = ready.get(nextQueueIndex);
+        ready.delete(nextQueueIndex);
+        try {
+          await playback.queue(chunk.filePath, nextQueueIndex);
+          job.chunks_queued += 1;
+          job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
+          await removeSpeechFile(chunk.filePath);
+          nextQueueIndex += 1;
+        } catch (error) {
+          if (nextQueueIndex < failureIndex) {
+            failure = error;
+            failureIndex = nextQueueIndex;
+          }
+          await removeSpeechFile(chunk.filePath);
+          break;
+        }
+      }
+
+      if (!failure) {
+        launch();
+      } else {
+        // Already-started lower indexes may still be needed to preserve audio order.
+        launchIndex = job.chunks.length;
+      }
+      for (const [index, chunk] of ready.entries()) {
+        if (index >= failureIndex) {
+          ready.delete(index);
+          await removeSpeechFile(chunk.filePath);
+        }
+      }
+    }
+
+    for (const chunk of ready.values()) await removeSpeechFile(chunk.filePath);
+    if (failure) throw failure;
+    if (nextQueueIndex !== job.chunks.length) {
+      throw new Error('Speech prefetch ended before every chunk was queued.');
+    }
+  }
+
+  async function continueSpeechJob(job, playback) {
+    job.currentPlayback = playback;
+    let pipelineError = null;
+    let playbackError = null;
+    try {
+      await queueRemainingSpeech(job, playback);
     } catch (error) {
-      if (current && current.filePath) await removeSpeechFile(current.filePath);
-      job.status = job.cancelRequested ? 'cancelled' : 'failed';
+      pipelineError = error;
       job.error = messageOf(error);
-      if (job.currentPlayback && job.currentPlayback.stop) job.currentPlayback.stop();
+      job.status = 'draining_after_error';
+    }
+
+    try {
+      if (job.cancelRequested) playback.stop();
+      else playback.end();
+      await playback.done;
+    } catch (error) {
+      playbackError = error;
+    }
+
+    try {
+      if (job.cancelRequested) {
+        job.status = 'cancelled';
+      } else if (pipelineError || playbackError) {
+        job.status = 'failed';
+        job.error = messageOf(pipelineError || playbackError);
+      } else {
+        job.status = 'completed';
+      }
     } finally {
       if (activeSpeechJobId === job.job_id) activeSpeechJobId = null;
       job.currentPlayback = null;
       job.finished_at = new Date(now()).toISOString();
     }
   }
-
   function combineWavBuffers(buffers) {
     if (!Array.isArray(buffers) || !buffers.length) throw new Error('No synthesized speech chunks were returned.');
     if (buffers.length === 1) return buffers[0];
@@ -1066,8 +1289,9 @@ function createVisionService(deps) {
 
     const jobId = newTtsRequestId();
     const job = { job_id: jobId, status: 'preparing', chunks, chunks_total: chunks.length,
-      chunks_started: 0, chunks_completed: 0, started_at: new Date(now()).toISOString(),
-      finished_at: null, error: null, cancelRequested: false, currentPlayback: null };
+      chunks_started: 0, chunks_queued: 0, chunks_completed: 0, completedChunkIndexes: new Set(),
+      started_at: new Date(now()).toISOString(), finished_at: null, error: null,
+      cancelRequested: false, currentPlayback: null };
     speechJobs.set(jobId, job);
     if (args.play !== false) activeSpeechJobId = jobId;
     while (speechJobs.size > 8) {
@@ -1096,15 +1320,31 @@ function createVisionService(deps) {
     }
 
     if (args.play === false) {
-      const generated = [];
+      const generated = new Array(chunks.length);
       let duration = 0;
+      let nextIndex = 0;
+      let generationError = null;
       try {
-        for (let index = 0; index < chunks.length; index += 1) {
-          const result = await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
-          generated.push(result.audio);
-          duration += Number(result.remote.duration_seconds) || 0;
-          job.chunks_started += 1; job.chunks_completed += 1;
-        }
+        const worker = async () => {
+          while (!generationError) {
+            const index = nextIndex++;
+            if (index >= chunks.length) return;
+            try {
+              const result = await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
+              generated[index] = result.audio;
+              duration += Number(result.remote.duration_seconds) || 0;
+              job.chunks_started += 1;
+              job.chunks_completed += 1;
+            } catch (error) {
+              generationError = generationError || error;
+            }
+          }
+        };
+        await Promise.all(Array.from(
+          { length: Math.min(MAX_TTS_PREFETCH_CONCURRENCY, chunks.length) },
+          () => worker()
+        ));
+        if (generationError) throw generationError;
         const audio = combineWavBuffers(generated);
         if (audio.length > MAX_TTS_AUDIO_BYTES) throw new Error('Combined Piper audio exceeds the local WAV size limit.');
         const hash = crypto.createHash('sha256').update(audio).digest('hex');
@@ -1122,6 +1362,7 @@ function createVisionService(deps) {
       }
     }
 
+
     let first;
     try { first = await saveSpeechChunk(job, chunks[0], 0, jobId); }
     catch (error) {
@@ -1129,23 +1370,37 @@ function createVisionService(deps) {
       if (activeSpeechJobId === jobId) activeSpeechJobId = null;
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
-    try { first.playback = startAudioPlayback(first.filePath); }
-    catch (error) {
+
+    try {
+      const onChunkDone = index => {
+        if (job.completedChunkIndexes.has(index)) return;
+        job.completedChunkIndexes.add(index);
+        job.chunks_completed = job.completedChunkIndexes.size;
+        job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
+      };
+      first.playback = startAudioPlayback(first.filePath, onChunkDone);
+      await first.playback.started;
+      job.status = 'playing';
+      job.chunks_queued = 1;
+      job.chunks_started = 1;
+      job.currentPlayback = first.playback;
+      await removeSpeechFile(first.filePath);
+    } catch (error) {
+      if (first.playback && first.playback.stop) first.playback.stop();
       await removeSpeechFile(first.filePath);
       job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
       if (activeSpeechJobId === jobId) activeSpeechJobId = null;
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
-    job.status = 'playing'; job.chunks_started = 1; job.currentPlayback = first.playback;
-    void continueSpeechJob(job, first);
+    void continueSpeechJob(job, first.playback);
     return { status: 'tts_started', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID,
       sample_rate: Number.isFinite(first.remote.sample_rate) ? first.remote.sample_rate : state.tts_sample_rate,
       channels: Number.isFinite(first.remote.channels) ? first.remote.channels : 1,
       duration_seconds: Number.isFinite(first.remote.duration_seconds) ? first.remote.duration_seconds : null,
       first_chunk_audio_bytes: first.audio.length, first_chunk_sha256: first.audioHash,
-      chunks_total: chunks.length, chunks_started: 1, chunks_completed: 0,
+      chunks_total: chunks.length, chunks_started: 1, chunks_queued: 1, chunks_completed: 0,
       played: true, playback_status: 'playing',
-      audio_transport: 'The first chunk is playing; remaining punctuation-bounded chunks are synthesized ahead of playback. Query computer(action=status) for progress.' };
+      audio_transport: 'The first chunk is queued on one Windows audio stream; the remaining chunks are synthesized with bounded parallel prefetch and queued in order. Query computer(action=status) for progress.' };
   }
 
     async function waitForRemoteResult(jobId, expectedHash, expectedFrameId, expectedModelRole) {
@@ -1476,7 +1731,7 @@ function createVisionService(deps) {
   async function dispose() {
     disposed = true;
     for (const job of speechJobs.values()) {
-      if (job.status === 'playing' || job.status === 'preparing') {
+      if (job.status === 'playing' || job.status === 'preparing' || job.status === 'draining_after_error') {
         job.cancelRequested = true;
         if (job.currentPlayback && typeof job.currentPlayback.stop === 'function') job.currentPlayback.stop();
       }
