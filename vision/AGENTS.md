@@ -17,6 +17,13 @@ The Colab notebook is the authenticated visual-analysis backend for the Windows 
 - Do not compile llama.cpp in a Colab runtime. Download the pinned official `ggml-org/llama.cpp` CUDA 12.8 release archive `cudart-llama-b11913-bin-ubuntu-cuda-12.8-x64.tar.gz`, verify SHA-256 `be951a4cb7885562b4df07e7652a897ebfac3b95f4e0434c68ac99302e4f613e`, and cache the compressed archive on the existing Google Drive model cache. Extract it to local `/content` storage for execution; check the executable's required CLI flags and resolve bundled shared libraries. `nvcc`, CMake, and a source checkout are not prerequisites. Fail clearly if download/checksum/extraction/CLI validation fails.
 - The notebook only performs visual inference. Mouse/keyboard input is executed locally by the Windows app and never sent to Colab.
 
+## Passive Observe feed versus Colab vision
+
+- The app's passive `bridge/vision/observe.json` feed is independent of this Colab service. If Observe is already enabled and fresh, ChatGPT should read it directly before screen interaction; it should not call Colab status/screenshot just to get a live window/control state.
+- Use this subsystem when actual screenshot pixels, OCR, visual interpretation or image-grounded coordinates are needed and the user's intent permits the Colab visual path. Keep status/connect/model-readiness checks outside the ordinary passive Observe loop.
+- For rapid interaction, do not run a Colab inference after every local input by default. Batch only predictable adjacent inputs in one sequence; when feedback is needed, let the assistant read the next passive Observe frame. Set the sequence's `observe=true` only when the Colab analysis result itself is required for the next decision.
+- Never claim that passive Observe supplied pixel-level text/scene understanding; keep uncertainty and source provenance explicit.
+
 ## Security and user control
 - The user explicitly asked for automatic activation after connecting Colab; do not auto-launch Colab or create a public tunnel without an explicit connect request.
 - `disable` prevents new screenshot analysis but does not shut down the runtime or unload a loaded model.

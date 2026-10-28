@@ -7,6 +7,7 @@ const {
   PROTOCOL,
   RESULT_PROTOCOL,
   DEFAULT_BRANCH,
+  DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
   validateConfig,
   validateRequest,
   sanitizeForRepository,
@@ -419,7 +420,8 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('periodic request-tree reconciliation finds new requests when the commit cursor is stale', async () => {
+test('default request-tree reconciliation is five seconds and recovers new requests when the commit cursor is stale', async () => {
+  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 5000);
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
   let executions = 0;
@@ -430,12 +432,14 @@ test('periodic request-tree reconciliation finds new requests when the commit cu
       executions++;
       return { ok: true, result: { id, tool } };
     },
-    intervalMs: 5000,
-    requestReconciliationIntervalMs: 1
+    intervalMs: 5000
   });
 
+  const originalNow = Date.now;
   try {
     await bridge.start();
+    // Simulate the five-second fallback deadline without sleeping in the test.
+    Date.now = () => originalNow() + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
     const request = {
@@ -468,6 +472,7 @@ test('periodic request-tree reconciliation finds new requests when the commit cu
     assert.equal(result.status, 'completed');
     assert.equal(result.request_id, request.request_id);
   } finally {
+    Date.now = originalNow;
     await bridge.stop();
   }
 });
