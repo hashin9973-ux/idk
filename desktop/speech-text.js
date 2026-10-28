@@ -61,7 +61,7 @@ function normalizeSpeechText(value) {
     .trim();
 }
 
-function splitSpeechIntoChunks(value, maxChars = 120) {
+function splitSpeechIntoChunks(value, maxChars = 56) {
   if (typeof value !== 'string' || !value.trim()) return [];
   if (!Number.isInteger(maxChars) || maxChars < 48 || maxChars > 400) {
     throw new RangeError('maxChars must be an integer between 48 and 400.');
