@@ -168,7 +168,8 @@ def main():
         "pending result preserves frame ID": '"input_frame_id": record.get("input_frame_id")',
         "pending result preserves model role": '"model_role": record.get("model_role")',
         "Ollama Qwen3-VL 4B detailed model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
-        "SmolVLM2 Q4 passive model": 'PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"',
+        "SmolVLM2 Q8 image-capable passive model": 'PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"',
+        "passive model repository uses image-capable Ollama tag": 'PASSIVE_MODEL_REPO = "ahmadwaqar/smolvlm2-2.2b-instruct"',
         "parked Qwen alias": 'PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"',
         "Ollama native chat API": 'OLLAMA_API + "/api/chat"',
         "vision image payload": '"images": [model_image_b64]',
@@ -211,6 +212,7 @@ def main():
             raise SystemExit(f"FAIL: missing {label}: {needle}")
 
     forbidden = (
+        "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M",
         "hf_hub_download",
         "Qwen3VL-8B-Instruct",
         "--mmproj",
