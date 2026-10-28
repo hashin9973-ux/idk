@@ -590,7 +590,7 @@ test('GitHub CLI token import validates the account before storing the token enc
   assert.equal(settings.github.encryptedToken.includes('gho-imported-test-token'), false);
   assert.equal((await auth.getState()).authenticated, true);
   await assert.rejects(auth.importToken('short'), /valid access token/i);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1, 'a fresh successful /user validation is reused from the short-lived auth cache');
 });
 
 test('transient GitHub API failures do not erase a recently verified login state', async () => {
@@ -616,6 +616,15 @@ test('transient GitHub API failures do not erase a recently verified login state
   assert.equal(state.login, 'example-user');
   assert.equal(state.verificationPending, true);
   assert.match(state.verificationError, /fetch failed/i);
+  const stillPending = await auth.getState();
+  assert.equal(stillPending.verificationPending, true, 'a transient error stays visibly pending during the short retry window');
+  assert.equal(userCalls, 2, 'the pending state should avoid a tight retry loop');
+  failProbe = false;
+  const recovered = await auth.getState({ force: true });
+  assert.equal(recovered.authenticated, true);
+  assert.equal(recovered.verificationPending, false);
+  assert.equal(recovered.login, 'example-user');
+  assert.equal(userCalls, 3);
 });
 
 test('GitHub token import keeps a CLI-authorized token during a transient verification outage and retries', async () => {
