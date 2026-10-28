@@ -236,6 +236,7 @@ function createObserveService(deps = {}) {
           vision_status: typeof analyzeFrame === 'function' ? 'pending' : 'not_configured',
           vision_model: null,
           vision_completed_at: null,
+          vision_error: null,
           vision: null,
           note: 'Image pixels stay local. Structured visual evidence is attached when passive model analysis completes; UI Automation and visual estimates remain separately attributed.'
         };
@@ -296,6 +297,7 @@ function createObserveService(deps = {}) {
               reportValue.frame && reportValue.frame.width_px === item.screen.frame_width &&
               reportValue.frame.height_px === item.screen.frame_height) {
             completedFrame.vision_status = 'ready';
+            completedFrame.vision_error = null;
             completedFrame.vision_model = safeText(result.model || 'SmolVLM2-2.2B-Instruct', 120);
             completedFrame.vision_completed_at = safeText(result.completed_at || new Date(now()).toISOString(), 40);
             completedFrame.vision = {
@@ -318,6 +320,7 @@ function createObserveService(deps = {}) {
             const reason = result && (result.error || result.message) ||
               'Passive vision result was incomplete or did not match the observed frame ID and dimensions.';
             completedFrame.vision_status = 'unavailable';
+            completedFrame.vision_error = safeText(reason, 500);
             completedFrame.vision_model = null;
             completedFrame.vision = null;
             lastVisionError = safeText(reason, 500);
@@ -330,6 +333,7 @@ function createObserveService(deps = {}) {
           const failedFrame = frames.find(frame => frame.sequence === item.sequence && frame.frame_id === item.frameId);
           if (failedFrame) {
             failedFrame.vision_status = 'unavailable';
+            failedFrame.vision_error = safeText(error && error.message || error || 'Passive vision failed', 500);
             failedFrame.vision_model = null;
             failedFrame.vision = null;
             publicationRevision += 1;
