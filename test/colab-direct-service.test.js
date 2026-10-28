@@ -1017,7 +1017,7 @@ test('remaining TTS chunks are synthesized concurrently and queued before the fi
   assert.equal(f.service.speechPlaybackStatus().jobs.find(item => item.job_id === started.speech_job_id).status, 'completed');
 });
 
-test('gapless Windows WaveOut helper compiles without opening an audio device', {
+test('gapless Windows WASAPI helper compiles without opening an audio device', {
   skip: process.platform !== 'win32'
 }, () => {
   const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'bridge-waveout-test-'));
@@ -1031,7 +1031,7 @@ test('gapless Windows WaveOut helper compiles without opening an audio device', 
     });
     assert.equal(result.error, undefined, result.error && result.error.message);
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /GAPLESS_WAVEOUT_COMPILED/);
+    assert.match(result.stdout, /GAPLESS_WASAPI_COMPILED/);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
