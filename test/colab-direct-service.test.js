@@ -67,7 +67,7 @@ function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
     vision_worker_api_version: 5,
-    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies'],
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch'],
     tts_ready: true,
     tts_model_loaded: true,
     tts_error: null,
