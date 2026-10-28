@@ -373,8 +373,14 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"'));
   assert.ok(python.includes('PASSIVE_CONTEXT_TOKENS = 16384'));
   assert.ok(python.includes('MAX_STRUCTURED_REPORT_CHARS = 1000000'));
-  assert.ok(python.includes('ocr_hint_limit = 32 if model_role == "passive" else 128'));
-  assert.ok(python.includes('accessibility_hint_limit = 48 if model_role == "passive" else 160'));
+  assert.ok(python.includes('ocr_hint_limit = 96 if model_role == "passive" else 128'));
+  assert.ok(python.includes('accessibility_hint_limit = 128 if model_role == "passive" else 160'));
+  assert.ok(python.includes('PASSIVE OBSERVE MODE: produce a dense, high-signal live screen map'));
+  assert.ok(python.includes('up to 96 task-relevant visible text spans'));
+  assert.ok(python.includes('up to 64 visible controls'));
+  assert.ok(python.includes('up to 40 other visible objects'));
+  assert.ok(python.includes('DETAILED QWEN MODE: focus on a reliable interpretation'));
+  assert.ok(python.includes('at most 8 regions, 24 text spans, 16 controls, and 12 objects'));
   assert.ok(!python.includes('richardyoung/smolvlm2-2.2b-instruct:Q4_K_M'));
   assert.ok(python.includes('VISION_WORKER_API_VERSION = 5'));
   assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
