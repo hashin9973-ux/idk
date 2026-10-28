@@ -20,7 +20,7 @@ When the task concerns the visible Windows desktop and passive Observe is alread
 - Use `observe=false` for a fast input sequence when you will read the passive Observe file directly and do not need Colab inference. Set `observe=true` only when the Colab screenshot-analysis report itself is needed to make the next decision.
 - Avoid narration between each step, repeated status checks, repeated context bootstrap, and one-request-per-key when a known sequence can be sent together. Do not sacrifice verification for speed.
 - Never infer failure from a missing result alone. Inspect the same request's `bridge/claims/<id>.json` and current `bridge/state/windows-app.json`, then reread `bridge/results/<id>.json`. Do not issue a duplicate while an input might still execute.
-- The worker's request-directory reconciliation safety net is five seconds in the updated build. This is a worker-side recovery interval, not an end-to-end SLA; GitHub integration and ChatGPT latency remain separate.
+- The worker scans the bounded request-directory Git tree every five seconds for new requests and no longer waits on the path-filtered commits endpoint before discovery. Local/published `requestPolling` telemetry records scan duration/count and poll duration. This is a worker-side scan interval, not an end-to-end SLA; GitHub integration and ChatGPT latency remain separate.
 
 ## 2. Bootstrap and catalog only when needed
 
@@ -39,7 +39,7 @@ Every local operation is published and returned through GitHub, so avoid avoidab
 
 - The current worker can process up to 32 independent mailbox requests. The current published `batch` catalog supports 1–100 steps and `maxConcurrency` 1–100; the installed catalog is authoritative for the build actually running.
 - Batch independent inspections and edits; preserve dependencies, shared-file conflicts, installs, stateful inputs and other side-effect order. Use result references for actual dependencies.
-- The path-filtered request-commit cursor is the fast path. The updated worker reconciles the request-directory tree every five seconds as recovery from a stale/eventually-consistent cursor. Older builds used a 60-second fallback and can exhibit minute-scale pickup stalls.
+- The updated worker scans the bounded request-directory tree every five seconds as its request discovery source. It no longer waits for the path-filtered commit API before running the scan, because that slow API call could block the timer and defeat the fallback. Older builds used a path-filtered commit cursor and a 60-second reconciliation fallback and could exhibit minute-scale pickup stalls.
 - Use request commit time to measure commit-to-claim pickup. `created_to_worker_start` starts from the request JSON's `created_at`, which is set before the integration write has necessarily committed, so it also includes pre-publication time. Compare commit timestamp, claim `claimed_at`, result `timing_ms`, and API errors instead of guessing where the delay occurred.
 - If `output_truncated` is true, status is `partial`, or a field says `OUTPUT EXTERNALIZED`, fetch all artifacts referenced in `artifacts[]`. For `tool_output_part`, concatenate all parts for the field in numeric part order; for `complete_result_part`, reconstruct the full result JSON before following its manifest. Check `artifact_errors`, stdout/stderr truncation and EOF/page markers before claiming complete output.
 
