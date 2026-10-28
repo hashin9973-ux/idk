@@ -394,7 +394,7 @@ function createVisionService(deps) {
       if (endpointWatch === watch) {
         watch.active = false;
         if (!endpointWatchError) {
-          endpointWatchError = 'Timed out waiting for the notebook to hand off its public HTTPS endpoint. Rerun the server cell to generate a new endpoint; if the browser blocks the app launch, click Connect to Windows Bridge. Copying the endpoint is a fallback only.';
+          endpointWatchError = 'Timed out waiting for the notebook to hand off its public HTTPS endpoint. Rerun the server cell to generate a new endpoint, check that Windows Repository Bridge is installed, and allow the browser to open it; if blocked, click Connect to Windows Bridge. Copying the endpoint is a fallback only.';
         }
       }
     } catch (error) {
