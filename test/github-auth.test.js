@@ -441,7 +441,7 @@ test('repository API allows only the configured mailbox contents routes', async 
     method: 'GET',
     path: '/repos/example/private-repo/commits',
     query: { sha: 'other-branch', path: 'bridge/requests', per_page: 1 }
-  }), /limited to the latest commit touching bridge\/requests/i);
+  }), /limited to the latest 20 commits touching bridge\/requests/i);
 
   const resultPayload = {
     protocol: 'chatgpt-local-repo-result/v1',
