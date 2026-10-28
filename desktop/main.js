@@ -695,7 +695,7 @@ async function attemptAutoConnect() {
   try {
     const auth = await githubAuth.getState();
     broadcastGitHubState(auth);
-    if (!auth.authenticated) {
+    if (!auth.authenticated || auth.verificationPending === true) {
       const waiting = auth.verificationPending === true;
       setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
         auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
