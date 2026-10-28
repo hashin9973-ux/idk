@@ -127,6 +127,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /const freshnessWindowMs = Math\.max\(15000, scanInterval \* 3\)/);
   assert.match(main, /if \(pollFresh\) return 'online'/);
   assert.match(main, /current\.lastPollError \|\| current\.lastError/);
+  assert.match(main, /const connectionError = workerStatus === 'online' \? '' :/);
   assert.match(main, /'app:vision-manual-panel'/);
   assert.match(main, /VISION_MANUAL_HEIGHT = 500/);
   assert.match(main, /'app:vision-setup-check'/);
