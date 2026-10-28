@@ -1135,6 +1135,7 @@ function createVisionService(deps) {
     started.catch(() => {});
     return {
       started,
+      initialQueued: initialQueue,
       done,
       queue: queueChunk,
       end() {
@@ -1238,9 +1239,10 @@ function createVisionService(deps) {
       let responseBytes = 0;
       let textBuffer = '';
       let streamRequestStartedAt = now();
+      let lastChunkRecordAt = null;
       const decoder = new TextDecoder();
 
-      const processRecord = async rawLine => {
+      const processRecord = async (rawLine, recordReceivedAt = now()) => {
         if (!rawLine.trim()) return;
         let record;
         try { record = JSON.parse(rawLine); }
@@ -1255,7 +1257,8 @@ function createVisionService(deps) {
               throw new Error('Colab streamed TTS start metadata was invalid.');
             }
             streamStarted = true;
-            job.stream_start_latency_ms = Math.max(0, now() - streamRequestStartedAt);
+            lastChunkRecordAt = recordReceivedAt;
+            job.stream_start_latency_ms = Math.max(0, recordReceivedAt - streamRequestStartedAt);
             return;
           }
           if (record.status === 'completed') {
@@ -1279,7 +1282,9 @@ function createVisionService(deps) {
             record.request_id !== expected.request_id) {
           throw new Error('Colab streamed TTS chunk order or request identity did not match.');
         }
-        const receivedAt = now();
+        const receivedAt = recordReceivedAt;
+        const chunkDeliveryIntervalMs = Math.max(0, receivedAt - (lastChunkRecordAt === null ? streamRequestStartedAt : lastChunkRecordAt));
+        lastChunkRecordAt = receivedAt;
         const generated = validateTtsAudioResponse(record, expected.request_id);
         const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id +
           '-chunk-' + String(expected.index + 1).padStart(2, '0') + '.wav');
@@ -1298,6 +1303,8 @@ function createVisionService(deps) {
             server_synthesis_ms: Number.isFinite(record.synthesis_ms) ? record.synthesis_ms : null,
             server_tts_lock_wait_ms: Number.isFinite(record.tts_lock_wait_ms) ? record.tts_lock_wait_ms : null,
             stream_elapsed_ms: Math.max(0, receivedAt - streamRequestStartedAt),
+            chunk_delivery_interval_ms: chunkDeliveryIntervalMs,
+            record_to_queue_ms: Math.max(0, queuedAt - receivedAt),
             file_write_ms: Math.max(0, fileWrittenAt - writeStartedAt),
             queue_ack_ms: Math.max(0, queuedAt - queueStartedAt),
             audio_bytes: generated.audio.length,
@@ -1362,11 +1369,11 @@ function createVisionService(deps) {
           while ((newline = textBuffer.indexOf('\n')) >= 0) {
             const line = textBuffer.slice(0, newline);
             textBuffer = textBuffer.slice(newline + 1);
-            await processRecord(line);
+            await processRecord(line, now());
           }
         }
         textBuffer += decoder.decode();
-        if (textBuffer.trim()) await processRecord(textBuffer);
+        if (textBuffer.trim()) await processRecord(textBuffer, now());
         if (!batchTerminal) throw new Error('Colab closed the TTS stream before its terminal record.');
         if (batchFailed) throw new Error('Colab TTS stream failed: ' + batchFailed);
       } catch (error) {
@@ -1393,9 +1400,26 @@ function createVisionService(deps) {
     await readOneAttempt(0);
   }
   async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
+    const requestStartedAt = now();
     const generated = await requestTtsAudio(text, requestId, 45000);
-    const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
+    const receivedAt = now();
+    const filePath = path.join(os.tmpdir, 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
+    const writeStartedAt = now();
     await fsImpl.promises.writeFile(filePath, generated.audio, { flag: 'wx' });
+    const fileWrittenAt = now();
+    job.chunk_metrics.push({
+      index,
+      server_synthesis_ms: Number.isFinite(generated.remote.synthesis_ms) ? generated.remote.synthesis_ms : null,
+      server_tts_lock_wait_ms: Number.isFinite(generated.remote.tts_lock_wait_ms) ? generated.remote.tts_lock_wait_ms : null,
+      request_round_trip_ms: Math.max(0, receivedAt - requestStartedAt),
+      stream_elapsed_ms: null,
+      chunk_delivery_interval_ms: null,
+      record_to_queue_ms: null,
+      file_write_ms: Math.max(0, fileWrittenAt - writeStartedAt),
+      queue_ack_ms: null,
+      audio_bytes: generated.audio.length,
+      duration_seconds: Number.isFinite(generated.remote.duration_seconds) ? generated.remote.duration_seconds : null
+    });
     return { ...generated, filePath, index, text };
   }
 
@@ -1606,6 +1630,13 @@ function createVisionService(deps) {
       job.chunks_queued = 1;
       job.chunks_started = 1;
       job.max_queue_depth = Math.max(job.max_queue_depth, 1);
+      const firstMetric = job.chunk_metrics.find(metric => metric.index === 0);
+      const firstQueueStartedAt = now();
+      if (firstMetric && first.playback.initialQueued && typeof first.playback.initialQueued.then === 'function') {
+        first.playback.initialQueued.then(() => {
+          firstMetric.queue_ack_ms = Math.max(0, now() - firstQueueStartedAt);
+        }).catch(() => {});
+      }
       // Begin the next-chunk request while the first WASAPI buffer is being primed.
       // The persistent player accepts queued FILE commands before reporting STARTED.
       prefetchPromise = queueRemainingSpeech(job, first.playback);
