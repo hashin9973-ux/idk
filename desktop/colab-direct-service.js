@@ -508,7 +508,10 @@ function createVisionService(deps) {
       stage: data.stage || null,
       stage_started_at: data.stage_started_at || null,
       stage_elapsed_seconds: Number.isFinite(data.stage_elapsed_seconds) ? Math.max(0, Math.floor(data.stage_elapsed_seconds)) : null,
-      active_request_id: data.active_request_id || null, last_completed_request_id: data.last_completed_request_id || null,
+      active_request_id: data.active_request_id || null,
+      passive_active_request_id: data.passive_active_request_id || null,
+      last_completed_request_id: data.last_completed_request_id || null,
+      model_state_refresh_error: data.model_state_refresh_error || null,
       message: String(data.message || ''), transport: 'direct_https_tunnel'
     };
   }
