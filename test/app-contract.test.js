@@ -303,7 +303,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes('readClipboardText: () => clipboard.readText()'));
   assert.ok(vision.includes("const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1'"));
   assert.ok(vision.includes('runtime_kept_alive: true'));
-  assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
+  assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 1280 * 1024'));
   assert.ok(vision.includes('input_sha256'));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
