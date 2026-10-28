@@ -1110,6 +1110,16 @@ test('remaining TTS chunks stream into the playback queue before the first chunk
   assert.equal(f.service.speechPlaybackStatus().jobs.find(item => item.job_id === started.speech_job_id).status, 'completed');
 });
 
+test('gapless WASAPI script invokes the C# type it declares', () => {
+  const script = buildGaplessPlaybackScript();
+  const declaration = script.match(/public static class\\s+([A-Za-z_]\\w*)/);
+  const invocation = script.match(/\\[([A-Za-z_]\\w*)\\]::Run\\(\\)/);
+  assert.ok(declaration, 'the audio player C# type should be declared');
+  assert.ok(invocation, 'the PowerShell script should invoke the audio player type');
+  assert.equal(invocation[1], declaration[1],
+    'the PowerShell entry point must reference the compiled C# type name exactly');
+});
+
 test('gapless Windows WASAPI helper compiles without opening an audio device', {
   skip: process.platform !== 'win32'
 }, () => {
