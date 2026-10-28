@@ -967,6 +967,12 @@ test('background TTS chunk failure remains failed after asynchronous playback st
   assert.match(String(job.error || ''), /(503|background Piper chunk|TTS)/i);
   assert.equal(playback.active_job_id, null, 'failed background playback must release the single-job slot');
   assert.ok(job.chunks_completed < job.chunks_total, 'a failed job must not claim that every chunk completed');
+
+  const computerStatus = await f.service.status();
+  const statusJob = computerStatus.speech_playback?.jobs.find(item => item.job_id === started.speech_job_id);
+  assert.ok(statusJob, 'computer(action=status) must expose the speech job');
+  assert.equal(statusJob.status, 'failed', 'computer(action=status) must preserve the terminal background failure');
+  assert.equal(computerStatus.speech_playback.active_job_id, null);
 });
 
 test('vision protocol requirements include v4 multimodal capability validation and the fixed Piper voice', () => {

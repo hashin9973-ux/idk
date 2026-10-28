@@ -537,7 +537,16 @@ test('computer uses familiar actions in one tool and gates visual side effects',
     let approvalCalls = 0;
     const calls = [];
     const fakeComputer = {
-      async status() { calls.push('status'); return { status: 'inactive', runtime_fresh: false }; },
+      async status() {
+        calls.push('status');
+        return {
+          status: 'inactive', runtime_fresh: false,
+          speech_playback: {
+            active_job_id: null,
+            jobs: [{ job_id: 'tts-' + 'b'.repeat(24), status: 'failed', chunks_total: 3, chunks_completed: 1, error: 'Injected background failure.' }]
+          }
+        };
+      },
       async connectColab() { calls.push('connect'); return { status: 'waiting_for_runtime', opened: true }; },
       async activate() { calls.push('enable'); return { status: 'starting', enabled: true, model_loaded: false }; },
       async deactivate() { calls.push('disable'); return { status: 'inactive', enabled: false, runtime_kept_alive: true }; },
@@ -554,6 +563,8 @@ test('computer uses familiar actions in one tool and gates visual side effects',
     });
     const status = await bridge.runTool('computer', { action: 'status' }, 'req-computer-status');
     assert.equal(status.ok, true);
+    assert.equal(status.result.speech_playback.jobs[0].status, 'failed');
+    assert.equal(status.result.speech_playback.jobs[0].chunks_completed, 1);
     assert.equal(approvalCalls, 0);
     const enabled = await bridge.runTool('computer', { action: 'enable' }, 'req-computer-enable');
     assert.equal(enabled.ok, true);

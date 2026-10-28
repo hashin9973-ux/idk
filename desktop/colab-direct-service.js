@@ -700,6 +700,7 @@ function createVisionService(deps) {
     if (endpointWatch && endpointWatch.active && endpointWatchAttemptInProgress) {
       return {
         status: 'checking_endpoint',
+        speech_playback: speechPlaybackStatus(),
         enabled: false,
         runtime_fresh: false,
         runtime_alive: false,
@@ -717,6 +718,7 @@ function createVisionService(deps) {
     if (!colabConnection && endpointWatch && endpointWatch.active) {
       return {
         ...remote,
+        speech_playback: speechPlaybackStatus(),
         status: 'waiting_for_endpoint',
         endpoint_watch_active: true,
         endpoint_test_in_progress: false,
@@ -732,6 +734,7 @@ function createVisionService(deps) {
     if (!colabConnection && endpointWatch && !endpointWatch.active && endpointWatchError) {
       return {
         ...remote,
+        speech_playback: speechPlaybackStatus(),
         endpoint_watch_active: false,
         endpoint_test_in_progress: false,
         endpoint_watch_error: endpointWatchError,
@@ -742,6 +745,7 @@ function createVisionService(deps) {
     }
     return {
       ...remote,
+      speech_playback: speechPlaybackStatus(),
       endpoint_watch_active: Boolean(endpointWatch && endpointWatch.active),
       endpoint_test_in_progress: false,
       endpoint_watch_error: endpointWatchError || '',
