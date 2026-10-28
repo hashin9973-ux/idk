@@ -918,10 +918,17 @@ test('concurrent TTS playback is reserved before runtime health and synthesis I/
   ]);
   assert.equal(results.filter(result => result.status === 'tts_started').length, 1);
   assert.equal(results.filter(result => result.status === 'tts_busy').length, 1);
-  for (let i = 0; i < 20 && f.service.speechPlaybackStatus().active_job_id; i += 1) {
-    await new Promise(resolve => setImmediate(resolve));
+  const deadline = Date.now() + 5000;
+  let speechStatus = f.service.speechPlaybackStatus();
+  while (Date.now() < deadline && !speechStatus.jobs.some(job => job.status === 'completed')) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    speechStatus = f.service.speechPlaybackStatus();
   }
-  assert.equal(f.service.speechPlaybackStatus().jobs.filter(job => job.status === 'completed').length, 1);
+  assert.equal(
+    speechStatus.jobs.filter(job => job.status === 'completed').length,
+    1,
+    'the admitted TTS job must finish; observed playback state: ' + JSON.stringify(speechStatus)
+  );
 });
 
 test('vision protocol requirements include v4 multimodal capability validation and the fixed Piper voice', () => {
