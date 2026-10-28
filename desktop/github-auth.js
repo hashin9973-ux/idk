@@ -387,9 +387,10 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     const fingerprint = tokenFingerprint(token);
     const ageMs = cachedAuthState && cachedAuthState.fingerprint === fingerprint
       ? Math.max(0, Date.now() - cachedAuthState.checkedAt) : Infinity;
+    const cachedStatePending = cachedAuthState && cachedAuthState.state && cachedAuthState.state.verificationPending === true;
     if (options.force !== true && cachedAuthState && cachedAuthState.fingerprint === fingerprint &&
-        ((cachedAuthState.verified && ageMs < AUTH_STATE_CACHE_MS) ||
-         (!cachedAuthState.verified && ageMs < AUTH_PENDING_CACHE_MS))) {
+        ((cachedAuthState.verified && !cachedStatePending && ageMs < AUTH_STATE_CACHE_MS) ||
+         (ageMs < AUTH_PENDING_CACHE_MS))) {
       return { ...cachedAuthState.state };
     }
     if (authProbePromise && authProbeFingerprint === fingerprint) return authProbePromise;
@@ -419,12 +420,14 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
           // Keep a previously verified account visibly connected, or show a
           // verification-pending state for a newly saved token while mailbox polling retries.
           if (cachedVerified) {
-            return {
+            const pendingState = {
               ...cachedVerified,
               verificationPending: true,
               verificationError: message,
               stale: true
             };
+            cachedAuthState = { fingerprint, checkedAt: Date.now(), verified: true, state: pendingState };
+            return { ...pendingState };
           }
           const pendingState = {
             ...baseState,
