@@ -437,10 +437,10 @@ test('five-second request-tree polling discovers work without awaiting the path-
   });
 
   const originalDateNow = Date.now;
-  let baseNow = 0;
   try {
     await bridge.start();
-    baseNow = originalDateNow();
+    const lastScanAt = Date.parse(bridge.getState().requestPolling.lastRequestTreeScanAt);
+    assert.ok(Number.isFinite(lastScanAt), 'the initial request-tree scan should be timestamped');
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
     assert.equal(
@@ -449,7 +449,7 @@ test('five-second request-tree polling discovers work without awaiting the path-
       'request polling must not put the potentially slow path-filtered commit endpoint ahead of request discovery'
     );
 
-    Date.now = () => baseNow + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS - 1;
+    Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS - 1;
     await bridge.pollOnce();
     assert.equal(
       fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length,
@@ -458,7 +458,7 @@ test('five-second request-tree polling discovers work without awaiting the path-
     );
 
     // Simulate the next five-second scan deadline without sleeping.
-    Date.now = () => baseNow + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
+    Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const request = {
       protocol: PROTOCOL,
       request_id: 'req-cursor-stale-reconcile',
