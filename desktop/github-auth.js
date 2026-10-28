@@ -35,7 +35,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
 
   function isTransientAuthFailure(error) {
     const message = String(error && error.message || error || '');
-    return /(?:GitHub HTTP (?:408|425|429|5\\d\\d):)|(?:GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked))|fetch failed|failed to fetch|network|offline|ENOTFOUND|EAI_AGAIN|ECONN|ETIMEDOUT|timed out|socket|DNS|temporarily unavailable|connection reset/i.test(message);
+    return /(?:GitHub HTTP (?:408|425|429|5\d\d):)|(?:GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked))|fetch failed|failed to fetch|network|offline|ENOTFOUND|EAI_AGAIN|ECONN|ETIMEDOUT|timed out|socket|DNS|temporarily unavailable|connection reset/i.test(message);
   }
 
   function isDefinitiveAuthFailure(error) {
@@ -534,7 +534,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
 
   async function importToken(rawToken) {
     const token = String(rawToken || '').trim();
-    if (token.length < 20 || token.length > 8192 || /\\s/.test(token)) {
+    if (token.length < 20 || token.length > 8192 || /\s/.test(token)) {
       throw new Error('GitHub did not return a valid access token.');
     }
     let profile;
