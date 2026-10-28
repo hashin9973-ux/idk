@@ -855,7 +855,7 @@ test('a started worker can be stopped cleanly', async () => {
 
 
 test('large textual tool output is preserved in retrievable text artifacts with an inline preview', async () => {
-  const longText = 'Header line\\n' + 'A'.repeat(200000) + '\\n' + 'λ🙂'.repeat(8000);
+  const longText = 'Header line\\n' + 'A'.repeat(1500000) + '\\n' + 'λ🙂'.repeat(8000);
   assert.ok(Buffer.byteLength(longText, 'utf8') > 128 * 1024, 'fixture must exceed the former 128 KiB capture ceiling');
   const request = {
     protocol: PROTOCOL,
@@ -864,7 +864,7 @@ test('large textual tool output is preserved in retrievable text artifacts with 
     tool: 'read_file',
     args: { path: 'large.txt' }
   };
-  const artifactName = 'output-' + require('node:crypto').createHash('sha256').update('output.result.content').digest('hex').slice(0, 12) + '.txt';
+  const artifactName = 'output-' + require('node:crypto').createHash('sha256').update('output.result.content').digest('hex').slice(0, 12) + '-part-001.txt';
   const artifactPath = 'bridge/artifacts/' + request.request_id + '/' + artifactName;
   const fake = fakeGitHub({
     initial: [['bridge/requests/req-large-output.json', request]],
@@ -889,7 +889,10 @@ test('large textual tool output is preserved in retrievable text artifacts with 
     assert.match(inline, /Read every listed part in ascending part order/);
     assert.ok(Buffer.byteLength(inline, 'utf8') <= 32 * 1024 + 256);
     const refs = record.artifacts.filter(item => item.kind === 'tool_output_part' && item.field === 'output.result.content');
-    assert.ok(refs.length >= 1, 'the result must include a retrievable artifact reference');
+    assert.ok(refs.length >= 2 && refs.length <= 3,
+      'about 1.55 MB of output should require only three artifacts at the 700 KiB payload bound');
+    assert.ok(refs.every(ref => ref.bytes <= 700 * 1024 - 1024),
+      'every artifact must stay below the Content API bound before base64 encoding');
     assert.equal(record.artifact_errors.length, 0, 'a transient unrelated branch-head conflict must not break artifact publication');
     assert.ok(fake.files.has(artifactPath), 'the artifact should be published after retrying the transient 409');
     assert.equal(
