@@ -52,6 +52,7 @@ function createObserveService(deps = {}) {
   let currentSha = null;
   let lastCaptureAt = null;
   let lastChangeAt = null;
+  let captureCount = 0;
   let skippedSamples = 0;
   let sampleFps = (() => {
     try { return normalizeSampleFps(getSampleFps()); } catch { return DEFAULT_SAMPLE_FPS; }
@@ -69,6 +70,8 @@ function createObserveService(deps = {}) {
       fps: sampleFps,
       sample_interval_ms: intervalForFps(sampleFps),
       frame_count: frames.length,
+      capture_count: captureCount,
+      skipped_samples: skippedSamples,
       sequence,
       last_capture_at: lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
       last_change_at: lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
@@ -90,6 +93,11 @@ function createObserveService(deps = {}) {
       enabled: enabledValue,
       updated_at: new Date(now()).toISOString(),
       sample_fps: sampleFps,
+      sample_interval_ms: intervalForFps(sampleFps),
+      capture_count: enabledValue ? captureCount : 0,
+      skipped_samples: enabledValue ? skippedSamples : 0,
+      last_capture_at: enabledValue && lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
+      last_change_at: enabledValue && lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
       frame_count: enabledValue ? frames.length : 0,
       frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
       status: enabledValue ? 'observing' : 'off',
@@ -184,6 +192,8 @@ function createObserveService(deps = {}) {
         const frame = {
           sequence: ++sequence,
           captured_at: new Date(item.capturedAt).toISOString(),
+          capture_count_at_capture: captureCount,
+          skipped_samples_at_capture: skippedSamples,
           screen,
           active_window: accessibility && accessibility.active_window || null,
           focused_control: accessibility && accessibility.focused_control || null,
@@ -218,6 +228,7 @@ function createObserveService(deps = {}) {
     inFlight = true;
     try {
       const captured = await captureScreenshot();
+      captureCount += 1;
       const capturedAt = Number(captured && captured.captured_at) || now();
       lastCaptureAt = capturedAt;
       const fingerprint = await fingerprintScreenshot(captured);
@@ -277,6 +288,10 @@ function createObserveService(deps = {}) {
       lastFingerprint = '';
       frames = [];
       sequence = 0;
+      captureCount = 0;
+      skippedSamples = 0;
+      lastCaptureAt = null;
+      lastChangeAt = null;
       publishedSequence = 0;
       lastError = '';
       if (timer !== null) clearIntervalImpl(timer);
