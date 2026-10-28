@@ -864,7 +864,7 @@ test('large textual tool output is preserved in retrievable text artifacts with 
     tool: 'read_file',
     args: { path: 'large.txt' }
   };
-  const artifactName = 'output-' + require('node:crypto').createHash('sha256').update('output.result.content').digest('hex').slice(0, 12) + '.txt';
+  const artifactName = 'output-' + require('node:crypto').createHash('sha256').update('output.result.content').digest('hex').slice(0, 12) + '-part-001.txt';
   const artifactPath = 'bridge/artifacts/' + request.request_id + '/' + artifactName;
   const fake = fakeGitHub({
     initial: [['bridge/requests/req-large-output.json', request]],
