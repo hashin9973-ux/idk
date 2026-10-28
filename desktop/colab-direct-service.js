@@ -571,7 +571,7 @@ function createVisionService(deps) {
   function manualSteps(status) {
     const common = [
       'Keep the Colab notebook tab open with its worker cell running. Screenshots and reports travel through the authenticated HTTPS tunnel; Colab does not need a GitHub token or Colab Secret.',
-      'The first activation installs the prebuilt Ollama runtime and downloads about 3.3 GB of Qwen3-VL 4B weights to the temporary local disk in Colab. There is no llama.cpp build or Google Drive model copy. A fresh Colab runtime must download the model again; status reports setup progress. Startup does not run inference on a synthetic image, so the first real screenshot request may take longer while Ollama loads the model into GPU memory.'
+      'The first activation downloads SmolVLM2-2.2B-Instruct Q4_K_M for passive GPU vision and the existing Qwen3-VL 4B detailed model, then keeps Qwen in a CPU-only parked alias. It attempts to enable a 4 GiB Linux swap file under /content; Colab may prohibit swapon, so inspect computer(action=status) for the actual swap result. There is no llama.cpp source build or Google Drive model copy. A fresh Colab runtime must download both models again. Passive and detailed images are sent at full captured dimensions; the model runtime may internally resize or patch images.'
     ];
     if (status === 'gpu_unavailable') return ['Select a Colab GPU runtime if one is offered; free GPU access is not guaranteed.', ...common];
     if (status === 'needs_authentication') return ['Complete any Google Colab runtime authorization requested in the Colab tab.', ...common];
