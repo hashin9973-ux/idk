@@ -65,6 +65,14 @@ The public UI remains a single familiar `computer` tool. It provides `status`, `
 - Report `totalLines`, `bytes`, and `sha256` from full-file metadata; separately report which line/page range was actually read. If the user requests the entire file, collect every page needed to reach EOF.
 - Files over 32 MiB or binary data are explicitly rejected by `read_file`; do not describe an incomplete page as a complete read.
 
+## Bounded diagnostics and uncertain long-running operations
+
+- Return compact, decision-focused PowerShell output. Emit only required fields such as stage, exit code, elapsed time, byte count, expected/actual SHA-256, hash-match booleans, and whether the app is running. Do not serialize full CIM/process objects or command lines, complete transcripts, the whole environment, or unbounded logs. Cap both log line count and line length.
+- Avoid creating huge stdout when a compact status summary answers the question. Large results can be split into many artifact parts, adding dozens of GitHub operations and increasing branch-conflict risk. When the full output actually matters, retrieve every referenced artifact part and reconstruct in numeric order; never treat an inline preview as complete.
+- For long-running installers or downloads, use a small status JSON with explicit stages (`downloading`, `verified`, `installing`, `completed`, `failed`), the expected/actual installer size and SHA-256, exit code, before/after installed hashes, and app process status. Keep logs out of the result unless troubleshooting requires a small bounded tail.
+- A shell wrapper timeout does not necessarily establish that a spawned child finished or failed. If a child may have continued, do not immediately repeat the side effect. Use a **new read-only request** to inspect that same operation's status marker, installer process, installed executable/archive hashes, and current worker heartbeat. A changed worker ID is evidence of a restart, not proof that installation succeeded.
+- For request pickup timing, compare the Git commit timestamp for `bridge/requests/<id>.json` with the matching claim's `claimed_at`. `created_to_worker_start` starts at the envelope's `created_at`, which is before the request commit and includes pre-publication time. Use `request_polling` scan/poll timings to distinguish slow mailbox discovery from tool execution and result publication.
+
 ## Development and verification
 - Follow the existing JavaScript/Electron stack, code style, dependency versions, and established module boundaries. Prefer focused, tested changes over broad rewrites.
 - Add or update regression tests for behavioral changes, especially workspace path boundaries, request/result protocol behavior, approval policy, authentication, and UI/app contracts.
