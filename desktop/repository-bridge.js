@@ -13,7 +13,7 @@ const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 1000;
 // Bound recovery when GitHub's path-filtered commit cursor is stale/eventually consistent.
-const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 1_500;
+const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 1_000;
 const MAX_CONCURRENT_REQUESTS = 32;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
