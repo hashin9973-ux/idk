@@ -90,7 +90,9 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
         return { status: 200, result: { ref: 'refs/heads/bridge-mailbox', object: { sha: headCommitSha } } };
       }
       if (method === 'GET' && path === '/repos/test-owner/test-repo/commits') {
-        assert.deepEqual(query, { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 1 });
+        assert.equal(query.sha, 'bridge-mailbox');
+        assert.equal(query.path, 'bridge/requests');
+        assert.ok([1, 20].includes(query.per_page));
         const requestPaths = [...files.keys()]
           .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
           .sort();
@@ -102,6 +104,13 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
               ? [{ sha: String(requestPaths.length).padStart(40, '0') }]
               : []
         };
+      }
+      const restCommitPrefix = '/repos/test-owner/test-repo/commits/';
+      if (method === 'GET' && path.startsWith(restCommitPrefix)) {
+        const requestPaths = [...files.keys()]
+          .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
+          .sort();
+        return { status: 200, result: { sha: path.slice(restCommitPrefix.length), files: requestPaths.map(filename => ({ filename, status: 'added' })) } };
       }
       const treePrefix = '/repos/test-owner/test-repo/git/trees/';
       if (method === 'GET' && path.startsWith(treePrefix)) {
@@ -472,8 +481,8 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('request-tree polling runs on every worker poll without awaiting the path-filtered commit endpoint', async () => {
-  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 1000);
+test('request-tree reconciliation remains authoritative when the fast commit endpoint is stale', async () => {
+  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 5000);
   // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
@@ -495,10 +504,9 @@ test('request-tree polling runs on every worker poll without awaiting the path-f
     assert.ok(Number.isFinite(lastScanAt), 'the initial request-tree scan should be timestamped');
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
-    assert.equal(
+    assert.ok(
       fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
-      false,
-      'request polling must not put the potentially slow path-filtered commit endpoint ahead of request discovery'
+      'the commit fast path runs separately from the full-tree scan'
     );
 
     Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS - 1;
@@ -543,16 +551,62 @@ test('request-tree polling runs on every worker poll without awaiting the path-f
     const polling = bridge.getState().requestPolling;
     assert.equal(polling.requestTreeScanCount, 2, 'initialization and due scan should be counted');
     assert.ok(Number.isFinite(polling.lastRequestTreeScanDurationMs));
-    assert.equal(
+    assert.ok(
       fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
-      false,
-      'request polling should not call the slow commit listing endpoint'
+      'request commit polling should remain enabled while full-tree reconciliation recovers the deliberately stale result'
     );
   } finally {
     Date.now = originalDateNow;
     await bridge.stop();
   }
 });
+
+test('fast request-commit probe executes a new request before full-tree reconciliation is due', async () => {
+  const initial = {
+    protocol: PROTOCOL,
+    request_id: 'req-fast-probe-initial',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const fake = fakeGitHub();
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      return { ok: true, result: { id, tool } };
+    },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    const initialTreeScanCount = bridge.getState().requestPolling.requestTreeScanCount;
+    const requestPath = 'bridge/requests/' + initial.request_id + '.json';
+    fake.files.set(requestPath, {
+      name: initial.request_id + '.json',
+      path: requestPath,
+      type: 'file',
+      encoding: 'base64',
+      content: encode(initial),
+      sha: 'sha-fast-probe-request'
+    });
+
+    await waitFor(() => fake.files.has('bridge/results/' + initial.request_id + '.json'), 3500);
+    assert.equal(executions, 1, 'the request from the recent commit should execute exactly once');
+    assert.equal(bridge.getState().requestPolling.requestTreeScanCount, initialTreeScanCount,
+      'fast pickup must not require another full request-folder tree read');
+    assert.ok(fake.calls.some(call => call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/commits/' + String(1).padStart(40, '0')),
+    'the fast path should inspect the changed commit file list');
+    assert.equal(decode(fake.files.get('bridge/results/' + initial.request_id + '.json')).status, 'completed');
+  } finally {
+    await bridge.stop();
+  }
+});
+
 
 test('worker drains queued mailbox requests without a folder re-read for every completion', async () => {
   const requests = Array.from({ length: 40 }, (_, index) => ({
