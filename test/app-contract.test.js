@@ -43,6 +43,13 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.reconnectGitHub/);
   assert.match(renderer, /windowsBridge\.retryConnection/);
   assert.match(renderer, /Worker online/);
+  assert.ok(renderer.includes("active > 0 ? 'Worker online · ' + active + ' active'"));
+  assert.ok(renderer.includes("pending > 0 ? 'Worker online · ' + pending + ' queued'"));
+  assert.ok(renderer.includes(": 'Worker online · idle'"));
+  assert.match(renderer, /Worker cannot reach the GitHub mailbox/);
+  assert.match(renderer, /Last successful request scan:/);
+  assert.match(renderer, /Mailbox transport error:/);
+  assert.match(renderer, /Recent tool\/result issue \(worker still reachable\):/);
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
   assert.match(renderer, /windowsBridge\.startGitHubLogin/);
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
