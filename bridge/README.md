@@ -55,3 +55,9 @@ If a worker crashes after a claim lease expires, the app deliberately marks the 
 - Do not approve an operation unless you understand its target and effect.
 
 The worker scheduler wakes on an approximately one-second timer, but discovers new requests by directly scanning the request-directory Git tree every five seconds. It no longer calls the path-filtered commits endpoint first, so a slow commit query cannot hold up the tree scan. These are worker-side timings, not an end-to-end SLA; ChatGPT/GitHub publication and result reads add separate latency. If create-file returns a 409 branch-head conflict, verify whether the exact request path exists before retrying; reuse the same ID/path if absent, and follow the existing request if present. After reading a result, continue the task in the same ChatGPT conversation and submit another request only when evidence justifies it.
+
+## Artifact publication and bounded output
+
+The updated worker retries an immutable, request-scoped artifact create-only write when GitHub reports a branch-head conflict and the exact target is still absent. It reads back the same path after a write error, accepts only matching content, refuses to overwrite a different artifact, and surfaces a verification failure if the target's state cannot be established.
+
+Keep diagnostic tool output small. Emit the status fields needed for the next decision; do not dump entire logs, process command lines, or full status objects when a compact JSON summary suffices. Large stdout can be externalized into many numbered parts, which requires extra GitHub operations. When full output matters, fetch all manifest parts and concatenate them in numeric order; an inline preview is never complete. For uncertain long-running installs, inspect the original status marker and installed hashes with a new read-only request before retrying.

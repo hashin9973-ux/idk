@@ -47,6 +47,12 @@ A GitHub request is never approval to execute a command. The local app's policy 
 
 Each worker result includes a `timing_ms` object. It separates the time from request creation to worker start, request fetch, claim acquisition, tool wall time, result preparation, and mailbox API time/calls before the final result publication. `tool_wall_time` includes any native approval wait. These numbers describe the local worker segment only; they do not measure time ChatGPT spends planning or calling its GitHub integration before/after the worker. If worker timings are small while the user's total wait is large, investigate the ChatGPT/GitHub request-and-read sequence rather than optimizing the local file operation alone. Note that `created_to_worker_start` begins at the request envelope's `created_at`, which is set before the GitHub write commits; use the request file's actual commit timestamp plus claim `claimed_at` to estimate commit-to-pickup delay. The worker's request-tree scan interval is five seconds in the updated build, without a preceding commit-cursor query. This is not an end-to-end SLA.
 
+## Compact diagnostics and long-running installs
+
+Use deliberately small diagnostic outputs: stage, exit code, timings, asset size/hash, installed hash comparisons, app-process status and only a few PIDs. Avoid complete process/command-line dumps, full transcripts, complete environment snapshots and unbounded log tails. Oversized output may be externalized into many artifact parts and add dozens of GitHub writes; retrieve all parts only when the full result matters.
+
+If a long-running installer wrapper times out, do not immediately label the install failed or start it again. Use a new read-only request to inspect the same operation's status marker, expected/actual installer hash and size, installed `app.asar`/executable hashes and worker state. A changed worker ID suggests restart; the matching install status and actual installed hashes establish the postcondition.
+
 ## Observe-first desktop interaction
 
 For a live screen task, read `hashin9973-ux/qdqwg` → `bridge-mailbox` → `bridge/vision/observe.json` **first**, when Observe is already enabled. Do not block that read on `get_agent_context`, a tool-catalog refresh, or `computer(action=status)`. The feed is separate from Colab vision. Read the newest frame and validate `enabled`, `updated_at`, and `captured_at`; stale or disabled data is not live evidence.
