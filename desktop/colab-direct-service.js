@@ -1374,7 +1374,7 @@ function createVisionService(deps) {
         if (reader) {
           try { await reader.cancel(); } catch {}
         }
-        const retryable = !streamStarted && acceptedChunks === 0 &&
+        const retryable = !job.cancelRequested && !streamStarted && acceptedChunks === 0 &&
           /Malformed JSON|HTTP (?:400|408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(messageOf(error));
         if (attempt === 0 && retryable) {
           await sleep(120);
