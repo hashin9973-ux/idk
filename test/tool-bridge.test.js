@@ -631,3 +631,34 @@ test('tts is a first-class local tool and routes Piper synthesis through the vis
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('tts reports playback failure distinctly from successful WAV synthesis', async () => {
+  const root = fixture();
+  try {
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {},
+      uploadWorkspaceFile: async () => ({}),
+      getAutoAcceptAll: () => true,
+      visionService: {
+        async synthesizeSpeech() {
+          return {
+            status: 'tts_completed', voice: 'en_US-libritts-high', speaker_id: 0,
+            played: false, playback_error: 'Windows audio device is unavailable.',
+            local_file: 'C:\\temp\\speech.wav'
+          };
+        }
+      }
+    });
+    const result = await bridge.runTool('tts', { text: 'Play a short test.' }, 'tts-playback-fail');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /audio device is unavailable/i);
+    assert.equal(result.result.status, 'tts_completed', 'WAV synthesis succeeded despite local playback failure');
+    assert.equal(result.result.played, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
