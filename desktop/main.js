@@ -625,10 +625,13 @@ function parseColabHandoffUri(raw) {
 
 function publishColabHandoffResult(result) {
   if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  const message = String(result && (result.message || result.error) || '')
+    .replace(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\/[A-Za-z0-9_-]{40,100}/gi, '[redacted temporary Colab endpoint]')
+    .slice(0, 500);
   mainWindow.webContents.send('app:colab-handoff-result', {
     connected: Boolean(result && result.connected === true),
     status: String(result && result.status || (result && result.connected ? 'connected' : 'error')),
-    message: String(result && (result.message || result.error) || '').slice(0, 500)
+    message
   });
 }
 
@@ -639,16 +642,31 @@ function processPendingColabHandoff() {
   const fingerprint = crypto.createHash('sha256').update(endpoint, 'utf8').digest('hex');
   const now = Date.now();
   if (fingerprint === lastColabHandoffFingerprint && now - lastColabHandoffAt < 5000) return;
-  lastColabHandoffFingerprint = fingerprint;
-  lastColabHandoffAt = now;
   colabHandoffInFlight = true;
   void visionService.connectColab(endpoint)
-    .then(result => publishColabHandoffResult(result))
-    .catch(error => publishColabHandoffResult({
-      connected: false,
-      status: 'error',
-      message: String(error && error.message || error)
-    }))
+    .then(result => {
+      if (result && result.connected === true) {
+        // Suppress only duplicate deliveries after a successful handshake. A
+        // failed health/registration attempt must remain immediately retryable.
+        lastColabHandoffFingerprint = fingerprint;
+        lastColabHandoffAt = Date.now();
+      } else if (lastColabHandoffFingerprint === fingerprint) {
+        lastColabHandoffFingerprint = '';
+        lastColabHandoffAt = 0;
+      }
+      publishColabHandoffResult(result);
+    })
+    .catch(error => {
+      if (lastColabHandoffFingerprint === fingerprint) {
+        lastColabHandoffFingerprint = '';
+        lastColabHandoffAt = 0;
+      }
+      publishColabHandoffResult({
+        connected: false,
+        status: 'error',
+        message: String(error && error.message || error)
+      });
+    })
     .finally(() => {
       colabHandoffInFlight = false;
       if (pendingColabHandoffUrl) processPendingColabHandoff();
