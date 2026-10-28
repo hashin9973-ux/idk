@@ -1106,10 +1106,17 @@ test('remaining TTS chunks stream into the playback queue before the first chunk
   assert.ok(Number.isFinite(job.initial_chunk_ready_ms) && job.initial_chunk_ready_ms >= 0);
   assert.ok(Number.isFinite(job.playback_start_ms) && job.playback_start_ms >= 0);
   assert.ok(Number.isFinite(job.stream_start_latency_ms) && job.stream_start_latency_ms >= 0);
-  assert.equal(job.chunk_metrics.length, job.chunks_total - 1,
-    'every streamed continuation chunk must expose client/server timing data');
-  assert.ok(job.chunk_metrics.every(metric => Number.isFinite(metric.file_write_ms) &&
+  assert.equal(job.chunk_metrics.length, job.chunks_total,
+    'the initial chunk and every streamed continuation must expose timing data');
+  const initialMetric = job.chunk_metrics.find(metric => metric.index === 0);
+  assert.ok(initialMetric && Number.isFinite(initialMetric.request_round_trip_ms) &&
+    Number.isFinite(initialMetric.file_write_ms) && initialMetric.audio_bytes > 0,
+    'first-chunk request and local-write latency must be measured');
+  const continuationMetrics = job.chunk_metrics.filter(metric => metric.index > 0);
+  assert.equal(continuationMetrics.length, job.chunks_total - 1);
+  assert.ok(continuationMetrics.every(metric => Number.isFinite(metric.file_write_ms) &&
     Number.isFinite(metric.queue_ack_ms) && Number.isFinite(metric.stream_elapsed_ms) &&
+    Number.isFinite(metric.chunk_delivery_interval_ms) && Number.isFinite(metric.record_to_queue_ms) &&
     Number.isFinite(metric.audio_bytes) && metric.audio_bytes > 0));
   assert.equal(typeof job.audio_underrun_count, 'number');
   assert.equal(typeof job.total_audio_gap_ms, 'number');
