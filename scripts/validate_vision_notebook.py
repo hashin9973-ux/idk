@@ -84,7 +84,7 @@ def validate_context_helpers(code):
 
     parse_cases = [
         ([("Content-Length", "2")], 2),
-        ([("content-length", " 0002\\t")], 2),
+        ([("content-length", " 0002\t")], 2),
         ([("Content-Length", "2000000")], 2000000),
     ]
     for fields, expected in parse_cases:
@@ -118,9 +118,9 @@ def validate_context_helpers(code):
             pass
         else:
             raise SystemExit(f"FAIL: oversized Content-Length was not rejected: {oversized!r}")
-    if decode_request_body(b"{\\\"protocol\\\":\\\"test\\\"}") != {"protocol": "test"}:
+    if decode_request_body(b'{"protocol":"test"}') != {"protocol": "test"}:
         raise SystemExit("FAIL: valid UTF-8 JSON request body could not be decoded")
-    for malformed in (b"{\\\"protocol\\\":", b"\\xff"):
+    for malformed in (b'{"protocol":', b"\xff"):
         try:
             decode_request_body(malformed)
         except ValueError as exc:
