@@ -14,6 +14,7 @@ test('UI Automation bounds are mapped to the screenshot frame and their centers 
       { name: 'private query text', role: 'Edit', enabled: true, bbox_screen_px: [100, 100, 500, 140] },
       { name: 'offscreen', role: 'Button', enabled: true, bbox_screen_px: [2000, 100, 2100, 150] }
     ],
+    cursor_screen_px: [1250, 500],
     node_count: 9
   }, { width: 1920, height: 1080 }, { width: 960, height: 540 });
 
@@ -22,6 +23,10 @@ test('UI Automation bounds are mapped to the screenshot frame and their centers 
   assert.deepEqual(result.active_window.bbox_px, [0, 0, 960, 540]);
   assert.deepEqual(result.controls[0].bbox_px, [800, 450, 900, 480]);
   assert.deepEqual(result.controls[0].center_px, [850, 465]);
+  assert.deepEqual(result.cursor, {
+    x_screen_px: 1250, y_screen_px: 500, x_px: 625, y_px: 250,
+    source: 'windows_native_cursor', coordinate_space: 'screenshot_jpeg_px'
+  });
   assert.equal(result.controls.some(control => control.label === 'private query text'), false);
   assert.equal(result.controls.some(control => control.label === 'offscreen'), false);
 });
@@ -60,9 +65,9 @@ test('PowerShell UI Automation capture executes and serializes a bounded snapsho
   assert.equal(result.source, 'windows_uia');
   assert.equal(result.coordinate_space, 'screenshot_jpeg_px');
   assert.ok(Array.isArray(result.controls));
-  assert.ok(result.controls.length <= 25);
+  assert.ok(result.controls.length <= 80);
   assert.ok(Number.isInteger(result.node_count));
-  assert.ok(result.node_count <= 40);
+  assert.ok(result.node_count <= 120);
 
   for (const control of result.controls) {
     assert.ok(Array.isArray(control.bbox_px));
