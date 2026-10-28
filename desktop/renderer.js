@@ -132,6 +132,14 @@
       Number.isFinite(polling.lastRequestTreeScanDurationMs)
         ? 'Last request scan took ' + polling.lastRequestTreeScanDurationMs + ' ms across ' + Number(polling.lastRequestTreeEntryCount || 0) + ' entries'
         : '',
+      Number.isFinite(polling.requestCommitProbeIntervalMs)
+        ? 'Fast request-commit probe interval: ' + polling.requestCommitProbeIntervalMs + ' ms'
+        : '',
+      polling.lastRequestCommitProbeAt ? 'Last fast request probe: ' + polling.lastRequestCommitProbeAt : '',
+      Number.isFinite(polling.lastRequestCommitProbeDurationMs)
+        ? 'Last fast request probe took ' + polling.lastRequestCommitProbeDurationMs + ' ms'
+        : '',
+      polling.lastRequestCommitProbeError ? 'Fast request probe error (tree reconciliation remains active): ' + polling.lastRequestCommitProbeError : '',
       Number.isFinite(polling.lastPollDurationMs) ? 'Last poll duration: ' + polling.lastPollDurationMs + ' ms' : '',
       currentBridgeState.lastPollError ? 'Mailbox transport error: ' + currentBridgeState.lastPollError : '',
       currentBridgeState.lastError && status === 'online' ? 'Recent tool/result issue (worker still reachable): ' + currentBridgeState.lastError : ''
