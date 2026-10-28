@@ -1145,6 +1145,7 @@ if (!hasInstanceLock) {
           inputControl: windowsInputController,
           captureScreenshot: captureDesktopScreenshot,
           getAccessibleSnapshot: captureWindowsUiAutomationSnapshot,
+          getLatestFrame: maxAgeMs => observeService ? observeService.getLatestFrame(maxAgeMs) : null,
           encodeJpeg: encodeVisionJpeg,
           openColabNotebook: url => openInBrowserAndYield(url),
           readClipboardText: () => clipboard.readText(),
@@ -1155,7 +1156,8 @@ if (!hasInstanceLock) {
           getSampleFps: () => settings.observeFps ?? DEFAULT_SAMPLE_FPS,
           captureScreenshot: captureDesktopScreenshot,
           fingerprintScreenshot: fingerprintDesktopScreenshot,
-          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot
+          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot,
+          analyzeFrame: frame => visionService ? visionService.analyzeFrame(frame) : Promise.resolve({ status: 'error', error: 'Colab vision service is unavailable.' })
         });
         void observeService.clearStaleContext().catch(error => {
           appendDiagnosticLog('observe-stale-context-clear-failed', error);
