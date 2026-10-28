@@ -27,7 +27,7 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./colab-direct-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint } = require('./colab-direct-service');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
@@ -99,6 +99,7 @@ const STATUS_SIZE = { width: 360, height: 402 };
 const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
+const COLAB_HANDOFF_SCHEME = 'windows-repository-bridge';
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
   owner: 'hashin9973-ux',
   repo: 'qdqwg',
@@ -126,6 +127,11 @@ let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let finishingVisionDispose = false;
 let pendingGitHubCliLogin = null;
+let pendingColabHandoffUrl = '';
+let colabHandoffInFlight = false;
+let lastColabHandoffFingerprint = '';
+let lastColabHandoffAt = 0;
+const startupColabHandoffUri = process.argv.find(value => typeof value === 'string' && value.startsWith(COLAB_HANDOFF_SCHEME + '://')) || '';
 let ipcRegistered = false;
 let appInitializationError = '';
 let workspaceInitializationError = '';
