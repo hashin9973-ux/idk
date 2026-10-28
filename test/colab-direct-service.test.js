@@ -99,6 +99,7 @@ function fixture(options = {}) {
       ...(Number.isFinite(options.capturedAt) ? { captured_at: options.capturedAt } : {})
     }),
     getAccessibleSnapshot: options.getAccessibleSnapshot,
+    getLatestFrame: options.getLatestFrame || (() => null),
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
@@ -134,7 +135,7 @@ function fixture(options = {}) {
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, desktop_registered: true });
       }
       if (route === '/activate') {
-        state = { ...state, status: 'ready', enabled: true, model_loaded: true };
+        state = { ...state, status: 'ready', enabled: true, model_loaded: true, passive_model_loaded: true, detailed_model_parked: true };
         return response(202, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: true });
       }
       if (route === '/deactivate') {
@@ -162,7 +163,9 @@ function fixture(options = {}) {
           request_id: body.request_id,
           status: 'completed',
           input_sha256: body.sha256,
-          model: 'test-model',
+          input_frame_id: body.frame_id,
+          model_role: body.model_role || 'detailed',
+          model: body.model_role === 'passive' ? 'SmolVLM2-2.2B-Instruct' : 'test-model',
           model_repository: 'test-model-repo',
           inference_ms: 75,
           completed_at: new Date().toISOString(),
@@ -175,7 +178,8 @@ function fixture(options = {}) {
           });
           return response(202, {
             protocol: DIRECT_VISION_PROTOCOL, request_id: body.request_id, status: 'processing',
-            input_sha256: body.sha256, poll_after_ms: 5
+            input_sha256: body.sha256, input_frame_id: body.frame_id,
+            model_role: body.model_role || 'detailed', poll_after_ms: 5
           });
         }
         return response(200, result);
@@ -436,6 +440,7 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(result.status, 'report_available');
   assert.match(result.report, /A test window is visible/);
   assert.equal(result.input_sha256, result.input_image.sha256);
+  assert.equal(result.input_image.frame_id, analyzeCallFrameId(f.calls));
   const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
   assert.ok(analyzeCall);
   assert.equal(analyzeCall.body.protocol, DIRECT_VISION_PROTOCOL);
