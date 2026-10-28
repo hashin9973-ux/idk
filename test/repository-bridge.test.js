@@ -471,8 +471,8 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('five-second request-tree polling discovers work without awaiting the path-filtered commit endpoint', async () => {
-  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 5000);
+test('1.5-second request-tree polling discovers work without awaiting the path-filtered commit endpoint', async () => {
+  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 1500);
   // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
@@ -508,7 +508,7 @@ test('five-second request-tree polling discovers work without awaiting the path-
       'a poll before the scan interval must not perform another GitHub tree read'
     );
 
-    // Simulate the next five-second scan deadline without sleeping.
+    // Simulate the next request-tree scan deadline without sleeping.
     Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const request = {
       protocol: PROTOCOL,
@@ -589,6 +589,50 @@ test('worker drains queued mailbox requests without a folder re-read for every c
     assert.equal(executions, 40);
     assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
     assert.equal(requestFolderTreeGetsAfterDrain, requestFolderTreeGetsAtDispatch, 'request completion should drain queued work without another tree listing when the request-commit cursor is unchanged');
+    for (const request of requests) {
+      const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+      assert.equal(result.status, 'completed');
+      assert.equal(result.result.result.id, request.request_id);
+    }
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('worker runs disjoint workspace operations concurrently and serializes conflicting paths across requests', async () => {
+  const requests = [
+    { protocol: PROTOCOL, request_id: 'req-conflict-a-read', created_at: new Date().toISOString(), tool: 'read_file', args: { path: 'same.txt' } },
+    { protocol: PROTOCOL, request_id: 'req-conflict-b-write', created_at: new Date().toISOString(), tool: 'write_file', args: { path: 'same.txt', content: 'new' } },
+    { protocol: PROTOCOL, request_id: 'req-disjoint-c-read', created_at: new Date().toISOString(), tool: 'read_file', args: { path: 'other.txt' } }
+  ];
+  const fake = fakeGitHub({ initial: requests.map(request => ['bridge/requests/' + request.request_id + '.json', request]) });
+  const fixture = settingsFixture();
+  const activePaths = [];
+  let active = 0;
+  let maximumActive = 0;
+  let conflictingOverlap = false;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      const isWrite = tool === 'write_file' || tool === 'delete_path' || tool === 'create_directory';
+      if (activePaths.some(item => item.path === args.path && (item.isWrite || isWrite))) conflictingOverlap = true;
+      activePaths.push({ path: args.path, isWrite });
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      active--;
+      activePaths.splice(activePaths.findIndex(item => item.path === args.path && item.isWrite === isWrite), 1);
+      return { ok: true, result: { id, path: args.path } };
+    },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
+    assert.equal(conflictingOverlap, false, 'reads and writes touching the same path must never overlap');
+    assert.ok(maximumActive >= 2, 'independent paths should still execute concurrently');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
       assert.equal(result.status, 'completed');
