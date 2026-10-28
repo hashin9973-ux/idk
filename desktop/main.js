@@ -233,6 +233,7 @@ async function completeGitHubCliLogin(login) {
   // independently encrypted token in Electron safeStorage.
   login.login = state.login;
   login.status = 'authenticated';
+  broadcastGitHubState({ configured: true, ...state });
   // A successful sign-in should bring the mailbox online without a separate
   // Start Worker action.
   void attemptAutoConnect();
@@ -592,6 +593,15 @@ function broadcastBridgeState(state) {
   }
 }
 
+function broadcastGitHubState(state) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    const safe = state && typeof state === 'object' ? { ...state } : { authenticated: false };
+    delete safe.token;
+    delete safe.accessToken;
+    mainWindow.webContents.send('app:github-state', safe);
+  }
+}
+
 function setAutoConnectionStatus(status, error = '') {
   autoConnectionStatus = status;
   autoConnectionError = String(error || '');
@@ -623,13 +633,16 @@ async function attemptAutoConnect() {
   autoConnectInFlight = true;
   try {
     const auth = await githubAuth.getState();
+    broadcastGitHubState(auth);
     if (!auth.authenticated) {
-      setAutoConnectionStatus(auth.error ? 'offline' : 'github', auth.error || 'Sign in to GitHub to connect the mailbox.');
+      const waiting = auth.verificationPending === true;
+      setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
+        auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
       return;
     }
     setAutoConnectionStatus('connecting');
     const started = await repositoryBridge.start();
-    setAutoConnectionStatus(started.running ? 'online' : 'connecting', started.lastError || '');
+    setAutoConnectionStatus(resolveWorkerStatus(started), started.lastPollError || started.lastError || '');
     if (started.running && latestFilesystemIndexSnapshot) {
       // Initial index creation is asynchronous and may finish while the worker is offline.
       // Publish the latest snapshot after reconnect without blocking the online status update.
@@ -773,11 +786,13 @@ function registerIpc() {
     app.quit();
     return true;
   });
-  ipcMain.handle('app:github-state', event => {
+  ipcMain.handle('app:github-state', async event => {
     assertLocalUi(event, 'index.html');
-    return githubAuth
-      ? githubAuth.getState()
+    const state = githubAuth
+      ? await githubAuth.getState()
       : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+    broadcastGitHubState(state);
+    return state;
   });
   ipcMain.handle('app:observe-status', event => {
     assertLocalUi(event, 'index.html');
