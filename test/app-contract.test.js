@@ -51,6 +51,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.getObserveStatus/);
   assert.match(renderer, /windowsBridge\.setObserveEnabled/);
   assert.match(renderer, /windowsBridge\.setObserveFps/);
+  assert.match(renderer, /recent frame/);
+  assert.match(renderer, /Retained changed frames:.*buffer size, not FPS/);
+  assert.match(renderer, /Successful captures this session/);
   assert.match(main, /app:observe-fps/);
   assert.match(main, /clearStaleContext\(\)/);
   assert.match(main, /Promise\.allSettled\(disposals\)\.finally\(\(\) => app\.quit\(\)\)/);
