@@ -1085,7 +1085,7 @@ test('remaining TTS chunks stream into the playback queue before the first chunk
   await f.service.activate({}, 'activate-for-tts-gapless-prefetch');
   const longText = Array.from({ length: 8 }, (_, i) => 'Sentence ' + (i + 1) + ' explains the next visible thing.').join(' ');
   const started = await f.service.synthesizeSpeech({ text: longText, play: true }, 'tts-gapless-prefetch');
-  assert.equal(started.status, 'tts_started');
+  assert.equal(started.status, 'tts_started', started.error || JSON.stringify(started));
   assert.ok(started.chunks_total >= 6, 'test text should create multiple queued chunks');
   assert.ok(Number.isFinite(started.time_to_first_audio_ms) && started.time_to_first_audio_ms >= 0,
     'the first synthesized audio latency must be measured');
@@ -1181,7 +1181,7 @@ test('background TTS chunk failure remains failed after asynchronous playback st
     () => 'First phrase ends here. Another sentence follows for background chunk checks.'
   ).join(' ');
   const started = await f.service.synthesizeSpeech({ text: spokenText, play: true }, 'tts-background-failure');
-  assert.equal(started.status, 'tts_started');
+  assert.equal(started.status, 'tts_started', started.error || JSON.stringify(started));
   assert.ok(started.chunks_total > 1, 'test must start a multi-chunk background speech job');
 
   const deadline = Date.now() + 5000;
