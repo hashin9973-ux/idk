@@ -55,6 +55,92 @@ const DEFAULT_BATCH_CONCURRENCY = 32;
 const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clone']);
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
+function normalizeExecutionPath(value) {
+  return String(value || '').replace(/\\\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
+}
+
+function getExecutionFootprint(tool, args = {}) {
+  if (tool === 'batch') {
+    const steps = Array.isArray(args.steps) ? args.steps : [];
+    if (!steps.length) return { reads: [], writes: [], barrier: true };
+    const combined = { reads: [], writes: [], barrier: false };
+    for (const step of steps) {
+      const footprint = getExecutionFootprint(step.tool, step.args || {});
+      combined.reads.push(...footprint.reads);
+      combined.writes.push(...footprint.writes);
+      if (footprint.barrier) combined.barrier = true;
+    }
+    return combined;
+  }
+  const reads = [];
+  const writes = [];
+  let barrier = false;
+  const add = (target, value) => {
+    const normalized = normalizeExecutionPath(value);
+    if (normalized) target.push(normalized);
+  };
+  switch (tool) {
+    case 'read_file':
+    case 'file_info':
+    case 'upload_workspace_file':
+      add(reads, args.path); break;
+    case 'write_file':
+    case 'create_directory':
+    case 'delete_path':
+      add(writes, args.path); break;
+    case 'move_path':
+      add(writes, args.source); add(writes, args.destination); break;
+    case 'init':
+      add(writes, 'AGENTS.md'); break;
+    case 'apply_patch': {
+      const paths = typeof args.patch === 'string'
+        ? [...args.patch.matchAll(/^\\*\\*\\* (?:Add File|Update File|Delete File):\\s*(.+)$/gm)].map(match => match[1].trim())
+        : [];
+      for (const item of paths) add(writes, item);
+      if (!writes.length) barrier = true;
+      break;
+    }
+    case 'project_status':
+    case 'environment_info':
+    case 'list_dir':
+    case 'directory_tree':
+    case 'glob_file_search':
+    case 'search':
+    case 'git_status':
+    case 'git_diff':
+    case 'git_log':
+    case 'git_show':
+    case 'git_branches':
+    case 'git_changed_files':
+    case 'discover_instructions':
+    case 'get_agent_context':
+      reads.push('*'); break;
+    case 'computer':
+    case 'tts':
+    case 'shell':
+    case 'run_tests':
+    case 'git_fetch':
+    case 'git_pull':
+    case 'git_push':
+    case 'git_clone':
+    case 'git_create_branch':
+    case 'git_switch_branch':
+    case 'git_commit':
+    case 'refresh_environment_context':
+      barrier = true; break;
+    default:
+      barrier = true; break;
+  }
+  return { reads, writes, barrier };
+}
+
+function executionFootprintsConflict(left, right) {
+  if (left.barrier || right.barrier) return true;
+  const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+  return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
+    right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+}
+
 const TOOL_DESCRIPTIONS = Object.freeze({
   get_capabilities: 'List every callable local tool with exact arguments, constraints, permission mode, and result summary. This catalog is stable for the running app build.',
   get_agent_context: 'Return one compact snapshot of the selected Windows workspace, runtime, Git state, project commands, instruction-file locations, directory overview, and callable tool catalog. Full source and instruction contents stay on demand.',
@@ -1068,7 +1154,7 @@ module.exports = {
   createToolBridge,
   TOOL_ARGUMENT_KEYS,
   getExecutionFootprint,
-  executionFootprintsConflict: batchFootprintsConflict,
+  executionFootprintsConflict,
   BLOCKED_TOOLS_FOR_MAILBOX,
   GITHUB_GIT_TOOLS
 };
