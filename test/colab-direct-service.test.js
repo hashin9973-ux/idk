@@ -30,7 +30,7 @@ function response(status, payload) {
 
 function createVisionReport(width, height) {
   return {
-    schema_version: 'windows-vision-context/v1',
+    schema_version: 'windows-vision-context/v2',
     frame: { width_px: width, height_px: height, coordinate_space: 'screenshot_jpeg_px', origin: 'top-left' },
     scene: {
       summary: 'A test window is visible.',
@@ -50,6 +50,8 @@ function createVisionReport(width, height) {
       center_px: [999, 999], coordinate_source: 'vision_estimate', state: 'enabled',
       relation: 'In the main window', targetability: 'clear', position_verification: 'unverified_visual_estimate'
     }],
+    objects: [],
+    perception: { mode: 'multimodal_vision+ocr+uia', degraded: false, error: null },
     focused_element: null,
     cursor: { visible: false, bbox_1000: null, bbox_px: null, location: 'Not confidently visible.' },
     accessibility: { available: false, source: 'windows_uia', reason: 'not_available', active_window: null, focused_control: null, controls: [], truncated: false, node_count: 0 },
@@ -62,8 +64,8 @@ function createVisionReport(width, height) {
 function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
-    vision_worker_api_version: 2,
-    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high'],
+    vision_worker_api_version: 3,
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback'],
     tts_ready: true,
     tts_model_loaded: true,
     tts_error: null,
@@ -498,7 +500,7 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(result.input_image.width, 640);
   assert.equal(result.input_image.height, 360);
   const report = JSON.parse(result.report);
-  assert.equal(report.schema_version, 'windows-vision-context/v1');
+  assert.equal(report.schema_version, 'windows-vision-context/v2');
   assert.equal(report.frame.width_px, 640);
   assert.deepEqual(report.controls[0].center_px, [
     (report.controls[0].bbox_px[0] + report.controls[0].bbox_px[2]) / 2,
@@ -820,7 +822,7 @@ test('the desktop uses a clipboard reader only for the explicit Colab connect fl
 });
 
 test('structured vision context rejects truncated JSON and mismatched frames', () => {
-  assert.throws(() => validateVisionContext('{"schema_version":"windows-vision-context/v1"', { width_px: 640, height_px: 360 }), /malformed or truncated JSON/i);
+  assert.throws(() => validateVisionContext('{"schema_version":"windows-vision-context/v2"', { width_px: 640, height_px: 360 }), /malformed or truncated JSON/i);
   assert.throws(() => validateVisionContext(JSON.stringify(createVisionReport(320, 180)), { width_px: 640, height_px: 360 }), /does not match the submitted screenshot/i);
 });
 
@@ -894,10 +896,13 @@ test('Piper TTS supports no-playback mode and reports not-ready runtime state', 
   assert.match(notReady.error, /Piper loading/);
 });
 
-test('vision protocol requirements include v2 frame matching and the fixed Piper voice', () => {
-  assert.equal(VISION_WORKER_API_VERSION, 2);
+test('vision protocol requirements include v3 multimodal capability validation and the fixed Piper voice', () => {
+  assert.equal(VISION_WORKER_API_VERSION, 3);
   assert.ok(REQUIRED_VISION_FEATURES.includes('frame-id-validation'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('tts-piper-libritts-high'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('passive-vision-capability-validation'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('coordinate-rich-context-v2'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('ocr-accessibility-fallback'));
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);
