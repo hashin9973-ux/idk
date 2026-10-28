@@ -28,6 +28,7 @@ def validate_context_helpers(code):
         "map_model_boxes_to_original",
         "normalize_model_report",
         "build_passive_fallback_report",
+        "is_swapfile_layout_error",
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
     found = {node.name for node in nodes}
@@ -36,6 +37,15 @@ def validate_context_helpers(code):
         raise SystemExit("FAIL: isolated context helpers missing: " + ", ".join(sorted(missing)))
     namespace = {"math": math, "json": json}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "<vision-context-helpers>", "exec"), namespace)
+
+    swap_layout_error = namespace["is_swapfile_layout_error"]
+    if not swap_layout_error(1, "swapon: swapfile: swapon failed: Invalid argument"):
+        raise SystemExit("FAIL: invalid swapfile layout was not recognized for one dense-allocation retry")
+    if swap_layout_error(1, "swapon: Operation not permitted"):
+        raise SystemExit("FAIL: permission failures must not trigger repeated 4 GiB allocation")
+    if swap_layout_error(0, "Invalid argument"):
+        raise SystemExit("FAIL: successful swap activation must not trigger fallback allocation")
+    print("PASS: swapfile EINVAL triggers a bounded dense-allocation retry, not permission errors")
 
     bounded_dimensions = namespace["bounded_image_dimensions"]
     resize_cases = [
@@ -222,6 +232,8 @@ def main():
         "CPU-only parked Qwen preload": "num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS",
         "three model slots permitted": '"OLLAMA_MAX_LOADED_MODELS": "3"',
         "swap-file path is visible": 'OLLAMA_SWAP_FILE = Path("/content/bridge-qwen-pagefile.swap")',
+        "invalid preallocated swap files get one dense allocation retry": "is_swapfile_layout_error(activated.returncode, activated.stderr, activated.stdout) and not dense_dd_used",
+        "swap fallback is observable": "retrying with dense dd allocation.",
         "swap activation result is inspected": 'Path("/proc/swaps").read_text(encoding="utf-8")',
         "priority scheduler for detailed requests": "def inference_slot(model_role):",
         "both model roles are reported": '"passive_model_loaded": bool(_passive_model_loaded)',
