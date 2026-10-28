@@ -654,6 +654,30 @@ test('GitHub token import keeps a CLI-authorized token during a transient verifi
   assert.equal(userCalls, 2);
 });
 
+test('HTTP 5xx verification errors remain retryable and malformed access tokens with whitespace are rejected', async () => {
+  let failProbe = true;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      if (failProbe) return response({ message: 'Service temporarily unavailable' }, 503);
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  const imported = await auth.importToken('gho-auth-http-retry-test-token');
+  assert.equal(imported.authenticated, true);
+  assert.equal(imported.verificationPending, true);
+  assert.match(imported.error, /HTTP 503/);
+  assert.equal(Boolean(settings.github.encryptedToken), true);
+  await assert.rejects(auth.importToken('gho-test-token with spaces'), /valid access token/i);
+
+  failProbe = false;
+  const recovered = await auth.getState({ force: true });
+  assert.equal(recovered.authenticated, true);
+  assert.equal(recovered.verificationPending, false);
+  assert.equal(recovered.login, 'example-user');
+});
+
 test('concurrent GitHub auth-state probes share one in-flight /user request', async () => {
   let resolveProfile;
   let userCalls = 0;
