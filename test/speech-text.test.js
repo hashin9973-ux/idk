@@ -42,6 +42,24 @@ test('short text is split at every punctuation mark instead of waiting for the f
   );
 });
 
+test('long sentences split into shorter prefetched phrases without breaking words', () => {
+  const text = 'The first chunk should begin quickly while later audio is generated and queued in the background.';
+  const chunks = splitSpeechIntoChunks(text);
+  assert.ok(chunks.length >= 2, 'a long sentence should yield more than one audio chunk');
+  assert.ok(chunks.every(chunk => chunk.length <= 56),
+    'the default chunk budget should keep synthesis ahead of playback');
+  assert.ok(chunks.every(chunk => !/\\s$/u.test(chunk)));
+  assert.match(chunks.at(-1), /background[.,!?;:]?$/u);
+});
+
+test('adaptive chunk sizes can cover a long request without exceeding 32 chunks', () => {
+  const text = 'word '.repeat(390).trim();
+  const maxChars = Math.min(240, Math.max(56, Math.ceil(text.length / MAX_SPEECH_CHUNKS)));
+  const chunks = splitSpeechIntoChunks(text, maxChars);
+  assert.ok(chunks.length <= MAX_SPEECH_CHUNKS);
+  assert.ok(chunks.every(chunk => chunk.length <= maxChars));
+});
+
 test('adjacent punctuation stays in a single speech chunk', () => {
   assert.deepEqual(
     splitSpeechIntoChunks('Alert?! Next... Done.', 120),
