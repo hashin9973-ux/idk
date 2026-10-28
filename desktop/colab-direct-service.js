@@ -1379,6 +1379,7 @@ function createVisionService(deps) {
         job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
       };
       first.playback = startAudioPlayback(first.filePath, onChunkDone);
+      job.currentPlayback = first.playback;
       await first.playback.started;
       job.status = 'playing';
       job.chunks_queued = 1;
