@@ -7,6 +7,8 @@ const DEFAULT_SAMPLE_FPS = 2;
 const OBSERVE_FPS_OPTIONS = Object.freeze([0.5, 1, 2, 4, 8]);
 const SAMPLE_INTERVAL_MS = 1000 / DEFAULT_SAMPLE_FPS;
 const PUBLISH_INTERVAL_MS = 1000;
+const PASSIVE_VISION_MIN_INTERVAL_MS = 1000;
+const PASSIVE_VISION_RETRY_INTERVAL_MS = 5000;
 
 function normalizeSampleFps(value) {
   const fps = Number(value);
@@ -18,7 +20,7 @@ function intervalForFps(value) {
   return Math.round(1000 / normalizeSampleFps(value));
 }
 const FRAME_LIMIT = 10;
-const MAX_CONTEXT_BYTES = 180000;
+const MAX_CONTEXT_BYTES = 350000;
 
 function safeText(value, limit = 500) {
   return String(value == null ? '' : value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit);
@@ -30,6 +32,7 @@ function createObserveService(deps = {}) {
     captureScreenshot,
     fingerprintScreenshot,
     getAccessibleSnapshot,
+    analyzeFrame,
     getSampleFps = () => DEFAULT_SAMPLE_FPS,
     now = () => Date.now(),
     setIntervalImpl = setInterval,
@@ -41,7 +44,8 @@ function createObserveService(deps = {}) {
   let timer = null;
   let inFlight = false;
   let publishInFlight = false;
-  let publishedSequence = 0;
+  let publicationRevision = 0;
+  let publishedRevision = 0;
   let disposed = false;
   let lastFingerprint = '';
   let lastPublishedAt = 0;
@@ -49,6 +53,13 @@ function createObserveService(deps = {}) {
   let sequence = 0;
   let observeEpoch = 0;
   let frames = [];
+  let latestCapturedFrame = null;
+  let pendingVisionFrame = null;
+  let visionInFlight = false;
+  let lastVisionAttemptAt = 0;
+  let lastVisionCompletedAt = null;
+  let latestVisionStatus = 'idle';
+  let lastVisionError = '';
   let currentSha = null;
   let lastCaptureAt = null;
   let lastChangeAt = null;
@@ -76,6 +87,9 @@ function createObserveService(deps = {}) {
       last_capture_at: lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
       last_change_at: lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
       last_publish_at: lastPublishedAt ? new Date(lastPublishedAt).toISOString() : null,
+      last_vision_completed_at: lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
+      passive_vision_status: latestVisionStatus,
+      passive_vision_error: lastVisionError,
       skipped_samples: skippedSamples,
       error: lastError
     };
@@ -143,20 +157,21 @@ function createObserveService(deps = {}) {
   }
 
   async function publishLatestWhenDue() {
-    if (publishInFlight || !enabled || disposed || sequence <= publishedSequence) return;
+    if (publishInFlight || !enabled || disposed || publicationRevision <= publishedRevision) return;
     publishInFlight = true;
     try {
       const delay = PUBLISH_INTERVAL_MS - (now() - lastPublishedAt);
       if (delay > 0) await sleep(delay);
       if (!enabled || disposed) return;
-      const published = await publish(true);
-      publishedSequence = published.frames.length ? published.frames[published.frames.length - 1].sequence : 0;
+      const targetRevision = publicationRevision;
+      await publish(true);
+      publishedRevision = targetRevision;
       lastError = '';
     } catch (error) {
       lastError = safeText(error && error.message || error || 'Observe publish failed', 500);
     } finally {
       publishInFlight = false;
-      if (enabled && !disposed && sequence > publishedSequence) {
+      if (enabled && !disposed && publicationRevision > publishedRevision) {
         // Coalesce changes that arrived while the last GitHub update was in flight.
         void publishLatestWhenDue();
       }
@@ -165,6 +180,14 @@ function createObserveService(deps = {}) {
 
   let contextInFlight = false;
   let pendingCapture = null;
+
+  function getLatestFrame(maxAgeMs = 2500) {
+    if (!enabled || disposed || !latestCapturedFrame) return null;
+    const capturedAt = Number(latestCapturedFrame.captured_at) || 0;
+    const ageMs = Math.max(0, now() - capturedAt);
+    if (!capturedAt || ageMs > maxAgeMs) return null;
+    return { ...latestCapturedFrame, age_ms: ageMs };
+  }
 
   async function drainChangedCapture() {
     if (contextInFlight || !pendingCapture || !enabled || disposed) return;
@@ -189,8 +212,12 @@ function createObserveService(deps = {}) {
           accessibility = { available: false, source: 'windows_uia', reason: safeText(error && error.message || error, 120) };
         }
         if (!enabled || disposed || item.epoch !== observeEpoch) break;
+        if (now() - item.capturedAt > 2500 && accessibility && accessibility.available === true) {
+          accessibility = { available: false, source: 'windows_uia', reason: 'snapshot_too_old_for_frame', truncated: false, node_count: accessibility.node_count ?? null };
+        }
         const frame = {
           sequence: ++sequence,
+          frame_id: safeText(captured.frame_id || '', 64),
           captured_at: new Date(item.capturedAt).toISOString(),
           capture_count_at_capture: captureCount,
           skipped_samples_at_capture: skippedSamples,
@@ -206,10 +233,19 @@ function createObserveService(deps = {}) {
             node_count: Number.isFinite(accessibility && accessibility.node_count) ? accessibility.node_count : null
           },
           fingerprint: item.fingerprint.slice(0, 64),
-          note: 'UI Automation is grounded evidence. This frame does not contain full pixel-level scene understanding; visual OCR/model enrichment is not yet attached.'
+          vision_status: typeof analyzeFrame === 'function' ? 'pending' : 'not_configured',
+          vision_model: null,
+          vision_completed_at: null,
+          vision: null,
+          note: 'Image pixels stay local. Structured visual evidence is attached when passive model analysis completes; UI Automation and visual estimates remain separately attributed.'
         };
         frames.push(frame);
         if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
+        publicationRevision += 1;
+        if (typeof analyzeFrame === 'function') {
+          pendingVisionFrame = { sequence: frame.sequence, frameId: frame.frame_id, captured, screen, accessibility, epoch: item.epoch };
+          void drainVisionQueue();
+        }
         void publishLatestWhenDue();
       }
     } catch (error) {
@@ -220,6 +256,95 @@ function createObserveService(deps = {}) {
     }
   }
 
+  async function drainVisionQueue() {
+    if (visionInFlight || typeof analyzeFrame !== 'function' || !enabled || disposed) return;
+    visionInFlight = true;
+    try {
+      while (pendingVisionFrame && enabled && !disposed) {
+        const item = pendingVisionFrame;
+        pendingVisionFrame = null;
+        if (item.epoch !== observeEpoch) continue;
+        const target = frames.find(frame => frame.sequence === item.sequence && frame.frame_id === item.frameId);
+        if (!target) continue;
+        const minInterval = lastVisionError ? PASSIVE_VISION_RETRY_INTERVAL_MS : PASSIVE_VISION_MIN_INTERVAL_MS;
+        const delay = Math.max(0, minInterval - (now() - lastVisionAttemptAt));
+        if (delay > 0) await sleep(delay);
+        if (!enabled || disposed || item.epoch !== observeEpoch) break;
+        const current = frames.find(frame => frame.sequence === item.sequence && frame.frame_id === item.frameId);
+        if (!current) continue;
+        lastVisionAttemptAt = now();
+        latestVisionStatus = 'processing';
+        current.vision_status = 'processing';
+        publicationRevision += 1;
+        void publishLatestWhenDue();
+        try {
+          const result = await analyzeFrame({
+            captured: item.captured,
+            frameId: item.frameId,
+            screen: item.screen,
+            accessibility: item.accessibility,
+            waitMs: 120000
+          });
+          if (!enabled || disposed || item.epoch !== observeEpoch) break;
+          const completedFrame = frames.find(frame => frame.sequence === item.sequence && frame.frame_id === item.frameId);
+          if (!completedFrame) continue;
+          let reportValue = null;
+          if (result && result.status === 'report_available' && typeof result.report === 'string') {
+            try { reportValue = JSON.parse(result.report); } catch {}
+          }
+          if (reportValue && result.input_image && result.input_image.frame_id === item.frameId &&
+              reportValue.frame && reportValue.frame.width_px === item.screen.frame_width &&
+              reportValue.frame.height_px === item.screen.frame_height) {
+            completedFrame.vision_status = 'ready';
+            completedFrame.vision_model = safeText(result.model || 'SmolVLM2-2.2B-Instruct', 120);
+            completedFrame.vision_completed_at = safeText(result.completed_at || new Date(now()).toISOString(), 40);
+            completedFrame.vision = {
+              scene: reportValue.scene || null,
+              regions: Array.isArray(reportValue.regions) ? reportValue.regions.slice(0, 6) : [],
+              text_spans: Array.isArray(reportValue.text_spans) ? reportValue.text_spans.slice(0, 12) : [],
+              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 8) : [],
+              focused_element: reportValue.focused_element || null,
+              cursor: reportValue.cursor || null,
+              ocr: reportValue.ocr && typeof reportValue.ocr === 'object'
+                ? { available: reportValue.ocr.available === true, method: safeText(reportValue.ocr.method || '', 40),
+                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 20) : [] }
+                : { available: false, text_spans: [] },
+              evidence_policy: 'Windows UI Automation rectangles are system-derived; vision-model rectangles remain estimates unless matched to UI Automation.'
+            };
+            lastVisionCompletedAt = now();
+            latestVisionStatus = 'ready';
+            lastVisionError = '';
+          } else {
+            const reason = result && (result.error || result.message) ||
+              'Passive vision result was incomplete or did not match the observed frame ID and dimensions.';
+            completedFrame.vision_status = 'unavailable';
+            completedFrame.vision_model = null;
+            completedFrame.vision = null;
+            lastVisionError = safeText(reason, 500);
+            latestVisionStatus = 'unavailable';
+          }
+          publicationRevision += 1;
+          void publishLatestWhenDue();
+        } catch (error) {
+          if (!enabled || disposed || item.epoch !== observeEpoch) break;
+          const failedFrame = frames.find(frame => frame.sequence === item.sequence && frame.frame_id === item.frameId);
+          if (failedFrame) {
+            failedFrame.vision_status = 'unavailable';
+            failedFrame.vision_model = null;
+            failedFrame.vision = null;
+            publicationRevision += 1;
+            void publishLatestWhenDue();
+          }
+          lastVisionError = safeText(error && error.message || error || 'Passive vision failed', 500);
+          latestVisionStatus = 'unavailable';
+        }
+      }
+    } finally {
+      visionInFlight = false;
+      if (pendingVisionFrame && enabled && !disposed) void drainVisionQueue();
+    }
+  }
+
   async function captureOnce() {
     if (!enabled || disposed || inFlight) {
       skippedSamples += 1;
@@ -227,10 +352,20 @@ function createObserveService(deps = {}) {
     }
     inFlight = true;
     try {
-      const captured = await captureScreenshot();
+      const rawCaptured = await captureScreenshot();
       captureCount += 1;
-      const capturedAt = Number(captured && captured.captured_at) || now();
+      const capturedAt = Number(rawCaptured && rawCaptured.captured_at) || now();
       lastCaptureAt = capturedAt;
+      const rawBytes = Buffer.isBuffer(rawCaptured) ? rawCaptured : rawCaptured && rawCaptured.bytes;
+      if (!Buffer.isBuffer(rawBytes) || rawBytes.length === 0) throw new Error('Observe capture returned no image bytes.');
+      const captured = {
+        ...(rawCaptured && typeof rawCaptured === 'object' && !Buffer.isBuffer(rawCaptured) ? rawCaptured : {}),
+        bytes: rawBytes,
+        captured_at: capturedAt,
+        frame_id: safeText(rawCaptured && rawCaptured.frame_id, 64) ||
+          crypto.createHash('sha256').update(rawBytes).digest('hex')
+      };
+      latestCapturedFrame = captured;
       const fingerprint = await fingerprintScreenshot(captured);
       if (!fingerprint || fingerprint === lastFingerprint) return;
       lastFingerprint = fingerprint;
@@ -261,15 +396,15 @@ function createObserveService(deps = {}) {
       while (publishInFlight) await sleep(50);
       publishInFlight = true;
       try {
-        const published = await publish(true);
-        publishedSequence = published.frames.length ? published.frames[published.frames.length - 1].sequence : 0;
+        await publish(true);
+        publishedRevision = publicationRevision;
         lastError = '';
       } catch (error) {
         lastError = safeText(error && error.message || error || 'Observe FPS publish failed', 500);
         throw error;
       } finally {
         publishInFlight = false;
-        if (enabled && !disposed && sequence > publishedSequence) void publishLatestWhenDue();
+        if (enabled && !disposed && publicationRevision > publishedRevision) void publishLatestWhenDue();
       }
     }
     return status();
@@ -292,15 +427,22 @@ function createObserveService(deps = {}) {
       skippedSamples = 0;
       lastCaptureAt = null;
       lastChangeAt = null;
-      publishedSequence = 0;
+      latestCapturedFrame = null;
+      pendingVisionFrame = null;
+      lastVisionAttemptAt = 0;
+      lastVisionCompletedAt = null;
+      latestVisionStatus = typeof analyzeFrame === 'function' ? 'starting' : 'not_configured';
+      lastVisionError = '';
+      publicationRevision = 0;
+      publishedRevision = 0;
       lastError = '';
       if (timer !== null) clearIntervalImpl(timer);
       timer = setIntervalImpl(() => { void captureOnce(); }, intervalForFps(sampleFps));
       // Serialize the initial status write with any frame publication.
       publishInFlight = true;
       try {
-        const published = await publish(true);
-        publishedSequence = published.frames.length ? published.frames[published.frames.length - 1].sequence : 0;
+        await publish(true);
+        publishedRevision = publicationRevision;
       } catch (error) {
         lastError = safeText(error && error.message || error, 500);
         enabled = false;
@@ -310,7 +452,7 @@ function createObserveService(deps = {}) {
       } finally {
         publishInFlight = false;
       }
-      if (sequence > publishedSequence) void publishLatestWhenDue();
+      if (publicationRevision > publishedRevision) void publishLatestWhenDue();
       void captureOnce();
       return status();
     }
@@ -319,7 +461,11 @@ function createObserveService(deps = {}) {
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
     frames = [];
+    latestCapturedFrame = null;
     pendingCapture = null;
+    pendingVisionFrame = null;
+    latestVisionStatus = 'off';
+    lastVisionError = '';
     lastFingerprint = '';
     lastError = '';
     while (publishInFlight) await sleep(50);
@@ -372,7 +518,9 @@ function createObserveService(deps = {}) {
     const wasEnabled = enabled;
     observeEpoch += 1;
     enabled = false;
+    latestCapturedFrame = null;
     pendingCapture = null;
+    pendingVisionFrame = null;
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
     frames = [];
@@ -386,7 +534,7 @@ function createObserveService(deps = {}) {
     disposed = true;
   }
 
-  return { status, setEnabled, setFps, clearStaleContext, dispose };
+  return { status, setEnabled, setFps, clearStaleContext, getLatestFrame, dispose };
 }
 
 module.exports = { createObserveService, OBSERVE_PROTOCOL, DEFAULT_SAMPLE_FPS, OBSERVE_FPS_OPTIONS, SAMPLE_INTERVAL_MS, PUBLISH_INTERVAL_MS, FRAME_LIMIT, intervalForFps };
