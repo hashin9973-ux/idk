@@ -99,16 +99,33 @@
   function renderWorker(state) {
     currentBridgeState = state || {};
     const status = String(currentBridgeState.workerStatus || (currentBridgeState.running ? 'online' : 'connecting'));
+    const active = Number.isFinite(currentBridgeState.activeCount) ? Math.max(0, currentBridgeState.activeCount) : 0;
+    const pending = Number.isFinite(currentBridgeState.pendingCount) ? Math.max(0, currentBridgeState.pendingCount) : 0;
     const labels = {
-      online: 'Worker online',
+      online: active > 0 ? 'Worker online · ' + active + ' active'
+        : pending > 0 ? 'Worker online · ' + pending + ' queued'
+          : 'Worker online · idle',
       connecting: 'Worker connecting…',
-      offline: 'Worker waiting for internet',
+      offline: 'Worker cannot reach the GitHub mailbox',
       github: 'Worker waiting for GitHub sign-in',
       setup: 'Worker needs configuration',
       attention: 'Worker needs attention'
     };
     workerLabel.textContent = labels[status] || 'Worker ' + status;
-    workerLabel.title = String(currentBridgeState.connectionError || currentBridgeState.lastError || workerLabel.textContent);
+    const polling = currentBridgeState.requestPolling || {};
+    const details = [
+      currentBridgeState.connectionError || '',
+      'Worker process: ' + (currentBridgeState.running ? 'running' : 'stopped'),
+      'Mailbox work: ' + active + ' active, ' + pending + ' queued',
+      currentBridgeState.lastPollAt ? 'Last successful request scan: ' + currentBridgeState.lastPollAt : 'No successful request scan recorded yet',
+      Number.isFinite(polling.lastRequestTreeScanDurationMs)
+        ? 'Last request scan took ' + polling.lastRequestTreeScanDurationMs + ' ms across ' + Number(polling.lastRequestTreeEntryCount || 0) + ' entries'
+        : '',
+      Number.isFinite(polling.lastPollDurationMs) ? 'Last poll duration: ' + polling.lastPollDurationMs + ' ms' : '',
+      currentBridgeState.lastPollError ? 'Mailbox transport error: ' + currentBridgeState.lastPollError : '',
+      currentBridgeState.lastError && status === 'online' ? 'Recent tool/result issue (worker still reachable): ' + currentBridgeState.lastError : ''
+    ].filter(Boolean);
+    workerLabel.title = details.join('\n') || workerLabel.textContent;
     setDot(workerDot, status === 'online' ? 'online' : status === 'offline' || status === 'attention' || status === 'setup' ? 'error' : 'waiting');
     renderAutoAccept(currentBridgeState.autoAcceptAll === true);
   }
