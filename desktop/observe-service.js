@@ -222,6 +222,13 @@ function createObserveService(deps = {}) {
           capture_count_at_capture: captureCount,
           skipped_samples_at_capture: skippedSamples,
           screen,
+          coordinate_system: {
+            frame_id: safeText(captured.frame_id || '', 64),
+            width_px: Number(screen.frame_width) || null,
+            height_px: Number(screen.frame_height) || null,
+            space: 'screenshot_jpeg_px', origin: 'top-left', x_axis: 'right', y_axis: 'down'
+          },
+          cursor: accessibility && accessibility.cursor || null,
           active_window: accessibility && accessibility.active_window || null,
           focused_control: accessibility && accessibility.focused_control || null,
           controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 250) : [],
@@ -296,26 +303,45 @@ function createObserveService(deps = {}) {
           if (reportValue && result.input_image && result.input_image.frame_id === item.frameId &&
               reportValue.frame && reportValue.frame.width_px === item.screen.frame_width &&
               reportValue.frame.height_px === item.screen.frame_height) {
-            completedFrame.vision_status = 'ready';
-            completedFrame.vision_error = null;
+            const degraded = Boolean(reportValue.perception && reportValue.perception.degraded);
+            completedFrame.vision_status = degraded ? 'degraded' : 'ready';
+            completedFrame.vision_error = degraded
+              ? safeText(reportValue.perception.error || result.model_error || 'Multimodal model unavailable; using OCR and Windows UI Automation evidence.', 500)
+              : null;
             completedFrame.vision_model = safeText(result.model || 'SmolVLM2-2.2B-Instruct', 120);
             completedFrame.vision_completed_at = safeText(result.completed_at || new Date(now()).toISOString(), 40);
             completedFrame.vision = {
+              schema_version: reportValue.schema_version || null,
+              frame_id: item.frameId,
+              coordinate_system: {
+                space: 'screenshot_jpeg_px', origin: 'top-left', x_axis: 'right', y_axis: 'down',
+                width_px: item.screen.frame_width, height_px: item.screen.frame_height
+              },
+              perception: reportValue.perception || { mode: 'multimodal_vision+ocr+uia', degraded: false },
               scene: reportValue.scene || null,
-              regions: Array.isArray(reportValue.regions) ? reportValue.regions.slice(0, 6) : [],
-              text_spans: Array.isArray(reportValue.text_spans) ? reportValue.text_spans.slice(0, 12) : [],
-              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 8) : [],
+              regions: Array.isArray(reportValue.regions) ? reportValue.regions.slice(0, 10) : [],
+              text_spans: Array.isArray(reportValue.text_spans) ? reportValue.text_spans.slice(0, 48) : [],
+              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 32) : [],
+              objects: Array.isArray(reportValue.objects) ? reportValue.objects.slice(0, 32) : [],
               focused_element: reportValue.focused_element || null,
-              cursor: reportValue.cursor || null,
+              cursor: reportValue.cursor || completedFrame.cursor || null,
               ocr: reportValue.ocr && typeof reportValue.ocr === 'object'
                 ? { available: reportValue.ocr.available === true, method: safeText(reportValue.ocr.method || '', 40),
-                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 20) : [] }
+                    reason: safeText(reportValue.ocr.reason || '', 100) || null,
+                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 64) : [] }
                 : { available: false, text_spans: [] },
-              evidence_policy: 'Windows UI Automation rectangles are system-derived; vision-model rectangles remain estimates unless matched to UI Automation.'
+              interaction_guidance: {
+                coordinate_frame_id: item.frameId,
+                use_pixel_boxes: 'Use bbox_px from this exact frame and calculate center from its left/top/right/bottom edges; center_px is already derived locally.',
+                source_priority: 'Use Windows UI Automation bounds where a target matches; otherwise visual estimates require confirmation.',
+                stale_frame_rule: 'After any state-changing input, read the newest Observe frame before choosing the next coordinate.',
+                ambiguity_rule: 'Do not click if target identity or box is ambiguous.'
+              },
+              evidence_policy: 'Windows UI Automation rectangles and native cursor position are system-derived; OCR text boxes are OCR-derived; visual-model rectangles remain estimates unless matched to UI Automation.'
             };
             lastVisionCompletedAt = now();
-            latestVisionStatus = 'ready';
-            lastVisionError = '';
+            latestVisionStatus = degraded ? 'degraded' : 'ready';
+            lastVisionError = degraded ? completedFrame.vision_error : '';
           } else {
             const reason = result && (result.error || result.message) ||
               'Passive vision result was incomplete or did not match the observed frame ID and dimensions.';
