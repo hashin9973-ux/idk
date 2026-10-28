@@ -1,70 +1,70 @@
 # ChatGPT Developer Workflow — Windows Repository Bridge
 
-This guide is for a ChatGPT conversation with access to the user's private shared mailbox and Windows Repository Bridge. The Windows workspace is the actual project environment; GitHub is only request/result transport.
+The selected Windows workspace is the actual execution environment. GitHub is a request/result mailbox, not the project itself and not a substitute for the Windows worker. Use the user's existing ChatGPT conversation.
 
 ## Paste-ready custom instructions
 
 ```text
-Use Windows Repository Bridge against my actual Windows workspace; GitHub is only the mailbox, not the project environment. For Windows tasks, inspect qdqwg:bridge-mailbox context, then call get_agent_context and use the installed tool catalog. Do not claim access is blocked or give manual instructions before trying the bridge. Use fresh immutable request IDs and read the matching result. If it is missing, inspect that ID's claim and worker state, then reread it; never duplicate an uncertain side effect. Discover machine facts before asking me. Batch related operations and use explicit references for dependencies. For substantial software work, define acceptance criteria, use modular architecture appropriate to scope, implement integrated slices, run checks/tests/builds and available UI smoke tests, fix failures, and report only verified outcomes. Check exit codes, timeouts, output and truncation. When `output_truncated` is true, status is `partial`, or a field says `OUTPUT EXTERNALIZED`, fetch every referenced `bridge/artifacts/...` file with GitHub MCP before reasoning from the preview. For `complete_result_part`, fetch all parts and concatenate them in part order to reconstruct the JSON, then follow its artifact manifest; for `tool_output_part`, concatenate all parts for that field. If parts are missing or `artifact_errors` is nonempty, retry in bounded pages instead of claiming the output is complete. The optional computer tool has status/connect/enable/disable/screenshot/wait actions; do not enable or connect vision unless I explicitly request visual inspection/activation. Confirm actual readiness before screenshots, reuse the same pending request ID when waiting, and do not claim disable shuts down Colab. Screenshots go directly to the authenticated Colab service; avoid sensitive screen contents. Never edit bridge control/request/claim/result records or send secrets.
+Use Windows Repository Bridge against my actual Windows workspace; GitHub is only the mailbox. For visible desktop work, read qdqwg:bridge-mailbox/bridge/vision/observe.json FIRST when Observe is enabled; do not block it on get_agent_context, catalog refresh, or computer(status). Loop: read live state → choose a justified input → invoke the GitHub integration's create-file/write operation for a fresh immutable bridge/requests/<id>.json request using the exact registered schema → read its matching result → reread Observe → adapt and repeat until verified. Reading repo files is not execution. If request creation fails, report the exact GitHub integration error; if result is delayed, inspect that same ID's claim and state, then reread the same result—never duplicate uncertain input. Avoid unnecessary status/context calls and narration between inputs. Batch only predictable adjacent inputs with computer(action=sequence, mode=fast); if the next step depends on the changed screen, observe first. Observe supplies window/control/UIA evidence, not full pixels or guaranteed OCR. Use Colab screenshots only when pixel/OCR/model analysis is needed and explicitly permitted, and confirm readiness first. For non-visual Windows tasks, fetch fresh context/catalog only when workspace, state, or schemas are unknown/stale; batch independent work. Discover machine facts before asking me. For substantial changes, inspect source/tests, define acceptance criteria, implement modularly, run checks/tests/builds and smoke tests, fix failures, verify diffs and exit codes, and report only measured results. Fetch all referenced output artifacts and reconstruct parts before relying on previews. Never edit existing bridge transport records, leak secrets, claim blocked access before trying the actual integration write, or replay uncertain side effects.
 ```
 
-Keep task-specific requirements in the user's prompt rather than trying to encode every future feature in custom instructions.
+## 1. Live desktop: Observe first
 
-## 1. Bootstrap with little context
+When the task concerns the visible Windows desktop and passive Observe is already enabled, read `hashin9973-ux/qdqwg` on branch `bridge-mailbox`, file `bridge/vision/observe.json`, directly and immediately. Do **not** wait for a fresh `get_agent_context`, reread capabilities just to see the screen, or call `computer(action=status)` just to read passive Observe. Context bootstrap and Colab vision status are separate concerns.
 
-1. Read `bridge/context/latest.json` and `bridge/context/capabilities.json` from `hashin9973-ux/qdqwg` on `bridge-mailbox`.
-2. Submit a fresh `get_agent_context` request when current Windows state matters. Its result and exact tool catalog are authoritative for the installed worker.
-3. Read applicable `AGENTS.md` files, project manifests, targeted source and tests. Identify the framework, existing implementation, and native test/build commands before asking for discoverable machine facts.
-4. Preserve unrelated files and changes. The selected Windows workspace is the actual target; the mailbox repository is not the project itself.
+- Validate `enabled`, `updated_at`, the newest frame's `captured_at`, and its active window/focused control. If the feed is disabled, absent, or stale, say exactly what evidence is missing; never enable/disable it without the user's instruction.
+- Observe frames contain active-window and focused-control data, Windows UI Automation control bounds when available, screen dimensions and change fingerprints. They are **not full screenshot pixels** and do not guarantee OCR or readable values for inputs. Do not claim that text was read when the feed says it was withheld.
+- Use the adaptive loop **Observe read → choose next justified input → publish one request through GitHub integration → verify matching result → read newest Observe → adapt**, repeating until the requested outcome is confirmed.
+- Each input request must use a new unique ID. Invoke the actual GitHub integration create-file/write operation for `bridge/requests/<id>.json`; merely reading the repo or seeing a catalog entry does not invoke the Windows tool. A successful commit proves publication only. A matching completed result proves execution.
+- If the next action is predictable, batch adjacent actions in one `computer(action=sequence, mode="fast", steps=[...])` request (subject to the current catalog's maximum). If the next action depends on the resulting screen, use the minimum needed input and read Observe again before deciding.
+- Use `observe=false` for a fast input sequence when you will read the passive Observe file directly and do not need Colab inference. Set `observe=true` only when the Colab screenshot-analysis report itself is needed to make the next decision.
+- Avoid narration between each step, repeated status checks, repeated context bootstrap, and one-request-per-key when a known sequence can be sent together. Do not sacrifice verification for speed.
+- Never infer failure from a missing result alone. Inspect the same request's `bridge/claims/<id>.json` and current `bridge/state/windows-app.json`, then reread `bridge/results/<id>.json`. Do not issue a duplicate while an input might still execute.
+- The worker's request-directory reconciliation safety net is five seconds in the updated build. This is a worker-side recovery interval, not an end-to-end SLA; GitHub integration and ChatGPT latency remain separate.
 
-## 2. Plan and implement to match the task
+## 2. Bootstrap and catalog only when needed
 
-For substantial work, define measurable acceptance criteria and a short implementation plan. Keep the plan proportional to scope.
+For non-visual Windows tasks, or when tool availability, workspace boundaries, local state or exact schemas are unknown/stale:
 
-- Choose the smallest architecture that really satisfies the requirements. Do not collapse a complex game, app, or multi-system feature into one source file merely for convenience unless the user explicitly requests a single-file deliverable.
-- Inspect entry points, existing modules, data formats, framework conventions and tests before choosing the design.
-- Implement in small, integrated vertical slices with clear responsibilities and interfaces. Keep the project runnable as work progresses; avoid disconnected stubs and unrelated rewrites.
-- Prefer targeted reads, searches and bounded output over dumping the whole workspace.
+1. Read `bridge/context/latest.json` and `bridge/context/capabilities.json` on `bridge-mailbox`.
+2. Submit `get_agent_context` using a fresh request when a genuinely fresh view is needed. Its returned tool catalog and workspace guidance govern calls to the worker.
+3. Read the applicable root/nested `AGENTS.md`, project manifests, relevant source and tests. Discover locally available facts before asking the user.
+4. Treat GitHub as the mailbox only; create and inspect files or run commands through registered Windows tools within the selected workspace and local policy.
 
-## 3. Use the mailbox efficiently
+A fresh environment bootstrap must not block direct reading of an already-enabled live Observe feed. When both reads are useful, start the independent GitHub reads concurrently where the interface permits.
 
-Every request/result cycle crosses GitHub asynchronously. Batch related work rather than creating one request per small read or command.
+## 3. Mailbox efficiency and latency diagnosis
 
-- `batch` supports 1–50 steps. Its independent-step concurrency defaults to 4 and has a maximum of 8. This is separate from the worker's mailbox request-concurrency limit.
-- Use an initial inspection batch for project status, relevant instructions, searches and source reads; a focused edit batch; then a verification batch for tests, build output, diff and status.
-- Use explicit result references for dependent steps. Do not put a dependent test beside an edit unless the dependency is represented in the batch.
-- Each request file is immutable. Use a new unique request ID for each intentional operation; never overwrite or delete existing request, claim, result, state, context or artifact records.
+Every local operation is published and returned through GitHub, so avoid avoidable cycles.
 
-## 4. Trust results, not assumptions
+- The current worker can process up to 32 independent mailbox requests. The current published `batch` catalog supports 1–100 steps and `maxConcurrency` 1–100; the installed catalog is authoritative for the build actually running.
+- Batch independent inspections and edits; preserve dependencies, shared-file conflicts, installs, stateful inputs and other side-effect order. Use result references for actual dependencies.
+- The path-filtered request-commit cursor is the fast path. The updated worker reconciles the request-directory tree every five seconds as recovery from a stale/eventually-consistent cursor. Older builds used a 60-second fallback and can exhibit minute-scale pickup stalls.
+- Use request commit time to measure commit-to-claim pickup. `created_to_worker_start` starts from the request JSON's `created_at`, which is set before the integration write has necessarily committed, so it also includes pre-publication time. Compare commit timestamp, claim `claimed_at`, result `timing_ms`, and API errors instead of guessing where the delay occurred.
+- If `output_truncated` is true, status is `partial`, or a field says `OUTPUT EXTERNALIZED`, fetch all artifacts referenced in `artifacts[]`. For `tool_output_part`, concatenate all parts for the field in numeric part order; for `complete_result_part`, reconstruct the full result JSON before following its manifest. Check `artifact_errors`, stdout/stderr truncation and EOF/page markers before claiming complete output.
 
-1. Create `bridge/requests/<id>.json` with the published protocol and exact tool/argument schema.
-2. Read `bridge/results/<same-id>.json` and confirm the request ID and result status.
-3. If a result is missing, inspect `bridge/claims/<same-id>.json` and `bridge/state/windows-app.json`, then reread that same result. A request or claim alone is not proof of completion.
-4. Diagnose the actual error. A missing native local-tool function, a ChatGPT server-sandbox path miss, a timeout, a compile error, a rejected schema and truncated output are different problems—not generic evidence that Windows access is blocked.
-5. Never replay an operation with uncertain side effects. Inspect the workspace before retrying any request marked for manual recovery.
+## 4. Trust results, recover carefully
 
-For `shell` and `run_tests`, inspect the real `exitCode`, `timedOut`, `stdout`, `stderr` and truncation flags. Exit code zero is necessary but not sufficient; confirm the output demonstrates the expected behavior. Background services should have redirected logs and bounded readiness checks rather than an unbounded foreground wait.
+1. Publish a new immutable JSON request at `bridge/requests/<id>.json` with protocol `chatgpt-local-repo-bridge/v1`, exact `tool`, schema-valid `args`, and matching `request_id`.
+2. Read `bridge/results/<same-id>.json`. Check request ID, status, nested `ok`, errors, exit code, timeout, partial/truncation flags and artifacts.
+3. If missing, inspect that same ID's claim and current worker state, then poll/re-read the same result. Claims, commits, heartbeats and previews are not terminal results.
+4. Diagnose the observed error: a GitHub create/write rejection happens before Windows sees the request; a missing result is a pickup/result-publication problem until evidence says otherwise; a matching rejected result gives the actual local validation error. Do not label these generically as a safety block.
+5. Never replay uncertain side effects. Rerun only when the original operation is known not to have executed or its state has been reconciled.
 
-## 5. Verify behavior before reporting completion
+## 5. Build and verify software changes
 
-After implementation:
+For substantial coding tasks, define measurable acceptance criteria, inspect existing implementation and tests, choose an architecture appropriate to the feature, and deliver integrated modules rather than an unrelated single-file approximation. Run project-native syntax/lint/checks, relevant automated tests, builds and available UI smoke tests. Fix failures and repeat the checks. Inspect diffs, output truncation, exit codes and persisted postconditions. Distinguish the tests that actually ran from unverified environment-specific behavior. Documentation-only changes do not require a redundant installer run.
 
-1. Run project-native syntax/check/lint commands and the relevant automated tests. Add regression tests for changed behavior.
-2. Build the actual target when a build command exists.
-3. For user-facing software, run the available UI or end-to-end smoke test. Exercise principal flows and inspect runtime errors and persisted state where relevant.
-4. Fix failures and repeat the relevant checks. Review the final diff for accidental changes, stale imports/references, secrets, or unfinished placeholders.
-5. Distinguish verified outcomes from assumptions and unverified areas. Do not claim a build, browser check, UI flow or full playthrough passed without its actual result.
+## 6. Optional pixel-level Colab vision
 
-## 6. Optional computer / Colab vision
+Passive Observe and the Colab screenshot backend are independent.
 
-The current ChatGPT-facing interface is the single `computer` tool with `status`, `connect`, `enable`, `disable`, `screenshot` and `wait` actions. It uses direct authenticated HTTPS transport between Windows and Colab; screenshot analysis results return through the normal mailbox.
+- Use the Colab `computer(action=screenshot)` path only when pixels, OCR, image interpretation or model-grounded coordinates materially help and the user asked for that visual path or its use is otherwise clearly permitted by their instruction.
+- Before screenshot analysis, check `computer(action=status)` and confirm the direct Colab connection, vision-enabled state and model readiness. Do not connect, activate or capture automatically just because Observe is on.
+- The Colab service analyzes screenshots; Windows still executes mouse/keyboard input. Keep screenshots, private messages, tunnel URLs and secrets out of repository artifacts.
+- If a screenshot/inference request returns pending, wait with the exact returned request ID. Do not submit duplicates.
+- `disable` prevents new screenshots but does not stop the Colab runtime or unload the model.
 
-- Vision is optional. Do not automatically connect to Colab, enable the model or capture a screenshot. Use connect/enable only when the user explicitly requests it.
-- Check status first. Before capture, confirm the connection and model are actually ready. Opening a notebook or seeing a running cell is not proof that inference is ready.
-- Capture only when visual evidence materially helps and avoid credentials, private messages and unrelated sensitive content.
-- If a screenshot request is pending, wait using the exact request ID returned by that request. Do not submit duplicate screenshots while the first may still be processing.
-- `disable` prevents new screenshot requests but does not stop the Colab runtime, close the browser or unload the model. Do not claim otherwise.
+## 7. Report only verified outcomes
 
-## 7. Finish with evidence
-
-State what changed, the tests/builds/smoke checks that actually passed, and remaining unverified areas. Match every claim of successful local work to a real result from the corresponding request ID.
+Keep reporting concise during rapid interaction and summarize at completion. State what was actually changed, the request/result IDs that support local actions, checks that passed, and remaining limitations. Never claim that a window opened, a tool executed, a build passed, or a file was fully read without matching evidence.
