@@ -61,10 +61,10 @@ function normalizeSpeechText(value) {
     .trim();
 }
 
-function splitSpeechIntoChunks(value, maxChars = 56) {
+function splitSpeechIntoChunks(value, maxChars = 40) {
   if (typeof value !== 'string' || !value.trim()) return [];
-  if (!Number.isInteger(maxChars) || maxChars < 48 || maxChars > 400) {
-    throw new RangeError('maxChars must be an integer between 48 and 400.');
+  if (!Number.isInteger(maxChars) || maxChars < 32 || maxChars > 400) {
+    throw new RangeError('maxChars must be an integer between 32 and 400.');
   }
   let remaining = value.trim().replace(/\s+/gu, ' ');
   const chunks = [];
