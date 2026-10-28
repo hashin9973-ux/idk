@@ -358,19 +358,18 @@ function createObserveService(deps = {}) {
       lastCaptureAt = capturedAt;
       const rawBytes = Buffer.isBuffer(rawCaptured) ? rawCaptured : rawCaptured && rawCaptured.bytes;
       if (!Buffer.isBuffer(rawBytes) || rawBytes.length === 0) throw new Error('Observe capture returned no image bytes.');
+      const sourceFrameId = safeText(rawCaptured && rawCaptured.frame_id, 64);
       const captured = {
         ...(rawCaptured && typeof rawCaptured === 'object' && !Buffer.isBuffer(rawCaptured) ? rawCaptured : {}),
         bytes: rawBytes,
         captured_at: capturedAt,
-        frame_id: safeText(rawCaptured && rawCaptured.frame_id, 64) ||
-          crypto.createHash('sha256').update(rawBytes).digest('hex')
+        frame_id: sourceFrameId || crypto.createHash('sha256').update(rawBytes).digest('hex')
       };
       latestCapturedFrame = captured;
       const fingerprint = await fingerprintScreenshot(captured);
-      // Use the full captured frame identity when available. The 64x36 fingerprint is
-      // only a cheap change hint and can miss small UI changes; it must never make stale
-      // visual bounds appear to describe a newer full-resolution frame.
-      const frameChangeKey = captured.frame_id || fingerprint;
+      // Prefer the real full-frame identity supplied by Electron. Lightweight test/alternate
+      // capture providers can still use their explicit fingerprint to signal changed pixels.
+      const frameChangeKey = sourceFrameId || fingerprint;
       if (!fingerprint || !frameChangeKey || frameChangeKey === lastFingerprint) return;
       lastFingerprint = frameChangeKey;
       lastChangeAt = capturedAt;
