@@ -42,6 +42,25 @@ test('short text is split at every punctuation mark instead of waiting for the f
   );
 });
 
+test('long sentences split into shorter prefetched phrases without breaking words', () => {
+  const text = 'The first chunk should begin quickly while later audio is generated and queued in the background.';
+  const chunks = splitSpeechIntoChunks(text);
+  assert.ok(chunks.length >= 2, 'a long sentence should yield more than one audio chunk');
+  assert.ok(chunks.every(chunk => chunk.length <= 40),
+    'the default chunk budget should keep synthesis ahead of playback');
+  assert.ok(chunks[0].length <= 40, 'the first generated audio should stay short to reduce time to first playback');
+  assert.ok(chunks.every(chunk => !/\\s$/u.test(chunk)));
+  assert.match(chunks.at(-1), /background[.,!?;:]?$/u);
+});
+
+test('adaptive chunk sizes can cover a long request without exceeding 32 chunks', () => {
+  const text = 'word '.repeat(390).trim();
+  const maxChars = Math.min(240, Math.max(40, Math.ceil(text.length / MAX_SPEECH_CHUNKS) + 4));
+  const chunks = splitSpeechIntoChunks(text, maxChars);
+  assert.ok(chunks.length <= MAX_SPEECH_CHUNKS);
+  assert.ok(chunks.every(chunk => chunk.length <= maxChars));
+});
+
 test('adjacent punctuation stays in a single speech chunk', () => {
   assert.deepEqual(
     splitSpeechIntoChunks('Alert?! Next... Done.', 120),
@@ -61,5 +80,5 @@ test('long unpunctuated text gets a safe pause boundary without cutting words', 
 
 test('empty and invalid chunk inputs behave predictably', () => {
   assert.deepEqual(splitSpeechIntoChunks('  '), []);
-  assert.throws(() => splitSpeechIntoChunks('hello', 12), /between 48 and 400/);
+  assert.throws(() => splitSpeechIntoChunks('hello', 12), /between 32 and 400/);
 });

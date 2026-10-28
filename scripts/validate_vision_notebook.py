@@ -336,6 +336,7 @@ def main():
         "per-chunk TTS synthesis latency is emitted": '"synthesis_ms": synthesis_ms',
         "per-chunk TTS lock wait is emitted": '"tts_lock_wait_ms": tts_lock_wait_ms',
         "streamed TTS prefetch is advertised": '"tts-streamed-prefetch"',
+        "server synthesis timing capability is advertised": '"tts-server-synthesis-metrics-v1"',
         "streamed TTS uses chunked HTTP response": 'self.send_header("Transfer-Encoding", "chunked")',
         "streamed TTS caps the aggregate audio body": "MAX_TTS_BATCH_AUDIO_BYTES = 25 * 1024 * 1024",
         "streamed TTS caps combined batch text": "MAX_TTS_BATCH_TEXT_CHARS = 8000",

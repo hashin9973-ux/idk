@@ -330,6 +330,8 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 1280 * 1024'));
   assert.ok(vision.includes('input_sha256'));
   assert.ok(vision.includes('VISION_WORKER_API_VERSION = 5'));
+  assert.ok(vision.includes("'tts-server-synthesis-metrics-v1'"));
+  assert.ok(python.includes('"tts-server-synthesis-metrics-v1"'));
   assert.ok(vision.includes('runtime_compatible'));
   assert.ok(vision.includes('async function synthesizeSpeech'));
   assert.ok(vision.includes('function speechPlaybackStatus()'));

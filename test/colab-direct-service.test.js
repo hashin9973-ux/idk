@@ -67,7 +67,7 @@ function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
     vision_worker_api_version: 5,
-    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch'],
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch', 'tts-server-synthesis-metrics-v1'],
     tts_ready: true,
     tts_model_loaded: true,
     tts_error: null,
@@ -916,6 +916,25 @@ test('structured vision context rejects invalid control bounds instead of accept
 });
 
 
+test('runtime without new TTS synthesis metrics is visible but explicitly out of date', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  const features = REQUIRED_VISION_FEATURES.filter(feature => feature !== 'tts-server-synthesis-metrics-v1');
+  f.setState({
+    protocol: DIRECT_VISION_PROTOCOL, status: 'ready', enabled: true, model_loaded: true,
+    model: 'qwen3-vl:4b-instruct', vision_worker_api_version: VISION_WORKER_API_VERSION,
+    features, passive_model_loaded: true, detailed_model_parked: true, tts_ready: true
+  });
+  const connected = await f.service.connectColab(ENDPOINT);
+  assert.equal(connected.connected, true, 'network connection should remain visible');
+  assert.equal(connected.runtime_compatible, false);
+  assert.equal(connected.status, 'incompatible_runtime');
+  assert.match(connected.message, /out of date/i);
+  assert.ok(connected.missing_vision_features.includes('tts-server-synthesis-metrics-v1'));
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'), false);
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'), false);
+});
+
 test('old Colab runtimes stay visible but never activate or receive screenshots/TTS', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
@@ -1218,6 +1237,7 @@ test('vision protocol requirements include v4 multimodal capability validation a
   assert.ok(REQUIRED_VISION_FEATURES.includes('passive-latest-frame-scheduling'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('safe-http-request-bodies'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('tts-streamed-prefetch'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('tts-server-synthesis-metrics-v1'));
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);
