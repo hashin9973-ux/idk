@@ -293,8 +293,12 @@ test('repository API allows only the configured mailbox contents routes', async 
         tree: [{ path: 'req-test.json', type: 'blob', sha: '4444444444444444444444444444444444444444', size: 120 }]
       });
     }
-    if (target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1') {
+    if (target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1' ||
+        target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=20') {
       return response([{ sha: '5555555555555555555555555555555555555555' }]);
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/commits/5555555555555555555555555555555555555555') {
+      return response({ sha: '5555555555555555555555555555555555555555', files: [{ filename: 'bridge/requests/req-test.json', status: 'added' }] });
     }
     if (target.startsWith('https://api.github.com/repos/example/private-repo/contents/')) {
       if ((options.method || 'GET') === 'PUT') return response({ content: { sha: '0123456789abcdef0123456789abcdef01234567' } }, 201);
@@ -355,6 +359,20 @@ test('repository API allows only the configured mailbox contents routes', async 
   });
   assert.equal(latestRequestCommit.result[0].sha, '5555555555555555555555555555555555555555');
   assert.ok(calls.some(call => call.url.endsWith('/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1')));
+
+  const recentRequestCommits = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/commits',
+    query: { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 20 }
+  });
+  assert.equal(recentRequestCommits.result[0].sha, '5555555555555555555555555555555555555555');
+  const commitDetails = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/commits/5555555555555555555555555555555555555555'
+  });
+  assert.equal(commitDetails.result.files[0].filename, 'bridge/requests/req-test.json');
+  assert.ok(calls.some(call => call.url.endsWith('/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=20')));
+  assert.ok(calls.some(call => call.url.endsWith('/commits/5555555555555555555555555555555555555555')));
 
   const headSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   const treeSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
