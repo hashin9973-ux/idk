@@ -13,7 +13,7 @@ function buildGaplessPlaybackScript() {
     "[BridgeGaplessWasapi]::Run()\r\n";
 }
 
-const { normalizeSpeechText, splitSpeechIntoChunks } = require('./speech-text');
+const { normalizeSpeechText, splitSpeechIntoChunks, MAX_SPEECH_CHUNKS } = require('./speech-text');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
@@ -1516,10 +1516,11 @@ function createVisionService(deps) {
     }
     const spokenText = normalizeSpeechText(sourceText);
     let chunks;
-    try { chunks = splitSpeechIntoChunks(spokenText, 120); }
+    const targetChunkChars = Math.min(240, Math.max(56, Math.ceil(spokenText.length / MAX_SPEECH_CHUNKS)));
+    try { chunks = splitSpeechIntoChunks(spokenText, targetChunkChars); }
     catch (error) { return { status: 'tts_failed', error: messageOf(error) }; }
     if (!chunks.length) return { status: 'tts_failed', error: 'No speakable text remained after Unicode normalization.' };
-    if (chunks.length > 32) return { status: 'tts_failed', error: 'Speech exceeded the bounded 32-chunk limit.' };
+    if (chunks.length > MAX_SPEECH_CHUNKS) return { status: 'tts_failed', error: 'Speech exceeded the bounded ' + MAX_SPEECH_CHUNKS + '-chunk limit.' };
 
     const jobId = newTtsRequestId();
     const job = { job_id: jobId, status: 'preparing', chunks, chunks_total: chunks.length,
