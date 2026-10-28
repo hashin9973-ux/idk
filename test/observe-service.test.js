@@ -45,28 +45,39 @@ test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling 
   assert.equal(SAMPLE_INTERVAL_MS, 500);
   assert.equal((await service.setEnabled(true)).enabled, true);
   assert.equal(service.status().fps, 2);
+  assert.equal(service.status().sample_interval_ms, 500);
   assert.equal(intervalMs, 500);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.status().frame_count, 1);
+  assert.equal(service.status().capture_count, 1);
   assert.equal(published[0].protocol, OBSERVE_PROTOCOL);
   assert.equal(published[0].sample_fps, 2);
-  assert.equal(published.at(-1).frames[0].active_window.title, 'Browser');
+  assert.equal(published[0].sample_interval_ms, 500);
+  const firstFramePublication = published.findLast(payload => payload.frames.length > 0);
+  assert.equal(firstFramePublication.capture_count, 1);
+  assert.equal(firstFramePublication.frames[0].capture_count_at_capture, 1);
+  assert.equal(firstFramePublication.frames[0].skipped_samples_at_capture, 0);
+  assert.equal(firstFramePublication.frames[0].active_window.title, 'Browser');
 
   await service.setFps(4);
   assert.equal(service.status().fps, 4);
+  assert.equal(service.status().sample_interval_ms, 250);
   assert.equal(intervalMs, 250);
   assert.equal(published.at(-1).sample_fps, 4);
+  assert.equal(published.at(-1).sample_interval_ms, 250);
   await assert.rejects(service.setFps(3), /one of: 0.5, 1, 2, 4, 8/);
 
   fingerprint = 'screen-b';
   await tick();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.status().frame_count, 2);
+  assert.equal(service.status().capture_count, 2);
 
   fingerprint = 'screen-b';
   await tick();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(service.status().frame_count, 2, 'unchanged screen should not append another frame');
+  assert.equal(service.status().capture_count, 3, 'unchanged samples still count as captures even though they are not retained as changed frames');
 
   for (let i = 0; i < 12; i += 1) {
     fingerprint = 'screen-' + i;
@@ -80,6 +91,9 @@ test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling 
   await service.setEnabled(false);
   assert.equal(service.status().enabled, false);
   assert.equal(published.at(-1).enabled, false);
+  assert.equal(published.at(-1).capture_count, 0);
+  assert.equal(published.at(-1).skipped_samples, 0);
+  assert.equal(published.at(-1).last_capture_at, null);
   assert.deepEqual(published.at(-1).frames, []);
   await service.dispose();
 });
