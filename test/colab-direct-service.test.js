@@ -533,7 +533,7 @@ test('the clipboard watcher reports an actionable timeout and stops watching', a
   const status = await f.service.status();
   assert.equal(status.endpoint_watch_active, false);
   assert.equal(status.endpoint_test_in_progress, false);
-  assert.match(status.message, /Timed out waiting for the notebook to copy its public HTTPS endpoint/);
+  assert.match(status.message, /Timed out waiting for the notebook to hand off its public HTTPS endpoint/);
   assert.match(status.message, /Rerun the cell/i);
 });
 
