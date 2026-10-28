@@ -916,10 +916,22 @@ function createVisionService(deps) {
     if (process.platform !== 'win32') throw new Error('Local WAV playback is supported only on Windows. Use play=false to synthesize without playback.');
 
     const script = buildGaplessPlaybackScript();
-    const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
-      windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
-    });
+    const scriptPath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-gapless-' + crypto.randomBytes(12).toString('hex') + '.ps1');
+    fs.writeFileSync(scriptPath, script, { encoding: 'utf8', flag: 'wx' });
+    const cleanupScript = () => {
+      try { fs.unlinkSync(scriptPath); } catch {}
+    };
+    let child;
+    try {
+      // Keep the command line short; embedding the entire C# helper in -EncodedCommand exceeds
+      // Windows CreateProcess limits. The script contains no credentials or caller text.
+      child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptPath], {
+        windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (error) {
+      cleanupScript();
+      throw error;
+    }
     let stdoutBuffer = '';
     let stderr = '';
     let fatalError = null;
@@ -990,6 +1002,7 @@ function createVisionService(deps) {
     });
     child.once('error', error => {
       settleQueueError(error);
+      cleanupScript();
       if (!settled) {
         settled = true;
         clearTimeout(timer);
@@ -999,6 +1012,7 @@ function createVisionService(deps) {
     child.once('close', (code, signal) => {
       settled = true;
       clearTimeout(timer);
+      cleanupScript();
       if (stdoutBuffer) handleLine(stdoutBuffer.replace(/\r$/, ''));
       const error = fatalError || (code === 0 ? null : new Error('Windows gapless audio player exited with code ' + code +
         (signal ? ' (' + signal + ')' : '') + (stderr.trim() ? ': ' + stderr.trim().slice(0, 1200) : '.')));

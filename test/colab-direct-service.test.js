@@ -1020,15 +1020,21 @@ test('remaining TTS chunks are synthesized concurrently and queued before the fi
 test('gapless Windows WaveOut helper compiles without opening an audio device', {
   skip: process.platform !== 'win32'
 }, () => {
-  const encoded = Buffer.from(buildGaplessPlaybackScript(), 'utf16le').toString('base64');
-  const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
-    encoding: 'utf8',
-    timeout: 30000,
-    env: { ...process.env, BRIDGE_GAPLESS_COMPILE_ONLY: '1' }
-  });
-  assert.equal(result.error, undefined, result.error && result.error.message);
-  assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, /GAPLESS_WAVEOUT_COMPILED/);
+  const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'bridge-waveout-test-'));
+  const scriptPath = path.join(directory, 'compile-gapless.ps1');
+  try {
+    fs.writeFileSync(scriptPath, buildGaplessPlaybackScript(), 'utf8');
+    const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptPath], {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, BRIDGE_GAPLESS_COMPILE_ONLY: '1' }
+    });
+    assert.equal(result.error, undefined, result.error && result.error.message);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /GAPLESS_WAVEOUT_COMPILED/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('background TTS chunk failure remains failed after asynchronous playback start', async t => {
