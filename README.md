@@ -203,7 +203,7 @@ The status window's **Connect Colab** button opens `vision/vision_worker.ipynb`.
 
 The worker uses two models with separate roles:
 
-- **SmolVLM2-2.2B-Instruct Q4_K_M** is the warm GPU model for asynchronous passive Observe enrichment.
+- **SmolVLM2-2.2B-Instruct Q8_0** (`ahmadwaqar/smolvlm2-2.2b-instruct:latest`) is the warm GPU model for asynchronous passive Observe enrichment. Ollama lists this tag as accepting both text and images; the prior `richardyoung/...:Q4_K_M` artifact is text-only and must not be reused for image inference.
 - **Qwen3-VL 4B Instruct** remains the detailed-analysis model. A separate CPU-only alias is kept resident in host memory, and the GPU-loaded Qwen instance is requested only for detailed work and unloaded afterward.
 
 The vision worker API is versioned and rejects old notebook sessions before sending a screenshot. The current runtime validates each model tag through Ollama `/api/show` and requires its reported `vision` capability; if the cached tag is stale, the worker refreshes it and checks again. After updating the app and notebook source, interrupt the old Colab cell and run the updated cell again.

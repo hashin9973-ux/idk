@@ -332,7 +332,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(compatibility.includes("require('./colab-direct-service')"));
   assert.ok(python.includes('cloudflared'));
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
-  assert.ok(python.includes('PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"'));
+  assert.ok(python.includes('PASSIVE_MODEL_REPO = "ahmadwaqar/smolvlm2-2.2b-instruct"'));
+  assert.ok(python.includes('PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"'));
+  assert.ok(!python.includes('richardyoung/smolvlm2-2.2b-instruct:Q4_K_M'));
   assert.ok(python.includes('VISION_WORKER_API_VERSION = 3'));
   assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
   assert.ok(python.includes('PIPER_SPEAKER_ID = 0'));
