@@ -134,6 +134,43 @@ def validate_context_helpers(code):
     print("PASS: matching Windows UI Automation bounds become explicitly accessibility-grounded")
     print("PASS: coordinate centers are computed locally from the validated bounding rectangles")
     print("PASS: object boxes map from focused crops into the original desktop coordinate frame")
+    large_controls = []
+    large_ocr_spans = []
+    for index in range(800):
+        left = (index % 100) * 18
+        top = (index // 100) * 100
+        box = [left, top, left + 16, top + 16]
+        large_controls.append({
+            "id": "uia-" + str(index + 1), "label": "Button " + str(index + 1),
+            "role": "Button", "enabled": True, "bbox_px": box
+        })
+        large_ocr_spans.append({
+            "text": "Visible text item " + str(index + 1) + " with useful screen wording",
+            "kind": "visible_text", "source": "tesseract_ocr",
+            "tesseract_confidence_score": 91.0, "bbox_px": box
+        })
+    large_fallback = fallback_builder(
+        1920, 1080,
+        {
+            "available": True, "source": "windows_uia", "truncated": False,
+            "active_window": {"title": "Dense application", "bbox_px": [0, 0, 1920, 1080]},
+            "focused_control": None, "cursor": None, "controls": large_controls
+        },
+        {"available": True, "method": "tesseract", "reason": None, "text_spans": large_ocr_spans},
+        "model output exceeded its generation window"
+    )
+    encoded_fallback = json.dumps(large_fallback, ensure_ascii=False, separators=(",", ":"))
+    if len(large_fallback["controls"]) != 800:
+        raise SystemExit("FAIL: compact passive fallback discarded system-grounded UIA controls.")
+    if len(large_fallback["ocr"]["text_spans"]) != 800:
+        raise SystemExit("FAIL: compact passive fallback discarded OCR evidence.")
+    if len(large_fallback["text_spans"]) != 64:
+        raise SystemExit("FAIL: top-level passive OCR preview must stay bounded at 64 spans.")
+    if len(large_fallback["accessibility"]["controls"]) != 64 or large_fallback["accessibility"]["controls_truncated"] is not True:
+        raise SystemExit("FAIL: duplicate nested UIA controls were not compacted and marked truncated.")
+    if len(encoded_fallback) > 1000000:
+        raise SystemExit("FAIL: 800 UIA controls plus 800 OCR spans exceeded the structured report size budget.")
+    print("PASS: passive fallback keeps 800 UIA controls and 800 OCR spans within the 1 MB report budget")
     print("PASS: passive model failures retain explicit, degraded OCR/UI Automation evidence")
 
 
@@ -180,7 +217,7 @@ def main():
         "full-resolution image boundary": "MODEL_MAX_EDGE = 16384",
         "bounded model image processing helper": "bounded_image_dimensions(",
         "model image dimensions remain explicit": '"resized": model_image_resized',
-        "passive model uses separate context": "PASSIVE_CONTEXT_TOKENS = 8192",
+        "passive model uses separate context": "PASSIVE_CONTEXT_TOKENS = 16384",
         "Qwen is unloaded after detailed requests": '"keep_alive": -1 if model_role == "passive" else 0',
         "CPU-only parked Qwen preload": "num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS",
         "three model slots permitted": '"OLLAMA_MAX_LOADED_MODELS": "3"',
@@ -205,7 +242,13 @@ def main():
         "expanded control/text budgets are enforced": "len(text_spans) > 800 or len(controls) > 800",
         "tenfold OCR spans": '"text_spans": spans[:800]',
         "tenfold UIA fallback": "raw_controls[:800]",
-        "tenfold fallback access": '"accessibility": {**access, "controls": access.get("controls", [])[:800]}',
+        "tenfold fallback access is compactly duplicated": '"accessibility": {**access, "controls": access_controls[:64], "controls_truncated": len(access_controls) > 64}',
+        "bounded passive OCR hints": 'ocr_hint_limit = 32 if model_role == "passive" else 128',
+        "bounded passive UIA hints": 'accessibility_hint_limit = 48 if model_role == "passive" else 160',
+        "larger passive context window": "PASSIVE_CONTEXT_TOKENS = 16384",
+        "bounded structured report size": "MAX_STRUCTURED_REPORT_CHARS = 1000000",
+        "compact fallback text preview": "enumerate(ocr_spans[:64])",
+        "full OCR retained in fallback": '"text_spans": ocr_spans[:800]',
         "readiness uses Ollama's loaded-model API": "refresh_model_runtime_state()",
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": "timeout=bounded_setup_timeout(600), env=server_env",

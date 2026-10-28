@@ -314,6 +314,8 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('speech_playback: speechPlaybackStatus()'));
   assert.ok(vision.includes("directRequest('/tts'"));
   assert.ok(bridge.includes("tts: ['text', 'play']"));
+  assert.ok(bridge.includes('function ttsOutputFailed(args = {}, output)'));
+  assert.ok(bridge.includes("output.status === 'tts_started'"));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
@@ -345,6 +347,10 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
   assert.ok(python.includes('PASSIVE_MODEL_REPO = "ahmadwaqar/smolvlm2-2.2b-instruct"'));
   assert.ok(python.includes('PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"'));
+  assert.ok(python.includes('PASSIVE_CONTEXT_TOKENS = 16384'));
+  assert.ok(python.includes('MAX_STRUCTURED_REPORT_CHARS = 1000000'));
+  assert.ok(python.includes('ocr_hint_limit = 32 if model_role == "passive" else 128'));
+  assert.ok(python.includes('accessibility_hint_limit = 48 if model_role == "passive" else 160'));
   assert.ok(!python.includes('richardyoung/smolvlm2-2.2b-instruct:Q4_K_M'));
   assert.ok(python.includes('VISION_WORKER_API_VERSION = 4'));
   assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
