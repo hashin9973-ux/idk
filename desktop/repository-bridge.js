@@ -1432,14 +1432,37 @@ function createRepositoryBridge(deps) {
       return { acquired: false, recovered: true, terminal: true };
     }
 
-    if (Number(prior.value.lease_expires_at_ms) > now) return { acquired: false };
+    const leaseActive = Number(prior.value.lease_expires_at_ms) > now;
+    let previousWorkerRestartConfirmed = false;
+    if (leaseActive && prior.value.status === 'processing' &&
+        typeof prior.value.worker_id === 'string' && prior.value.worker_id !== workerId) {
+      // An installer or abrupt app exit can stop the worker before it publishes
+      // a terminal result. The old lease would otherwise leave this request in
+      // pending state for 30 minutes. Only recover early when the shared state
+      // confirms this worker is now the current owner and its heartbeat is not
+      // older than the original claim. Do not replay the request; child processes
+      // may still have side effects in progress.
+      const workerState = await readRemoteFile('bridge/state/windows-app.json').catch(() => null);
+      const stateValue = workerState && isPlainObject(workerState.value) ? workerState.value : null;
+      const stateUpdatedAt = Date.parse(stateValue && stateValue.updated_at || '');
+      const claimStartedAt = Date.parse(prior.value.claimed_at || '');
+      previousWorkerRestartConfirmed = Boolean(
+        stateValue &&
+        stateValue.worker_id === workerId &&
+        Number.isFinite(stateUpdatedAt) &&
+        (!Number.isFinite(claimStartedAt) || stateUpdatedAt >= claimStartedAt)
+      );
+    }
+    if (leaseActive && !previousWorkerRestartConfirmed) return { acquired: false };
     if (prior.value.status === 'processing') {
       const recovery = {
         protocol: RESULT_PROTOCOL,
         request_id: requestId,
         status: 'needs_manual_recovery',
         completed_at: new Date().toISOString(),
-        error: 'A previous worker claim expired. This request was not replayed automatically because the local operation may already have had side effects. Check the workspace before creating a new request ID.'
+        error: previousWorkerRestartConfirmed
+          ? 'The previous worker stopped before publishing a terminal result. The request was not replayed because its local operation may still have side effects. Inspect its status marker and workspace before retrying with a new request ID.'
+          : 'A previous worker claim expired. This request was not replayed automatically because the local operation may already have had side effects. Check the workspace before creating a new request ID.'
       };
       const result = await publishResult(requestId, recovery);
       await writeRemoteJson(claimPath, {
@@ -1447,6 +1470,7 @@ function createRepositoryBridge(deps) {
         request_id: requestId,
         worker_id: workerId,
         status: 'needs_manual_recovery',
+        previous_worker_id: previousWorkerRestartConfirmed ? prior.value.worker_id : undefined,
         completed_at: new Date().toISOString()
       }, prior.sha, false).catch(() => {});
       return { acquired: false, recovered: result.published };
