@@ -56,7 +56,13 @@ const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clon
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
 function normalizeExecutionPath(value) {
-  return String(value || '').replace(/\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
+  const raw = String(value || '').trim().replace(/\\/g, '/');
+  // Absolute paths and parent traversals may alias workspace-relative paths. A
+  // caller lacks the canonical workspace root here, so treat them conservatively
+  // as barriers rather than risk concurrent writes to one physical file.
+  if (!raw || raw.startsWith('/') || /^[a-z]:/i.test(raw) || raw.split('/').includes('..')) return null;
+  const normalized = path.posix.normalize(raw).replace(/^\.\//, '').toLowerCase();
+  return normalized && normalized !== '.' && !normalized.startsWith('../') ? normalized : null;
 }
 
 function getExecutionFootprint(tool, args = {}) {
@@ -78,6 +84,7 @@ function getExecutionFootprint(tool, args = {}) {
   const add = (target, value) => {
     const normalized = normalizeExecutionPath(value);
     if (normalized) target.push(normalized);
+    else barrier = true;
   };
   switch (tool) {
     case 'read_file':
