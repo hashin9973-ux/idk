@@ -465,6 +465,20 @@ function createVisionService(deps) {
         }
       }
       const state = await queryRuntime();
+      if (state.runtime_fresh && state.status === 'incompatible_runtime') {
+        return {
+          ...state,
+          connected: true,
+          opened: false,
+          vision_activated: false,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          next_steps: [
+            'Interrupt the currently running Colab server cell.',
+            'Open the current notebook from main and run its “Start the direct Colab vision server” cell.'
+          ],
+          message: state.message
+        };
+      }
       if (state.runtime_fresh) {
         if (!state.enabled || !state.model_loaded || state.status !== 'ready') {
           const activated = await activate({}, 'connect-existing-' + String(now()));

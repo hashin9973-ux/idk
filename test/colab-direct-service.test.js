@@ -939,6 +939,27 @@ test('old Colab runtimes stay visible but never activate or receive screenshots/
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts').length, 0);
 });
 
+test('reconnecting to a live incompatible Colab runtime reports connection without claiming activation', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  f.setState({
+    protocol: DIRECT_VISION_PROTOCOL, status: 'ready', enabled: true, model_loaded: true,
+    model: 'qwen3-vl:4b-instruct', vision_worker_api_version: undefined, features: undefined,
+    passive_model_loaded: false, tts_ready: false
+  });
+  const first = await f.service.connectColab(ENDPOINT);
+  assert.equal(first.connected, true);
+  assert.equal(first.status, 'incompatible_runtime');
+  assert.equal(first.vision_activated, false);
+  const activationCallsBefore = f.calls.filter(call => call.type === 'direct_http' && call.route === '/activate').length;
+  const retry = await f.service.connectColab();
+  assert.equal(retry.connected, true);
+  assert.equal(retry.status, 'incompatible_runtime');
+  assert.equal(retry.vision_activated, false);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/activate').length, activationCallsBefore,
+    'reconnecting must not activate a runtime that lacks the required API/features');
+});
+
 test('Piper TTS validates voice and speaker, saves WAV locally, and optionally plays it', async t => {
   const played = [];
   const f = fixture({ playAudio: async filePath => { played.push(filePath); } });
