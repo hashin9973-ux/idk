@@ -27,6 +27,7 @@ def validate_context_helpers(code):
         "normalized_accessibility_hints",
         "map_model_boxes_to_original",
         "normalize_model_report",
+        "build_passive_fallback_report",
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
     found = {node.name for node in nodes}
@@ -58,9 +59,10 @@ def validate_context_helpers(code):
     map_boxes = namespace["map_model_boxes_to_original"]
     normalize_report = namespace["normalize_model_report"]
     hints = namespace["normalized_accessibility_hints"]
+    fallback_builder = namespace["build_passive_fallback_report"]
 
     crop_report = {
-        "schema_version": "windows-vision-context/v1",
+        "schema_version": "windows-vision-context/v2",
         "scene": {
             "summary": "A dialog is open in the foreground.",
             "active_application": "Test app",
@@ -73,6 +75,7 @@ def validate_context_helpers(code):
         },
         "regions": [{"id": "r1", "label": "dialog", "purpose": "Primary dialog", "bbox_1000": [0, 0, 1000, 1000]}],
         "text_spans": [],
+        "objects": [{"id": "o1", "label": "dialog icon", "category": "icon", "appearance": "small blue square", "color": "blue", "shape": "square", "region_id": "r1", "bbox_1000": [50, 50, 100, 100], "confidence": "high"}],
         "controls": [{
             "id": "c1", "label": "Save", "role": "button", "region_id": "r1",
             "bbox_1000": [250, 250, 500, 500], "state": "enabled",
@@ -104,9 +107,34 @@ def validate_context_helpers(code):
         raise SystemExit("FAIL: crop coordinates did not map to the original frame or the center was not derived from the box.")
     if target["visual_bbox_px"] != [500, 200, 600, 250]:
         raise SystemExit("FAIL: the original visual estimate was not preserved as separate evidence.")
+    if normalized["objects"][0]["bbox_px"] != [420, 160, 440, 170]:
+        raise SystemExit("FAIL: visual object coordinates were not mapped from the focused crop into the original frame.")
+
+    fallback = fallback_builder(
+        1000, 500,
+        {
+            "available": True, "source": "windows_uia", "reason": None,
+            "active_window": {"title": "Test app", "bbox_px": [0, 0, 1000, 500]},
+            "focused_control": None,
+            "controls": [{"id": "uia-apply", "label": "Apply", "role": "Button",
+                          "enabled": True, "bbox_px": [800, 400, 900, 450]}],
+            "cursor": {"x_px": 500, "y_px": 250}
+        },
+        {"available": True, "method": "tesseract", "reason": None,
+         "text_spans": [{"text": "Install", "bbox_px": [10, 10, 60, 30]}]},
+        "RuntimeError: model does not support multimodal requests"
+    )
+    if not fallback["perception"]["degraded"] or fallback["perception"]["mode"] != "ocr_accessibility_fallback":
+        raise SystemExit("FAIL: passive fallback did not explicitly mark degraded OCR/UIA mode.")
+    if fallback["controls"][0]["bbox_px"] != [800, 400, 900, 450] or fallback["controls"][0]["center_px"] != [850.0, 425.0]:
+        raise SystemExit("FAIL: degraded fallback did not preserve system-grounded control coordinates.")
+    if fallback["text_spans"][0]["text"] != "Install":
+        raise SystemExit("FAIL: degraded fallback did not preserve OCR text evidence.")
     print("PASS: crop-relative coordinates map to the original screenshot frame")
     print("PASS: matching Windows UI Automation bounds become explicitly accessibility-grounded")
     print("PASS: coordinate centers are computed locally from the validated bounding rectangles")
+    print("PASS: object boxes map from focused crops into the original desktop coordinate frame")
+    print("PASS: passive model failures retain explicit, degraded OCR/UI Automation evidence")
 
 
 def main():
@@ -123,7 +151,13 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
-        "versioned vision worker API": "VISION_WORKER_API_VERSION = 2",
+        "versioned vision worker API": "VISION_WORKER_API_VERSION = 3",
+        "actual Ollama vision capabilities are inspected": "def ollama_model_capabilities(model_name):",
+        "stale vision model metadata is refreshed": "def refresh_and_verify_vision_capability(",
+        "real multimodal errors trigger a repair attempt": "def refresh_passive_model_after_multimodal_error():",
+        "passive observation preserves OCR/UIA evidence on failure": "def build_passive_fallback_report(",
+        "expanded visual object output is normalized": '"objects": normalized_objects',
+        "object boxes are transformed from focused crops": 'for key in ("regions", "text_spans", "controls", "objects")',
         "TTS capability advertised by health": '"tts-piper-libritts-high"',
         "Piper LibriTTS high voice": 'PIPER_VOICE_NAME = "en_US-libritts-high"',
         "fixed speaker ID zero": "PIPER_SPEAKER_ID = 0",
@@ -153,7 +187,7 @@ def main():
         "model-role routing": 'model_name = PASSIVE_MODEL if model_role == "passive" else OLLAMA_MODEL',
         "thinking disabled for concise vision output": '"think": False',
         "structured JSON output": '"format": "json"',
-        "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"',
+        "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v2"',
         "truncation is rejected explicitly": "malformed or truncated JSON; the report was rejected.",
         "normalized coordinate conversion": "def normalize_model_box(",
         "derived centers instead of model centers": 'item["center_px"] = [round((pixel_box[0] + pixel_box[2]) / 2, 2)',
@@ -162,6 +196,8 @@ def main():
         "Windows UI Automation grounding": "windows_ui_automation_hints",
         "generation length exhaustion is a failure": "Vision output hit its generation limit.",
         "model download is checked": "if not ollama_model_is_downloaded(model_name):",
+        "passive readiness requires actual vision capability": 'if "vision" not in capabilities:',
+        "expanded control/text budgets are enforced": "len(text_spans) > 48 or len(controls) > 32",
         "readiness uses Ollama's loaded-model API": "refresh_model_runtime_state()",
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": "timeout=bounded_setup_timeout(600), env=server_env",
