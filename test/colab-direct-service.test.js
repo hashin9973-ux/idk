@@ -534,7 +534,7 @@ test('the clipboard watcher reports an actionable timeout and stops watching', a
   assert.equal(status.endpoint_watch_active, false);
   assert.equal(status.endpoint_test_in_progress, false);
   assert.match(status.message, /Timed out waiting for the notebook to hand off its public HTTPS endpoint/);
-  assert.match(status.message, /Rerun the cell/i);
+  assert.match(status.message, /Check that Windows Repository Bridge is installed/i);
 });
 
 test('connection fails safely when the server-to-server acknowledgement is unsuccessful', async t => {
