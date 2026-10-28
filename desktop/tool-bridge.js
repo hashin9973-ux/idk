@@ -56,7 +56,7 @@ const GITHUB_GIT_TOOLS = new Set(['git_fetch', 'git_pull', 'git_push', 'git_clon
 const BLOCKED_TOOLS_FOR_MAILBOX = new Set(['github_status', 'github_api']);
 
 function normalizeExecutionPath(value) {
-  return String(value || '').replace(/\\\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
+  return String(value || '').replace(/\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
 }
 
 function getExecutionFootprint(tool, args = {}) {
@@ -94,7 +94,7 @@ function getExecutionFootprint(tool, args = {}) {
       add(writes, 'AGENTS.md'); break;
     case 'apply_patch': {
       const paths = typeof args.patch === 'string'
-        ? [...args.patch.matchAll(/^\\*\\*\\* (?:Add File|Update File|Delete File):\\s*(.+)$/gm)].map(match => match[1].trim())
+        ? [...args.patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File):\s*(.+)$/gm)].map(match => match[1].trim())
         : [];
       for (const item of paths) add(writes, item);
       if (!writes.length) barrier = true;
