@@ -477,7 +477,7 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.ok(python.includes('windows-repository-bridge://connect-colab?endpoint='));
   assert.ok(python.includes('sendToWindowsBridge(false)'));
   assert.match(python, /document\.createElement\("textarea"\)/);
-  assert.match(python, /Clipboard copy was blocked\. The endpoint is selected/);
+  assert.match(python, /Clipboard access was blocked\. The endpoint is selected/);
   assert.match(python, /Paste URL in Windows Repository Bridge/);
   assert.match(main, /'app:vision-manual-panel'/);
   assert.ok(main.includes('setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)'));
