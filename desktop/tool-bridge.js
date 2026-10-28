@@ -38,6 +38,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   git_clone: ['repository', 'path', 'branch', 'timeoutMs'],
   upload_workspace_file: ['path', 'artifactName'],
   computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'frame_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode'],
+  tts: ['text', 'play'],
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
@@ -90,6 +91,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   computer: 'Native local computer tool for the real Windows workspace. This fast interaction mode is an optional path: when the user requests rapid interaction, inspect the latest live state as needed and use one computer(action=sequence, mode=fast, steps=[...]) call for ordered local input without intermediate narration. The fast mode skips automatic post-action Colab inference unless observe=true, avoiding an extra model/tunnel round trip; request a fresh observation when verification or the next action depends on screen changes. This is an optional tool-loop optimization, not a switch that disables ChatGPT internal reasoning. Observe and detailed screenshots use the primary display at full physical pixel dimensions; JPEG compression lowers quality rather than spatially downscaling. The screenshot report includes active app/window, screen regions, readable text, control relationships, OCR and Windows UI Automation bounds when exposed, plus uncertainty. For closer inspection, pass region=[left,top,right,bottom] in the latest screenshot pixel frame; returned boxes are mapped back to the original full-frame coordinates. When using passive Observe coordinates, pass the matching frame_id with the input action; changed or stale frame IDs are rejected. Accessibility-grounded bounds are preferred to visual estimates. All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab. Ordered local mouse/keyboard inputs, up to 50 steps, can be submitted in one sequence; sequence batches up to 50 inputs. start_control enables a control session; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
+  tts: 'Synthesize speech with Piper en_US-libritts-high using speaker ID 0. By default, play the WAV locally on Windows; set play=false to save without playback. The actual audio bytes stay local and are not published to GitHub.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
   batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
 });
@@ -99,7 +101,7 @@ const REQUIRED_ARGUMENTS = Object.freeze({
   delete_path: ['path'], git_create_branch: ['name'], git_switch_branch: ['name'],
   git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
   upload_workspace_file: ['path'], batch: ['steps'],
-  computer: ['action']
+  computer: ['action'], tts: ['text']
 });
 const BASE_FIELD_SCHEMAS = Object.freeze({
   path: { type: 'string', description: 'Path relative to the selected workspace or an absolute Windows path inside it. Paths outside the selected workspace and symlink escapes are rejected.' },
@@ -134,6 +136,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   key: { type: 'string', description: 'A key name such as W, ENTER, ESC, CTRL, SPACE, LEFT, or F1.', maxLength: 20 },
   keys: { type: 'array', description: 'Keys for a hotkey combination.', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 20 } },
   text: { type: 'string', description: 'Text to type via Unicode input (up to 2,000 characters).', maxLength: 2000 },
+  play: { type: 'boolean', description: 'For TTS, play the synthesized WAV locally after generation. Set false to save it without playback; defaults to true.', default: true },
   observe: { type: 'boolean', description: 'For sequence, capture/analyze a fresh screenshot after actions. In normal mode, defaults to true. In mode=fast, skips automatic follow-up vision unless explicitly true.' },
   region: { type: 'array', description: 'Optional focused observation crop [left, top, right, bottom] in pixels relative to the exact screenshot frame. Use only with screenshot or a sequence follow-up observation. The returned context coordinates remain mapped to the original full screenshot.', minItems: 4, maxItems: 4, items: { type: 'integer', minimum: 0, maximum: 20000 } },
   frameWidth: { type: 'integer', description: 'Optional coordinate frame width.', minimum: 1, maximum: 20000 },
@@ -163,6 +166,10 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   steps: { type: 'array', description: 'Ordered local tool calls (up to 100). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 100 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
+  tts: {
+    text: { type: 'string', description: 'Speech text for Piper en_US-libritts-high, speaker ID 0. Maximum 2,000 characters.', minLength: 1, maxLength: 2000 },
+    play: { type: 'boolean', description: 'Play the synthesized WAV locally on Windows. Defaults to true; false saves it without playback.', default: true }
+  },
   computer: {
     action: { enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up', 'sequence'] },
     source: { enum: ['desktop', 'workspace_file'], default: 'desktop' },
@@ -449,6 +456,7 @@ function createToolBridge(deps) {
         reads.push('*');
         break;
       case 'computer':
+      case 'tts':
       case 'shell':
       case 'run_tests':
       case 'git_fetch':
@@ -527,6 +535,11 @@ function createToolBridge(deps) {
   function approvalDetail(tool, args, root) {
     const header = 'Workspace: ' + displayApprovalValue(root, 1500) + '\nTool: ' + tool + '\n\n';
     const resultWarning = 'The result will be committed to the configured shared GitHub mailbox branch. Anyone with repository read access may see it; for a public repository, it is publicly readable.\n\n';
+    if (tool === 'tts') {
+      return header + resultWarning + 'Synthesize speech using en_US-libritts-high, speaker ID 0. ' +
+        (args.play === false ? 'Save the resulting WAV to a local temporary file without playback.' : 'Play the resulting WAV locally through Windows audio. Audio bytes are not committed to GitHub.') +
+        '\nText: ' + displayApprovalValue(args.text, 1800);
+    }
     if (tool === 'upload_workspace_file') {
       const rawTarget = String(args.path || '(missing path)');
       const target = displayApprovalValue(rawTarget, 1200);
@@ -929,7 +942,11 @@ function createToolBridge(deps) {
         result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
         const isComputerTool = COMPUTER_TOOLS.has(tool);
+        const isTtsTool = tool === 'tts';
         if (isComputerTool && !visionService) throw new Error('The computer screenshot service is unavailable in this app build.');
+        if (isTtsTool && (!visionService || typeof visionService.synthesizeSpeech !== 'function')) {
+          throw new Error('The Colab Piper TTS service is unavailable in this app build.');
+        }
         if (isComputerTool && !['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'sequence', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'].includes(args.action)) {
           throw new Error('Unsupported computer action.');
         }
@@ -950,7 +967,9 @@ function createToolBridge(deps) {
                   (['screenshot', ...inputActions].includes(args.action) && !controlActive),
                 automatic: false
               }
-            : localTools.getToolPolicy(tool, args);
+            : isTtsTool
+              ? { tool, requiresApproval: args.play !== false, automatic: false }
+              : localTools.getToolPolicy(tool, args);
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
             ? true
@@ -961,8 +980,12 @@ function createToolBridge(deps) {
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
             const output = isComputerTool
               ? await computerServiceCall(visionService, args, id)
-              : await executeLocalTool(root, tool, args, id);
-            if ((isComputerTool && computerOutputFailed(args.action, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+              : isTtsTool
+                ? await visionService.synthesizeSpeech(args, id)
+                : await executeLocalTool(root, tool, args, id);
+            if ((isComputerTool && computerOutputFailed(args.action, output)) ||
+                (isTtsTool && (!output || output.status !== 'tts_completed')) ||
+                (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
               result = {
                 ok: false,
                 error: isComputerTool
@@ -977,8 +1000,12 @@ function createToolBridge(deps) {
         } else {
           const output = isComputerTool
             ? await computerServiceCall(visionService, args, id)
-            : await executeLocalTool(root, tool, args, id);
-          if ((isComputerTool && computerOutputFailed(args.action, output)) || (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
+            : isTtsTool
+              ? await visionService.synthesizeSpeech(args, id)
+              : await executeLocalTool(root, tool, args, id);
+          if ((isComputerTool && computerOutputFailed(args.action, output)) ||
+              (isTtsTool && (!output || output.status !== 'tts_completed')) ||
+              (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
             result = {
               ok: false,
               error: isComputerTool
