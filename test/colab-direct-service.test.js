@@ -1112,8 +1112,8 @@ test('remaining TTS chunks stream into the playback queue before the first chunk
 
 test('gapless WASAPI script invokes the C# type it declares', () => {
   const script = buildGaplessPlaybackScript();
-  const declaration = script.match(/public static class\\s+([A-Za-z_]\\w*)/);
-  const invocation = script.match(/\\[([A-Za-z_]\\w*)\\]::Run\\(\\)/);
+  const declaration = script.match(/public static class\s+([A-Za-z_]\w*)/);
+  const invocation = script.match(/\[([A-Za-z_]\w*)\]::Run\(\)/);
   assert.ok(declaration, 'the audio player C# type should be declared');
   assert.ok(invocation, 'the PowerShell script should invoke the audio player type');
   assert.equal(invocation[1], declaration[1],
