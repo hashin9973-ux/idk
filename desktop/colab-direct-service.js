@@ -10,7 +10,7 @@ function buildGaplessPlaybackScript() {
   return "$ErrorActionPreference = 'Stop'\r\n$source = @'\r\n" + source + "\r\n'@\r\n" +
     "Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop\r\n" +
     "if ($env:BRIDGE_GAPLESS_COMPILE_ONLY -eq '1') { Write-Output 'GAPLESS_WASAPI_COMPILED'; exit 0 }\r\n" +
-    "[BridgeGaplessWaveOut]::Run()\r\n";
+    "[BridgeGaplessWasapi]::Run()\r\n";
 }
 
 const { normalizeSpeechText, splitSpeechIntoChunks } = require('./speech-text');
