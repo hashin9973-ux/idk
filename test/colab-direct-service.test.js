@@ -86,6 +86,7 @@ function fixture(options = {}) {
   let latestPassiveFrame = options.latestFrame || null;
   const calls = [];
   const inputCalls = [];
+  let ttsRequestCount = 0;
   const asyncResults = new Map();
   const inputControl = {
     run: async (steps, frame) => { inputCalls.push({ steps, frame }); return { status: 'input_completed', actions_executed: steps.length, coordinate_frame: frame }; },
@@ -166,6 +167,15 @@ function fixture(options = {}) {
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: false, runtime_kept_alive: true });
       }
       if (route === '/tts') {
+        ttsRequestCount += 1;
+        // Test-only failure injection: let the first chunk start, then fail a background chunk request.
+        if (options.failTtsRequestAt === ttsRequestCount) {
+          return response(options.failTtsStatus || 503, {
+            protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+            request_id: body.request_id, status: 'error',
+            error: 'Injected test-only failure for background Piper chunk.'
+          });
+        }
         const audio = Buffer.alloc(48);
         audio.write('RIFF', 0, 'ascii'); audio.writeUInt32LE(40, 4); audio.write('WAVE', 8, 'ascii');
         audio.write('fmt ', 12, 'ascii'); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20);
@@ -929,6 +939,34 @@ test('concurrent TTS playback is reserved before runtime health and synthesis I/
     1,
     'the admitted TTS job must finish; observed playback state: ' + JSON.stringify(speechStatus)
   );
+});
+
+test('background TTS chunk failure remains failed after asynchronous playback start', async t => {
+  const f = fixture({ playAudio: async () => {}, failTtsRequestAt: 2 });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts-background-failure');
+  const spokenText = Array.from(
+    { length: 5 },
+    () => 'First phrase ends here. Another sentence follows for background chunk checks.'
+  ).join(' ');
+  const started = await f.service.synthesizeSpeech({ text: spokenText, play: true }, 'tts-background-failure');
+  assert.equal(started.status, 'tts_started');
+  assert.ok(started.chunks_total > 1, 'test must start a multi-chunk background speech job');
+
+  const deadline = Date.now() + 5000;
+  let playback = f.service.speechPlaybackStatus();
+  let job = playback.jobs.find(item => item.job_id === started.speech_job_id);
+  while (Date.now() < deadline && job && job.status !== 'failed' && job.status !== 'completed') {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    playback = f.service.speechPlaybackStatus();
+    job = playback.jobs.find(item => item.job_id === started.speech_job_id);
+  }
+  assert.ok(job, 'the started speech job must remain queryable in computer(action=status)');
+  assert.equal(job.status, 'failed', 'a failed background chunk must never be reported as completed');
+  assert.match(String(job.error || ''), /(503|background Piper chunk|TTS)/i);
+  assert.equal(playback.active_job_id, null, 'failed background playback must release the single-job slot');
+  assert.ok(job.chunks_completed < job.chunks_total, 'a failed job must not claim that every chunk completed');
 });
 
 test('vision protocol requirements include v4 multimodal capability validation and the fixed Piper voice', () => {
