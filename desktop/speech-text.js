@@ -76,6 +76,7 @@ function splitSpeechIntoChunks(value, maxChars = 120) {
     for (let i = 0; i < scanLimit; i += 1) {
       if (SPEECH_PUNCTUATION.test(remaining[i])) {
         cut = i + 1;
+        while (cut < remaining.length && SPEECH_PUNCTUATION.test(remaining[cut])) cut += 1;
         break;
       }
     }

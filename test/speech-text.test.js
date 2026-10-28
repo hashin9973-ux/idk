@@ -42,6 +42,13 @@ test('short text is split at every punctuation mark instead of waiting for the f
   );
 });
 
+test('adjacent punctuation stays in a single speech chunk', () => {
+  assert.deepEqual(
+    splitSpeechIntoChunks('Alert?! Next... Done.', 120),
+    ['Alert?!', 'Next...', 'Done.']
+  );
+});
+
 test('long unpunctuated text gets a safe pause boundary without cutting words', () => {
   const source = 'visibleword '.repeat(40).trim();
   const chunks = splitSpeechIntoChunks(source, 100);

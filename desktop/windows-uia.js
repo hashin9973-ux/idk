@@ -144,7 +144,7 @@ async function captureWindowsUiAutomationSnapshot(options = {}) {
     const encoded = Buffer.from(POWERSHELL_SNAPSHOT, 'utf16le').toString('base64');
     const { stdout } = await execFileAsync('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded
-    ], { windowsHide: true, timeout: UIA_TIMEOUT_MS, maxBuffer: 512 * 1024 });
+    ], { windowsHide: true, timeout: UIA_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 });
     const raw = JSON.parse(String(stdout || '').trim());
     return normalizeSnapshotForFrame(raw, screen, frame);
   } catch (error) {
