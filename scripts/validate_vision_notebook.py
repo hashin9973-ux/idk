@@ -29,6 +29,8 @@ def validate_context_helpers(code):
         "normalize_model_report",
         "build_passive_fallback_report",
         "is_swapfile_layout_error",
+        "is_client_disconnect_error",
+        "read_exact_request_body",
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
     found = {node.name for node in nodes}
@@ -37,6 +39,38 @@ def validate_context_helpers(code):
         raise SystemExit("FAIL: isolated context helpers missing: " + ", ".join(sorted(missing)))
     namespace = {"math": math, "json": json}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "<vision-context-helpers>", "exec"), namespace)
+
+    is_disconnect = namespace["is_client_disconnect_error"]
+    read_exact_body = namespace["read_exact_request_body"]
+
+    class ShortBodyReader:
+        def __init__(self, payload, piece_size):
+            self.payload = payload
+            self.piece_size = piece_size
+            self.offset = 0
+
+        def read(self, requested):
+            size = min(requested, self.piece_size)
+            result = self.payload[self.offset:self.offset + size]
+            self.offset += len(result)
+            return result
+
+    payload = b'{"protocol":"test","text":"complete"}'
+    if read_exact_body(ShortBodyReader(payload, 3), len(payload)) != payload:
+        raise SystemExit("FAIL: exact HTTP body reader did not tolerate short socket reads")
+    try:
+        read_exact_body(ShortBodyReader(payload[:-4], 5), len(payload))
+    except EOFError as exc:
+        if "expected" not in str(exc) or "received" not in str(exc):
+            raise SystemExit("FAIL: incomplete-body error omitted expected/received byte counts")
+    else:
+        raise SystemExit("FAIL: incomplete HTTP body was accepted")
+    if not is_disconnect(BrokenPipeError("peer closed")) or not is_disconnect(ConnectionResetError("peer reset")):
+        raise SystemExit("FAIL: disconnected-client socket errors were not classified")
+    if is_disconnect(ValueError("invalid input")):
+        raise SystemExit("FAIL: non-socket errors must not be swallowed as disconnects")
+    print("PASS: exact HTTP body reading handles short reads and rejects incomplete uploads")
+    print("PASS: peer disconnect writes are handled without a secondary traceback")
 
     swap_layout_error = namespace["is_swapfile_layout_error"]
     if not swap_layout_error(1, "swapon: swapfile: swapon failed: Invalid argument"):
@@ -198,7 +232,7 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
-        "versioned vision worker API": "VISION_WORKER_API_VERSION = 4",
+        "versioned vision worker API": "VISION_WORKER_API_VERSION = 5",
         "actual Ollama vision capabilities are inspected": "def ollama_model_capabilities(model_name):",
         "stale vision model metadata is refreshed": "def refresh_and_verify_vision_capability(",
         "real multimodal errors trigger a repair attempt": "def refresh_passive_model_after_multimodal_error():",
@@ -231,6 +265,16 @@ def main():
         "Qwen is unloaded after detailed requests": '"keep_alive": -1 if model_role == "passive" else 0',
         "CPU-only parked Qwen preload": "num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS",
         "three model slots permitted": '"OLLAMA_MAX_LOADED_MODELS": "3"',
+        "safe HTTP body parsing advertised": '"safe-http-request-bodies"',
+        "body read checks declared length": "read_exact_request_body(self.rfile, length)",
+        "streamed TTS prefetch is advertised": '"tts-streamed-prefetch"',
+        "streamed TTS uses chunked HTTP response": 'self.send_header("Transfer-Encoding", "chunked")',
+        "streamed TTS caps the aggregate audio body": "MAX_TTS_BATCH_AUDIO_BYTES = 25 * 1024 * 1024",
+        "streamed TTS caps combined batch text": "MAX_TTS_BATCH_TEXT_CHARS = 8000",
+        "streamed TTS has a bounded chunk count": "MAX_TTS_BATCH_CHUNKS = 31",
+        "streamed TTS flushes each audio chunk": "self.wfile.flush()",
+        "disconnected response writes are handled": "if is_client_disconnect_error(exc):",
+        "incomplete HTTP bodies get an explicit response": '{"error": "Incomplete request body"}',
         "swap-file path is visible": 'OLLAMA_SWAP_FILE = Path("/content/bridge-qwen-pagefile.swap")',
         "invalid preallocated swap files get one dense allocation retry": "is_swapfile_layout_error(activated.returncode, activated.stderr, activated.stdout) and not dense_dd_used",
         "swap fallback is observable": "retrying with dense dd allocation.",

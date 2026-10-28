@@ -1,12 +1,14 @@
 'use strict';
 
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const {
   createVisionService,
+  buildGaplessPlaybackScript,
   DIRECT_VISION_PROTOCOL,
   VISION_WORKER_API_VERSION,
   REQUIRED_VISION_FEATURES,
@@ -64,8 +66,8 @@ function createVisionReport(width, height) {
 function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
-    vision_worker_api_version: 4,
-    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling'],
+    vision_worker_api_version: 5,
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch'],
     tts_ready: true,
     tts_model_loaded: true,
     tts_error: null,
@@ -87,6 +89,8 @@ function fixture(options = {}) {
   const calls = [];
   const inputCalls = [];
   let ttsRequestCount = 0;
+  let activeTtsRequests = 0;
+  let maxActiveTtsRequests = 0;
   const asyncResults = new Map();
   const inputControl = {
     run: async (steps, frame) => { inputCalls.push({ steps, frame }); return { status: 'input_completed', actions_executed: steps.length, coordinate_frame: frame }; },
@@ -166,30 +170,94 @@ function fixture(options = {}) {
         state = { ...state, status: 'inactive', enabled: false };
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: false, runtime_kept_alive: true });
       }
+      if (route === '/tts/stream') {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream({
+          async start(controller) {
+            const emit = record => controller.enqueue(encoder.encode(JSON.stringify(record) + '\n'));
+            emit({
+              protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+              request_id: body.request_id, status: 'stream_started',
+              chunks_total: body.chunks.length, voice: 'en_US-libritts-high', speaker_id: 0
+            });
+            for (const chunk of body.chunks) {
+              ttsRequestCount += 1;
+              activeTtsRequests += 1;
+              maxActiveTtsRequests = Math.max(maxActiveTtsRequests, activeTtsRequests);
+              try {
+                if (options.ttsDelayMs) await new Promise(resolve => setTimeout(resolve, options.ttsDelayMs));
+                if (options.failTtsRequestAt === ttsRequestCount) {
+                  emit({
+                    protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+                    request_id: body.request_id, status: 'failed',
+                    failed_chunk_request_id: chunk.request_id, chunks_total: body.chunks.length,
+                    error: 'Injected test-only failure for background Piper chunk.'
+                  });
+                  controller.close();
+                  return;
+                }
+                const audio = Buffer.alloc(48);
+                audio.write('RIFF', 0, 'ascii'); audio.writeUInt32LE(40, 4); audio.write('WAVE', 8, 'ascii');
+                audio.write('fmt ', 12, 'ascii'); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20);
+                audio.writeUInt16LE(1, 22); audio.writeUInt32LE(22050, 24); audio.writeUInt32LE(44100, 28);
+                audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36, 'ascii');
+                audio.writeUInt32LE(4, 40);
+                const audioHash = require('node:crypto').createHash('sha256').update(audio).digest('hex');
+                emit({
+                  protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+                  batch_request_id: body.request_id, request_id: chunk.request_id,
+                  status: 'completed', voice: 'en_US-libritts-high', speaker_id: 0,
+                  sample_rate: 22050, channels: 1, duration_seconds: 0.001,
+                  content_type: 'audio/wav', audio_bytes: audio.length,
+                  audio_sha256: audioHash, audio_base64: audio.toString('base64')
+                });
+              } finally {
+                activeTtsRequests -= 1;
+              }
+            }
+            emit({
+              protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+              request_id: body.request_id, status: 'completed', chunks_total: body.chunks.length
+            });
+            controller.close();
+          }
+        });
+        return new Response(stream, { status: 200, headers: { 'content-type': 'application/x-ndjson; charset=utf-8' } });
+      }
       if (route === '/tts') {
         ttsRequestCount += 1;
-        // Test-only failure injection: let the first chunk start, then fail a background chunk request.
-        if (options.failTtsRequestAt === ttsRequestCount) {
-          return response(options.failTtsStatus || 503, {
+        activeTtsRequests += 1;
+        maxActiveTtsRequests = Math.max(maxActiveTtsRequests, activeTtsRequests);
+        try {
+          if (options.ttsDelayMs) await new Promise(resolve => setTimeout(resolve, options.ttsDelayMs));
+          // These are test-only HTTP failures; real production code never uses this injection.
+          if (options.malformedTtsRequestAt === ttsRequestCount) {
+            return response(400, { error: 'Malformed JSON' });
+          }
+          if (options.failTtsRequestAt === ttsRequestCount) {
+            return response(options.failTtsStatus || 503, {
+              protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+              request_id: body.request_id, status: 'error',
+              error: 'Injected test-only failure for background Piper chunk.'
+            });
+          }
+          const audio = Buffer.alloc(48);
+          audio.write('RIFF', 0, 'ascii'); audio.writeUInt32LE(40, 4); audio.write('WAVE', 8, 'ascii');
+          audio.write('fmt ', 12, 'ascii'); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20);
+          audio.writeUInt16LE(1, 22); audio.writeUInt32LE(22050, 24); audio.writeUInt32LE(44100, 28);
+          audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36, 'ascii');
+          audio.writeUInt32LE(4, 40);
+          const audioHash = require('node:crypto').createHash('sha256').update(audio).digest('hex');
+          return response(200, {
             protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
-            request_id: body.request_id, status: 'error',
-            error: 'Injected test-only failure for background Piper chunk.'
+            request_id: body.request_id, status: 'completed', voice: 'en_US-libritts-high',
+            speaker_id: 0, sample_rate: 22050, channels: 1, duration_seconds: 0.001,
+            content_type: 'audio/wav', audio_bytes: audio.length, audio_sha256: audioHash,
+            audio_base64: audio.toString('base64')
           });
+        } finally {
+          activeTtsRequests -= 1;
         }
-        const audio = Buffer.alloc(48);
-        audio.write('RIFF', 0, 'ascii'); audio.writeUInt32LE(40, 4); audio.write('WAVE', 8, 'ascii');
-        audio.write('fmt ', 12, 'ascii'); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20);
-        audio.writeUInt16LE(1, 22); audio.writeUInt32LE(22050, 24); audio.writeUInt32LE(44100, 28);
-        audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36, 'ascii');
-        audio.writeUInt32LE(4, 40);
-        const audioHash = require('node:crypto').createHash('sha256').update(audio).digest('hex');
-        return response(200, {
-          protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
-          request_id: body.request_id, status: 'completed', voice: 'en_US-libritts-high',
-          speaker_id: 0, sample_rate: 22050, channels: 1, duration_seconds: 0.001,
-          content_type: 'audio/wav', audio_bytes: audio.length, audio_sha256: audioHash,
-          audio_base64: audio.toString('base64')
-        });
       }
       if (route.startsWith('/result/')) {
         const requestId = route.slice('/result/'.length);
@@ -240,6 +308,7 @@ function fixture(options = {}) {
   serviceTestCalls.set(service, calls);
   return {
     service, calls, inputCalls,
+    getMaxActiveTtsRequests: () => maxActiveTtsRequests,
     getState: () => state,
     setState: patch => { state = { ...state, ...patch }; },
     setClipboard: value => { clipboardText = value; },
@@ -941,8 +1010,91 @@ test('concurrent TTS playback is reserved before runtime health and synthesis I/
   );
 });
 
+test('TTS retries one malformed/truncated request body with the same request ID', async t => {
+  const f = fixture({ playAudio: async () => {}, malformedTtsRequestAt: 1 });
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts-malformed-body-retry');
+  const result = await f.service.synthesizeSpeech({ text: 'One sentence for a bounded HTTP retry.' }, 'tts-malformed-body-retry');
+  assert.equal(result.status, 'tts_started');
+  const ttsCalls = f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts');
+  assert.equal(ttsCalls.length, 2, 'the truncated request is retried once, not indefinitely');
+  assert.equal(ttsCalls[0].body.request_id, ttsCalls[1].body.request_id, 'retry must preserve the immutable chunk request ID');
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline && f.service.speechPlaybackStatus().active_job_id) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(f.service.speechPlaybackStatus().jobs.at(-1).status, 'completed');
+});
+
+test('remaining TTS chunks stream into the playback queue before the first chunk finishes', async t => {
+  let finishFirstChunk;
+  const firstChunkPlaying = new Promise(resolve => { finishFirstChunk = resolve; });
+  const played = [];
+  const f = fixture({
+    ttsDelayMs: 80,
+    playAudio: async filePath => {
+      played.push(filePath);
+      if (played.length === 1) await firstChunkPlaying;
+    }
+  });
+  t.after(async () => {
+    finishFirstChunk();
+    await f.service.dispose();
+  });
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts-gapless-prefetch');
+  const longText = Array.from({ length: 8 }, (_, i) => 'Sentence ' + (i + 1) + ' explains the next visible thing.').join(' ');
+  const started = await f.service.synthesizeSpeech({ text: longText, play: true }, 'tts-gapless-prefetch');
+  assert.equal(started.status, 'tts_started');
+  assert.ok(started.chunks_total >= 6, 'test text should create multiple queued chunks');
+
+  const deadline = Date.now() + 3000;
+  let status = f.service.speechPlaybackStatus();
+  let job = status.jobs.find(item => item.job_id === started.speech_job_id);
+  while (Date.now() < deadline && job && job.chunks_queued < job.chunks_total) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    status = f.service.speechPlaybackStatus();
+    job = status.jobs.find(item => item.job_id === started.speech_job_id);
+  }
+  assert.ok(job, 'the speech job must remain visible while the first chunk plays');
+  assert.equal(job.chunks_queued, job.chunks_total, 'the remaining audio should be synthesized and queued ahead of playback');
+  assert.equal(job.chunks_completed, 0, 'later chunks must queue without waiting for the first chunk to finish');
+  assert.equal(f.getMaxActiveTtsRequests(), 1, 'one streamed response should serialize safe Piper access without per-chunk HTTP round trips');
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts/stream').length, 1);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts').length, 1, 'only the initial audible chunk should use the single-chunk endpoint');
+  assert.equal(played.length, 1, 'the test player must still be inside the first audio chunk');
+  finishFirstChunk();
+
+  const completionDeadline = Date.now() + 3000;
+  while (Date.now() < completionDeadline && f.service.speechPlaybackStatus().active_job_id) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(f.service.speechPlaybackStatus().jobs.find(item => item.job_id === started.speech_job_id).status, 'completed');
+});
+
+test('gapless Windows WASAPI helper compiles without opening an audio device', {
+  skip: process.platform !== 'win32'
+}, () => {
+  const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'bridge-waveout-test-'));
+  const scriptPath = path.join(directory, 'compile-gapless.ps1');
+  try {
+    fs.writeFileSync(scriptPath, buildGaplessPlaybackScript(), 'utf8');
+    const result = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptPath], {
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, BRIDGE_GAPLESS_COMPILE_ONLY: '1' }
+    });
+    assert.equal(result.error, undefined, result.error && result.error.message);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /GAPLESS_WASAPI_COMPILED/);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('background TTS chunk failure remains failed after asynchronous playback start', async t => {
-  const f = fixture({ playAudio: async () => {}, failTtsRequestAt: 2 });
+  const f = fixture({ playAudio: async () => {}, failTtsRequestAt: 2, failTtsStatus: 422 });
   t.after(() => f.service.dispose());
   await openAndPublishEndpoint(f);
   await f.service.activate({}, 'activate-for-tts-background-failure');
@@ -976,7 +1128,7 @@ test('background TTS chunk failure remains failed after asynchronous playback st
 });
 
 test('vision protocol requirements include v4 multimodal capability validation and the fixed Piper voice', () => {
-  assert.equal(VISION_WORKER_API_VERSION, 4);
+  assert.equal(VISION_WORKER_API_VERSION, 5);
   assert.ok(REQUIRED_VISION_FEATURES.includes('frame-id-validation'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('tts-piper-libritts-high'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('passive-vision-capability-validation'));
@@ -986,6 +1138,8 @@ test('vision protocol requirements include v4 multimodal capability validation a
   assert.ok(REQUIRED_VISION_FEATURES.includes('unicode-speech-normalization'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('expanded-observe-context-v3'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('passive-latest-frame-scheduling'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('safe-http-request-bodies'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('tts-streamed-prefetch'));
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);

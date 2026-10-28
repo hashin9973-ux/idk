@@ -5,17 +5,29 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+function buildGaplessPlaybackScript() {
+  const source = "using System;\nusing System.Collections.Generic;\nusing System.IO;\nusing System.Runtime.InteropServices;\nusing System.Text;\nusing System.Threading;\n\npublic static class BridgeGaplessWasapi\n{\n    private const int ERender = 0;\n    private const int EConsole = 0;\n    private const int ClsctxAll = 23;\n    private const int ShareModeShared = 0;\n    private const uint StreamAutoConvertPcm = 0x80000000;\n    private const uint StreamSrcDefaultQuality = 0x08000000;\n    private const uint BufferSilent = 0x00000002;\n    private const int RpcEChangedMode = unchecked((int)0x80010106);\n    private static readonly object QueueLock = new object();\n    private static readonly Queue<string> Commands = new Queue<string>();\n    private static volatile bool EndRequested;\n    private static volatile bool InputClosed;\n    private static string InputError;\n\n    [StructLayout(LayoutKind.Sequential, Pack = 2)]\n    private struct WaveFormatEx\n    {\n        public ushort formatTag;\n        public ushort channels;\n        public uint samplesPerSecond;\n        public uint averageBytesPerSecond;\n        public ushort blockAlign;\n        public ushort bitsPerSample;\n        public ushort extraSize;\n    }\n\n    [ComImport, Guid(\"A95664D2-9614-4F35-A746-DE8DB63617E6\"),\n     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n    private interface IMMDeviceEnumerator\n    {\n        [PreserveSig] int EnumAudioEndpoints(int dataFlow, uint stateMask, out IntPtr devices);\n        [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);\n        [PreserveSig] int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);\n        [PreserveSig] int RegisterEndpointNotificationCallback(IntPtr client);\n        [PreserveSig] int UnregisterEndpointNotificationCallback(IntPtr client);\n    }\n\n    [ComImport, Guid(\"D666063F-1587-4E43-81F1-B948E807363F\"),\n     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n    private interface IMMDevice\n    {\n        [PreserveSig] int Activate([In] ref Guid iid, uint clsctx, IntPtr activationParams,\n            [MarshalAs(UnmanagedType.Interface)] out IAudioClient audioClient);\n        [PreserveSig] int OpenPropertyStore(int access, out IntPtr properties);\n        [PreserveSig] int GetId(out IntPtr id);\n        [PreserveSig] int GetState(out uint state);\n    }\n\n    [ComImport, Guid(\"1CB9AD4C-DBFA-4c32-B178-C2F568A703B2\"),\n     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n    private interface IAudioClient\n    {\n        [PreserveSig] int Initialize(int shareMode, uint streamFlags, long bufferDuration, long periodicity,\n            IntPtr format, IntPtr audioSessionGuid);\n        [PreserveSig] int GetBufferSize(out uint bufferFrames);\n        [PreserveSig] int GetStreamLatency(out long latency);\n        [PreserveSig] int GetCurrentPadding(out uint paddingFrames);\n        [PreserveSig] int IsFormatSupported(int shareMode, IntPtr format, out IntPtr closestMatch);\n        [PreserveSig] int GetMixFormat(out IntPtr format);\n        [PreserveSig] int GetDevicePeriod(out long defaultPeriod, out long minimumPeriod);\n        [PreserveSig] int Start();\n        [PreserveSig] int Stop();\n        [PreserveSig] int Reset();\n        [PreserveSig] int SetEventHandle(IntPtr eventHandle);\n        [PreserveSig] int GetService([In] ref Guid iid,\n            [MarshalAs(UnmanagedType.Interface)] out IAudioRenderClient renderClient);\n    }\n\n    [ComImport, Guid(\"F294ACFC-3146-4483-A7BF-ADDCA7C260E2\"),\n     InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]\n    private interface IAudioRenderClient\n    {\n        [PreserveSig] int GetBuffer(uint framesRequested, out IntPtr data);\n        [PreserveSig] int ReleaseBuffer(uint framesWritten, uint flags);\n    }\n\n    private sealed class WaveChunk\n    {\n        public int Index;\n        public WaveFormatEx Format;\n        public byte[] Pcm;\n        public int Offset;\n        public ulong EndFrame = UInt64.MaxValue;\n    }\n\n    private static void CheckHResult(int hr)\n    {\n        if (hr < 0) Marshal.ThrowExceptionForHR(hr);\n    }\n\n    private static void ReleaseCom(object value)\n    {\n        if (value != null && Marshal.IsComObject(value))\n        {\n            try { Marshal.ReleaseComObject(value); } catch { }\n        }\n    }\n\n    private static string EncodeError(string message)\n    {\n        return Convert.ToBase64String(Encoding.UTF8.GetBytes(message ?? \"Audio queue error\"));\n    }\n\n    private static void EmitError(string message)\n    {\n        Console.WriteLine(\"ERROR\\t\" + EncodeError(message));\n        Console.Out.Flush();\n    }\n\n    private static void ReadInput()\n    {\n        try\n        {\n            string line;\n            while ((line = Console.ReadLine()) != null)\n            {\n                if (line == \"END\")\n                {\n                    EndRequested = true;\n                    break;\n                }\n                lock (QueueLock) { Commands.Enqueue(line); }\n            }\n        }\n        catch (Exception ex)\n        {\n            InputError = ex.Message;\n            EndRequested = true;\n        }\n        finally { InputClosed = true; }\n    }\n\n    private static bool TryTakeCommand(out string command)\n    {\n        lock (QueueLock)\n        {\n            if (Commands.Count > 0)\n            {\n                command = Commands.Dequeue();\n                return true;\n            }\n        }\n        command = null;\n        return false;\n    }\n\n    private static bool HasCommands()\n    {\n        lock (QueueLock) { return Commands.Count > 0; }\n    }\n\n    private static string WaitForFirstCommand()\n    {\n        string command;\n        while (true)\n        {\n            if (TryTakeCommand(out command)) return command;\n            if (InputClosed) return null;\n            Thread.Sleep(3);\n        }\n    }\n\n    private static void ParseFileCommand(string command, out int index, out string path)\n    {\n        string[] parts = command.Split('\\t');\n        if (parts.Length != 3 || parts[0] != \"FILE\" || !Int32.TryParse(parts[1], out index) || index < 0)\n            throw new InvalidDataException(\"Malformed audio queue command\");\n        path = Encoding.UTF8.GetString(Convert.FromBase64String(parts[2]));\n        if (String.IsNullOrWhiteSpace(path)) throw new InvalidDataException(\"Empty audio file path\");\n    }\n\n    private static WaveChunk ReadWave(string path, int index)\n    {\n        byte[] bytes = File.ReadAllBytes(path);\n        if (bytes.Length < 44 ||\n            Encoding.ASCII.GetString(bytes, 0, 4) != \"RIFF\" ||\n            Encoding.ASCII.GetString(bytes, 8, 4) != \"WAVE\")\n            throw new InvalidDataException(\"Audio chunk is not a valid RIFF/WAVE file\");\n\n        byte[] formatBytes = null;\n        byte[] pcm = null;\n        int offset = 12;\n        while (offset + 8 <= bytes.Length)\n        {\n            string name = Encoding.ASCII.GetString(bytes, offset, 4);\n            uint sizeValue = BitConverter.ToUInt32(bytes, offset + 4);\n            if (sizeValue > Int32.MaxValue) throw new InvalidDataException(\"Audio chunk section is too large\");\n            int size = (int)sizeValue;\n            int dataOffset = offset + 8;\n            if (dataOffset + size > bytes.Length) throw new InvalidDataException(\"Audio chunk contains a truncated WAV section\");\n            if (name == \"fmt \" && formatBytes == null)\n            {\n                if (size < 16) throw new InvalidDataException(\"Audio chunk has a short WAV format section\");\n                formatBytes = new byte[size];\n                Buffer.BlockCopy(bytes, dataOffset, formatBytes, 0, size);\n            }\n            else if (name == \"data\" && pcm == null)\n            {\n                pcm = new byte[size];\n                Buffer.BlockCopy(bytes, dataOffset, pcm, 0, size);\n            }\n            offset = dataOffset + size + (size & 1);\n        }\n        if (formatBytes == null || pcm == null || pcm.Length == 0)\n            throw new InvalidDataException(\"Audio chunk is missing WAV format or PCM data\");\n\n        WaveFormatEx format = new WaveFormatEx();\n        format.formatTag = BitConverter.ToUInt16(formatBytes, 0);\n        format.channels = BitConverter.ToUInt16(formatBytes, 2);\n        format.samplesPerSecond = BitConverter.ToUInt32(formatBytes, 4);\n        format.averageBytesPerSecond = BitConverter.ToUInt32(formatBytes, 8);\n        format.blockAlign = BitConverter.ToUInt16(formatBytes, 12);\n        format.bitsPerSample = BitConverter.ToUInt16(formatBytes, 14);\n        format.extraSize = formatBytes.Length >= 18 ? BitConverter.ToUInt16(formatBytes, 16) : (ushort)0;\n        if (format.formatTag != 1 || format.bitsPerSample != 16 ||\n            (format.channels != 1 && format.channels != 2) ||\n            format.blockAlign != format.channels * 2 ||\n            format.samplesPerSecond == 0 ||\n            pcm.Length % format.blockAlign != 0)\n            throw new InvalidDataException(\"Audio chunk must be aligned 16-bit PCM mono/stereo WAV\");\n\n        WaveChunk result = new WaveChunk();\n        result.Index = index;\n        result.Format = format;\n        result.Pcm = pcm;\n        return result;\n    }\n\n    private static bool SameFormat(WaveFormatEx left, WaveFormatEx right)\n    {\n        return left.formatTag == right.formatTag &&\n            left.channels == right.channels &&\n            left.samplesPerSecond == right.samplesPerSecond &&\n            left.averageBytesPerSecond == right.averageBytesPerSecond &&\n            left.blockAlign == right.blockAlign &&\n            left.bitsPerSample == right.bitsPerSample;\n    }\n\n    private static IMMDeviceEnumerator CreateEnumerator()\n    {\n        Guid classId = new Guid(\"BCDE0395-E52F-467C-8E3D-C4579291692E\");\n        Type type = Type.GetTypeFromCLSID(classId);\n        if (type == null) throw new InvalidOperationException(\"Windows audio device enumeration is unavailable.\");\n        return (IMMDeviceEnumerator)Activator.CreateInstance(type);\n    }\n\n    private static void QueueAudioFrames(\n        IAudioClient audioClient,\n        IAudioRenderClient renderClient,\n        uint bufferFrames,\n        int blockAlign,\n        Queue<WaveChunk> pending,\n        Queue<WaveChunk> completionQueue,\n        ref ulong framesSubmitted)\n    {\n        uint padding;\n        CheckHResult(audioClient.GetCurrentPadding(out padding));\n        if (padding >= bufferFrames) return;\n        uint freeFrames = bufferFrames - padding;\n\n        ulong sourceFrames = 0;\n        foreach (WaveChunk chunk in pending)\n        {\n            int remaining = chunk.Pcm.Length - chunk.Offset;\n            if (remaining > 0) sourceFrames += (ulong)(remaining / blockAlign);\n        }\n        uint framesToWrite = (uint)Math.Min((ulong)freeFrames, sourceFrames);\n        if (framesToWrite == 0) return;\n\n        IntPtr data = IntPtr.Zero;\n        bool released = false;\n        try\n        {\n            CheckHResult(renderClient.GetBuffer(framesToWrite, out data));\n            uint framesCopied = 0;\n            while (framesCopied < framesToWrite && pending.Count > 0)\n            {\n                WaveChunk chunk = pending.Peek();\n                int remainingBytes = chunk.Pcm.Length - chunk.Offset;\n                int availableFrames = remainingBytes / blockAlign;\n                if (availableFrames <= 0)\n                    throw new InvalidDataException(\"Speech chunk ended on a partial PCM frame.\");\n                int takeFrames = (int)Math.Min((ulong)(framesToWrite - framesCopied), (ulong)availableFrames);\n                int copyBytes = takeFrames * blockAlign;\n                IntPtr destination = new IntPtr(data.ToInt64() + (long)framesCopied * blockAlign);\n                Marshal.Copy(chunk.Pcm, chunk.Offset, destination, copyBytes);\n                chunk.Offset += copyBytes;\n                framesCopied += (uint)takeFrames;\n                if (chunk.Offset == chunk.Pcm.Length)\n                {\n                    chunk.EndFrame = framesSubmitted + framesCopied;\n                    chunk.Pcm = null;\n                    pending.Dequeue();\n                    completionQueue.Enqueue(chunk);\n                }\n            }\n            if (framesCopied != framesToWrite)\n                throw new InvalidDataException(\"Audio source queue changed during WASAPI buffer fill.\");\n            CheckHResult(renderClient.ReleaseBuffer(framesCopied, 0));\n            released = true;\n            framesSubmitted += framesCopied;\n        }\n        finally\n        {\n            if (!released && data != IntPtr.Zero)\n            {\n                try { renderClient.ReleaseBuffer(0, 0); } catch { }\n            }\n        }\n    }\n\n    private static void ReportCompletedAudio(\n        IAudioClient audioClient,\n        Queue<WaveChunk> completionQueue,\n        ulong framesSubmitted)\n    {\n        uint padding;\n        CheckHResult(audioClient.GetCurrentPadding(out padding));\n        ulong framesPlayed = framesSubmitted > padding ? framesSubmitted - padding : 0;\n        while (completionQueue.Count > 0 && completionQueue.Peek().EndFrame <= framesPlayed)\n        {\n            WaveChunk completed = completionQueue.Dequeue();\n            Console.WriteLine(\"DONE\\t\" + completed.Index);\n            Console.Out.Flush();\n        }\n    }\n\n    public static int Run()\n    {\n        IntPtr formatPointer = IntPtr.Zero;\n        IMMDeviceEnumerator enumerator = null;\n        IMMDevice device = null;\n        IAudioClient audioClient = null;\n        IAudioRenderClient renderClient = null;\n        bool shouldUninitializeCom = false;\n        bool audioStarted = false;\n        Thread inputThread = new Thread(ReadInput);\n        inputThread.IsBackground = true;\n        Queue<WaveChunk> pending = new Queue<WaveChunk>();\n        Queue<WaveChunk> completion = new Queue<WaveChunk>();\n        ulong framesSubmitted = 0;\n        uint bufferFrames = 0;\n        int blockAlign = 0;\n        long streamLatency = 0;\n\n        try\n        {\n            int comResult = CoInitializeEx(IntPtr.Zero, 0);\n            if (comResult == RpcEChangedMode)\n            {\n                // A host may have initialized the PowerShell thread as STA already. The\n                // current apartment is valid; do not uninitialize a COM apartment we did not own.\n                shouldUninitializeCom = false;\n            }\n            else\n            {\n                CheckHResult(comResult);\n                shouldUninitializeCom = true;\n            }\n\n            inputThread.Start();\n            string firstCommand = WaitForFirstCommand();\n            if (firstCommand == null) throw new InvalidDataException(\"No first audio chunk was provided\");\n            int firstIndex;\n            string firstPath;\n            ParseFileCommand(firstCommand, out firstIndex, out firstPath);\n            if (firstIndex != 0) throw new InvalidDataException(\"First audio chunk index must be zero\");\n            WaveChunk first = ReadWave(firstPath, firstIndex);\n            blockAlign = first.Format.blockAlign;\n\n            enumerator = CreateEnumerator();\n            CheckHResult(enumerator.GetDefaultAudioEndpoint(ERender, EConsole, out device));\n            Guid audioClientIid = new Guid(\"1CB9AD4C-DBFA-4c32-B178-C2F568A703B2\");\n            CheckHResult(device.Activate(ref audioClientIid, ClsctxAll, IntPtr.Zero, out audioClient));\n\n            formatPointer = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(WaveFormatEx)));\n            Marshal.StructureToPtr(first.Format, formatPointer, false);\n            uint flags = StreamAutoConvertPcm | StreamSrcDefaultQuality;\n            CheckHResult(audioClient.Initialize(ShareModeShared, flags, 2000000L, 0L, formatPointer, IntPtr.Zero));\n            Marshal.FreeHGlobal(formatPointer);\n            formatPointer = IntPtr.Zero;\n\n            CheckHResult(audioClient.GetBufferSize(out bufferFrames));\n            if (bufferFrames == 0) throw new InvalidOperationException(\"WASAPI returned an empty audio buffer.\");\n            CheckHResult(audioClient.GetStreamLatency(out streamLatency));\n            Guid renderClientIid = new Guid(\"F294ACFC-3146-4483-A7BF-ADDCA7C260E2\");\n            CheckHResult(audioClient.GetService(ref renderClientIid, out renderClient));\n\n            pending.Enqueue(first);\n            Console.WriteLine(\"QUEUED\\t0\");\n            Console.Out.Flush();\n\n            while (true)\n            {\n                string command;\n                while (TryTakeCommand(out command))\n                {\n                    if (!command.StartsWith(\"FILE\\t\", StringComparison.Ordinal))\n                    {\n                        EmitError(\"Malformed audio queue command\");\n                        EndRequested = true;\n                        continue;\n                    }\n                    if (EndRequested && InputClosed) continue;\n                    try\n                    {\n                        int index;\n                        string path;\n                        ParseFileCommand(command, out index, out path);\n                        WaveChunk chunk = ReadWave(path, index);\n                        if (!SameFormat(first.Format, chunk.Format))\n                            throw new InvalidDataException(\"Piper chunks did not share one PCM format\");\n                        pending.Enqueue(chunk);\n                        Console.WriteLine(\"QUEUED\\t\" + index);\n                        Console.Out.Flush();\n                    }\n                    catch (Exception error)\n                    {\n                        EmitError(error.Message);\n                        EndRequested = true;\n                    }\n                }\n                if (InputError != null)\n                {\n                    EmitError(InputError);\n                    InputError = null;\n                    EndRequested = true;\n                }\n\n                QueueAudioFrames(audioClient, renderClient, bufferFrames, blockAlign,\n                    pending, completion, ref framesSubmitted);\n                if (!audioStarted && framesSubmitted > 0)\n                {\n                    CheckHResult(audioClient.Start());\n                    audioStarted = true;\n                    Console.WriteLine(\"STARTED\\t0\");\n                    Console.Out.Flush();\n                }\n                if (audioStarted) ReportCompletedAudio(audioClient, completion, framesSubmitted);\n\n                if ((EndRequested || InputClosed) && !HasCommands() &&\n                    pending.Count == 0 && completion.Count == 0)\n                {\n                    uint padding;\n                    CheckHResult(audioClient.GetCurrentPadding(out padding));\n                    if (padding == 0)\n                    {\n                        int drainMs = (int)Math.Max(25L, Math.Min(500L, streamLatency / 10000L + 40L));\n                        Thread.Sleep(drainMs);\n                        break;\n                    }\n                }\n                Thread.Sleep(3);\n            }\n\n            if (audioStarted) CheckHResult(audioClient.Stop());\n            audioStarted = false;\n            return 0;\n        }\n        catch (Exception error)\n        {\n            EmitError(error.Message);\n            if (audioClient != null)\n            {\n                try { audioClient.Reset(); } catch { }\n                try { audioClient.Stop(); } catch { }\n            }\n            return 1;\n        }\n        finally\n        {\n            if (formatPointer != IntPtr.Zero) Marshal.FreeHGlobal(formatPointer);\n            ReleaseCom(renderClient);\n            ReleaseCom(audioClient);\n            ReleaseCom(device);\n            ReleaseCom(enumerator);\n            if (shouldUninitializeCom) CoUninitialize();\n        }\n    }\n\n    [DllImport(\"ole32.dll\")]\n    private static extern int CoInitializeEx(IntPtr reserved, uint coInit);\n    [DllImport(\"ole32.dll\")]\n    private static extern void CoUninitialize();\n}";
+  return "$ErrorActionPreference = 'Stop'\r\n$source = @'\r\n" + source + "\r\n'@\r\n" +
+    "Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop\r\n" +
+    "if ($env:BRIDGE_GAPLESS_COMPILE_ONLY -eq '1') { Write-Output 'GAPLESS_WASAPI_COMPILED'; exit 0 }\r\n" +
+    "[BridgeGaplessWaveOut]::Run()\r\n";
+}
+
 const { normalizeSpeechText, splitSpeechIntoChunks } = require('./speech-text');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
-const VISION_WORKER_API_VERSION = 4;
-const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling']);
+const VISION_WORKER_API_VERSION = 5;
+const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch']);
 const TTS_PROTOCOL = 'piper-libritts-tts/v1';
 const TTS_VOICE = 'en_US-libritts-high';
 const TTS_SPEAKER_ID = 0;
 const MAX_TTS_TEXT_CHARS = 2000;
 const MAX_TTS_AUDIO_BYTES = 25 * 1024 * 1024;
+const MAX_TTS_PREFETCH_CONCURRENCY = 3;
+const TTS_PLAYBACK_TIMEOUT_MS = 10 * 60 * 1000;
+const TTS_STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_TTS_STREAM_RESPONSE_BYTES = 36 * 1024 * 1024;
 const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
 const MODEL_ID = 'ollama/qwen3-vl';
@@ -869,52 +881,204 @@ function createVisionService(deps) {
     return value;
   }
 
-  function startAudioPlayback(filePath) {
+  function startAudioPlayback(filePath, onChunkDone = () => {}) {
     if (typeof playAudio === 'function') {
-      let done;
-      try { done = Promise.resolve(playAudio(filePath)); }
-      catch (error) { done = Promise.reject(error); }
-      return { done, stop: () => {} };
+      let firstPlayback;
+      try { firstPlayback = Promise.resolve(playAudio(filePath)); }
+      catch (error) { firstPlayback = Promise.reject(error); }
+      const queued = [];
+      let chain = firstPlayback.then(() => onChunkDone(0));
+      let ended = false;
+      let doneResolve, doneReject;
+      const done = new Promise((resolve, reject) => { doneResolve = resolve; doneReject = reject; });
+      done.catch(() => {});
+      const playback = {
+        started: Promise.resolve(),
+        done,
+        queue(nextPath, index) {
+          if (ended) return Promise.reject(new Error('The audio queue is already closed.'));
+          queued.push({ filePath: nextPath, index });
+          chain = chain.then(() => playAudio(nextPath)).then(() => onChunkDone(index));
+          chain.catch(() => {});
+          return Promise.resolve();
+        },
+        end() {
+          if (ended) return;
+          ended = true;
+          chain.then(doneResolve, doneReject);
+        },
+        stop() {
+          ended = true;
+          chain.catch(() => {});
+          doneReject(new Error('Speech playback was stopped.'));
+        }
+      };
+      return playback;
     }
     if (process.platform !== 'win32') throw new Error('Local WAV playback is supported only on Windows. Use play=false to synthesize without playback.');
-    const escapedPath = String(filePath).replace(/'/g, "''");
-    const script = "$ErrorActionPreference='Stop'; $player=New-Object System.Media.SoundPlayer -ArgumentList '" +
-      escapedPath + "'; try { $player.Load(); $player.PlaySync() } finally { $player.Dispose() }";
-    const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
-      windowsHide: true, stdio: ['ignore', 'ignore', 'pipe']
-    });
+
+    const script = buildGaplessPlaybackScript();
+    const scriptPath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-gapless-' + crypto.randomBytes(12).toString('hex') + '.ps1');
+    fs.writeFileSync(scriptPath, script, { encoding: 'utf8', flag: 'wx' });
+    const cleanupScript = () => {
+      try { fs.unlinkSync(scriptPath); } catch {}
+    };
+    let child;
+    try {
+      // Keep the command line short; embedding the entire C# helper in -EncodedCommand exceeds
+      // Windows CreateProcess limits. The script contains no credentials or caller text.
+      child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', scriptPath], {
+        windowsHide: true, stdio: ['pipe', 'pipe', 'pipe']
+      });
+    } catch (error) {
+      cleanupScript();
+      throw error;
+    }
+    let stdoutBuffer = '';
     let stderr = '';
+    let fatalError = null;
+    let ended = false;
     let settled = false;
     let timer = null;
-    const done = new Promise((resolve, reject) => {
-      timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        try { child.kill(); } catch {}
-        reject(new Error('Windows audio playback timed out for one speech chunk.'));
-      }, 120000);
-      child.stderr.on('data', chunk => {
-        if (stderr.length < 2000) stderr += chunk.toString('utf8').slice(0, 2000 - stderr.length);
-      });
-      child.once('error', error => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.once('close', (code, signal) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (code === 0) resolve();
-        else reject(new Error('Windows audio playback exited with code ' + code + (signal ? ' (' + signal + ')' : '') +
-          (stderr.trim() ? ': ' + stderr.trim().slice(0, 1200) : '.')));
-      });
-    });
-    return { done, stop: () => { try { child.kill(); } catch {} }, pid: child.pid };
-  }
+    const pendingQueue = new Map();
+    let startedResolve, startedReject, startedSettled = false;
+    let doneResolve, doneReject;
+    const startedSignal = new Promise((resolve, reject) => { startedResolve = resolve; startedReject = reject; });
+    const done = new Promise((resolve, reject) => { doneResolve = resolve; doneReject = reject; });
+    startedSignal.catch(() => {});
+    done.catch(() => {});
 
+    function settleQueueError(error) {
+      fatalError = fatalError || error;
+      for (const [index, handlers] of pendingQueue.entries()) {
+        pendingQueue.delete(index);
+        handlers.reject(fatalError);
+      }
+      if (!startedSettled) {
+        startedSettled = true;
+        startedReject(fatalError);
+      }
+    }
+    function handleLine(line) {
+      if (!line) return;
+      const split = line.indexOf('\t');
+      const kind = split < 0 ? line : line.slice(0, split);
+      const value = split < 0 ? '' : line.slice(split + 1);
+      if (kind === 'STARTED') {
+        if (!startedSettled) {
+          startedSettled = true;
+          startedResolve({ index: Number(value) });
+        }
+      } else if (kind === 'QUEUED') {
+        const index = Number(value);
+        const handlers = pendingQueue.get(index);
+        if (handlers) {
+          pendingQueue.delete(index);
+          handlers.resolve();
+        }
+      } else if (kind === 'DONE') {
+        const index = Number(value);
+        try { onChunkDone(index); } catch {}
+      } else if (kind === 'ERROR') {
+        let message = 'Windows audio queue failed.';
+        try { message = Buffer.from(value, 'base64').toString('utf8') || message; } catch {}
+        settleQueueError(new Error(message));
+      }
+    }
+
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => {
+      stdoutBuffer += chunk;
+      let newline;
+      while ((newline = stdoutBuffer.indexOf('\n')) >= 0) {
+        const line = stdoutBuffer.slice(0, newline).replace(/\r$/, '');
+        stdoutBuffer = stdoutBuffer.slice(newline + 1);
+        handleLine(line);
+      }
+    });
+    child.stderr.on('data', chunk => {
+      if (stderr.length < 2000) stderr += chunk.toString('utf8').slice(0, 2000 - stderr.length);
+    });
+    child.stdin.on('error', error => {
+      if (!ended && !(error && error.code === 'EPIPE')) settleQueueError(error);
+    });
+    child.once('error', error => {
+      settleQueueError(error);
+      cleanupScript();
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        doneReject(error);
+      }
+    });
+    child.once('close', (code, signal) => {
+      settled = true;
+      clearTimeout(timer);
+      cleanupScript();
+      if (stdoutBuffer) handleLine(stdoutBuffer.replace(/\r$/, ''));
+      const error = fatalError || (code === 0 ? null : new Error('Windows gapless audio player exited with code ' + code +
+        (signal ? ' (' + signal + ')' : '') + (stderr.trim() ? ': ' + stderr.trim().slice(0, 1200) : '.')));
+      if (!startedSettled) {
+        startedSettled = true;
+        startedReject(error || new Error('Windows audio player exited before playback was confirmed.'));
+      }
+      for (const [index, handlers] of pendingQueue.entries()) {
+        pendingQueue.delete(index);
+        handlers.reject(error || new Error('Windows audio player exited before queue acknowledgement.'));
+      }
+      if (error) doneReject(error);
+      else doneResolve();
+    });
+    timer = setTimeout(() => {
+      if (settled) return;
+      const error = new Error('Windows gapless audio playback timed out.');
+      settleQueueError(error);
+      try { child.kill(); } catch {}
+    }, TTS_PLAYBACK_TIMEOUT_MS);
+
+    function queueChunk(nextPath, index) {
+      if (ended || settled) return Promise.reject(new Error('The audio queue is already closed.'));
+      if (pendingQueue.has(index)) return Promise.reject(new Error('Duplicate audio queue index ' + index + '.'));
+      const promise = new Promise((resolve, reject) => pendingQueue.set(index, { resolve, reject }));
+      const path64 = Buffer.from(String(nextPath), 'utf8').toString('base64');
+      try {
+        child.stdin.write('FILE\t' + index + '\t' + path64 + '\n', error => {
+          if (error) {
+            const handlers = pendingQueue.get(index);
+            if (handlers) {
+              pendingQueue.delete(index);
+              handlers.reject(error);
+            }
+          }
+        });
+      } catch (error) {
+        pendingQueue.delete(index);
+        return Promise.reject(error);
+      }
+      promise.catch(() => {});
+      return promise;
+    }
+
+    const initialQueue = queueChunk(filePath, 0);
+    const started = Promise.all([initialQueue, startedSignal]).then(() => ({ started: true }));
+    started.catch(() => {});
+    return {
+      started,
+      done,
+      queue: queueChunk,
+      end() {
+        if (ended || settled) return;
+        ended = true;
+        try { child.stdin.end('END\n'); }
+        catch (error) { settleQueueError(error); try { child.kill(); } catch {} }
+      },
+      stop() {
+        ended = true;
+        try { child.kill(); } catch {}
+      },
+      pid: child.pid
+    };
+  }
   async function playAudioFile(filePath) {
     const player = startAudioPlayback(filePath);
     await player.done;
@@ -926,7 +1090,7 @@ function createVisionService(deps) {
       active_job_id: activeSpeechJobId,
       jobs: Array.from(speechJobs.values()).slice(-8).map(job => ({
         job_id: job.job_id, status: job.status, chunks_total: job.chunks_total,
-        chunks_started: job.chunks_started, chunks_completed: job.chunks_completed,
+        chunks_started: job.chunks_started, chunks_queued: job.chunks_queued, chunks_completed: job.chunks_completed,
         started_at: job.started_at, finished_at: job.finished_at, error: job.error || null
       }))
     };
@@ -936,11 +1100,7 @@ function createVisionService(deps) {
     return 'tts-' + crypto.randomBytes(12).toString('hex');
   }
 
-  async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
-    const remote = await directRequest('/tts', {
-      method: 'POST', timeoutMs,
-      body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
-    });
+  function validateTtsAudioResponse(remote, requestId) {
     if (remote.protocol !== DIRECT_VISION_PROTOCOL || remote.tts_protocol !== TTS_PROTOCOL ||
         remote.request_id !== requestId || remote.status !== 'completed' ||
         remote.voice !== TTS_VOICE || remote.speaker_id !== TTS_SPEAKER_ID ||
@@ -957,6 +1117,182 @@ function createVisionService(deps) {
     return { audio, remote, audioHash: actualHash, requestId };
   }
 
+  async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
+    let remote;
+    try {
+      remote = await directRequest('/tts', {
+        method: 'POST', timeoutMs,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+      });
+    } catch (error) {
+      const message = messageOf(error);
+      const retryable = /Malformed JSON|HTTP (?:408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(message);
+      if (!retryable) throw error;
+      // A disconnected/partial request body is safe to retry before any audio exists.
+      await sleep(120);
+      remote = await directRequest('/tts', {
+        method: 'POST', timeoutMs,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+      });
+    }
+    return validateTtsAudioResponse(remote, requestId);
+  }
+
+  async function streamRemainingSpeech(job, playback) {
+    const chunks = job.chunks.slice(1).map((text, offset) => ({
+      index: offset + 1, request_id: newTtsRequestId(), text
+    }));
+    if (!chunks.length) return;
+
+    const batchRequestId = newTtsRequestId();
+    let streamChunkIndex = 0;
+
+    async function readOneAttempt(attempt) {
+      const controller = new AbortController();
+      let reader = null;
+      let timer = null;
+      let streamStarted = false;
+      let acceptedChunks = 0;
+      let batchTerminal = false;
+      let batchFailed = null;
+      let responseBytes = 0;
+      let textBuffer = '';
+      const decoder = new TextDecoder();
+
+      const processRecord = async rawLine => {
+        if (!rawLine.trim()) return;
+        let record;
+        try { record = JSON.parse(rawLine); }
+        catch { throw new Error('Colab returned malformed JSON in its streamed TTS response.'); }
+        if (record.protocol !== DIRECT_VISION_PROTOCOL || record.tts_protocol !== TTS_PROTOCOL) {
+          throw new Error('Colab streamed TTS protocol did not match the current worker.');
+        }
+        if (record.request_id === batchRequestId) {
+          if (record.status === 'stream_started') {
+            if (streamStarted || record.chunks_total !== chunks.length ||
+                record.voice !== TTS_VOICE || record.speaker_id !== TTS_SPEAKER_ID) {
+              throw new Error('Colab streamed TTS start metadata was invalid.');
+            }
+            streamStarted = true;
+            return;
+          }
+          if (record.status === 'completed') {
+            if (!streamStarted || acceptedChunks !== chunks.length ||
+                record.chunks_total !== chunks.length) {
+              throw new Error('Colab ended the TTS stream before every chunk arrived.');
+            }
+            batchTerminal = true;
+            return;
+          }
+          if (record.status === 'failed') {
+            batchTerminal = true;
+            batchFailed = String(record.error || 'Colab TTS stream failed.').slice(0, 1000);
+            return;
+          }
+          throw new Error('Colab returned an unknown streamed TTS terminal status.');
+        }
+        if (!streamStarted || batchTerminal) throw new Error('Colab sent TTS audio outside the active stream.');
+        const expected = chunks[streamChunkIndex];
+        if (!expected || record.batch_request_id !== batchRequestId ||
+            record.request_id !== expected.request_id) {
+          throw new Error('Colab streamed TTS chunk order or request identity did not match.');
+        }
+        const generated = validateTtsAudioResponse(record, expected.request_id);
+        const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id +
+          '-chunk-' + String(expected.index + 1).padStart(2, '0') + '.wav');
+        await fsImpl.promises.writeFile(filePath, generated.audio, { flag: 'wx' });
+        try {
+          await playback.queue(filePath, expected.index);
+          job.chunks_queued += 1;
+          job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
+          acceptedChunks += 1;
+          streamChunkIndex += 1;
+        } finally {
+          await removeSpeechFile(filePath);
+        }
+      };
+
+      try {
+        timer = setTimeout(() => controller.abort(), TTS_STREAM_TIMEOUT_MS);
+        const response = await fetchImpl(colabConnection.url + '/tts/stream', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + colabConnection.apiKey,
+            Accept: 'application/x-ndjson',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            protocol: DIRECT_VISION_PROTOCOL,
+            request_id: batchRequestId,
+            voice: TTS_VOICE,
+            speaker_id: TTS_SPEAKER_ID,
+            chunks: chunks.map(item => ({ request_id: item.request_id, text: item.text }))
+          }),
+          signal: controller.signal,
+          cache: 'no-store',
+          redirect: 'error'
+        });
+        if (!response.ok) {
+          let detail = 'request failed';
+          try {
+            const data = await response.json();
+            detail = String(data.error || data.message || detail).slice(0, 600);
+          } catch {}
+          throw new Error('Colab TTS stream returned HTTP ' + response.status + ': ' + detail);
+        }
+        const contentType = response.headers && response.headers.get
+          ? String(response.headers.get('content-type') || '') : '';
+        if (contentType && !/application\/x-ndjson/i.test(contentType)) {
+          throw new Error('Colab TTS stream returned an unexpected content type.');
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+          throw new Error('Colab TTS streaming response did not expose a readable body.');
+        }
+        reader = response.body.getReader();
+        while (true) {
+          const packet = await reader.read();
+          if (packet.done) break;
+          responseBytes += packet.value.byteLength;
+          if (responseBytes > MAX_TTS_STREAM_RESPONSE_BYTES) {
+            throw new Error('Colab TTS stream exceeded the 36 MiB bounded response size.');
+          }
+          textBuffer += decoder.decode(packet.value, { stream: true });
+          if (textBuffer.length > MAX_TTS_STREAM_RESPONSE_BYTES) {
+            throw new Error('Colab TTS stream exceeded the bounded JSON line size.');
+          }
+          let newline;
+          while ((newline = textBuffer.indexOf('\n')) >= 0) {
+            const line = textBuffer.slice(0, newline);
+            textBuffer = textBuffer.slice(newline + 1);
+            await processRecord(line);
+          }
+        }
+        textBuffer += decoder.decode();
+        if (textBuffer.trim()) await processRecord(textBuffer);
+        if (!batchTerminal) throw new Error('Colab closed the TTS stream before its terminal record.');
+        if (batchFailed) throw new Error('Colab TTS stream failed: ' + batchFailed);
+      } catch (error) {
+        controller.abort();
+        if (reader) {
+          try { await reader.cancel(); } catch {}
+        }
+        const retryable = !streamStarted && acceptedChunks === 0 &&
+          /Malformed JSON|HTTP (?:400|408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(messageOf(error));
+        if (attempt === 0 && retryable) {
+          await sleep(120);
+          return readOneAttempt(1);
+        }
+        throw error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (reader) {
+          try { reader.releaseLock(); } catch {}
+        }
+      }
+    }
+
+    await readOneAttempt(0);
+  }
   async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
     const generated = await requestTtsAudio(text, requestId, 45000);
     const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
@@ -968,49 +1304,47 @@ function createVisionService(deps) {
     try { await fsImpl.promises.unlink(filePath); } catch {}
   }
 
-  async function continueSpeechJob(job, firstChunk) {
-    let current = firstChunk;
+  async function queueRemainingSpeech(job, playback) {
+    await streamRemainingSpeech(job, playback);
+    if (job.chunks_queued !== job.chunks_total) {
+      throw new Error('TTS streaming ended before every chunk was queued.');
+    }
+  }
+  async function continueSpeechJob(job, playback) {
+    job.currentPlayback = playback;
+    let pipelineError = null;
+    let playbackError = null;
     try {
-      while (current && !job.cancelRequested) {
-        job.currentPlayback = current.playback;
-        const nextIndex = current.index + 1;
-        let nextPromise = null;
-        if (nextIndex < job.chunks.length) {
-          nextPromise = saveSpeechChunk(job, job.chunks[nextIndex], nextIndex, newTtsRequestId())
-            .then(async value => {
-              if (job.cancelRequested) {
-                await removeSpeechFile(value.filePath);
-                return { value: null };
-              }
-              return { value };
-            }, error => ({ error }));
-        }
-        await current.playback.done;
-        job.chunks_completed += 1;
-        await removeSpeechFile(current.filePath);
-        if (job.cancelRequested) break;
-        if (nextIndex >= job.chunks.length) { current = null; break; }
-        const next = await nextPromise;
-        if (next.error) throw next.error;
-        if (!next.value) break;
-        current = next.value;
-        current.playback = startAudioPlayback(current.filePath);
-        job.currentPlayback = current.playback;
-        job.chunks_started += 1;
-      }
-      job.status = job.cancelRequested ? 'cancelled' : 'completed';
+      await queueRemainingSpeech(job, playback);
     } catch (error) {
-      if (current && current.filePath) await removeSpeechFile(current.filePath);
-      job.status = job.cancelRequested ? 'cancelled' : 'failed';
+      pipelineError = error;
       job.error = messageOf(error);
-      if (job.currentPlayback && job.currentPlayback.stop) job.currentPlayback.stop();
+      job.status = 'draining_after_error';
+    }
+
+    try {
+      if (job.cancelRequested) playback.stop();
+      else playback.end();
+      await playback.done;
+    } catch (error) {
+      playbackError = error;
+    }
+
+    try {
+      if (job.cancelRequested) {
+        job.status = 'cancelled';
+      } else if (pipelineError || playbackError) {
+        job.status = 'failed';
+        job.error = messageOf(pipelineError || playbackError);
+      } else {
+        job.status = 'completed';
+      }
     } finally {
       if (activeSpeechJobId === job.job_id) activeSpeechJobId = null;
       job.currentPlayback = null;
       job.finished_at = new Date(now()).toISOString();
     }
   }
-
   function combineWavBuffers(buffers) {
     if (!Array.isArray(buffers) || !buffers.length) throw new Error('No synthesized speech chunks were returned.');
     if (buffers.length === 1) return buffers[0];
@@ -1066,8 +1400,9 @@ function createVisionService(deps) {
 
     const jobId = newTtsRequestId();
     const job = { job_id: jobId, status: 'preparing', chunks, chunks_total: chunks.length,
-      chunks_started: 0, chunks_completed: 0, started_at: new Date(now()).toISOString(),
-      finished_at: null, error: null, cancelRequested: false, currentPlayback: null };
+      chunks_started: 0, chunks_queued: 0, chunks_completed: 0, completedChunkIndexes: new Set(),
+      started_at: new Date(now()).toISOString(), finished_at: null, error: null,
+      cancelRequested: false, currentPlayback: null };
     speechJobs.set(jobId, job);
     if (args.play !== false) activeSpeechJobId = jobId;
     while (speechJobs.size > 8) {
@@ -1096,15 +1431,31 @@ function createVisionService(deps) {
     }
 
     if (args.play === false) {
-      const generated = [];
+      const generated = new Array(chunks.length);
       let duration = 0;
+      let nextIndex = 0;
+      let generationError = null;
       try {
-        for (let index = 0; index < chunks.length; index += 1) {
-          const result = await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
-          generated.push(result.audio);
-          duration += Number(result.remote.duration_seconds) || 0;
-          job.chunks_started += 1; job.chunks_completed += 1;
-        }
+        const worker = async () => {
+          while (!generationError) {
+            const index = nextIndex++;
+            if (index >= chunks.length) return;
+            try {
+              const result = await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
+              generated[index] = result.audio;
+              duration += Number(result.remote.duration_seconds) || 0;
+              job.chunks_started += 1;
+              job.chunks_completed += 1;
+            } catch (error) {
+              generationError = generationError || error;
+            }
+          }
+        };
+        await Promise.all(Array.from(
+          { length: Math.min(MAX_TTS_PREFETCH_CONCURRENCY, chunks.length) },
+          () => worker()
+        ));
+        if (generationError) throw generationError;
         const audio = combineWavBuffers(generated);
         if (audio.length > MAX_TTS_AUDIO_BYTES) throw new Error('Combined Piper audio exceeds the local WAV size limit.');
         const hash = crypto.createHash('sha256').update(audio).digest('hex');
@@ -1122,6 +1473,7 @@ function createVisionService(deps) {
       }
     }
 
+
     let first;
     try { first = await saveSpeechChunk(job, chunks[0], 0, jobId); }
     catch (error) {
@@ -1129,23 +1481,38 @@ function createVisionService(deps) {
       if (activeSpeechJobId === jobId) activeSpeechJobId = null;
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
-    try { first.playback = startAudioPlayback(first.filePath); }
-    catch (error) {
+
+    try {
+      const onChunkDone = index => {
+        if (job.completedChunkIndexes.has(index)) return;
+        job.completedChunkIndexes.add(index);
+        job.chunks_completed = job.completedChunkIndexes.size;
+        job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
+      };
+      first.playback = startAudioPlayback(first.filePath, onChunkDone);
+      job.currentPlayback = first.playback;
+      await first.playback.started;
+      job.status = 'playing';
+      job.chunks_queued = 1;
+      job.chunks_started = 1;
+      job.currentPlayback = first.playback;
+      await removeSpeechFile(first.filePath);
+    } catch (error) {
+      if (first.playback && first.playback.stop) first.playback.stop();
       await removeSpeechFile(first.filePath);
       job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
       if (activeSpeechJobId === jobId) activeSpeechJobId = null;
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
-    job.status = 'playing'; job.chunks_started = 1; job.currentPlayback = first.playback;
-    void continueSpeechJob(job, first);
+    void continueSpeechJob(job, first.playback);
     return { status: 'tts_started', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID,
       sample_rate: Number.isFinite(first.remote.sample_rate) ? first.remote.sample_rate : state.tts_sample_rate,
       channels: Number.isFinite(first.remote.channels) ? first.remote.channels : 1,
       duration_seconds: Number.isFinite(first.remote.duration_seconds) ? first.remote.duration_seconds : null,
       first_chunk_audio_bytes: first.audio.length, first_chunk_sha256: first.audioHash,
-      chunks_total: chunks.length, chunks_started: 1, chunks_completed: 0,
+      chunks_total: chunks.length, chunks_started: 1, chunks_queued: 1, chunks_completed: 0,
       played: true, playback_status: 'playing',
-      audio_transport: 'The first chunk is playing; remaining punctuation-bounded chunks are synthesized ahead of playback. Query computer(action=status) for progress.' };
+      audio_transport: 'The first chunk is queued on one Windows audio stream; the remaining chunks are synthesized with bounded parallel prefetch and queued in order. Query computer(action=status) for progress.' };
   }
 
     async function waitForRemoteResult(jobId, expectedHash, expectedFrameId, expectedModelRole) {
@@ -1476,7 +1843,7 @@ function createVisionService(deps) {
   async function dispose() {
     disposed = true;
     for (const job of speechJobs.values()) {
-      if (job.status === 'playing' || job.status === 'preparing') {
+      if (job.status === 'playing' || job.status === 'preparing' || job.status === 'draining_after_error') {
         job.cancelRequested = true;
         if (job.currentPlayback && typeof job.currentPlayback.stop === 'function') job.currentPlayback.stop();
       }
@@ -1503,6 +1870,6 @@ module.exports = {
   createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL,
   VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS,
   MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, VISION_CONTEXT_SCHEMA, validateVisionContext, validateBoundingBox, validJobId,
-  safeTunnelUrl, safeApiKey, parseTunnelEndpoint,
+  safeTunnelUrl, safeApiKey, parseTunnelEndpoint, buildGaplessPlaybackScript,
   normalizeSpeechText, splitSpeechIntoChunks
 };
