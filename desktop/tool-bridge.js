@@ -168,7 +168,8 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
     source: { enum: ['desktop', 'workspace_file'], default: 'desktop' },
     path: { description: 'Optional image path within the workspace; required when action=screenshot and source=workspace_file.' },
     waitMs: { default: 15000 },
-    request_id: { description: 'Existing screenshot request ID returned by computer(action=screenshot) or computer(action=sequence, observe=true).', pattern: '^computer-[a-f0-9]{24}
+    request_id: { description: 'Existing screenshot request ID returned by computer(action=screenshot) or computer(action=sequence, observe=true).', pattern: '^computer-[a-f0-9]{24}$' },
+    frame_id: { description: 'SHA-256 identity of the exact live Observe/screenshot frame used to choose these coordinates. Pass the frame_id from the same observed frame so stale or changed pixels are rejected.', pattern: '^[a-f0-9]{64}$' },
     steps: {
       type: 'array', description: 'Ordered local mouse/keyboard inputs, up to 50 steps. Each step has a type and its action-specific fields; all steps run in one PowerShell process.',
       minItems: 1, maxItems: 50,
