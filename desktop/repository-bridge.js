@@ -1824,6 +1824,9 @@ function createRepositoryBridge(deps) {
       }));
       const failedDetail = details.find(detail => detail.error || !Array.isArray(detail.files));
       if (failedDetail) {
+        // Stop retrying the same unavailable commit-detail page every two seconds.
+        // The bounded request-tree reconciliation remains responsible for recovery.
+        lastRequestCommitSha = commits[0].sha;
         throw new Error('Could not read changed files for request commit ' + failedDetail.commitSha + ': ' +
           (failedDetail.error || 'GitHub did not return a files array.'));
       }
