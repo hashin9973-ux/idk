@@ -11,7 +11,7 @@ const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-
 const MODEL_ID = 'ollama/qwen3-vl';
 const MODEL_FILE = 'qwen3-vl:4b-instruct';
 const PROJECTOR_FILE = null;
-const MAX_SCREENSHOT_BYTES = 600 * 1024;
+const MAX_SCREENSHOT_BYTES = 1280 * 1024;
 const MAX_INPUT_FILE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_WAIT_MS = 15000;
 const MAX_WAIT_MS = 120000;
@@ -752,7 +752,7 @@ function createVisionService(deps) {
     const encoded = await encodeJpeg(raw);
     const bytes = Buffer.isBuffer(encoded) ? encoded : encoded && encoded.bytes;
     if (!Buffer.isBuffer(bytes) || !bytes.length) throw new Error('Image conversion returned no JPEG bytes.');
-    if (bytes.length > MAX_SCREENSHOT_BYTES) throw new Error('Screenshot could not be compressed below the 600 KiB direct Colab transfer limit.');
+    if (bytes.length > MAX_SCREENSHOT_BYTES) throw new Error('Full-resolution screenshot exceeds the direct Colab transfer limit; spatial downscaling is disabled.');
     const width = encoded && encoded.width || null;
     const height = encoded && encoded.height || null;
     const screenWidth = Number.isInteger(capturedMetadata.screen_width) && capturedMetadata.screen_width > 0
