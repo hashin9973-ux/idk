@@ -1037,7 +1037,7 @@ function createVisionService(deps) {
     dataHeader.write('data', 0, 'ascii'); dataHeader.writeUInt32LE(data.length, 4);
     const header = Buffer.alloc(12);
     header.write('RIFF', 0, 'ascii');
-    header.writeUInt32LE(4 + format.length + dataHeader.length + data.length - 8, 4);
+    header.writeUInt32LE(4 + format.length + dataHeader.length + data.length, 4);
     header.write('WAVE', 8, 'ascii');
     return Buffer.concat([header, format, dataHeader, data]);
   }
