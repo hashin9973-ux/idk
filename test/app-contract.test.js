@@ -362,7 +362,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes("malformed or truncated JSON; the report was rejected."));
   assert.ok(python.includes('"coordinate_space": "screenshot_jpeg_px"'));
   assert.ok(python.includes('MAX_TTS_TEXT_CHARS = 240'));
-  assert.ok(python.includes('"text_spans": spans[:160]'));
+  assert.ok(python.includes('"text_spans": spans[:800]'));
   assert.ok(python.includes('model_predict = 1500 if model_role == "passive" else 2000'));
   assert.ok(python.includes('https://ollama.com/install.sh'));
   assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
