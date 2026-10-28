@@ -55,6 +55,9 @@ function createObserveService(deps = {}) {
   let frames = [];
   let latestCapturedFrame = null;
   let pendingVisionFrame = null;
+  // Protect the exact frame being analyzed and the last usable report from rolling-history eviction.
+  let activeVisionFrame = null;
+  let lastCompletedVisionFrame = null;
   let visionInFlight = false;
   let lastVisionAttemptAt = 0;
   let lastVisionCompletedAt = null;
@@ -74,6 +77,15 @@ function createObserveService(deps = {}) {
     if (startupCleanupPromise) await startupCleanupPromise.catch(() => {});
   }
 
+  function trimFrameHistory() {
+    while (frames.length > FRAME_LIMIT) {
+      const protectedFrames = new Set([activeVisionFrame, lastCompletedVisionFrame].filter(Boolean));
+      const removableIndex = frames.findIndex(frame => !protectedFrames.has(frame));
+      if (removableIndex < 0) break;
+      frames.splice(removableIndex, 1);
+    }
+  }
+
   function status() {
     return {
       enabled,
@@ -88,6 +100,8 @@ function createObserveService(deps = {}) {
       last_change_at: lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
       last_publish_at: lastPublishedAt ? new Date(lastPublishedAt).toISOString() : null,
       last_vision_completed_at: lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
+      in_flight_frame_id: activeVisionFrame ? activeVisionFrame.frame_id : null,
+      last_vision_frame_id: lastCompletedVisionFrame ? lastCompletedVisionFrame.frame_id : null,
       passive_vision_status: latestVisionStatus,
       passive_vision_error: lastVisionError,
       skipped_samples: skippedSamples,
@@ -112,6 +126,11 @@ function createObserveService(deps = {}) {
       skipped_samples: enabledValue ? skippedSamples : 0,
       last_capture_at: enabledValue && lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
       last_change_at: enabledValue && lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
+      last_vision_completed_at: enabledValue && lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
+      passive_vision_status: enabledValue ? latestVisionStatus : 'off',
+      passive_vision_error: enabledValue ? safeText(lastVisionError, 500) : '',
+      in_flight_frame_id: enabledValue && activeVisionFrame ? activeVisionFrame.frame_id : null,
+      last_vision_frame_id: enabledValue && lastCompletedVisionFrame ? lastCompletedVisionFrame.frame_id : null,
       frame_count: enabledValue ? frames.length : 0,
       frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
       status: enabledValue ? 'observing' : 'off',
@@ -120,7 +139,15 @@ function createObserveService(deps = {}) {
     let content = JSON.stringify(payload);
     if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
       const clippedFrames = payload.frames.slice();
-      while (clippedFrames.length && Buffer.byteLength(JSON.stringify({ ...payload, frames: clippedFrames }), 'utf8') > MAX_CONTEXT_BYTES) clippedFrames.shift();
+      const protectedFrameIds = new Set(
+        [activeVisionFrame, lastCompletedVisionFrame].filter(Boolean).map(frame => frame.frame_id)
+      );
+      while (clippedFrames.length &&
+             Buffer.byteLength(JSON.stringify({ ...payload, frames: clippedFrames }), 'utf8') > MAX_CONTEXT_BYTES) {
+        const removableIndex = clippedFrames.findIndex(frame => !protectedFrameIds.has(frame.frame_id));
+        if (removableIndex < 0) break;
+        clippedFrames.splice(removableIndex, 1);
+      }
       payload.frames = clippedFrames;
       payload.frame_count = clippedFrames.length;
       payload.truncated = true;
@@ -248,7 +275,7 @@ function createObserveService(deps = {}) {
           note: 'Image pixels stay local. Structured visual evidence is attached when passive model analysis completes; UI Automation and visual estimates remain separately attributed.'
         };
         frames.push(frame);
-        if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
+        trimFrameHistory();
         publicationRevision += 1;
         if (typeof analyzeFrame === 'function') {
           if (pendingVisionFrame && pendingVisionFrame.epoch === item.epoch &&
@@ -285,6 +312,7 @@ function createObserveService(deps = {}) {
         if (item.epoch !== observeEpoch) continue;
         const target = frames.find(frame => frame.sequence === item.sequence && frame.frame_id === item.frameId);
         if (!target) continue;
+        activeVisionFrame = target;
         const minInterval = lastVisionError ? PASSIVE_VISION_RETRY_INTERVAL_MS : PASSIVE_VISION_MIN_INTERVAL_MS;
         const delay = Math.max(0, minInterval - (now() - lastVisionAttemptAt));
         if (delay > 0) await sleep(delay);
@@ -351,6 +379,7 @@ function createObserveService(deps = {}) {
               evidence_policy: 'Windows UI Automation rectangles and native cursor position are system-derived; OCR text boxes are OCR-derived; visual-model rectangles remain estimates unless matched to UI Automation.'
             };
             lastVisionCompletedAt = now();
+            lastCompletedVisionFrame = completedFrame;
             latestVisionStatus = degraded ? 'degraded' : 'ready';
             lastVisionError = degraded ? completedFrame.vision_error : '';
           } else {
@@ -381,6 +410,8 @@ function createObserveService(deps = {}) {
         }
       }
     } finally {
+      activeVisionFrame = null;
+      trimFrameHistory();
       visionInFlight = false;
       if (pendingVisionFrame && enabled && !disposed) void drainVisionQueue();
     }
@@ -466,6 +497,8 @@ function createObserveService(deps = {}) {
       enabled = true;
       lastFingerprint = '';
       frames = [];
+      activeVisionFrame = null;
+      lastCompletedVisionFrame = null;
       sequence = 0;
       captureCount = 0;
       skippedSamples = 0;
@@ -505,6 +538,8 @@ function createObserveService(deps = {}) {
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
     frames = [];
+    activeVisionFrame = null;
+    lastCompletedVisionFrame = null;
     latestCapturedFrame = null;
     pendingCapture = null;
     pendingVisionFrame = null;
@@ -516,6 +551,8 @@ function createObserveService(deps = {}) {
     // Clear live context on GitHub. GitHub's prior commit history may still contain old snapshots.
     await publish(false);
     frames = [];
+    activeVisionFrame = null;
+    lastCompletedVisionFrame = null;
     return status();
   }
 
@@ -541,6 +578,8 @@ function createObserveService(deps = {}) {
           (Number(payload.frame_count) || 0) > 0;
         if (hasLiveContext) {
           frames = [];
+          activeVisionFrame = null;
+          lastCompletedVisionFrame = null;
           pendingCapture = null;
           lastFingerprint = '';
           await publish(false);
@@ -568,6 +607,8 @@ function createObserveService(deps = {}) {
     if (timer !== null) clearIntervalImpl(timer);
     timer = null;
     frames = [];
+    activeVisionFrame = null;
+    lastCompletedVisionFrame = null;
     lastFingerprint = '';
     if (wasEnabled) {
       try {
