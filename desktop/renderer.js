@@ -138,11 +138,14 @@
     observeEnabled = value.enabled === true;
     if (observeFpsSelect) observeFpsSelect.value = String(value.fps || 2);
     observeRow.setAttribute('aria-pressed', String(observeEnabled));
+    const retainedFrames = Number(value.frame_count || 0);
     observeLabel.textContent = observeEnabled
-      ? 'Observe: ON · ' + Number(value.frame_count || 0) + '/10 frames'
+      ? 'Observe: ON · ' + retainedFrames + ' recent frame' + (retainedFrames === 1 ? '' : 's')
       : 'Observe: OFF';
     const details = [
-      'Sampling at ' + Number(value.fps || 2) + ' fps; only changed screen fingerprints trigger context updates.',
+      'Target sampling rate: ' + Number(value.fps || 2) + ' fps (' + Number(value.sample_interval_ms || 500) + ' ms per tick).',
+      'Retained changed frames: ' + retainedFrames + '/10 maximum; this is buffer size, not FPS. Unchanged fingerprints are omitted.',
+      'Successful captures this session: ' + Number(value.capture_count || 0) + '; timer ticks skipped while a capture was busy: ' + Number(value.skipped_samples || 0) + '.',
       'Live context is published to the private GitHub mailbox at most once per second.',
       observeEnabled ? 'Status: ' + String(value.status || 'watching') : 'Live context is cleared when Observe is turned off.',
       value.last_capture_at ? 'Last capture: ' + value.last_capture_at : '',
