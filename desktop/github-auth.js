@@ -170,17 +170,25 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       if (method !== 'GET' || input.body !== undefined ||
           keys.join(',') !== 'path,per_page,sha' ||
           query.sha !== branch || query.path !== 'bridge/requests' ||
-          query.per_page !== 1) {
-        throw new Error('Commit polling is limited to the latest commit touching bridge/requests on the configured branch.');
+          !Number.isInteger(query.per_page) || query.per_page < 1 || query.per_page > 20) {
+        throw new Error('Commit polling is limited to the latest 20 commits touching bridge/requests on the configured branch.');
       }
       return {
         method, path: pathValue, query: undefined, body: undefined,
         url: 'https://api.github.com' + pathValue +
-          '?sha=' + encodeURIComponent(branch) + '&path=bridge%2Frequests&per_page=1'
+          '?sha=' + encodeURIComponent(branch) + '&path=bridge%2Frequests&per_page=' + String(query.per_page)
       };
     }
 
     const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
+    const repositoryCommitPrefix = base + '/commits/';
+    if (pathValue.startsWith(repositoryCommitPrefix)) {
+      const sha = pathValue.slice(repositoryCommitPrefix.length);
+      if (method !== 'GET' || !validSha(sha) || input.body !== undefined || input.query !== undefined) {
+        throw new Error('Commit details may only be read by a full commit SHA in the configured mailbox repository.');
+      }
+      return { method, path: pathValue, query: undefined, body: undefined, url: 'https://api.github.com' + pathValue };
+    }
     const cleanupMessage = '[local bridge] retention cleanup of completed mailbox records';
     const validCleanupPath = value => {
       if (typeof value !== 'string') return false;
