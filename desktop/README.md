@@ -17,7 +17,7 @@ ChatGPT does not need a separate login inside this worker. **Sign in to ChatGPT*
 
 ## Diagnose a failed request
 
-Use the request ID to inspect `bridge/requests/<request-id>.json`, `bridge/claims/<request-id>.json`, and `bridge/results/<request-id>.json` on the configured mailbox branch. A request file means ChatGPT/its GitHub integration committed the request; a matching claim means the local worker claimed it; the result records validation, execution, and any tool error. If no request file exists, the Windows worker never received that request through this mailbox, so investigate the upstream request creation or ChatGPT/GitHub integration rather than describing it as a local execution block.
+Use the request ID to inspect `bridge/requests/<request-id>.json`, `bridge/claims/<request-id>.json`, and `bridge/results/<request-id>.json` on the configured mailbox branch. A request file means ChatGPT/its GitHub integration committed the request; a matching claim means the local worker claimed it; the result records validation, execution, and any tool error. If no request file exists, the Windows worker never received that request through this mailbox, so investigate the upstream request creation or ChatGPT/GitHub integration rather than describing it as a local execution block. If the GitHub create-file call reports HTTP 409 for a branch-head conflict, read back that exact request path first; if it exists, continue with the same request, and if it is absent, refresh the branch and retry the same ID/path. Never create a second ID to work around an uncertain write.
 
 ## Observe-first interactive desktop loop
 
