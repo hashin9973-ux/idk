@@ -876,7 +876,6 @@ test('notebook output JavaScript attempts direct app handoff with clipboard copy
   assert.ok(browserSource.includes('Connect to Windows Bridge'));
   assert.ok(browserSource.includes('windows-repository-bridge://connect-colab?endpoint='));
   assert.ok(browserSource.includes('sendToWindowsBridge(false)'));
-  assert.ok(browserSource.includes('windows-repository-bridge://connect-colab?endpoint='));
 });
 
 test('notebook scopes its public API to the random URL path token and keeps the model off', () => {
@@ -897,7 +896,7 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
 
-test('the desktop uses a clipboard reader only for the explicit Colab connect flow', () => {
+test('native Colab URL handoff is primary and clipboard polling remains a fallback', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'main.js'), 'utf8');
   const service = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'colab-direct-service.js'), 'utf8');
   assert.match(main, /readClipboardText: \(\) => clipboard\.readText\(\)/);
