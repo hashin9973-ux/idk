@@ -27,6 +27,7 @@ def validate_context_helpers(code):
         "normalized_accessibility_hints",
         "map_model_boxes_to_original",
         "normalize_model_report",
+        "build_passive_fallback_report",
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
     found = {node.name for node in nodes}
@@ -58,6 +59,7 @@ def validate_context_helpers(code):
     map_boxes = namespace["map_model_boxes_to_original"]
     normalize_report = namespace["normalize_model_report"]
     hints = namespace["normalized_accessibility_hints"]
+    fallback_builder = namespace["build_passive_fallback_report"]
 
     crop_report = {
         "schema_version": "windows-vision-context/v2",
@@ -105,9 +107,34 @@ def validate_context_helpers(code):
         raise SystemExit("FAIL: crop coordinates did not map to the original frame or the center was not derived from the box.")
     if target["visual_bbox_px"] != [500, 200, 600, 250]:
         raise SystemExit("FAIL: the original visual estimate was not preserved as separate evidence.")
+    if normalized["objects"][0]["bbox_px"] != [420, 160, 440, 170]:
+        raise SystemExit("FAIL: visual object coordinates were not mapped from the focused crop into the original frame.")
+
+    fallback = fallback_builder(
+        1000, 500,
+        {
+            "available": True, "source": "windows_uia", "reason": None,
+            "active_window": {"title": "Test app", "bbox_px": [0, 0, 1000, 500]},
+            "focused_control": None,
+            "controls": [{"id": "uia-apply", "label": "Apply", "role": "Button",
+                          "enabled": True, "bbox_px": [800, 400, 900, 450]}],
+            "cursor": {"x_px": 500, "y_px": 250}
+        },
+        {"available": True, "method": "tesseract", "reason": None,
+         "text_spans": [{"text": "Install", "bbox_px": [10, 10, 60, 30]}]},
+        "RuntimeError: model does not support multimodal requests"
+    )
+    if not fallback["perception"]["degraded"] or fallback["perception"]["mode"] != "ocr_accessibility_fallback":
+        raise SystemExit("FAIL: passive fallback did not explicitly mark degraded OCR/UIA mode.")
+    if fallback["controls"][0]["bbox_px"] != [800, 400, 900, 450] or fallback["controls"][0]["center_px"] != [850.0, 425.0]:
+        raise SystemExit("FAIL: degraded fallback did not preserve system-grounded control coordinates.")
+    if fallback["text_spans"][0]["text"] != "Install":
+        raise SystemExit("FAIL: degraded fallback did not preserve OCR text evidence.")
     print("PASS: crop-relative coordinates map to the original screenshot frame")
     print("PASS: matching Windows UI Automation bounds become explicitly accessibility-grounded")
     print("PASS: coordinate centers are computed locally from the validated bounding rectangles")
+    print("PASS: object boxes map from focused crops into the original desktop coordinate frame")
+    print("PASS: passive model failures retain explicit, degraded OCR/UI Automation evidence")
 
 
 def main():
