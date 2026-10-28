@@ -27,7 +27,7 @@ The ChatGPT GitHub integration and the app's GitHub authorization are separate. 
 
 - **Repository:** `hashin9973-ux/qdqwg` (private)
 - **Mailbox branch:** `bridge-mailbox`
-- **Default polling interval:** 2 seconds (faster result pickup; GitHub still transports requests/results asynchronously)
+- **Worker poll timer:** approximately 1 second; request-directory reconciliation every 5 seconds in the updated build if the path-filtered commit cursor is stale. GitHub still transports requests/results asynchronously.
 
 The app defaults to `hashin9973-ux/qdqwg`, branch `bridge-mailbox`, and reuses any previously saved mailbox configuration. There is no configuration screen in the minimal status UI. Use the same repository and branch in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
 
@@ -41,7 +41,7 @@ The status window includes **Auto-accept everything**, off by default. Turning i
 
 Important distinction: `sandbox/` is an operating convention for ChatGPT's GitHub work area, not a GitHub-enforced path permission. GitHub repository access is granted at repository level. Keep the mailbox private and protect the app source in its separate repository. Local path validation is enforced by the desktop app; it does not constrain actions performed directly through the GitHub integration.
 
-A GitHub request is never approval to execute a command. The local app's policy cannot be overridden by request arguments.
+A GitHub request is never approval to execute a command. The local app's policy cannot be overridden by request arguments. If the GitHub create-file operation returns HTTP 409 for a branch-head conflict, first read the exact request path: if it exists, use the same request and result; if absent, refresh the branch and retry the same ID/path. Do not blindly create a second ID for an uncertain write.
 
 ## Diagnosing end-to-end latency
 
@@ -83,7 +83,7 @@ The worker validates the request, claims it, runs the requested local tool accor
 
 ### Batch local operations
 
-Use `tool: "get_agent_context"` once at the start to get the workspace overview and tool schemas; it is a single compact request. The main performance target is the **whole task**, not just file listings: every separate request/result cycle crosses GitHub's asynchronous mailbox, so avoid one bridge call per small step. Use `tool: "batch"` for up to 50 planned operations in one request, including related reads, diffs, edits, and tests. Independent steps run concurrently up to `maxConcurrency` (default 4, maximum 8); dependent steps should use explicit result references. Use result references to pass outputs between steps. Structure complex work as a few task-level cycles: (1) inspect project state and relevant files together, (2) apply a focused multi-file change, and (3) run relevant tests plus Git status/diff together. Do another cycle only when findings require a new decision. Prefer targeted search/ranged reads over dumping all content, but apply the same batching rule to all tool types—not just listings. Use a shell script only when it safely consolidates several known operations; shell commands run with the user's Windows permissions and are not workspace-sandboxed. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted. With Auto-accept everything enabled, the worker skips native approval prompts but continues enforcing tool validation and workspace path restrictions.
+Use `tool: "get_agent_context"` when the current workspace overview or registered schemas are unknown/stale; do not delay a live-screen read from an already-enabled `bridge/vision/observe.json` feed while fetching context. The main performance target is the **whole task**, not just file listings: every separate request/result cycle crosses GitHub's asynchronous mailbox, so avoid one bridge call per small step. Use `tool: "batch"` for up to 100 planned operations in one request. The current catalog allows `maxConcurrency` from 1 to 100 (default 32); the worker dispatches up to 32 independent mailbox requests. The installed catalog is authoritative for the running build; dependent steps should use explicit result references. Use result references to pass outputs between steps. Structure complex work as a few task-level cycles: (1) inspect project state and relevant files together, (2) apply a focused multi-file change, and (3) run relevant tests plus Git status/diff together. Do another cycle only when findings require a new decision. Prefer targeted search/ranged reads over dumping all content, but apply the same batching rule to all tool types—not just listings. Use a shell script only when it safely consolidates several known operations; shell commands run with the user's Windows permissions and are not workspace-sandboxed. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted. With Auto-accept everything enabled, the worker skips native approval prompts but continues enforcing tool validation and workspace path restrictions.
 
 ```json
 {
