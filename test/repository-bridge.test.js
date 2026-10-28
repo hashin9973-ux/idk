@@ -13,6 +13,7 @@ const {
   sanitizeForRepository,
   createRepositoryBridge
 } = require('../desktop/repository-bridge');
+const { getExecutionFootprint, executionFootprintsConflict } = require('../desktop/tool-bridge');
 
 function encode(value) {
   return Buffer.from(JSON.stringify(value, null, 2) + '\n', 'utf8').toString('base64');
@@ -471,8 +472,8 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('1.5-second request-tree polling discovers work without awaiting the path-filtered commit endpoint', async () => {
-  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 1500);
+test('request-tree polling runs on every worker poll without awaiting the path-filtered commit endpoint', async () => {
+  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 1000);
   // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
@@ -597,6 +598,23 @@ test('worker drains queued mailbox requests without a folder re-read for every c
   } finally {
     await bridge.stop();
   }
+});
+
+
+test('execution footprints serialize ambiguous aliases but allow disjoint paths to run concurrently', () => {
+  const readFile = getExecutionFootprint('read_file', { path: 'same.txt' });
+  const writeFile = getExecutionFootprint('write_file', { path: 'same.txt', content: 'new' });
+  const readOther = getExecutionFootprint('read_file', { path: 'other.txt' });
+  const aliasRead = getExecutionFootprint('read_file', { path: 'folder/../same.txt' });
+  const absoluteRead = getExecutionFootprint('read_file', { path: 'C:\\workspace\\same.txt' });
+  const unknownSideEffect = getExecutionFootprint('new_tool_not_in_the_catalog', {});
+
+  assert.equal(executionFootprintsConflict(readFile, writeFile), true);
+  assert.equal(executionFootprintsConflict(readFile, readOther), false);
+  assert.equal(aliasRead.barrier, true, 'parent-traversal aliases must not bypass conflict detection');
+  assert.equal(absoluteRead.barrier, true, 'absolute paths cannot be safely matched without the canonical workspace root');
+  assert.equal(unknownSideEffect.barrier, true, 'unknown tools must block concurrent execution conservatively');
+  assert.equal(executionFootprintsConflict(aliasRead, readOther), true);
 });
 
 
