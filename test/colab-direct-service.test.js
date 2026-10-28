@@ -914,20 +914,29 @@ test('structured vision context rejects invalid control bounds instead of accept
 });
 
 
-test('old single-model Colab runtimes are rejected before any screenshot upload', async t => {
+test('old Colab runtimes stay visible but never activate or receive screenshots/TTS', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
-  await openAndPublishEndpoint(f);
   f.setState({
     protocol: DIRECT_VISION_PROTOCOL, status: 'ready', enabled: true, model_loaded: true,
     model: 'qwen3-vl:4b-instruct', vision_worker_api_version: undefined, features: undefined,
     passive_model_loaded: false, tts_ready: false
   });
+  const connected = await f.service.connectColab(ENDPOINT);
+  assert.equal(connected.connected, true, 'a reachable tunnel is still reported as connected');
+  assert.equal(connected.status, 'incompatible_runtime');
+  assert.equal(connected.runtime_compatible, false);
+  assert.equal(connected.vision_activated, false, 'the obsolete runtime must not receive an activation request');
+  assert.match(connected.message, /out of date/i);
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'), true);
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'), false);
+
   const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, 'old-runtime-check');
   assert.equal(result.status, 'incompatible_runtime');
   assert.equal(result.runtime_compatible, false);
   assert.match(result.message, /out of date/i);
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, 0);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts').length, 0);
 });
 
 test('Piper TTS validates voice and speaker, saves WAV locally, and optionally plays it', async t => {

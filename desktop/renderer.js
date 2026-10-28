@@ -541,17 +541,20 @@
       if (result && result.connected === true) {
         stopVisionConnectionWatch();
         renderVisionStatus(result);
-        visionSetupDetail.textContent = 'Colab connected';
+        const incompatibleRuntime = result.status === 'incompatible_runtime' || result.runtime_compatible === false;
+        visionSetupDetail.textContent = incompatibleRuntime ? 'Notebook update required' : 'Colab connected';
         visionSetupDetail.title = result.message || 'Colab responded through the direct authenticated HTTPS endpoint.';
-        visionSetupDetail.dataset.state = 'passed';
-        visionColabDetail.textContent = 'Direct tunnel live';
+        visionSetupDetail.dataset.state = incompatibleRuntime ? 'failed' : 'passed';
+        visionColabDetail.textContent = incompatibleRuntime ? 'Tunnel live · API outdated' : 'Direct tunnel live';
         visionColabDetail.title = result.message || 'The app verified the authenticated HTTPS connection.';
-        visionColabDetail.dataset.state = 'passed';
-        visionModelDetail.textContent = result.model_loaded === true ? 'Loaded' : result.enabled === true ? 'Loading…' : 'Not loaded';
-        visionModelDetail.title = result.model_loaded === true
-          ? 'The Colab model is loaded.'
-          : result.enabled === true ? 'Vision is active; the model is loading in the background.' : 'Waiting for the authenticated connection to activate vision.';
-        visionModelDetail.dataset.state = result.model_loaded === true ? 'passed' : result.enabled === true ? 'in_progress' : 'not_verified';
+        visionColabDetail.dataset.state = incompatibleRuntime ? 'action_required' : 'passed';
+        visionModelDetail.textContent = incompatibleRuntime ? 'Update notebook' : result.model_loaded === true ? 'Loaded' : result.enabled === true ? 'Loading…' : 'Not loaded';
+        visionModelDetail.title = incompatibleRuntime
+          ? result.message || 'Interrupt the old server cell and run the latest notebook cell.'
+          : result.model_loaded === true
+            ? 'The Colab model is loaded.'
+            : result.enabled === true ? 'Vision is active; the model is loading in the background.' : 'Waiting for the authenticated connection to activate vision.';
+        visionModelDetail.dataset.state = incompatibleRuntime ? 'action_required' : result.model_loaded === true ? 'passed' : result.enabled === true ? 'in_progress' : 'not_verified';
         if (isManual) {
           visionEndpointInput.value = '';
           setVisionManualPanelVisible(false);

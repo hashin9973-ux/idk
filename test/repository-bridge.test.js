@@ -37,6 +37,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
   }
   const calls = [];
+  let requestTreeFailuresRemaining = 0;
   const falseConflictPaths = new Set(falseConflictCreatePaths);
   const transientCreateConflictTargets = new Set(transientCreateConflictPaths);
   let headCommitSha = 'f'.repeat(40);
@@ -106,6 +107,10 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
         const treeRef = path.slice(treePrefix.length);
         const treePath = treeRef === 'bridge-mailbox' ? '' : treePathsBySha.get(treeRef);
         if (treePath === undefined) throw new Error('Not Found (404)');
+        if (treePath === 'bridge/requests' && requestTreeFailuresRemaining > 0) {
+          requestTreeFailuresRemaining--;
+          throw new Error('fetch failed: simulated mailbox network timeout');
+        }
         const prefix = treePath ? treePath + '/' : '';
         const children = new Map();
         for (const [filePath, value] of files) {
@@ -183,7 +188,8 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
   };
   return {
     githubAuth, files, calls,
-    treeRef: relativePath => treeShaForPath(relativePath)
+    treeRef: relativePath => treeShaForPath(relativePath),
+    failNextRequestTreeReads: count => { requestTreeFailuresRemaining = Math.max(0, Number(count) || 0); }
   };
 }
 
@@ -368,6 +374,39 @@ test('create-only HTTP 422 without an existing result is verified and retried', 
     const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
     assert.equal(claim.status, 'completed');
     assert.equal(bridge.getState().lastError, '');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('mailbox transport health is tracked separately from ordinary tool errors', async () => {
+  const fake = fakeGitHub();
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true }),
+    intervalMs: 5000,
+    requestReconciliationIntervalMs: 1
+  });
+
+  try {
+    const started = await bridge.start();
+    assert.equal(started.running, true);
+    assert.ok(started.lastPollAt, 'a successful request-tree scan records the last successful poll');
+    assert.equal(started.lastPollError, '');
+
+    fake.failNextRequestTreeReads(1);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await bridge.pollOnce();
+    const failedPoll = bridge.getState();
+    assert.equal(failedPoll.lastPollAt, started.lastPollAt, 'a failed scan must not refresh the successful-poll timestamp');
+    assert.match(failedPoll.lastPollError, /simulated mailbox network timeout/i);
+
+    await bridge.pollOnce();
+    const recovered = bridge.getState();
+    assert.ok(recovered.lastPollAt);
+    assert.equal(recovered.lastPollError, '', 'a successful scan clears the separate transport error');
   } finally {
     await bridge.stop();
   }
