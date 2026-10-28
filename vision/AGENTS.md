@@ -36,3 +36,5 @@ The Colab notebook is the authenticated visual-analysis backend for the Windows 
 - Preserve valid Jupyter notebook JSON and code-cell source representation; clear saved cell outputs so a short-lived endpoint never leaks into the repository.
 - Run `npm run check` and `npm test`, and verify the Python source embedded in notebook code cells compiles. Distinguish static verification and CI from a live Colab GPU/inference test.
 - Do not claim a live tunnel, GPU, model load, inference, or end-to-end screenshot worked unless directly tested.
+
+- Preserve LibriTTS attribution in user-facing documentation: the `en_US-libritts-high` voice is trained on LibriTTS/OpenSLR 60, licensed CC BY 4.0; link to the voice model card and license.
