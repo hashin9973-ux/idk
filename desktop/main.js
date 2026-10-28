@@ -476,11 +476,15 @@ function createTray() {
 }
 
 
+// Observe only needs a change fingerprint (computed below at 64x36), not a full-resolution
+// image for OCR or display. Request a smaller Electron thumbnail to reduce capture overhead.
+const OBSERVE_CAPTURE_THUMBNAIL_SIZE = Object.freeze({ width: 640, height: 360 });
+
 async function captureDesktopScreenshot() {
   const primaryDisplay = screen.getPrimaryDisplay();
   const sources = await desktopCapturer.getSources({
     types: ['screen'],
-    thumbnailSize: { width: 1920, height: 1080 },
+    thumbnailSize: OBSERVE_CAPTURE_THUMBNAIL_SIZE,
     fetchWindowIcons: false
   });
   const source = sources.find(item => String(item.display_id) === String(primaryDisplay.id)) || sources[0];
