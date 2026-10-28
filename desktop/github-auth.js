@@ -49,7 +49,8 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       checkedAt: Date.now(),
       verified: true,
       state: {
-        configured: true,
+        configured: typeof githubSettings().clientId === 'string' &&
+          OAUTH_CLIENT_ID_PATTERN.test(githubSettings().clientId),
         clientId: String(githubSettings().clientId || ''),
         authenticated: true,
         login: typeof login === 'string' ? login : '',
