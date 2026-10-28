@@ -184,6 +184,115 @@ test('Observe coalesces pending passive analysis to the newest frame and marks s
   assert.match(skipped.vision_error, /newer changed screen frame/i);
 });
 
+ 
+test('Observe retains an in-flight report frame beyond the rolling ten-frame history', async t => {
+  let tick = null;
+  let captureIndex = 0;
+  const published = [];
+  const analyzedFrameIds = [];
+  let releaseFirst;
+  const firstAnalysisGate = new Promise(resolve => { releaseFirst = resolve; });
+  const service = createObserveService({
+    githubAuth: {
+      requestApi: async input => {
+        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
+        published.push(JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8')));
+        return { result: { content: { sha: 'd'.repeat(40) } } };
+      }
+    },
+    captureScreenshot: async () => {
+      captureIndex += 1;
+      return {
+        bytes: Buffer.from('delayed-frame-' + captureIndex),
+        frame_id: 'delayed-frame-' + captureIndex,
+        width: 1920, height: 1080, screen_width: 1920, screen_height: 1080,
+        captured_at: Date.now(), display_id: 'primary'
+      };
+    },
+    fingerprintScreenshot: async captured => captured.frame_id,
+    getAccessibleSnapshot: async ({ screen }) => ({
+      available: true, source: 'windows_uia', active_window: { title: 'Browser' },
+      focused_control: null, controls: [], cursor: null, truncated: false, node_count: 1,
+      screen: { width: screen.width, height: screen.height }
+    }),
+    analyzeFrame: async ({ frameId, screen }) => {
+      analyzedFrameIds.push(frameId);
+      if (frameId === 'delayed-frame-1') await firstAnalysisGate;
+      return {
+        status: 'report_available',
+        model: 'SmolVLM2-2.2B-Instruct',
+        input_image: { frame_id: frameId },
+        report: JSON.stringify({
+          schema_version: 'windows-vision-context/v2',
+          frame: {
+            width_px: screen.frame_width, height_px: screen.frame_height,
+            coordinate_space: 'screenshot_jpeg_px', origin: 'top-left',
+            x_axis: 'right', y_axis: 'down'
+          },
+          scene: { summary: 'Observed ' + frameId, screen_type: 'desktop' },
+          regions: [], text_spans: [], controls: [], objects: [],
+          perception: { mode: 'multimodal_vision+ocr+uia', degraded: false, error: null },
+          accessibility: { available: true, controls: [] },
+          ocr: { available: true, method: 'tesseract', text_spans: [] }
+        })
+      };
+    },
+    sleep: async () => {},
+    setIntervalImpl: fn => { tick = fn; return 1; },
+    clearIntervalImpl: () => {}
+  });
+  t.after(async () => {
+    releaseFirst();
+    await service.setEnabled(false);
+    await service.dispose();
+  });
+
+  async function waitFor(predicate, label) {
+    for (let i = 0; i < 120; i += 1) {
+      if (predicate()) return;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.fail('Timed out waiting for ' + label);
+  }
+
+  await service.setEnabled(true);
+  await waitFor(() => analyzedFrameIds.length === 1, 'first passive analysis to start');
+  assert.equal(analyzedFrameIds[0], 'delayed-frame-1');
+
+  for (let index = 2; index <= FRAME_LIMIT + 3; index += 1) {
+    tick();
+    await waitFor(() => service.status().sequence >= index, 'frame ' + index + ' to enter Observe');
+  }
+  await waitFor(() => published.some(payload => payload.frames?.some(frame => frame.frame_id === 'delayed-frame-13')),
+    'latest frame publication');
+  assert.equal(service.status().frame_count, FRAME_LIMIT);
+  const duringInference = published.findLast(payload => payload.frames?.some(frame => frame.frame_id === 'delayed-frame-13'));
+  assert.ok(duringInference.frames.some(frame =>
+    frame.frame_id === 'delayed-frame-1' && frame.vision_status === 'processing'),
+  'the in-flight frame must remain addressable after more than ten newer frames arrive');
+  assert.equal(duringInference.in_flight_frame_id, 'delayed-frame-1');
+
+  releaseFirst();
+  await waitFor(() => analyzedFrameIds.length === 2, 'the newest pending frame to be analyzed');
+  await waitFor(() => published.some(payload =>
+    payload.last_vision_frame_id === 'delayed-frame-1' &&
+    payload.frames?.some(frame => frame.frame_id === 'delayed-frame-1' && frame.vision_status === 'ready')),
+  'the delayed report to be attached to its original frame');
+  const firstCompleted = published.findLast(payload =>
+    payload.last_vision_frame_id === 'delayed-frame-1' &&
+    payload.frames?.some(frame => frame.frame_id === 'delayed-frame-1' && frame.vision_status === 'ready'));
+  const firstFrame = firstCompleted.frames.find(frame => frame.frame_id === 'delayed-frame-1');
+  assert.equal(firstFrame.vision.frame_id, firstFrame.frame_id);
+  assert.equal(firstFrame.vision.scene.summary, 'Observed delayed-frame-1');
+  assert.equal(firstCompleted.last_vision_frame_id, 'delayed-frame-1');
+  assert.equal(firstCompleted.in_flight_frame_id, 'delayed-frame-13');
+
+  await waitFor(() => published.some(payload =>
+    payload.last_vision_frame_id === 'delayed-frame-13' &&
+    payload.frames?.some(frame => frame.frame_id === 'delayed-frame-13' && frame.vision_status === 'ready')),
+  'the latest report to complete');
+  assert.deepEqual(analyzedFrameIds, ['delayed-frame-1', 'delayed-frame-13']);
+});
 test('Observe retains full-resolution pixels locally and publishes matching passive vision without image bytes', async () => {
   let tick = null;
   const published = [];
