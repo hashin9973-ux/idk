@@ -915,8 +915,9 @@ function createVisionService(deps) {
       }
       if (data.protocol !== RESULT_PROTOCOL || data.request_id !== jobId ||
           data.input_sha256 !== screenshot.metadata.sha256 ||
-          data.input_frame_id !== screenshot.metadata.frame_id) {
-        throw new Error('The Colab result did not match the submitted request ID and screenshot SHA-256; the output was rejected.');
+          data.input_frame_id !== screenshot.metadata.frame_id ||
+          data.model_role !== screenshot.metadata.model_role) {
+        throw new Error('The Colab result did not match the submitted request ID, screenshot SHA-256, frame ID, and model role; the output was rejected.');
       }
       if (data.status === 'failed') {
         throw new Error(String(data.error || 'Colab vision inference failed.'));
