@@ -901,7 +901,7 @@ test('Piper TTS supports no-playback mode and reports not-ready runtime state', 
 });
 
 test('concurrent TTS playback is reserved before runtime health and synthesis I/O', async t => {
-  const f = fixture();
+  const f = fixture({ playAudio: async () => {} });
   t.after(() => f.service.dispose());
   await openAndPublishEndpoint(f);
   await f.service.activate({}, 'activate-for-tts-race');

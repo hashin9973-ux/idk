@@ -99,6 +99,91 @@ test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling 
 });
 
 
+test('Observe coalesces pending passive analysis to the newest frame and marks skipped frames', async t => {
+  let tick = null;
+  let captureIndex = 0;
+  const published = [];
+  const analyzedFrameIds = [];
+  let releaseFirst;
+  const firstAnalysisGate = new Promise(resolve => { releaseFirst = resolve; });
+
+  const service = createObserveService({
+    githubAuth: {
+      requestApi: async input => {
+        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
+        published.push(JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8')));
+        return { result: { content: { sha: 'c'.repeat(40) } } };
+      }
+    },
+    captureScreenshot: async () => {
+      captureIndex += 1;
+      return {
+        bytes: Buffer.from('frame-' + captureIndex),
+        frame_id: 'sample-frame-' + captureIndex,
+        width: 1920, height: 1080, screen_width: 1920, screen_height: 1080,
+        captured_at: Date.now(), display_id: 'primary'
+      };
+    },
+    fingerprintScreenshot: async captured => captured.frame_id,
+    getAccessibleSnapshot: async ({ screen }) => ({
+      available: true, source: 'windows_uia', active_window: null, focused_control: null,
+      controls: [], cursor: null, truncated: false, node_count: 1,
+      screen: { width: screen.width, height: screen.height }
+    }),
+    analyzeFrame: async ({ frameId, screen }) => {
+      analyzedFrameIds.push(frameId);
+      if (analyzedFrameIds.length === 1) await firstAnalysisGate;
+      return {
+        status: 'report_available',
+        model: 'SmolVLM2-2.2B-Instruct',
+        input_image: { frame_id: frameId },
+        report: JSON.stringify({
+          schema_version: 'windows-vision-context/v2',
+          frame: { width_px: screen.frame_width, height_px: screen.frame_height },
+          scene: { summary: 'Observed ' + frameId },
+          regions: [], text_spans: [], controls: [], objects: [],
+          perception: { mode: 'multimodal_vision+ocr+uia', degraded: false, error: null },
+          accessibility: { available: true, controls: [] },
+          ocr: { available: true, method: 'tesseract', text_spans: [] }
+        })
+      };
+    },
+    sleep: async () => {},
+    setIntervalImpl: fn => { tick = fn; return 1; },
+    clearIntervalImpl: () => {}
+  });
+  t.after(async () => { releaseFirst(); await service.setEnabled(false); await service.dispose(); });
+
+  await service.setEnabled(true);
+  async function waitFor(predicate, label) {
+    for (let i = 0; i < 80; i += 1) {
+      if (predicate()) return;
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.fail('Timed out waiting for ' + label);
+  }
+  await waitFor(() => analyzedFrameIds.length === 1, 'first passive analysis to start');
+  assert.equal(analyzedFrameIds[0], 'sample-frame-1');
+
+  tick();
+  await waitFor(() => service.status().frame_count >= 2, 'second frame to enter Observe');
+  tick();
+  await waitFor(() => service.status().frame_count >= 3, 'third frame to enter Observe');
+  assert.deepEqual(analyzedFrameIds, ['sample-frame-1'], 'new screens should replace a queued frame while current inference is running');
+
+  releaseFirst();
+  await waitFor(() => analyzedFrameIds.length === 2, 'newest pending frame to be analyzed');
+  await waitFor(() => published.flatMap(payload => payload.frames || []).some(frame =>
+    frame.frame_id === 'sample-frame-3' && frame.vision_status === 'ready'), 'newest frame result publication');
+
+  assert.deepEqual(analyzedFrameIds, ['sample-frame-1', 'sample-frame-3']);
+  const frames = published.flatMap(payload => payload.frames || []);
+  const skipped = frames.filter(frame => frame.frame_id === 'sample-frame-2').at(-1);
+  assert.ok(skipped, 'the skipped frame remains available for diagnostics');
+  assert.equal(skipped.vision_status, 'superseded');
+  assert.match(skipped.vision_error, /newer changed screen frame/i);
+});
+
 test('Observe retains full-resolution pixels locally and publishes matching passive vision without image bytes', async () => {
   let tick = null;
   const published = [];

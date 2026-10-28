@@ -251,6 +251,17 @@ function createObserveService(deps = {}) {
         if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
         publicationRevision += 1;
         if (typeof analyzeFrame === 'function') {
+          if (pendingVisionFrame && pendingVisionFrame.epoch === item.epoch &&
+              pendingVisionFrame.frameId !== frame.frame_id) {
+            const supersededFrame = frames.find(candidate =>
+              candidate.sequence === pendingVisionFrame.sequence &&
+              candidate.frame_id === pendingVisionFrame.frameId);
+            if (supersededFrame && supersededFrame.vision_status === 'pending') {
+              supersededFrame.vision_status = 'superseded';
+              supersededFrame.vision_error = 'Passive analysis skipped because a newer changed screen frame arrived while vision was busy.';
+              publicationRevision += 1;
+            }
+          }
           pendingVisionFrame = { sequence: frame.sequence, frameId: frame.frame_id, captured, screen, accessibility, epoch: item.epoch };
           void drainVisionQueue();
         }
