@@ -284,7 +284,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   const compatibility = read('desktop', 'vision-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
-  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode']"));
+  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'frame_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode']"));
   assert.match(bridge, /Native local computer tool for the real Windows workspace/);
   assert.match(bridge, /returned boxes are mapped back to the original full-frame coordinates/);
   assert.match(bridge, /All click\/move\/drag\/scroll\/key\/mouse inputs execute on local Windows, not in Colab/);
