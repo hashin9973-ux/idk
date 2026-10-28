@@ -1144,11 +1144,29 @@ const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', showMainWindow);
+  app.on('second-instance', (_event, commandLine) => {
+    const deepLink = Array.isArray(commandLine)
+      ? commandLine.find(value => typeof value === 'string' && value.startsWith(COLAB_HANDOFF_SCHEME + '://'))
+      : '';
+    if (deepLink) queueColabHandoff(deepLink);
+    showMainWindow();
+  });
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    queueColabHandoff(url);
+  });
 
   app.whenReady().then(() => {
     appendDiagnosticLog('startup', 'Electron app ready; version=' + app.getVersion() + '; packaged=' + app.isPackaged);
     app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
+    try {
+      const registered = app.isPackaged
+        ? app.setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)
+        : app.setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME, process.execPath, [path.resolve(process.argv[1] || '.')]);
+      if (!registered) appendDiagnosticLog('colab-handoff-protocol', 'Native URL protocol registration did not succeed; the notebook output fallback stays available.');
+    } catch (error) {
+      appendDiagnosticLog('colab-handoff-protocol-registration-failed', String(error && error.message || error));
+    }
     settings = loadSettings();
     const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
       ? settings.repositoryBridge : {};
@@ -1259,6 +1277,8 @@ if (!hasInstanceLock) {
         console.warn('Could not start filesystem index:', filesystemIndexSyncError);
       });
       startAutoConnectLoop();
+      if (startupColabHandoffUri) queueColabHandoff(startupColabHandoffUri);
+      else if (pendingColabHandoffUrl) processPendingColabHandoff();
     } else if (appInitializationError) {
       setAutoConnectionStatus('attention', appInitializationError);
     }
