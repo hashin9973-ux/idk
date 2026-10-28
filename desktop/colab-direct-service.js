@@ -6,6 +6,13 @@ const path = require('node:path');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
+const VISION_WORKER_API_VERSION = 2;
+const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high']);
+const TTS_PROTOCOL = 'piper-libritts-tts/v1';
+const TTS_VOICE = 'en_US-libritts-high';
+const TTS_SPEAKER_ID = 0;
+const MAX_TTS_TEXT_CHARS = 2000;
+const MAX_TTS_AUDIO_BYTES = 25 * 1024 * 1024;
 const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
 const MODEL_ID = 'ollama/qwen3-vl';
@@ -490,29 +497,43 @@ function createVisionService(deps) {
     const enabled = data.enabled === true;
     const loaded = data.model_loaded === true;
     const reported = String(data.status || 'starting');
+    const features = Array.isArray(data.features) ? data.features.filter(item => typeof item === 'string') : [];
+    const apiVersion = Number.isInteger(data.vision_worker_api_version) ? data.vision_worker_api_version : 0;
+    const missingFeatures = REQUIRED_VISION_FEATURES.filter(feature => !features.includes(feature));
+    const runtimeCompatible = apiVersion >= VISION_WORKER_API_VERSION && missingFeatures.length === 0;
     let status;
-    if (!enabled) status = 'inactive';
+    if (!runtimeCompatible) status = 'incompatible_runtime';
+    else if (!enabled) status = 'inactive';
     else if (reported === 'processing' || reported === 'inference_in_progress') status = 'inference_in_progress';
     else if (['gpu_unavailable', 'needs_authentication', 'error'].includes(reported)) status = reported;
     else status = loaded ? 'ready' : 'starting';
+    const compatibilityMessage = !runtimeCompatible
+      ? 'The connected Colab notebook is out of date (API version ' + apiVersion +
+        '; required version ' + VISION_WORKER_API_VERSION + '). Interrupt the running Colab cell, open the updated notebook, and run its server cell again. Required capabilities missing: ' +
+        (missingFeatures.join(', ') || 'vision worker API v2') + '. No screenshot or TTS request should be sent to this runtime.'
+      : '';
     return {
       status, enabled, runtime_fresh: true, runtime_alive: true, connection_registered: true,
+      runtime_compatible: runtimeCompatible, vision_worker_api_version: apiVersion,
+      features, missing_vision_features: missingFeatures,
       runtime_status: reported, heartbeat_at: data.heartbeat_at || new Date(now()).toISOString(),
       gpu: data.gpu || null, vram_mib: Number.isFinite(data.vram_mib) ? data.vram_mib : null,
       model_loaded: loaded, model: data.model || MODEL_FILE,
-      passive_model: data.passive_model || null,
-      passive_model_loaded: data.passive_model_loaded === true,
-      detailed_model_parked: data.detailed_model_parked === true,
-      detailed_model_loaded: data.detailed_model_loaded === true,
+      passive_model: data.passive_model || null, passive_model_loaded: data.passive_model_loaded === true,
+      detailed_model_parked: data.detailed_model_parked === true, detailed_model_loaded: data.detailed_model_loaded === true,
       swap: data.swap && typeof data.swap === 'object' ? data.swap : null,
-      stage: data.stage || null,
-      stage_started_at: data.stage_started_at || null,
+      tts_ready: data.tts_ready === true, tts_model_loaded: data.tts_model_loaded === true,
+      tts_error: data.tts_error ? String(data.tts_error).slice(0, 500) : null,
+      tts_voice: data.tts_voice || null,
+      tts_speaker_id: Number.isInteger(data.tts_speaker_id) ? data.tts_speaker_id : null,
+      tts_sample_rate: Number.isFinite(data.tts_sample_rate) ? data.tts_sample_rate : null,
+      stage: data.stage || null, stage_started_at: data.stage_started_at || null,
       stage_elapsed_seconds: Number.isFinite(data.stage_elapsed_seconds) ? Math.max(0, Math.floor(data.stage_elapsed_seconds)) : null,
       active_request_id: data.active_request_id || null,
       passive_active_request_id: data.passive_active_request_id || null,
       last_completed_request_id: data.last_completed_request_id || null,
       model_state_refresh_error: data.model_state_refresh_error || null,
-      message: String(data.message || ''), transport: 'direct_https_tunnel'
+      message: compatibilityMessage || String(data.message || ''), transport: 'direct_https_tunnel'
     };
   }
 
@@ -520,8 +541,8 @@ function createVisionService(deps) {
     if (!colabConnection) {
       return {
         status: 'disconnected', enabled: visionEnabled, runtime_fresh: false, runtime_alive: false,
-        connection_registered: false, model_loaded: false,
-        message: 'No direct Colab connection is registered. Click Connect Colab and run the notebook cell; no GitHub token is needed in Colab.'
+        connection_registered: false, model_loaded: false, runtime_compatible: false, tts_ready: false, tts_model_loaded: false,
+        message: 'No direct Colab connection is registered. Click Connect Colab and run the updated vision notebook cell; no GitHub token is needed in Colab.'
       };
     }
     try {
@@ -532,7 +553,7 @@ function createVisionService(deps) {
     } catch (error) {
       return {
         status: 'disconnected', enabled: visionEnabled, runtime_fresh: false, runtime_alive: false,
-        connection_registered: true, model_loaded: false,
+        connection_registered: true, model_loaded: false, runtime_compatible: false, tts_ready: false,
         message: 'The Colab tunnel was registered but is not responding: ' + messageOf(error)
       };
     }
@@ -977,6 +998,11 @@ function createVisionService(deps) {
       const previous = jobs.get(jobId);
       if (previous) return previous.result || waitForJob(jobId, safeWaitMs(args.waitMs));
       const state = await queryRuntime();
+      if (state.runtime_compatible !== true) {
+        return { ...state, status: 'incompatible_runtime', request_id: jobId,
+          error: state.message || 'The connected Colab runtime does not support the current vision protocol.',
+          next_step: 'Interrupt the currently running Colab cell and rerun the updated vision_worker.ipynb cell. No screenshot was sent.' };
+      }
       const modelReady = modelRole === 'passive'
         ? state.passive_model_loaded === true
         : state.model_loaded === true && state.status === 'ready';
