@@ -440,9 +440,9 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(result.status, 'report_available');
   assert.match(result.report, /A test window is visible/);
   assert.equal(result.input_sha256, result.input_image.sha256);
-  assert.equal(result.input_image.frame_id, analyzeCallFrameId(f.calls));
   const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
   assert.ok(analyzeCall);
+  assert.equal(result.input_image.frame_id, analyzeCall.body.frame_id);
   assert.equal(analyzeCall.body.protocol, DIRECT_VISION_PROTOCOL);
   assert.equal(analyzeCall.body.sha256, result.input_sha256);
   assert.ok(typeof analyzeCall.body.image_base64 === 'string');
