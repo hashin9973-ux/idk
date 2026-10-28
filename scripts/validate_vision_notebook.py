@@ -60,7 +60,7 @@ def validate_context_helpers(code):
     hints = namespace["normalized_accessibility_hints"]
 
     crop_report = {
-        "schema_version": "windows-vision-context/v1",
+        "schema_version": "windows-vision-context/v2",
         "scene": {
             "summary": "A dialog is open in the foreground.",
             "active_application": "Test app",
@@ -73,6 +73,7 @@ def validate_context_helpers(code):
         },
         "regions": [{"id": "r1", "label": "dialog", "purpose": "Primary dialog", "bbox_1000": [0, 0, 1000, 1000]}],
         "text_spans": [],
+        "objects": [{"id": "o1", "label": "dialog icon", "category": "icon", "appearance": "small blue square", "color": "blue", "shape": "square", "region_id": "r1", "bbox_1000": [50, 50, 100, 100], "confidence": "high"}],
         "controls": [{
             "id": "c1", "label": "Save", "role": "button", "region_id": "r1",
             "bbox_1000": [250, 250, 500, 500], "state": "enabled",
@@ -123,7 +124,13 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
-        "versioned vision worker API": "VISION_WORKER_API_VERSION = 2",
+        "versioned vision worker API": "VISION_WORKER_API_VERSION = 3",
+        "actual Ollama vision capabilities are inspected": "def ollama_model_capabilities(model_name):",
+        "stale vision model metadata is refreshed": "def refresh_and_verify_vision_capability(",
+        "real multimodal errors trigger a repair attempt": "def refresh_passive_model_after_multimodal_error():",
+        "passive observation preserves OCR/UIA evidence on failure": "def build_passive_fallback_report(",
+        "expanded visual object output is normalized": '"objects": normalized_objects',
+        "object boxes are transformed from focused crops": 'for key in ("regions", "text_spans", "controls", "objects")',
         "TTS capability advertised by health": '"tts-piper-libritts-high"',
         "Piper LibriTTS high voice": 'PIPER_VOICE_NAME = "en_US-libritts-high"',
         "fixed speaker ID zero": "PIPER_SPEAKER_ID = 0",
@@ -153,7 +160,7 @@ def main():
         "model-role routing": 'model_name = PASSIVE_MODEL if model_role == "passive" else OLLAMA_MODEL',
         "thinking disabled for concise vision output": '"think": False',
         "structured JSON output": '"format": "json"',
-        "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"',
+        "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v2"',
         "truncation is rejected explicitly": "malformed or truncated JSON; the report was rejected.",
         "normalized coordinate conversion": "def normalize_model_box(",
         "derived centers instead of model centers": 'item["center_px"] = [round((pixel_box[0] + pixel_box[2]) / 2, 2)',
@@ -162,6 +169,8 @@ def main():
         "Windows UI Automation grounding": "windows_ui_automation_hints",
         "generation length exhaustion is a failure": "Vision output hit its generation limit.",
         "model download is checked": "if not ollama_model_is_downloaded(model_name):",
+        "passive readiness requires actual vision capability": 'if "vision" not in capabilities:',
+        "expanded control/text budgets are enforced": "len(text_spans) > 48 or len(controls) > 32",
         "readiness uses Ollama's loaded-model API": "refresh_model_runtime_state()",
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": "timeout=bounded_setup_timeout(600), env=server_env",
