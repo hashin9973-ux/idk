@@ -420,8 +420,9 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('default request-tree reconciliation is five seconds and recovers new requests when the commit cursor is stale', async () => {
+test('five-second request-tree polling discovers work without awaiting the path-filtered commit endpoint', async () => {
   assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 5000);
+  // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
   let executions = 0;
@@ -435,13 +436,29 @@ test('default request-tree reconciliation is five seconds and recovers new reque
     intervalMs: 5000
   });
 
-  const originalNow = Date.now;
+  const originalDateNow = Date.now;
+  let baseNow = 0;
   try {
     await bridge.start();
-    // Simulate the five-second fallback deadline without sleeping in the test.
-    Date.now = () => originalNow() + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
+    baseNow = originalDateNow();
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
+    assert.equal(
+      fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
+      false,
+      'request polling must not put the potentially slow path-filtered commit endpoint ahead of request discovery'
+    );
+
+    Date.now = () => baseNow + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS - 1;
+    await bridge.pollOnce();
+    assert.equal(
+      fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length,
+      initialTreeReads,
+      'a poll before the scan interval must not perform another GitHub tree read'
+    );
+
+    // Simulate the next five-second scan deadline without sleeping.
+    Date.now = () => baseNow + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const request = {
       protocol: PROTOCOL,
       request_id: 'req-cursor-stale-reconcile',
@@ -466,13 +483,21 @@ test('default request-tree reconciliation is five seconds and recovers new reque
     assert.equal(executions, 1, 'the new request should execute exactly once');
     assert.ok(
       fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length > initialTreeReads,
-      'a due reconciliation must re-read the bounded request tree even when the commit cursor is unchanged'
+      'a due scan must re-read the bounded request tree without needing a commit-cursor result'
     );
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     assert.equal(result.status, 'completed');
     assert.equal(result.request_id, request.request_id);
+    const polling = bridge.getState().requestPolling;
+    assert.equal(polling.requestTreeScanCount, 2, 'initialization and due scan should be counted');
+    assert.ok(Number.isFinite(polling.lastRequestTreeScanDurationMs));
+    assert.equal(
+      fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
+      false,
+      'request polling should not call the slow commit listing endpoint'
+    );
   } finally {
-    Date.now = originalNow;
+    Date.now = originalDateNow;
     await bridge.stop();
   }
 });
@@ -1004,10 +1029,19 @@ test('mailbox polling dispatches new requests while a background context refresh
       sha: 'sha-injected-request'
     });
 
-    const pollReturned = await Promise.race([
-      bridge.pollOnce().then(() => true),
-      new Promise(resolve => setTimeout(() => resolve(false), 250))
-    ]);
+    const originalDateNow = Date.now;
+    const lastScanAt = Date.parse(bridge.getState().requestPolling.lastRequestTreeScanAt);
+    assert.ok(Number.isFinite(lastScanAt), 'the initial request-tree scan should be timestamped');
+    Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
+    let pollReturned;
+    try {
+      pollReturned = await Promise.race([
+        bridge.pollOnce().then(() => true),
+        new Promise(resolve => setTimeout(() => resolve(false), 250))
+      ]);
+    } finally {
+      Date.now = originalDateNow;
+    }
     assert.equal(pollReturned, true, 'polling must dispatch without awaiting background context collection');
     await waitFor(() => projectStarted, 1500);
     await waitFor(() => fake.files.has('bridge/results/' + requestId + '.json'), 1500);

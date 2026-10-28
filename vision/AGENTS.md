@@ -19,7 +19,7 @@ The Colab notebook is the authenticated visual-analysis backend for the Windows 
 
 ## Passive Observe feed versus Colab vision
 
-- The app's passive `bridge/vision/observe.json` feed is independent of this Colab service. If Observe is already enabled and fresh, ChatGPT should read it directly before screen interaction; it should not call Colab status/screenshot just to get a live window/control state.
+- Do not make passive Observe reads wait on context refresh or this Colab service. The app's passive `bridge/vision/observe.json` feed is independent of this Colab service. If Observe is already enabled and fresh, ChatGPT should read it directly before screen interaction; it should not call Colab status/screenshot just to get a live window/control state.
 - Use this subsystem when actual screenshot pixels, OCR, visual interpretation or image-grounded coordinates are needed and the user's intent permits the Colab visual path. Keep status/connect/model-readiness checks outside the ordinary passive Observe loop.
 - For rapid interaction, do not run a Colab inference after every local input by default. Batch only predictable adjacent inputs in one sequence; when feedback is needed, let the assistant read the next passive Observe frame. Set the sequence's `observe=true` only when the Colab analysis result itself is required for the next decision.
 - Never claim that passive Observe supplied pixel-level text/scene understanding; keep uncertainty and source provenance explicit.

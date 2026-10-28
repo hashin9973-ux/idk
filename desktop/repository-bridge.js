@@ -185,8 +185,11 @@ function createRepositoryBridge(deps) {
   let lastStatePublishAt = 0;
   const inMemoryClaims = new Set();
   let knownResultFiles = null;
-  let lastRequestCommitSha = null;
   let lastRequestTreeReconcileAt = 0;
+  let lastRequestTreeReconcileDurationMs = null;
+  let lastRequestTreeEntryCount = 0;
+  let requestTreeReconcileCount = 0;
+  let lastPollDurationMs = null;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
   let contextRefreshInFlight = false;
@@ -223,11 +226,6 @@ function createRepositoryBridge(deps) {
     return '/repos/' + config.owner + '/' + config.repo + '/git/trees/' + value;
   }
 
-  function apiCommitsPath() {
-    const config = currentConfig();
-    return '/repos/' + config.owner + '/' + config.repo + '/commits';
-  }
-
   function stateSnapshot() {
     const config = (() => {
       try { return currentConfig(); } catch { return { owner: '', repo: '', branch: DEFAULT_BRANCH, allowPublicMailbox: false }; }
@@ -253,7 +251,16 @@ function createRepositoryBridge(deps) {
       activeRequestId: activeRequestIds.size === 1 ? activeRequestIds.values().next().value : null,
       activeRequestIds: [...activeRequestIds],
       activeCount: activeRequestIds.size,
-      pendingCount
+      pendingCount,
+      requestPolling: {
+        pollIntervalMs: Math.max(1000, Number(intervalMs) || DEFAULT_INTERVAL_MS),
+        requestTreeScanIntervalMs: Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS),
+        lastRequestTreeScanAt: lastRequestTreeReconcileAt ? new Date(lastRequestTreeReconcileAt).toISOString() : null,
+        lastRequestTreeScanDurationMs: lastRequestTreeReconcileDurationMs,
+        lastRequestTreeEntryCount,
+        requestTreeScanCount: requestTreeReconcileCount,
+        lastPollDurationMs
+      }
     };
   }
 
@@ -329,22 +336,6 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  async function latestRequestCommitSha() {
-    const config = currentConfig();
-    const response = await api('GET', apiCommitsPath(), null, {
-      sha: config.branch,
-      path: 'bridge/requests',
-      per_page: 1
-    });
-    if (!Array.isArray(response.result)) throw new Error('GitHub returned an unexpected request-commit listing.');
-    if (response.result.length === 0) return null;
-    const sha = response.result[0] && response.result[0].sha;
-    if (typeof sha !== 'string' || !/^[a-f0-9]{40}$/i.test(sha)) {
-      throw new Error('GitHub returned an invalid request-commit SHA.');
-    }
-    return sha;
-  }
-
   async function writeRemoteJson(relativePath, value, existingSha = null, createOnly = false) {
     const config = currentConfig();
     const body = {
@@ -414,6 +405,15 @@ function createRepositoryBridge(deps) {
       active_count: activeRequestIds.size,
       pending_count: pendingCount,
       last_poll_at: lastPollAt,
+      request_polling: {
+        poll_interval_ms: Math.max(1000, Number(intervalMs) || DEFAULT_INTERVAL_MS),
+        request_tree_scan_interval_ms: Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS),
+        last_request_tree_scan_at: lastRequestTreeReconcileAt ? new Date(lastRequestTreeReconcileAt).toISOString() : null,
+        last_request_tree_scan_duration_ms: lastRequestTreeReconcileDurationMs,
+        last_request_tree_entry_count: lastRequestTreeEntryCount,
+        request_tree_scan_count: requestTreeReconcileCount,
+        last_poll_duration_ms: lastPollDurationMs
+      },
       last_error: lastError || null,
       workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
       context_path: 'bridge/context/latest.json',
@@ -1668,13 +1668,14 @@ function createRepositoryBridge(deps) {
   async function pollOnce() {
     if (pollInFlight || !running) return;
     pollInFlight = true;
+    const pollStartedAt = Date.now();
     const task = (async () => {
       try {
         let files;
         if (knownResultFiles === null) {
-          // Capture the request-commit cursor before listing. If a new request
-          // arrives during the listing, the next poll still detects its commit.
-          const requestCommitSha = await latestRequestCommitSha();
+          // Do not query the path-filtered commit endpoint before this first scan.
+          // A slow/stale cursor must never sit ahead of discovering mailbox work.
+          const scanStartedAt = Date.now();
           const [requestFiles, resultFiles] = await Promise.all([
             listFolder('bridge/requests'),
             listFolder('bridge/results')
@@ -1683,21 +1684,24 @@ function createRepositoryBridge(deps) {
           knownResultFiles = new Set(resultFiles
             .map(file => file.name)
             .filter(name => name.endsWith('.json')));
-          lastRequestCommitSha = requestCommitSha;
           lastRequestTreeReconcileAt = Date.now();
+          lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
+          lastRequestTreeEntryCount = requestFiles.length;
+          requestTreeReconcileCount++;
         } else {
-          // The path-filtered commit query is the fast path, not the only way
-          // to discover new work. Reconcile the compact request tree at least
-          // every five seconds so a stale/eventually-consistent commit cursor
-          // cannot strand interactive input requests for a minute. This stays
-          // bounded to one mailbox folder and avoids Contents API directory scans.
-          const requestCommitSha = await latestRequestCommitSha();
+          // Use bounded request-tree polling as the discovery source instead of
+          // awaiting the path-filtered commit cursor on every cycle. A slow
+          // commit query previously blocked this timer and made the five-second
+          // recovery interval ineffective. Skip network I/O between tree scans.
           const reconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS);
           const reconciliationDue = Date.now() - lastRequestTreeReconcileAt >= reconciliationInterval;
-          if (requestCommitSha !== lastRequestCommitSha || reconciliationDue) {
+          if (reconciliationDue) {
+            const scanStartedAt = Date.now();
             files = await listFolder('bridge/requests');
-            lastRequestCommitSha = requestCommitSha;
             lastRequestTreeReconcileAt = Date.now();
+            lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
+            lastRequestTreeEntryCount = files.length;
+            requestTreeReconcileCount++;
           } else {
             files = [];
           }
@@ -1732,6 +1736,7 @@ function createRepositoryBridge(deps) {
         lastError = cleanError(error.message);
         announce();
       } finally {
+        lastPollDurationMs = Math.max(0, Date.now() - pollStartedAt);
         pollInFlight = false;
         pollPromise = null;
         announce();
