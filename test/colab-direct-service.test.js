@@ -348,6 +348,8 @@ test('Colab vision notebook uses a 16,384-token context and reports the configur
 
   assert.match(pythonSource, /VISION_CONTEXT_TOKENS = 16384/);
   assert.match(pythonSource, /PASSIVE_CONTEXT_TOKENS = 16384/);
+  assert.match(pythonSource, /PASSIVE_MAX_OUTPUT_TOKENS = 2400/);
+  assert.match(pythonSource, /model_predict = PASSIVE_MAX_OUTPUT_TOKENS if model_role == "passive" else DETAILED_MAX_OUTPUT_TOKENS/);
   assert.ok(pythonSource.includes('PASSIVE_MODEL_REPO = "ahmadwaqar/smolvlm2-2.2b-instruct"'));
   assert.ok(pythonSource.includes('PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"'));
   assert.ok(!pythonSource.includes('PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"'));
@@ -1085,6 +1087,10 @@ test('remaining TTS chunks stream into the playback queue before the first chunk
   const started = await f.service.synthesizeSpeech({ text: longText, play: true }, 'tts-gapless-prefetch');
   assert.equal(started.status, 'tts_started');
   assert.ok(started.chunks_total >= 6, 'test text should create multiple queued chunks');
+  assert.ok(Number.isFinite(started.time_to_first_audio_ms) && started.time_to_first_audio_ms >= 0,
+    'the first synthesized audio latency must be measured');
+  assert.ok(Number.isFinite(started.playback_start_ms) && started.playback_start_ms >= 0,
+    'the initial playback startup latency must be measured');
 
   const deadline = Date.now() + 3000;
   let status = f.service.speechPlaybackStatus();
@@ -1097,6 +1103,16 @@ test('remaining TTS chunks stream into the playback queue before the first chunk
   assert.ok(job, 'the speech job must remain visible while the first chunk plays');
   assert.equal(job.chunks_queued, job.chunks_total, 'the remaining audio should be synthesized and queued ahead of playback');
   assert.equal(job.chunks_completed, 0, 'later chunks must queue without waiting for the first chunk to finish');
+  assert.ok(Number.isFinite(job.initial_chunk_ready_ms) && job.initial_chunk_ready_ms >= 0);
+  assert.ok(Number.isFinite(job.playback_start_ms) && job.playback_start_ms >= 0);
+  assert.ok(Number.isFinite(job.stream_start_latency_ms) && job.stream_start_latency_ms >= 0);
+  assert.equal(job.chunk_metrics.length, job.chunks_total - 1,
+    'every streamed continuation chunk must expose client/server timing data');
+  assert.ok(job.chunk_metrics.every(metric => Number.isFinite(metric.file_write_ms) &&
+    Number.isFinite(metric.queue_ack_ms) && Number.isFinite(metric.stream_elapsed_ms) &&
+    Number.isFinite(metric.audio_bytes) && metric.audio_bytes > 0));
+  assert.equal(typeof job.audio_underrun_count, 'number');
+  assert.equal(typeof job.total_audio_gap_ms, 'number');
   assert.equal(f.getMaxActiveTtsRequests(), 1, 'one streamed response should serialize safe Piper access without per-chunk HTTP round trips');
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts/stream').length, 1);
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts').length, 1, 'only the initial audible chunk should use the single-chunk endpoint');
@@ -1118,6 +1134,14 @@ test('gapless WASAPI script invokes the C# type it declares', () => {
   assert.ok(invocation, 'the PowerShell script should invoke the audio player type');
   assert.equal(invocation[1], declaration[1],
     'the PowerShell entry point must reference the compiled C# type name exactly');
+  assert.doesNotMatch(script, /if \(EndRequested && InputClosed\) continue;/,
+    'commands read before END must not be discarded if END arrives before the consumer drains the input queue');
+  assert.match(script, /Console\.WriteLine\("GAP\\\\t"/,
+    'the WASAPI player must report measured playback-buffer starvation gaps');
+  const source = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'colab-direct-service.js'), 'utf8');
+  assert.match(source, /audio_underrun_count/);
+  assert.match(source, /prefetchPromise = queueRemainingSpeech\(job, first\.playback\);/,
+    'next-chunk production should begin before waiting for initial playback startup');
 });
 
 test('gapless Windows WASAPI helper compiles without opening an audio device', {
