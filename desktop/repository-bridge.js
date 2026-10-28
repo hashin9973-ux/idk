@@ -12,6 +12,8 @@ const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 1000;
+// Bound recovery when GitHub's path-filtered commit cursor is stale/eventually consistent.
+const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 5_000;
 const MAX_CONCURRENT_REQUESTS = 32;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
@@ -162,7 +164,7 @@ function createRepositoryBridge(deps) {
     cleanupIntervalMs = DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS,
     cleanupScanLimit = MAX_MAILBOX_CLEANUP_SCAN,
     cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS,
-    requestReconciliationIntervalMs = 60_000
+    requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS
   } = deps;
 
   const workerId = randomUUID();
@@ -1685,12 +1687,12 @@ function createRepositoryBridge(deps) {
           lastRequestTreeReconcileAt = Date.now();
         } else {
           // The path-filtered commit query is the fast path, not the only way
-          // to discover new work. Periodically reconcile the compact Git tree in
-          // case the cursor endpoint or a cached/ref view fails to expose a new
-          // request commit. This stays bounded to one mailbox folder and avoids
-          // Contents API listings of the full historical request directory.
+          // to discover new work. Reconcile the compact request tree at least
+          // every five seconds so a stale/eventually-consistent commit cursor
+          // cannot strand interactive input requests for a minute. This stays
+          // bounded to one mailbox folder and avoids Contents API directory scans.
           const requestCommitSha = await latestRequestCommitSha();
-          const reconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || 60_000);
+          const reconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS);
           const reconciliationDue = Date.now() - lastRequestTreeReconcileAt >= reconciliationInterval;
           if (requestCommitSha !== lastRequestCommitSha || reconciliationDue) {
             files = await listFolder('bridge/requests');
@@ -1805,6 +1807,7 @@ module.exports = {
   CONTEXT_PROTOCOL,
   CONTEXT_REQUEST_TOOL,
   DEFAULT_BRANCH,
+  DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
   validateConfig,
   validateRequest,
   sanitizeForRepository,
