@@ -68,18 +68,20 @@ function normalizeExecutionPath(value) {
 function getExecutionFootprint(tool, args = {}) {
   if (tool === 'batch') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
-    if (!steps.length) return { reads: [], writes: [], barrier: true };
-    const combined = { reads: [], writes: [], barrier: false };
+    if (!steps.length) return { reads: [], writes: [], resources: [], barrier: true };
+    const combined = { reads: [], writes: [], resources: [], barrier: false };
     for (const step of steps) {
       const footprint = getExecutionFootprint(step.tool, step.args || {});
       combined.reads.push(...footprint.reads);
       combined.writes.push(...footprint.writes);
+      combined.resources.push(...(footprint.resources || []));
       if (footprint.barrier) combined.barrier = true;
     }
     return combined;
   }
   const reads = [];
   const writes = [];
+  const resources = [];
   let barrier = false;
   const add = (target, value) => {
     const normalized = normalizeExecutionPath(value);
@@ -123,6 +125,8 @@ function getExecutionFootprint(tool, args = {}) {
     case 'get_agent_context':
       reads.push('*'); break;
     case 'computer':
+      resources.push('desktop');
+      break;
     case 'tts':
     case 'shell':
     case 'run_tests':
@@ -138,11 +142,13 @@ function getExecutionFootprint(tool, args = {}) {
     default:
       barrier = true; break;
   }
-  return { reads, writes, barrier };
+  return { reads, writes, resources, barrier };
 }
 
 function executionFootprintsConflict(left, right) {
   if (left.barrier || right.barrier) return true;
+  const rightResources = new Set(right.resources || []);
+  if ((left.resources || []).some(resource => rightResources.has(resource))) return true;
   const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
   return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
     right.writes.some(a => left.reads.some(b => overlaps(a, b)));
