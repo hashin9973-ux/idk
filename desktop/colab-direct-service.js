@@ -288,8 +288,32 @@ function createVisionService(deps) {
       if (ack.accepted !== true || ack.desktop_registered !== true) {
         throw new Error('Colab did not confirm the authenticated HTTPS connection.');
       }
-      // A successful connection is the user's request to prepare vision: activate immediately,
-      // then let the existing runtime worker load the model in the background.
+      const checkedRuntime = stateFromRemote(health);
+      if (!checkedRuntime.runtime_compatible) {
+        // Register the live tunnel so the UI can explain the exact version mismatch,
+        // but never activate or send screenshots/audio to a runtime missing required features.
+        visionEnabled = health.enabled === true;
+        endpointWatchError = '';
+        endpointWatchAttemptInProgress = false;
+        if (endpointWatch) endpointWatch.active = false;
+        endpointWatch = null;
+        return {
+          ...checkedRuntime,
+          connected: true,
+          opened: false,
+          manually_entered: source === 'manual',
+          vision_activated: false,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          next_steps: [
+            'Interrupt the currently running Colab server cell.',
+            'Open the current Windows Repository Bridge notebook from main and run its “Start the direct Colab vision server” cell.',
+            'Wait for API v5 to appear in computer(action=status); screenshots and TTS stay blocked until its required features are verified.'
+          ],
+          message: checkedRuntime.message
+        };
+      }
+      // A successful compatible connection is the user's request to prepare vision:
+      // activate immediately, then let the existing runtime worker load models in the background.
       const activation = await directRequest('/activate', {
         method: 'POST',
         timeoutMs: 10000,
@@ -441,6 +465,20 @@ function createVisionService(deps) {
         }
       }
       const state = await queryRuntime();
+      if (state.runtime_fresh && state.status === 'incompatible_runtime') {
+        return {
+          ...state,
+          connected: true,
+          opened: false,
+          vision_activated: false,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          next_steps: [
+            'Interrupt the currently running Colab server cell.',
+            'Open the current notebook from main and run its “Start the direct Colab vision server” cell.'
+          ],
+          message: state.message
+        };
+      }
       if (state.runtime_fresh) {
         if (!state.enabled || !state.model_loaded || state.status !== 'ready') {
           const activated = await activate({}, 'connect-existing-' + String(now()));
@@ -590,6 +628,18 @@ function createVisionService(deps) {
   async function activate(args = {}, callId = null) {
     try {
       let state = await queryRuntime();
+      if (state.runtime_fresh && !state.runtime_compatible) {
+        return {
+          ...state,
+          model_reload_requested: false,
+          notebook_url: COLAB_NOTEBOOK_URL,
+          next_steps: [
+            'Interrupt the currently running Colab server cell.',
+            'Open the current Windows Repository Bridge notebook from main and run its “Start the direct Colab vision server” cell.'
+          ],
+          message: state.message
+        };
+      }
       if (!state.connection_registered || !state.runtime_fresh) {
         const opened = await openColabIfNeeded();
         return {
@@ -683,13 +733,17 @@ function createVisionService(deps) {
     if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
     else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
     else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
-    if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'Ollama is healthy and Qwen3-VL 4B is downloaded in the connected Colab runtime. The first real screenshot request may take longer while Ollama loads the model into GPU memory.' };
+    if (state.runtime_fresh && state.status === 'incompatible_runtime') {
+      checks.model = { status: 'failed', message: state.message || 'The running Colab notebook is missing required API v5 capabilities.' };
+    } else if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The connected Colab vision model reports ready. The first real screenshot request may still need warm-up.' };
     else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and Ollama is installing or downloading the model. Keep the Colab cell running and check status again.' };
-    else checks.model = { status: 'not_verified', message: 'The model is not ready yet. Reconnect Colab to automatically activate vision, or use computer(action=enable) to retry an inactive runtime.' };
-    checks.vision = state.enabled
-      ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and Qwen3-VL 4B is downloaded and ready for inference.' : 'Vision is enabled; model setup is still in progress.' }
-      : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
+    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and model setup/download is in progress. Keep the Colab cell running and check status again.' };
+    else checks.model = { status: 'not_verified', message: 'The model is not ready yet. Reconnect Colab to activate vision, or use computer(action=enable) to retry an inactive compatible runtime.' };
+    checks.vision = state.status === 'incompatible_runtime'
+      ? { status: 'disabled', message: 'The endpoint is reachable, but this app will not send screenshots or speech until the notebook advertises the required API v5 features.' }
+      : state.enabled
+        ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the connected model is ready for inference.' : 'Vision is enabled; model setup is still in progress.' }
+        : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
     const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
     const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
     const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
@@ -698,9 +752,16 @@ function createVisionService(deps) {
     if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
     if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
-    if (checks.model.status === 'in_progress') next_steps.push('Vision is already active. Ollama setup/model download is still in progress; check computer(action=status) again for progress.');
-    else if (checks.model.status !== 'passed') next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Use computer(action=enable) only to retry activation if status shows inactive.');
-    if (checks.vision.status === 'disabled') next_steps.push('The runtime is connected but inactive. Call computer(action=enable) to retry activation.');
+    if (state.status === 'incompatible_runtime') {
+      next_steps.push('Interrupt the old Colab server cell, open the current notebook from main, and run “Start the direct Colab vision server”. The app will continue to block screenshot/TTS requests until API v5 compatibility is confirmed.');
+    } else if (checks.model.status === 'in_progress') {
+      next_steps.push('Vision is already active. Model setup/download is still in progress; check computer(action=status) for progress.');
+    } else if (checks.model.status !== 'passed') {
+      next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Use computer(action=enable) only to retry activation if status shows inactive.');
+    }
+    if (checks.vision.status === 'disabled' && state.status !== 'incompatible_runtime') {
+      next_steps.push('The runtime is connected but inactive. Call computer(action=enable) to retry activation.');
+    }
     return {
       status: passed ? 'ready' : failed ? 'failed' : loading ? 'loading' : 'action_required',
       checked_at: checkedAt, notebook_url: COLAB_NOTEBOOK_URL, checks, next_steps,

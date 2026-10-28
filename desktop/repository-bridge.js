@@ -179,6 +179,7 @@ function createRepositoryBridge(deps) {
   const requestTasks = new Map();
   const requestTelemetry = new AsyncLocalStorage();
   let lastPollAt = null;
+  let lastPollError = '';
   let lastError = '';
   let publicRepository = null;
   let pendingCount = 0;
@@ -247,6 +248,7 @@ function createRepositoryBridge(deps) {
       publicRepository,
       workerId,
       lastPollAt,
+      lastPollError,
       lastError,
       activeRequestId: activeRequestIds.size === 1 ? activeRequestIds.values().next().value : null,
       activeRequestIds: [...activeRequestIds],
@@ -1723,6 +1725,7 @@ function createRepositoryBridge(deps) {
     pollInFlight = true;
     const pollStartedAt = Date.now();
     const task = (async () => {
+      let requestScanSucceeded = false;
       try {
         let files;
         if (knownResultFiles === null) {
@@ -1734,6 +1737,7 @@ function createRepositoryBridge(deps) {
             listFolder('bridge/results')
           ]);
           files = requestFiles;
+          requestScanSucceeded = true;
           knownResultFiles = new Set(resultFiles
             .map(file => file.name)
             .filter(name => name.endsWith('.json')));
@@ -1751,6 +1755,7 @@ function createRepositoryBridge(deps) {
           if (reconciliationDue) {
             const scanStartedAt = Date.now();
             files = await listFolder('bridge/requests');
+            requestScanSucceeded = true;
             lastRequestTreeReconcileAt = Date.now();
             lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
             lastRequestTreeEntryCount = files.length;
@@ -1766,7 +1771,10 @@ function createRepositoryBridge(deps) {
         const pending = sorted.filter(filename => !knownResultFiles.has(filename));
         enqueuePendingRequests(pending);
         const firstPoll = !lastPollAt;
-        lastPollAt = new Date().toISOString();
+        if (requestScanSucceeded) {
+          lastPollAt = new Date().toISOString();
+          lastPollError = '';
+        }
         lastError = '';
         announce();
 
@@ -1787,6 +1795,7 @@ function createRepositoryBridge(deps) {
         }
       } catch (error) {
         lastError = cleanError(error.message);
+        if (!requestScanSucceeded) lastPollError = lastError;
         announce();
       } finally {
         lastPollDurationMs = Math.max(0, Date.now() - pollStartedAt);

@@ -43,6 +43,13 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.reconnectGitHub/);
   assert.match(renderer, /windowsBridge\.retryConnection/);
   assert.match(renderer, /Worker online/);
+  assert.ok(renderer.includes("active > 0 ? 'Worker online · ' + active + ' active'"));
+  assert.ok(renderer.includes("pending > 0 ? 'Worker online · ' + pending + ' queued'"));
+  assert.ok(renderer.includes(": 'Worker online · idle'"));
+  assert.match(renderer, /Worker cannot reach the GitHub mailbox/);
+  assert.match(renderer, /Last successful request scan:/);
+  assert.match(renderer, /Mailbox transport error:/);
+  assert.match(renderer, /Recent tool\/result issue \(worker still reachable\):/);
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
   assert.match(renderer, /windowsBridge\.startGitHubLogin/);
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
@@ -75,6 +82,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
+  assert.match(renderer, /incompatible_runtime: 'Colab: update notebook'/);
+  assert.match(renderer, /running notebook is out of date/);
+  assert.doesNotMatch(html, /Vision stays off until enabled/);
   assert.match(renderer, /21 \* 60 \* 1000/);
   assert.match(renderer, /The Colab connection check timed out/);
   assert.match(renderer, /screenshot analysis is disabled, but the model remains loaded/);
@@ -114,11 +124,24 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /height: 402/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
+  assert.match(main, /const freshnessWindowMs = Math\.max\(15000, scanInterval \* 3\)/);
+  assert.match(main, /if \(pollFresh\) return 'online'/);
+  assert.match(main, /current\.lastPollError \|\| current\.lastError/);
   assert.match(main, /'app:vision-manual-panel'/);
   assert.match(main, /VISION_MANUAL_HEIGHT = 500/);
   assert.match(main, /'app:vision-setup-check'/);
-  assert.match(main, /const mailboxCheck = await visionService\.setupCheck\(githubState\)/);
-  assert.match(main, /mailboxCheck\.checks\.mailbox\.status !== 'passed'/);
+  const visionStatusHandler = main.slice(
+    main.indexOf("ipcMain.handle('app:vision-status'"),
+    main.indexOf("ipcMain.handle('app:vision-connect-colab'")
+  );
+  const connectColabHandler = main.slice(
+    main.indexOf("ipcMain.handle('app:vision-connect-colab'"),
+    main.indexOf("ipcMain.handle('app:vision-manual-panel'")
+  );
+  assert.match(visionStatusHandler, /return visionService\.status\(\)/);
+  assert.doesNotMatch(visionStatusHandler, /githubAuth\.getState|githubState\.authenticated/);
+  assert.match(connectColabHandler, /return visionService\.connectColab/);
+  assert.doesNotMatch(connectColabHandler, /githubAuth\.getState|visionService\.setupCheck|mailboxCheck/);
   assert.match(main, /visionService\.setupCheck\(githubState\)/);
   assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);

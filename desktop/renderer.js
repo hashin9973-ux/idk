@@ -99,16 +99,33 @@
   function renderWorker(state) {
     currentBridgeState = state || {};
     const status = String(currentBridgeState.workerStatus || (currentBridgeState.running ? 'online' : 'connecting'));
+    const active = Number.isFinite(currentBridgeState.activeCount) ? Math.max(0, currentBridgeState.activeCount) : 0;
+    const pending = Number.isFinite(currentBridgeState.pendingCount) ? Math.max(0, currentBridgeState.pendingCount) : 0;
     const labels = {
-      online: 'Worker online',
+      online: active > 0 ? 'Worker online · ' + active + ' active'
+        : pending > 0 ? 'Worker online · ' + pending + ' queued'
+          : 'Worker online · idle',
       connecting: 'Worker connecting…',
-      offline: 'Worker waiting for internet',
+      offline: 'Worker cannot reach the GitHub mailbox',
       github: 'Worker waiting for GitHub sign-in',
       setup: 'Worker needs configuration',
       attention: 'Worker needs attention'
     };
     workerLabel.textContent = labels[status] || 'Worker ' + status;
-    workerLabel.title = String(currentBridgeState.connectionError || currentBridgeState.lastError || workerLabel.textContent);
+    const polling = currentBridgeState.requestPolling || {};
+    const details = [
+      currentBridgeState.connectionError || '',
+      'Worker process: ' + (currentBridgeState.running ? 'running' : 'stopped'),
+      'Mailbox work: ' + active + ' active, ' + pending + ' queued',
+      currentBridgeState.lastPollAt ? 'Last successful request scan: ' + currentBridgeState.lastPollAt : 'No successful request scan recorded yet',
+      Number.isFinite(polling.lastRequestTreeScanDurationMs)
+        ? 'Last request scan took ' + polling.lastRequestTreeScanDurationMs + ' ms across ' + Number(polling.lastRequestTreeEntryCount || 0) + ' entries'
+        : '',
+      Number.isFinite(polling.lastPollDurationMs) ? 'Last poll duration: ' + polling.lastPollDurationMs + ' ms' : '',
+      currentBridgeState.lastPollError ? 'Mailbox transport error: ' + currentBridgeState.lastPollError : '',
+      currentBridgeState.lastError && status === 'online' ? 'Recent tool/result issue (worker still reachable): ' + currentBridgeState.lastError : ''
+    ].filter(Boolean);
+    workerLabel.title = details.join('\n') || workerLabel.textContent;
     setDot(workerDot, status === 'online' ? 'online' : status === 'offline' || status === 'attention' || status === 'setup' ? 'error' : 'waiting');
     renderAutoAccept(currentBridgeState.autoAcceptAll === true);
   }
@@ -279,6 +296,10 @@
     if (vision.endpoint_test_in_progress === true || status === 'checking_endpoint') {
       message = 'Endpoint copied. Testing the direct HTTPS health response and registration acknowledgement…';
       state = 'in_progress';
+    } else if (vision.runtime_fresh === true && status === 'incompatible_runtime') {
+      message = 'Colab is reachable, but its running notebook is out of date: ' +
+        (sourceMessage || 'interrupt the old server cell and run the latest notebook cell.');
+      state = 'failed';
     } else if (vision.runtime_fresh === true && ['needs_authentication', 'gpu_unavailable', 'error'].includes(status)) {
       message = 'Colab is connected, but needs attention: ' + summarizeVisionFailure(sourceMessage);
       state = 'failed';
@@ -328,6 +349,7 @@
     renderVisionMessage(vision);
     const labels = {
       ready: 'Vision: ready',
+      incompatible_runtime: 'Colab: update notebook',
       inactive: vision.runtime_fresh === true ? 'Colab connected · vision off' : 'Vision: inactive',
       starting: 'Vision: starting',
       waiting_for_runtime: 'Colab: waiting for connection',
@@ -343,7 +365,7 @@
     };
     visionLabel.textContent = labels[status] || 'Vision: ' + status.replace(/_/g, ' ');
     visionLabel.title = String(vision.message || vision.error || 'Live vision status');
-    const danger = ['disconnected', 'needs_authentication', 'gpu_unavailable', 'error', 'unavailable'].includes(status);
+    const danger = ['disconnected', 'needs_authentication', 'gpu_unavailable', 'error', 'unavailable', 'incompatible_runtime'].includes(status);
     setDot(visionDot,
       (status === 'ready' && vision.model_loaded === true) ||
       (status === 'inactive' && vision.runtime_fresh === true)
@@ -360,14 +382,16 @@
           : elapsedSeconds + 's';
       const runtimeLabel = status === 'inactive'
         ? 'Direct tunnel live; vision disabled'
-        : status === 'starting' && stageName
-          ? 'Vision setup: ' + stageName + (elapsedLabel ? ' · ' + elapsedLabel : '')
-          : status === 'needs_authentication' ? 'Google/Drive authentication required'
-            : status === 'gpu_unavailable' ? 'GPU unavailable'
-              : 'Direct tunnel live (' + String(vision.runtime_status || status).replace(/_/g, ' ') + ')';
+        : status === 'incompatible_runtime'
+          ? 'Notebook update required'
+          : status === 'starting' && stageName
+            ? 'Vision setup: ' + stageName + (elapsedLabel ? ' · ' + elapsedLabel : '')
+            : status === 'needs_authentication' ? 'Google/Drive authentication required'
+              : status === 'gpu_unavailable' ? 'GPU unavailable'
+                : 'Direct tunnel live (' + String(vision.runtime_status || status).replace(/_/g, ' ') + ')';
       visionColabDetail.textContent = runtimeLabel;
       visionColabDetail.title = String(vision.message || '');
-      visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error'].includes(status) ? 'action_required' : 'passed';
+      visionColabDetail.dataset.state = ['needs_authentication', 'gpu_unavailable', 'error', 'incompatible_runtime'].includes(status) ? 'action_required' : 'passed';
     } else {
       const endpointFailure = /Last detection attempt:|HTTP \d{3}|malformed JSON|fetch failed|timed out|failed/i.test(String(vision.message || '')) ||
         Boolean(vision.endpoint_watch_error);
@@ -534,17 +558,20 @@
       if (result && result.connected === true) {
         stopVisionConnectionWatch();
         renderVisionStatus(result);
-        visionSetupDetail.textContent = 'Colab connected';
+        const incompatibleRuntime = result.status === 'incompatible_runtime' || result.runtime_compatible === false;
+        visionSetupDetail.textContent = incompatibleRuntime ? 'Notebook update required' : 'Colab connected';
         visionSetupDetail.title = result.message || 'Colab responded through the direct authenticated HTTPS endpoint.';
-        visionSetupDetail.dataset.state = 'passed';
-        visionColabDetail.textContent = 'Direct tunnel live';
+        visionSetupDetail.dataset.state = incompatibleRuntime ? 'failed' : 'passed';
+        visionColabDetail.textContent = incompatibleRuntime ? 'Tunnel live · API outdated' : 'Direct tunnel live';
         visionColabDetail.title = result.message || 'The app verified the authenticated HTTPS connection.';
-        visionColabDetail.dataset.state = 'passed';
-        visionModelDetail.textContent = result.model_loaded === true ? 'Loaded' : result.enabled === true ? 'Loading…' : 'Not loaded';
-        visionModelDetail.title = result.model_loaded === true
-          ? 'The Colab model is loaded.'
-          : result.enabled === true ? 'Vision is active; the model is loading in the background.' : 'Waiting for the authenticated connection to activate vision.';
-        visionModelDetail.dataset.state = result.model_loaded === true ? 'passed' : result.enabled === true ? 'in_progress' : 'not_verified';
+        visionColabDetail.dataset.state = incompatibleRuntime ? 'action_required' : 'passed';
+        visionModelDetail.textContent = incompatibleRuntime ? 'Update notebook' : result.model_loaded === true ? 'Loaded' : result.enabled === true ? 'Loading…' : 'Not loaded';
+        visionModelDetail.title = incompatibleRuntime
+          ? result.message || 'Interrupt the old server cell and run the latest notebook cell.'
+          : result.model_loaded === true
+            ? 'The Colab model is loaded.'
+            : result.enabled === true ? 'Vision is active; the model is loading in the background.' : 'Waiting for the authenticated connection to activate vision.';
+        visionModelDetail.dataset.state = incompatibleRuntime ? 'action_required' : result.model_loaded === true ? 'passed' : result.enabled === true ? 'in_progress' : 'not_verified';
         if (isManual) {
           visionEndpointInput.value = '';
           setVisionManualPanelVisible(false);
@@ -562,7 +589,7 @@
         visionColabDetail.title = result.message || 'The app is watching for the endpoint. You can paste it manually too.';
         visionColabDetail.dataset.state = 'action_required';
         visionModelDetail.textContent = 'Not started';
-        visionModelDetail.title = 'Connecting to Colab does not activate vision or download the model.';
+        visionModelDetail.title = 'After the authenticated HTTPS connection succeeds, the app activates vision automatically and model setup runs in the background.';
         visionModelDetail.dataset.state = 'not_verified';
         startVisionConnectionWatch();
       } else {

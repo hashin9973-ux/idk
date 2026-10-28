@@ -63,7 +63,7 @@
         <button id="vision-endpoint-connect" class="status-action" type="submit">Connect using URL</button>
         <button id="vision-endpoint-cancel" class="status-action secondary-action" type="button">Cancel</button>
       </div>
-      <p class="vision-manual-help">Paste the complete PUBLIC_VISION_ENDPOINT from the running Colab cell. The long path is a temporary secret; keep it private. The app verifies the endpoint before connecting. Vision stays off until enabled.</p>
+      <p class="vision-manual-help">Paste the complete PUBLIC_VISION_ENDPOINT from the running Colab cell. The long path is a temporary secret; keep it private. The app verifies the endpoint over HTTPS, then activates vision automatically; model setup continues in the background.</p>
     </form>
 
     <section id="vision-details" class="vision-details" aria-label="Vision setup details" aria-live="polite">
