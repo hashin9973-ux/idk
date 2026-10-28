@@ -123,6 +123,16 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
+        "versioned vision worker API": "VISION_WORKER_API_VERSION = 2",
+        "TTS capability advertised by health": '"tts-piper-libritts-high"',
+        "Piper LibriTTS high voice": 'PIPER_VOICE_NAME = "en_US-libritts-high"',
+        "fixed speaker ID zero": "PIPER_SPEAKER_ID = 0",
+        "verified Piper voice checksum": "PIPER_VOICE_SHA256",
+        "persistent Piper voice load": "def ensure_tts_voice():",
+        "authenticated TTS endpoint": 'if route == "/tts":',
+        "WAV audio checksum": '"audio_sha256": hashlib.sha256(audio).hexdigest()',
+        "pending result preserves frame ID": '"input_frame_id": record.get("input_frame_id")',
+        "pending result preserves model role": '"model_role": record.get("model_role")',
         "Ollama Qwen3-VL 4B detailed model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
         "SmolVLM2 Q4 passive model": 'PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"',
         "parked Qwen alias": 'PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"',
@@ -184,8 +194,8 @@ def main():
     validate_context_helpers(code)
 
     guide = source_of(notebook.get("cells", [{}])[0])
-    if "prebuilt Ollama runtime" not in guide or "Fresh Colab runtimes must download both model packages again" not in guide:
-        raise SystemExit("FAIL: notebook guide does not explain the prebuilt runtime and two-model ephemeral cache")
+    if "prebuilt Ollama runtime" not in guide or "Fresh Colab runtimes" not in guide or "Piper" not in guide:
+        raise SystemExit("FAIL: notebook guide does not explain the prebuilt runtime, model cache, and persistent Piper TTS voice")
 
     print("PASS: notebook JSON parsed")
     print("PASS: Python code cell syntax parsed")

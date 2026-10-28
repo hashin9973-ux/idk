@@ -305,6 +305,11 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('runtime_kept_alive: true'));
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 1280 * 1024'));
   assert.ok(vision.includes('input_sha256'));
+  assert.ok(vision.includes('VISION_WORKER_API_VERSION = 2'));
+  assert.ok(vision.includes('runtime_compatible'));
+  assert.ok(vision.includes('async function synthesizeSpeech'));
+  assert.ok(vision.includes("directRequest('/tts'"));
+  assert.ok(bridge.includes("tts: ['text', 'play']"));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
@@ -325,6 +330,12 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('cloudflared'));
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
   assert.ok(python.includes('PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"'));
+  assert.ok(python.includes('VISION_WORKER_API_VERSION = 2'));
+  assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
+  assert.ok(python.includes('PIPER_SPEAKER_ID = 0'));
+  assert.ok(python.includes('def ensure_tts_voice():'));
+  assert.ok(python.includes('if route == "/tts":'));
+  assert.ok(python.includes('PIPER_VOICE_SHA256'));
   assert.ok(python.includes('PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"'));
   assert.ok(python.includes('num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS'));
   assert.ok(python.includes('OLLAMA_SWAP_BYTES = 4 * 1024**3'));
@@ -421,6 +432,10 @@ test('Colab vision notebook becomes ready after model download without startup i
   assert.doesNotMatch(source, /run_vision_smoke_test|vision_smoke_test|blue-square vision check|generated test image/i);
   assert.match(source, /ollama_model_is_downloaded\(\)/);
   assert.match(source, /No startup image inference was run/);
+  assert.match(source, /VISION_WORKER_API_VERSION = 2/);
+  assert.match(source, /"input_frame_id": record.get\("input_frame_id"\)/);
+  assert.match(source, /"model_role": record.get\("model_role"\)/);
+  assert.match(source, /Piper TTS/);
   assert.match(source, /OLLAMA_MODELS_DIR = Path\("\/content\/ollama-models"\)/);
   assert.doesNotMatch(source, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
   const readme = read('README.md');
