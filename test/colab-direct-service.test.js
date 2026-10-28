@@ -8,6 +8,11 @@ const vm = require('node:vm');
 const {
   createVisionService,
   DIRECT_VISION_PROTOCOL,
+  VISION_WORKER_API_VERSION,
+  REQUIRED_VISION_FEATURES,
+  TTS_PROTOCOL,
+  TTS_VOICE,
+  TTS_SPEAKER_ID,
   validateVisionContext,
   safeTunnelUrl,
   safeApiKey,
@@ -57,6 +62,16 @@ function createVisionReport(width, height) {
 function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
+    vision_worker_api_version: 2,
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high'],
+    tts_ready: true,
+    tts_model_loaded: true,
+    tts_error: null,
+    tts_voice: 'en_US-libritts-high',
+    tts_speaker_id: 0,
+    tts_sample_rate: 22050,
+    passive_model_loaded: true,
+    detailed_model_parked: true,
     status: 'inactive',
     enabled: false,
     model_loaded: false,
@@ -66,6 +81,7 @@ function fixture(options = {}) {
     vram_mib: 16384
   };
   let clipboardText = options.initialClipboard || '';
+  let latestPassiveFrame = options.latestFrame || null;
   const calls = [];
   const inputCalls = [];
   const asyncResults = new Map();
@@ -99,10 +115,16 @@ function fixture(options = {}) {
       ...(Number.isFinite(options.capturedAt) ? { captured_at: options.capturedAt } : {})
     }),
     getAccessibleSnapshot: options.getAccessibleSnapshot,
+    getLatestFrame: maxAgeMs => {
+      if (!latestPassiveFrame) return null;
+      const ageMs = Math.max(0, Date.now() - Number(latestPassiveFrame.captured_at || 0));
+      return ageMs <= maxAgeMs ? { ...latestPassiveFrame, age_ms: ageMs } : null;
+    },
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
     inputControl,
+    playAudio: options.playAudio,
     clipboardPollIntervalMs: options.clipboardPollIntervalMs || 5,
     clipboardWatchTimeoutMs: options.clipboardWatchTimeoutMs || 2000,
     pollIntervalMs: 10,
@@ -134,12 +156,28 @@ function fixture(options = {}) {
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, desktop_registered: true });
       }
       if (route === '/activate') {
-        state = { ...state, status: 'ready', enabled: true, model_loaded: true };
+        state = { ...state, status: 'ready', enabled: true, model_loaded: true, passive_model_loaded: true, detailed_model_parked: true };
         return response(202, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: true });
       }
       if (route === '/deactivate') {
         state = { ...state, status: 'inactive', enabled: false };
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: false, runtime_kept_alive: true });
+      }
+      if (route === '/tts') {
+        const audio = Buffer.alloc(48);
+        audio.write('RIFF', 0, 'ascii'); audio.writeUInt32LE(40, 4); audio.write('WAVE', 8, 'ascii');
+        audio.write('fmt ', 12, 'ascii'); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20);
+        audio.writeUInt16LE(1, 22); audio.writeUInt32LE(22050, 24); audio.writeUInt32LE(44100, 28);
+        audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36, 'ascii');
+        audio.writeUInt32LE(4, 40);
+        const audioHash = require('node:crypto').createHash('sha256').update(audio).digest('hex');
+        return response(200, {
+          protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+          request_id: body.request_id, status: 'completed', voice: 'en_US-libritts-high',
+          speaker_id: 0, sample_rate: 22050, channels: 1, duration_seconds: 0.001,
+          content_type: 'audio/wav', audio_bytes: audio.length, audio_sha256: audioHash,
+          audio_base64: audio.toString('base64')
+        });
       }
       if (route.startsWith('/result/')) {
         const requestId = route.slice('/result/'.length);
@@ -148,7 +186,8 @@ function fixture(options = {}) {
         if (Date.now() < pending.readyAt) {
           return response(202, {
             protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, status: 'processing',
-            input_sha256: pending.result.input_sha256, poll_after_ms: 5
+            input_sha256: pending.result.input_sha256, input_frame_id: pending.result.input_frame_id,
+            model_role: pending.result.model_role, poll_after_ms: 5
           });
         }
         return response(200, pending.result);
@@ -162,7 +201,9 @@ function fixture(options = {}) {
           request_id: body.request_id,
           status: 'completed',
           input_sha256: body.sha256,
-          model: 'test-model',
+          input_frame_id: body.frame_id,
+          model_role: body.model_role || 'detailed',
+          model: body.model_role === 'passive' ? 'SmolVLM2-2.2B-Instruct' : 'test-model',
           model_repository: 'test-model-repo',
           inference_ms: 75,
           completed_at: new Date().toISOString(),
@@ -175,7 +216,8 @@ function fixture(options = {}) {
           });
           return response(202, {
             protocol: DIRECT_VISION_PROTOCOL, request_id: body.request_id, status: 'processing',
-            input_sha256: body.sha256, poll_after_ms: 5
+            input_sha256: body.sha256, input_frame_id: body.frame_id,
+            model_role: body.model_role || 'detailed', poll_after_ms: 5
           });
         }
         return response(200, result);
@@ -189,7 +231,8 @@ function fixture(options = {}) {
     getState: () => state,
     setState: patch => { state = { ...state, ...patch }; },
     setClipboard: value => { clipboardText = value; },
-    getClipboard: () => clipboardText
+    getClipboard: () => clipboardText,
+    setLatestFrame: value => { latestPassiveFrame = value; }
   };
 }
 
@@ -223,7 +266,16 @@ test('Colab vision notebook uses a 16,384-token context and reports the configur
     .join('\n');
 
   assert.match(pythonSource, /VISION_CONTEXT_TOKENS = 16384/);
-  assert.match(pythonSource, /"num_ctx": VISION_CONTEXT_TOKENS/);
+  assert.match(pythonSource, /PASSIVE_CONTEXT_TOKENS = 8192/);
+  assert.match(pythonSource, /PASSIVE_MODEL = "richardyoung\/smolvlm2-2\.2b-instruct:Q4_K_M"/);
+  assert.match(pythonSource, /PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"/);
+  assert.match(pythonSource, /options = \{"num_ctx": int\(context_tokens\), "num_predict": 1\}/);
+  assert.match(pythonSource, /context_tokens=VISION_CONTEXT_TOKENS/);
+  assert.match(pythonSource, /context_tokens=PASSIVE_CONTEXT_TOKENS/);
+  assert.match(pythonSource, /MODEL_MAX_EDGE = 16384/);
+  assert.match(pythonSource, /OLLAMA_SWAP_FILE = Path\("\/content\/bridge-qwen-pagefile\.swap"\)/);
+  assert.match(pythonSource, /"keep_alive": -1 if model_role == "passive" else 0/);
+  assert.match(pythonSource, /"input_frame_id": input_frame_id/);
   assert.doesNotMatch(pythonSource, /"num_ctx": 4096/);
   assert.match(pythonSource, /"context_window_tokens": VISION_CONTEXT_TOKENS/);
 });
@@ -242,7 +294,7 @@ test('Colab serves long vision inference asynchronously through a matching resul
   assert.match(pythonSource, /MAX_ACTIVE_VISION_JOBS = 8/);
   assert.match(pythonSource, /MAX_RETAINED_VISION_RESULTS = 32/);
   assert.match(pythonSource, /current_status == "processing" and current_stage == "queued"/);
-  assert.match(pythonSource, /publish_runtime\(\s*"processing", stage="inference"/);
+  assert.match(pythonSource, /publish_runtime\(\s*"processing", stage="detailed_inference"/);
   assert.match(pythonSource, /"status": "processing"/);
 });
 
@@ -438,6 +490,7 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(result.input_sha256, result.input_image.sha256);
   const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
   assert.ok(analyzeCall);
+  assert.equal(result.input_image.frame_id, analyzeCall.body.frame_id);
   assert.equal(analyzeCall.body.protocol, DIRECT_VISION_PROTOCOL);
   assert.equal(analyzeCall.body.sha256, result.input_sha256);
   assert.ok(typeof analyzeCall.body.image_base64 === 'string');
@@ -456,6 +509,71 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.frame.width_px, 640);
   assert.equal(analyzeCall.body.accessibility.available, false);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
+});
+
+test('passive Smol vision can analyze the exact Observe frame while detailed Qwen is busy', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-passive-analysis');
+
+  const frameId = 'c'.repeat(64);
+  const capturedAt = Date.now();
+  f.setLatestFrame({
+    frame_id: frameId, bytes: Buffer.from('desktop-source-image'),
+    width: 640, height: 360, screen_width: 640, screen_height: 360,
+    captured_at: capturedAt, display_id: 'primary'
+  });
+  f.setState({
+    status: 'processing', enabled: true, model_loaded: true,
+    passive_model_loaded: true, detailed_model_parked: true,
+    detailed_model_loaded: true, active_request_id: 'computer-' + 'd'.repeat(24)
+  });
+
+  const result = await f.service.analyzeFrame({
+    frameId,
+    captured: {
+      frame_id: frameId, bytes: Buffer.from('desktop-source-image'),
+      width: 640, height: 360, screen_width: 640, screen_height: 360,
+      captured_at: capturedAt, display_id: 'primary'
+    },
+    screen: { width: 640, height: 360, frame_width: 640, frame_height: 360, display_id: 'primary' },
+    accessibility: { available: false, source: 'windows_uia', reason: 'not_available', controls: [] },
+    waitMs: 1000
+  });
+  assert.equal(result.status, 'report_available');
+  assert.equal(result.model_role, 'passive');
+  assert.equal(result.model, 'SmolVLM2-2.2B-Instruct');
+  assert.equal(result.input_image.frame_id, frameId);
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.equal(analyzeCall.body.model_role, 'passive');
+  assert.equal(analyzeCall.body.frame_id, frameId);
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.frame.height_px, 360);
+});
+
+test('mouse input accepts a fresh matching passive frame and rejects a mismatched frame ID', async t => {
+  const frameId = 'e'.repeat(64);
+  const f = fixture({ latestFrame: {
+    frame_id: frameId, width: 640, height: 360,
+    captured_at: Date.now(), age_ms: 0
+  } });
+  t.after(() => f.service.dispose());
+
+  const accepted = await f.service.inputAction({
+    action: 'click', x: 100, y: 80, frame_id: frameId
+  }, 'computer-' + '1'.repeat(24));
+  assert.equal(accepted.status, 'input_completed');
+  assert.equal(f.inputCalls.length, 1);
+  assert.equal(f.inputCalls[0].frame.frame_id, frameId);
+  assert.equal(f.inputCalls[0].frame.width, 640);
+
+  const rejected = await f.service.inputAction({
+    action: 'click', x: 100, y: 80, frame_id: 'f'.repeat(64)
+  }, 'computer-' + '2'.repeat(24));
+  assert.equal(rejected.status, 'error');
+  assert.match(rejected.error, /does not match a fresh passive Observe frame/i);
+  assert.equal(f.inputCalls.length, 1, 'mismatched frame IDs must be rejected before local input');
 });
 
 test('a screenshot wait timeout returns pending and the same request ID can be resumed', async t => {
@@ -710,4 +828,77 @@ test('structured vision context rejects invalid control bounds instead of accept
   const report = createVisionReport(640, 360);
   report.controls[0].bbox_px = [630, 350, 650, 370];
   assert.throws(() => validateVisionContext(JSON.stringify(report), { width_px: 640, height_px: 360 }), /outside the submitted screenshot frame/i);
+});
+
+
+test('old single-model Colab runtimes are rejected before any screenshot upload', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  f.setState({
+    protocol: DIRECT_VISION_PROTOCOL, status: 'ready', enabled: true, model_loaded: true,
+    model: 'qwen3-vl:4b-instruct', vision_worker_api_version: undefined, features: undefined,
+    passive_model_loaded: false, tts_ready: false
+  });
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, 'old-runtime-check');
+  assert.equal(result.status, 'incompatible_runtime');
+  assert.equal(result.runtime_compatible, false);
+  assert.match(result.message, /out of date/i);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, 0);
+});
+
+test('Piper TTS validates voice and speaker, saves WAV locally, and optionally plays it', async t => {
+  const played = [];
+  const f = fixture({ playAudio: async filePath => { played.push(filePath); } });
+  const madeFiles = [];
+  t.after(async () => {
+    await f.service.dispose();
+    for (const filePath of madeFiles) { try { fs.unlinkSync(filePath); } catch {} }
+  });
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts');
+  const result = await f.service.synthesizeSpeech({ text: 'Hello from Piper.', play: true }, 'tts-test-call');
+  assert.equal(result.status, 'tts_completed');
+  assert.equal(result.voice, TTS_VOICE);
+  assert.equal(result.speaker_id, TTS_SPEAKER_ID);
+  assert.equal(result.played, true);
+  assert.match(result.local_file, /\.wav$/i);
+  madeFiles.push(result.local_file);
+  assert.equal(fs.readFileSync(result.local_file).subarray(0, 4).toString('ascii'), 'RIFF');
+  assert.deepEqual(played, [result.local_file]);
+  const apiCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/tts');
+  assert.equal(apiCall.body.protocol, DIRECT_VISION_PROTOCOL);
+  assert.equal(apiCall.body.voice, 'en_US-libritts-high');
+  assert.equal(apiCall.body.speaker_id, 0);
+  assert.equal(apiCall.body.text, 'Hello from Piper.');
+  assert.equal(result.audio_base64, undefined, 'audio bytes must not be included in the mailbox tool result');
+});
+
+test('Piper TTS supports no-playback mode and reports not-ready runtime state', async t => {
+  const f = fixture();
+  const madeFiles = [];
+  t.after(async () => {
+    await f.service.dispose();
+    for (const filePath of madeFiles) { try { fs.unlinkSync(filePath); } catch {} }
+  });
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts-no-play');
+  const result = await f.service.synthesizeSpeech({ text: 'Silent synthesis.', play: false }, 'tts-no-play');
+  assert.equal(result.status, 'tts_completed');
+  assert.equal(result.played, false);
+  assert.equal(result.playback_error, null);
+  madeFiles.push(result.local_file);
+  f.setState({ tts_ready: false, tts_error: 'Piper loading.' });
+  const notReady = await f.service.synthesizeSpeech({ text: 'Wait.' }, 'tts-not-ready');
+  assert.equal(notReady.status, 'tts_unavailable');
+  assert.match(notReady.error, /Piper loading/);
+});
+
+test('vision protocol requirements include v2 frame matching and the fixed Piper voice', () => {
+  assert.equal(VISION_WORKER_API_VERSION, 2);
+  assert.ok(REQUIRED_VISION_FEATURES.includes('frame-id-validation'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('tts-piper-libritts-high'));
+  assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
+  assert.equal(TTS_VOICE, 'en_US-libritts-high');
+  assert.equal(TTS_SPEAKER_ID, 0);
 });

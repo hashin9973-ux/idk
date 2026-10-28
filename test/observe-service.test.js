@@ -99,6 +99,74 @@ test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling 
 });
 
 
+test('Observe retains full-resolution pixels locally and publishes matching passive vision without image bytes', async () => {
+  let tick = null;
+  const published = [];
+  const rawBytes = Buffer.from('private-full-resolution-pixel-buffer');
+  const service = createObserveService({
+    githubAuth: {
+      requestApi: async input => {
+        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
+        const payload = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
+        published.push(payload);
+        return { result: { content: { sha: 'b'.repeat(40) } } };
+      }
+    },
+    captureScreenshot: async () => ({
+      bytes: rawBytes, width: 1920, height: 1080,
+      screen_width: 1920, screen_height: 1080,
+      captured_at: Date.now(), display_id: 'primary'
+    }),
+    fingerprintScreenshot: async () => 'screen-fingerprint',
+    getAccessibleSnapshot: async ({ screen, frame }) => ({
+      available: true, source: 'windows_uia',
+      active_window: { title: 'Desktop', bbox_screen_px: [0, 0, screen.width, screen.height] },
+      controls: [], focused_control: null, truncated: false, node_count: 1, frame
+    }),
+    analyzeFrame: async ({ frameId, screen }) => ({
+      status: 'report_available',
+      model: 'SmolVLM2-2.2B-Instruct',
+      completed_at: new Date().toISOString(),
+      input_image: { frame_id: frameId },
+      report: JSON.stringify({
+        schema_version: 'windows-vision-context/v1',
+        frame: { width_px: screen.frame_width, height_px: screen.frame_height },
+        scene: { summary: 'A full-resolution desktop frame was analyzed.' },
+        regions: [{ id: 'r1', label: 'desktop', bbox_px: [0, 0, screen.frame_width, screen.frame_height] }],
+        text_spans: [{ text: 'Window', bbox_px: [20, 20, 90, 40] }],
+        controls: [{ id: 'c1', label: 'Open', role: 'button', bbox_px: [20, 20, 90, 40] }],
+        accessibility: { available: true, controls: [] },
+        ocr: { available: true, method: 'tesseract', text_spans: [] }
+      })
+    }),
+    sleep: async () => {},
+    setIntervalImpl: fn => { tick = fn; return 1; },
+    clearIntervalImpl: () => {}
+  });
+
+  await service.setEnabled(true);
+  for (let i = 0; i < 6; i += 1) await new Promise(resolve => setImmediate(resolve));
+
+  const latest = service.getLatestFrame(2500);
+  assert.ok(latest, 'a fresh live frame should be available to the input validator');
+  assert.equal(latest.width, 1920);
+  assert.equal(latest.height, 1080);
+  assert.equal(latest.bytes, rawBytes);
+  assert.match(latest.frame_id, /^[a-f0-9]{64}$/);
+
+  const matching = published.flatMap(item => item.frames || []).find(frame => frame.frame_id === latest.frame_id && frame.vision_status === 'ready');
+  assert.ok(matching, 'visual evidence should attach only to the matching frame ID');
+  assert.equal(matching.vision_model, 'SmolVLM2-2.2B-Instruct');
+  assert.equal(matching.vision.scene.summary, 'A full-resolution desktop frame was analyzed.');
+  assert.deepEqual(matching.vision.controls[0].bbox_px, [20, 20, 90, 40]);
+  assert.equal(JSON.stringify(published).includes(rawBytes.toString('utf8')), false,
+    'raw screenshot bytes must stay local rather than being published to the GitHub mailbox');
+  assert.equal(service.status().passive_vision_status, 'ready');
+  await service.setEnabled(false);
+  assert.equal(service.getLatestFrame(), null);
+  await service.dispose();
+});
+
 test('Observe reads the existing blob SHA after an app restart before updating its live context file', async () => {
   let liveSha = 'a'.repeat(40);
   let revision = 98;

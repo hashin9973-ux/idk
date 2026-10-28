@@ -579,3 +579,86 @@ test('computer uses familiar actions in one tool and gates visual side effects',
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('tts is a first-class local tool and routes Piper synthesis through the vision service', async () => {
+  const root = fixture();
+  try {
+    let localToolCalls = 0;
+    let approvalCalls = 0;
+    const speechCalls = [];
+    const local = {
+      ...localTools,
+      async executeTool(...args) { localToolCalls++; return localTools.executeTool(...args); }
+    };
+    const fakeVision = {
+      async synthesizeSpeech(args, id) {
+        speechCalls.push({ text: args.text, play: args.play, id });
+        return { status: 'tts_completed', voice: 'en_US-libritts-high', speaker_id: 0, played: args.play !== false, local_file: 'C:\\temp\\speech.wav' };
+      }
+    };
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { approvalCalls++; return { response: 0 }; } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools: local,
+      githubAuth: {},
+      visionService: fakeVision,
+      getAutoAcceptAll: () => false
+    });
+    const saved = await bridge.runTool('tts', { text: 'Hello from Piper.', play: false }, 'tts-save-test');
+    assert.equal(saved.ok, true);
+    assert.equal(saved.result.status, 'tts_completed');
+    assert.equal(saved.result.played, false);
+    assert.equal(approvalCalls, 0, 'saving generated audio without playback does not play sound');
+    const played = await bridge.runTool('tts', { text: 'A short spoken test.' }, 'tts-play-test');
+    assert.equal(played.ok, true);
+    assert.equal(played.result.status, 'tts_completed');
+    assert.equal(played.result.played, true);
+    assert.equal(approvalCalls, 1, 'local audio playback asks for approval unless auto-accept is enabled');
+    assert.equal(speechCalls.length, 2);
+    assert.equal(speechCalls[0].text, 'Hello from Piper.');
+    assert.equal(speechCalls[0].play, false);
+    assert.equal(speechCalls[1].play, undefined);
+    assert.equal(localToolCalls, 0, 'TTS must not be passed to the generic local tool runner');
+    const catalog = await bridge.runTool('get_capabilities', {}, 'tts-catalog');
+    const tool = catalog.result.tools.find(item => item.name === 'tts');
+    assert.ok(tool);
+    assert.equal(tool.parameters.properties.play.default, true);
+    assert.equal(tool.parameters.properties.text.maxLength, 2000);
+    assert.deepEqual(tool.parameters.required, ['text']);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('tts reports playback failure distinctly from successful WAV synthesis', async () => {
+  const root = fixture();
+  try {
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {},
+      uploadWorkspaceFile: async () => ({}),
+      getAutoAcceptAll: () => true,
+      visionService: {
+        async synthesizeSpeech() {
+          return {
+            status: 'tts_completed', voice: 'en_US-libritts-high', speaker_id: 0,
+            played: false, playback_error: 'Windows audio device is unavailable.',
+            local_file: 'C:\\temp\\speech.wav'
+          };
+        }
+      }
+    });
+    const result = await bridge.runTool('tts', { text: 'Play a short test.' }, 'tts-playback-fail');
+    assert.equal(result.ok, false);
+    assert.match(result.error, /audio device is unavailable/i);
+    assert.equal(result.result.status, 'tts_completed', 'WAV synthesis succeeded despite local playback failure');
+    assert.equal(result.result.played, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

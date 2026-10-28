@@ -476,15 +476,16 @@ function createTray() {
 }
 
 
-// Observe only needs a change fingerprint (computed below at 64x36), not a full-resolution
-// image for OCR or display. Request a smaller Electron thumbnail to reduce capture overhead.
-const OBSERVE_CAPTURE_THUMBNAIL_SIZE = Object.freeze({ width: 640, height: 360 });
-
+// Capture the primary display at its physical pixel dimensions. The 64x36 image below is
+// only a fingerprint; it is never used as the visual/model input or coordinate frame.
 async function captureDesktopScreenshot() {
   const primaryDisplay = screen.getPrimaryDisplay();
+  const scaleFactor = Number(primaryDisplay.scaleFactor) || 1;
+  const screenWidth = Math.max(1, Math.round(primaryDisplay.size.width * scaleFactor));
+  const screenHeight = Math.max(1, Math.round(primaryDisplay.size.height * scaleFactor));
   const sources = await desktopCapturer.getSources({
     types: ['screen'],
-    thumbnailSize: OBSERVE_CAPTURE_THUMBNAIL_SIZE,
+    thumbnailSize: { width: screenWidth, height: screenHeight },
     fetchWindowIcons: false
   });
   const source = sources.find(item => String(item.display_id) === String(primaryDisplay.id)) || sources[0];
@@ -492,16 +493,21 @@ async function captureDesktopScreenshot() {
     throw new Error('Windows did not provide a usable desktop screenshot. Check desktop capture permissions and retry.');
   }
   const size = source.thumbnail.getSize();
-  const scaleFactor = Number(primaryDisplay.scaleFactor) || 1;
+  if (size.width !== screenWidth || size.height !== screenHeight) {
+    throw new Error('Windows returned a ' + size.width + 'x' + size.height +
+      ' capture for a ' + screenWidth + 'x' + screenHeight + ' display. Full-resolution capture is required; input coordinates were not authorized from a downscaled frame.');
+  }
+  const bytes = source.thumbnail.toPNG();
   return {
-    bytes: source.thumbnail.toPNG(),
+    bytes,
     filename: 'desktop-' + new Date().toISOString().replace(/[:.]/g, '-') + '.png',
     width: size.width,
     height: size.height,
-    screen_width: Math.max(1, Math.round(primaryDisplay.size.width * scaleFactor)),
-    screen_height: Math.max(1, Math.round(primaryDisplay.size.height * scaleFactor)),
+    screen_width: screenWidth,
+    screen_height: screenHeight,
     display_id: source.display_id || null,
-    captured_at: Date.now()
+    captured_at: Date.now(),
+    frame_id: crypto.createHash('sha256').update(bytes).digest('hex')
   };
 }
 
@@ -527,20 +533,20 @@ function encodeVisionJpeg(input) {
   if (!original || original.isEmpty()) throw new Error('The selected file is not a supported readable image.');
   const originalSize = original.getSize();
   if (!originalSize.width || !originalSize.height) throw new Error('Image has invalid dimensions.');
-  let best = null;
-  for (const scale of [1, 0.85, 0.7, 0.58, 0.46, 0.36, 0.28, 0.2]) {
-    const width = Math.max(1, Math.round(originalSize.width * scale));
-    const height = Math.max(1, Math.round(originalSize.height * scale));
-    const image = scale === 1 ? original : original.resize({ width, height, quality: 'good' });
-    for (const quality of [82, 72, 62, 52, 42, 34]) {
-      const bytes = image.toJPEG(quality);
-      if (!best || bytes.length < best.bytes.length) best = { bytes, width, height, quality };
-      if (bytes.length <= MAX_SCREENSHOT_BYTES) return { bytes, width, height, quality };
+  // Preserve the pixel dimensions used for mouse coordinates. Reduce JPEG quality, never
+  // spatial resolution; if the transfer budget cannot hold the frame, fail explicitly.
+  let smallest = null;
+  for (const quality of [88, 82, 76, 70, 64, 58, 52, 46, 40, 34, 28]) {
+    const bytes = original.toJPEG(quality);
+    if (!smallest || bytes.length < smallest.bytes.length) smallest = { bytes, quality };
+    if (bytes.length <= MAX_SCREENSHOT_BYTES) {
+      return { bytes, width: originalSize.width, height: originalSize.height, quality };
     }
   }
-  if (!best) throw new Error('Could not convert the image to JPEG.');
-  throw new Error('Screenshot compression could not meet the 600 KiB mailbox transfer limit (smallest attempt: ' +
-    best.bytes.length + ' bytes). Use a smaller screenshot.');
+  throw new Error('Full-resolution ' + originalSize.width + 'x' + originalSize.height +
+    ' screenshot exceeds the ' + Math.round(MAX_SCREENSHOT_BYTES / 1024) +
+    ' KiB transfer budget even at JPEG quality ' + smallest.quality +
+    ' (' + smallest.bytes.length + ' bytes). The image was not downscaled; use a larger supported transfer budget or a smaller display resolution.');
 }
 
 function isNetworkError(message) {
@@ -1139,6 +1145,7 @@ if (!hasInstanceLock) {
           inputControl: windowsInputController,
           captureScreenshot: captureDesktopScreenshot,
           getAccessibleSnapshot: captureWindowsUiAutomationSnapshot,
+          getLatestFrame: maxAgeMs => observeService ? observeService.getLatestFrame(maxAgeMs) : null,
           encodeJpeg: encodeVisionJpeg,
           openColabNotebook: url => openInBrowserAndYield(url),
           readClipboardText: () => clipboard.readText(),
@@ -1149,7 +1156,8 @@ if (!hasInstanceLock) {
           getSampleFps: () => settings.observeFps ?? DEFAULT_SAMPLE_FPS,
           captureScreenshot: captureDesktopScreenshot,
           fingerprintScreenshot: fingerprintDesktopScreenshot,
-          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot
+          getAccessibleSnapshot: captureWindowsUiAutomationSnapshot,
+          analyzeFrame: frame => visionService ? visionService.analyzeFrame(frame) : Promise.resolve({ status: 'error', error: 'Colab vision service is unavailable.' })
         });
         void observeService.clearStaleContext().catch(error => {
           appendDiagnosticLog('observe-stale-context-clear-failed', error);

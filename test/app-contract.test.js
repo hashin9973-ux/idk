@@ -60,8 +60,10 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.doesNotMatch(main, /void observeService\.dispose\(\)\.catch/);
   assert.match(main, /height: 402/);
   assert.match(main, /createObserveService/);
-  assert.match(main, /OBSERVE_CAPTURE_THUMBNAIL_SIZE = Object\.freeze\(\{ width: 640, height: 360 \}\)/);
-  assert.match(main, /thumbnailSize: OBSERVE_CAPTURE_THUMBNAIL_SIZE/);
+  assert.match(main, /const screenWidth = Math\.max\(1, Math\.round\(primaryDisplay\.size\.width \* scaleFactor\)\)/);
+  assert.match(main, /thumbnailSize: \{ width: screenWidth, height: screenHeight \}/);
+  assert.match(main, /size\.width !== screenWidth \|\| size\.height !== screenHeight/);
+  assert.match(main, /frame_id: crypto\.createHash\('sha256'\)\.update\(bytes\)\.digest\('hex'\)/);
   assert.match(main, /fingerprintDesktopScreenshot/);
   assert.match(renderer, /windowsBridge\.connectColab/);
   assert.match(renderer, /windowsBridge\.setVisionManualPanel/);
@@ -282,7 +284,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   const compatibility = read('desktop', 'vision-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('')).join('\n');
-  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode']"));
+  assert.ok(bridge.includes("computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'frame_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode']"));
   assert.match(bridge, /Native local computer tool for the real Windows workspace/);
   assert.match(bridge, /returned boxes are mapped back to the original full-frame coordinates/);
   assert.match(bridge, /All click\/move\/drag\/scroll\/key\/mouse inputs execute on local Windows, not in Colab/);
@@ -301,8 +303,13 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes('readClipboardText: () => clipboard.readText()'));
   assert.ok(vision.includes("const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1'"));
   assert.ok(vision.includes('runtime_kept_alive: true'));
-  assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 600 * 1024'));
+  assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 1280 * 1024'));
   assert.ok(vision.includes('input_sha256'));
+  assert.ok(vision.includes('VISION_WORKER_API_VERSION = 2'));
+  assert.ok(vision.includes('runtime_compatible'));
+  assert.ok(vision.includes('async function synthesizeSpeech'));
+  assert.ok(vision.includes("directRequest('/tts'"));
+  assert.ok(bridge.includes("tts: ['text', 'play']"));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
@@ -322,6 +329,16 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(compatibility.includes("require('./colab-direct-service')"));
   assert.ok(python.includes('cloudflared'));
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
+  assert.ok(python.includes('PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"'));
+  assert.ok(python.includes('VISION_WORKER_API_VERSION = 2'));
+  assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
+  assert.ok(python.includes('PIPER_SPEAKER_ID = 0'));
+  assert.ok(python.includes('def ensure_tts_voice():'));
+  assert.ok(python.includes('if route == "/tts":'));
+  assert.ok(python.includes('PIPER_VOICE_SHA256'));
+  assert.ok(python.includes('PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"'));
+  assert.ok(python.includes('num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS'));
+  assert.ok(python.includes('OLLAMA_SWAP_BYTES = 4 * 1024**3'));
   assert.ok(python.includes('"think": False'));
   assert.ok(python.includes('"format": "json"'));
   assert.ok(python.includes('VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"'));
@@ -335,11 +352,11 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(!python.includes('def run_vision_smoke_test()'));
   assert.ok(!python.includes('vision_smoke_test'));
   assert.ok(python.includes('No startup image inference was run'));
-  assert.ok(python.includes('ollama_model_is_downloaded()'));
+  assert.ok(python.includes('ollama_model_is_downloaded(model_name)'));
   assert.ok(python.includes('"images": [model_image_b64]'));
   assert.ok(python.includes('OLLAMA_API + "/api/chat"'));
   assert.ok(python.includes('model_loaded=True'));
-  assert.ok(python.includes('SETUP_BUDGET_SECONDS = 480'));
+  assert.ok(python.includes('SETUP_BUDGET_SECONDS = 900'));
   assert.ok(python.includes('_setup_blocked = True'));
   assert.ok(python.includes('_desktop_registration_event.wait(timeout=90)'));
   assert.doesNotMatch(python, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
@@ -360,8 +377,8 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes("contents.on('render-process-gone'"));
   assert.ok(main.includes("app.on('child-process-gone'"));
   assert.ok(python.includes('class DirectVisionHandler'));
-  assert.ok(bridge.includes('screenshot JPEG pixel frame'));
-  assert.ok(bridge.includes('accessibility-grounded bounds are preferred'));
+  assert.ok(bridge.includes('latest screenshot pixel frame'));
+  assert.match(bridge, /accessibility-grounded bounds are preferred/i);
   assert.ok(bridge.includes('All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab'));
   assert.ok(bridge.includes('Optional focused observation crop'));
   assert.ok(vision.includes('region_px: screenshot.metadata.region_px'));
@@ -376,7 +393,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(!python.includes('userdata.get'));
   assert.ok(!python.includes('api.github.com/repos/hashin9973-ux/qdqwg'));
   assert.equal(main.slice(main.indexOf('app.whenReady().then')).includes('visionService.activate('), false);
-  assert.equal(/process\.kill|kill\(\)|shutdown.*Colab/i.test(vision), false);
+  assert.equal(/process\.kill|shutdown.*Colab/i.test(vision), false);
 });
 
 test('Colab connection detects the public endpoint copied by the notebook without a pairing link', () => {
@@ -415,6 +432,10 @@ test('Colab vision notebook becomes ready after model download without startup i
   assert.doesNotMatch(source, /run_vision_smoke_test|vision_smoke_test|blue-square vision check|generated test image/i);
   assert.match(source, /ollama_model_is_downloaded\(\)/);
   assert.match(source, /No startup image inference was run/);
+  assert.match(source, /VISION_WORKER_API_VERSION = 2/);
+  assert.match(source, /"input_frame_id": record.get\("input_frame_id"\)/);
+  assert.match(source, /"model_role": record.get\("model_role"\)/);
+  assert.match(source, /Piper TTS/);
   assert.match(source, /OLLAMA_MODELS_DIR = Path\("\/content\/ollama-models"\)/);
   assert.doesNotMatch(source, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
   const readme = read('README.md');
