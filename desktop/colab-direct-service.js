@@ -284,14 +284,15 @@ function createVisionService(deps) {
         // The old notebook's /registration/ack handler activates its runtime. Never
         // send that side-effecting request until API/version features are verified.
         // The authenticated health response is enough to report a live-but-outdated tunnel.
-        visionEnabled = false;
+        // Preserve the runtime's reported state; vision_activated below means this
+        // connection attempt did not activate it, not that a pre-existing runtime is off.
+        visionEnabled = health.enabled === true;
         endpointWatchError = '';
         endpointWatchAttemptInProgress = false;
         if (endpointWatch) endpointWatch.active = false;
         endpointWatch = null;
         return {
           ...checkedRuntime,
-          enabled: false,
           connected: true,
           connection_registered: true,
           opened: false,
