@@ -308,10 +308,46 @@ function createRepositoryBridge(deps) {
       throw new Error('Unsafe mailbox folder path.');
     }
 
-    // Contents API directory responses include several URLs per file and exceed
-    // the 1 MiB response cap once the request/result history grows. Traverse
-    // tree SHAs without recursion, then list only the target directory's entries.
+    // A Contents listing of bridge itself is tiny and exposes each subfolder's
+    // tree SHA. Use it to reach the requested large folder directly in two API
+    // calls instead of walking root -> bridge -> target (three sequential calls).
+    // Never list bridge/requests, bridge/results, or bridge/artifacts through the
+    // Contents API: those directory responses can exceed its 1 MiB / 1000-entry
+    // limits as mailbox history grows.
     try {
+      let bridgeEntries = null;
+      try {
+        const response = await api('GET', apiPath('bridge'), null, { ref: config.branch });
+        if (Array.isArray(response && response.result)) bridgeEntries = response.result;
+      } catch (error) {
+        if (isNotFound(error)) return [];
+        // Fall back to bounded Git Trees traversal if the tiny Contents lookup
+        // is unavailable for a reason other than a missing mailbox root.
+      }
+
+      if (bridgeEntries && segments.length === 2) {
+        // The bridge-directory shortcut resolves only an immediate child. For
+        // nested request-scoped folders (such as artifacts/<request-id>), retain
+        // the full tree traversal so callers get the exact requested directory.
+        const directory = bridgeEntries.find(item => item && item.type === 'dir' && item.name === segments[1]);
+        if (!directory) return [];
+        if (typeof directory.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(directory.sha)) {
+          throw new Error('GitHub returned an invalid tree SHA for mailbox directory ' + segments[1] + '.');
+        }
+        const tree = await readRemoteTree(directory.sha);
+        return tree.tree
+          .filter(item => item && item.type === 'blob' && typeof item.path === 'string')
+          .map(item => ({
+            name: item.path,
+            path: relativePath + '/' + item.path,
+            type: 'file',
+            sha: item.sha,
+            size: item.size
+          }));
+      }
+
+      // Fallback to the fully bounded traversal if the Contents endpoint returned
+      // an unexpected shape; this path remains correct without large directory responses.
       let tree = await readRemoteTree(config.branch);
       for (const segment of segments) {
         const directory = tree.tree.find(item => item && item.type === 'tree' && item.path === segment);
