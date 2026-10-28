@@ -936,7 +936,12 @@ test('old Colab runtimes stay visible but never activate or receive screenshots/
   assert.equal(result.runtime_compatible, false);
   assert.match(result.message, /out of date/i);
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, 0);
-  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/tts').length, 0);
+
+  const speech = await f.service.synthesizeSpeech({ text: 'This speech must not go to the old endpoint.' }, 'old-runtime-tts-check');
+  assert.equal(speech.status, 'tts_unavailable');
+  assert.match(speech.error, /out of date/i);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && (call.route === '/tts' || call.route === '/tts/stream')).length, 0,
+    'the incompatible notebook must never receive single-chunk or streamed TTS requests');
 });
 
 test('reconnecting to a live incompatible Colab runtime reports connection without claiming activation', async t => {
