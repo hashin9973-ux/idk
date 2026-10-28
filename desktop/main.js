@@ -743,15 +743,29 @@ async function attemptAutoConnect() {
 function retryConnectionNow() {
   if (!repositoryBridge || !githubAuth) return { scheduled: false };
   const state = repositoryBridge.getState();
+
+  // A user-requested retry must bypass the short pending-auth cache so the app
+  // does a fresh GitHub /user probe. This runs alongside the mailbox poll when
+  // the worker is already up, and restarts the worker immediately on recovery.
+  void githubAuth.getState({ force: true }).then(auth => {
+    broadcastGitHubState(auth);
+    if (!auth.authenticated || auth.verificationPending === true) {
+      const waiting = auth.verificationPending === true;
+      setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
+        auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
+      return;
+    }
+    if (!state.running) void attemptAutoConnect();
+  }).catch(error => {
+    const message = String(error && error.message || error);
+    setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+  });
+
   if (state.running) {
     void repositoryBridge.pollOnce().catch(error => {
       const message = String(error && error.message || error);
       setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
     });
-  } else {
-    // Do not gate on a connectivity probe. Attempts continue during outages and
-    // the periodic loop retries until GitHub becomes reachable.
-    void attemptAutoConnect();
   }
   return { scheduled: true };
 }
