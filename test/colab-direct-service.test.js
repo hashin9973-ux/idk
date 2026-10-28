@@ -233,7 +233,14 @@ test('Colab vision notebook uses a 16,384-token context and reports the configur
     .join('\n');
 
   assert.match(pythonSource, /VISION_CONTEXT_TOKENS = 16384/);
+  assert.match(pythonSource, /PASSIVE_CONTEXT_TOKENS = 8192/);
+  assert.match(pythonSource, /PASSIVE_MODEL = "richardyoung\/smolvlm2-2\.2b-instruct:Q4_K_M"/);
+  assert.match(pythonSource, /PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"/);
   assert.match(pythonSource, /"num_ctx": VISION_CONTEXT_TOKENS/);
+  assert.match(pythonSource, /MODEL_MAX_EDGE = 16384/);
+  assert.match(pythonSource, /OLLAMA_SWAP_FILE = Path\("\/content\/bridge-qwen-pagefile\.swap"\)/);
+  assert.match(pythonSource, /"keep_alive": -1 if model_role == "passive" else 0/);
+  assert.match(pythonSource, /"input_frame_id": input_frame_id/);
   assert.doesNotMatch(pythonSource, /"num_ctx": 4096/);
   assert.match(pythonSource, /"context_window_tokens": VISION_CONTEXT_TOKENS/);
 });
