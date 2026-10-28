@@ -20,7 +20,7 @@ function intervalForFps(value) {
   return Math.round(1000 / normalizeSampleFps(value));
 }
 const FRAME_LIMIT = 10;
-const MAX_CONTEXT_BYTES = 350000;
+const MAX_CONTEXT_BYTES = 3500000;
 
 function safeText(value, limit = 500) {
   return String(value == null ? '' : value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit);
@@ -231,7 +231,7 @@ function createObserveService(deps = {}) {
           cursor: accessibility && accessibility.cursor || null,
           active_window: accessibility && accessibility.active_window || null,
           focused_control: accessibility && accessibility.focused_control || null,
-          controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 250) : [],
+          controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 800) : [],
           accessibility: {
             available: accessibility && accessibility.available === true,
             source: safeText(accessibility && accessibility.source || 'windows_uia', 40),
@@ -251,6 +251,17 @@ function createObserveService(deps = {}) {
         if (frames.length > FRAME_LIMIT) frames = frames.slice(-FRAME_LIMIT);
         publicationRevision += 1;
         if (typeof analyzeFrame === 'function') {
+          if (pendingVisionFrame && pendingVisionFrame.epoch === item.epoch &&
+              pendingVisionFrame.frameId !== frame.frame_id) {
+            const supersededFrame = frames.find(candidate =>
+              candidate.sequence === pendingVisionFrame.sequence &&
+              candidate.frame_id === pendingVisionFrame.frameId);
+            if (supersededFrame && supersededFrame.vision_status === 'pending') {
+              supersededFrame.vision_status = 'superseded';
+              supersededFrame.vision_error = 'Passive analysis skipped because a newer changed screen frame arrived while vision was busy.';
+              publicationRevision += 1;
+            }
+          }
           pendingVisionFrame = { sequence: frame.sequence, frameId: frame.frame_id, captured, screen, accessibility, epoch: item.epoch };
           void drainVisionQueue();
         }
@@ -319,16 +330,16 @@ function createObserveService(deps = {}) {
               },
               perception: reportValue.perception || { mode: 'multimodal_vision+ocr+uia', degraded: false },
               scene: reportValue.scene || null,
-              regions: Array.isArray(reportValue.regions) ? reportValue.regions.slice(0, 10) : [],
-              text_spans: Array.isArray(reportValue.text_spans) ? reportValue.text_spans.slice(0, 48) : [],
-              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 32) : [],
-              objects: Array.isArray(reportValue.objects) ? reportValue.objects.slice(0, 32) : [],
+              regions: Array.isArray(reportValue.regions) ? reportValue.regions.slice(0, 24) : [],
+              text_spans: Array.isArray(reportValue.text_spans) ? reportValue.text_spans.slice(0, 64) : [],
+              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 800) : [],
+              objects: Array.isArray(reportValue.objects) ? reportValue.objects.slice(0, 48) : [],
               focused_element: reportValue.focused_element || null,
               cursor: completedFrame.cursor || reportValue.cursor || null,
               ocr: reportValue.ocr && typeof reportValue.ocr === 'object'
                 ? { available: reportValue.ocr.available === true, method: safeText(reportValue.ocr.method || '', 40),
                     reason: safeText(reportValue.ocr.reason || '', 100) || null,
-                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 64) : [] }
+                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 800) : [] }
                 : { available: false, text_spans: [] },
               interaction_guidance: {
                 coordinate_frame_id: item.frameId,
