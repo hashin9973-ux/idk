@@ -193,7 +193,7 @@ function createVisionService(deps) {
     now = () => Date.now(),
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
     pollIntervalMs = 250,
-    clipboardPollIntervalMs = 1000,
+    clipboardPollIntervalMs = 3000,
     clipboardWatchTimeoutMs = 20 * 60 * 1000,
     fetchImpl = globalThis.fetch
   } = deps || {};
@@ -394,7 +394,7 @@ function createVisionService(deps) {
       if (endpointWatch === watch) {
         watch.active = false;
         if (!endpointWatchError) {
-          endpointWatchError = 'Timed out waiting for the notebook to copy its public HTTPS endpoint. Rerun the cell; if automatic clipboard copy is blocked, use the notebook’s Copy endpoint fallback button.';
+          endpointWatchError = 'Timed out waiting for the notebook to hand off its public HTTPS endpoint. Rerun the server cell to generate a new endpoint, check that Windows Repository Bridge is installed, and allow the browser to open it; if blocked, click Connect to Windows Bridge. Copying the endpoint is a fallback only.';
         }
       }
     } catch (error) {

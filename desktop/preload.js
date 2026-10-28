@@ -9,6 +9,18 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   minimizeToTray: () => ipcRenderer.invoke('app:minimize-to-tray'),
   quit: () => ipcRenderer.invoke('app:quit'),
   getGitHubState: () => ipcRenderer.invoke('app:github-state'),
+  onGitHubState(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, state) => callback(state && typeof state === 'object' ? state : {});
+    ipcRenderer.on('app:github-state', listener);
+    return () => ipcRenderer.removeListener('app:github-state', listener);
+  },
+  onColabHandoffResult(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, result) => callback(result && typeof result === 'object' ? result : {});
+    ipcRenderer.on('app:colab-handoff-result', listener);
+    return () => ipcRenderer.removeListener('app:colab-handoff-result', listener);
+  },
   getVisionStatus: () => ipcRenderer.invoke('app:vision-status'),
   getObserveStatus: () => ipcRenderer.invoke('app:observe-status'),
   setObserveEnabled: enabled => ipcRenderer.invoke('app:observe-toggle', enabled),

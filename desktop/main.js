@@ -27,7 +27,7 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL } = require('./colab-direct-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint } = require('./colab-direct-service');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
@@ -99,6 +99,7 @@ const STATUS_SIZE = { width: 360, height: 402 };
 const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
+const COLAB_HANDOFF_SCHEME = 'windows-repository-bridge';
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
   owner: 'hashin9973-ux',
   repo: 'qdqwg',
@@ -126,6 +127,11 @@ let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let finishingVisionDispose = false;
 let pendingGitHubCliLogin = null;
+let pendingColabHandoffUrl = '';
+let colabHandoffInFlight = false;
+let lastColabHandoffFingerprint = '';
+let lastColabHandoffAt = 0;
+const startupColabHandoffUri = process.argv.find(value => typeof value === 'string' && value.startsWith(COLAB_HANDOFF_SCHEME + '://')) || '';
 let ipcRegistered = false;
 let appInitializationError = '';
 let workspaceInitializationError = '';
@@ -233,6 +239,7 @@ async function completeGitHubCliLogin(login) {
   // independently encrypted token in Electron safeStorage.
   login.login = state.login;
   login.status = 'authenticated';
+  broadcastGitHubState({ configured: true, ...state });
   // A successful sign-in should bring the mailbox online without a separate
   // Start Worker action.
   void attemptAutoConnect();
@@ -592,6 +599,88 @@ function broadcastBridgeState(state) {
   }
 }
 
+function broadcastGitHubState(state) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    const safe = state && typeof state === 'object' ? { ...state } : { authenticated: false };
+    delete safe.token;
+    delete safe.accessToken;
+    mainWindow.webContents.send('app:github-state', safe);
+  }
+}
+
+function parseColabHandoffUri(raw) {
+  if (typeof raw !== 'string' || raw.length > 1200) return null;
+  try {
+    const uri = new URL(raw);
+    if (uri.protocol !== COLAB_HANDOFF_SCHEME + ':' || uri.hostname !== 'connect-colab' ||
+        (uri.pathname && uri.pathname !== '/') || uri.username || uri.password || uri.port || uri.hash) return null;
+    const keys = [...uri.searchParams.keys()];
+    if (keys.length !== 1 || keys[0] !== 'endpoint' || uri.searchParams.getAll('endpoint').length !== 1) return null;
+    const endpoint = parseTunnelEndpoint(uri.searchParams.get('endpoint'));
+    return endpoint ? endpoint.url : null;
+  } catch {
+    return null;
+  }
+}
+
+function publishColabHandoffResult(result) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  const message = String(result && (result.message || result.error) || '')
+    .replace(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\/[A-Za-z0-9_-]{40,100}/gi, '[redacted temporary Colab endpoint]')
+    .slice(0, 500);
+  mainWindow.webContents.send('app:colab-handoff-result', {
+    connected: Boolean(result && result.connected === true),
+    status: String(result && result.status || (result && result.connected ? 'connected' : 'error')),
+    message
+  });
+}
+
+function processPendingColabHandoff() {
+  if (colabHandoffInFlight || !visionService || !pendingColabHandoffUrl) return;
+  const endpoint = pendingColabHandoffUrl;
+  pendingColabHandoffUrl = '';
+  const fingerprint = crypto.createHash('sha256').update(endpoint, 'utf8').digest('hex');
+  const now = Date.now();
+  if (fingerprint === lastColabHandoffFingerprint && now - lastColabHandoffAt < 5000) return;
+  colabHandoffInFlight = true;
+  void visionService.connectColab(endpoint)
+    .then(result => {
+      if (result && result.connected === true) {
+        // Suppress only duplicate deliveries after a successful handshake. A
+        // failed health/registration attempt must remain immediately retryable.
+        lastColabHandoffFingerprint = fingerprint;
+        lastColabHandoffAt = Date.now();
+      } else if (lastColabHandoffFingerprint === fingerprint) {
+        lastColabHandoffFingerprint = '';
+        lastColabHandoffAt = 0;
+      }
+      publishColabHandoffResult(result);
+    })
+    .catch(error => {
+      if (lastColabHandoffFingerprint === fingerprint) {
+        lastColabHandoffFingerprint = '';
+        lastColabHandoffAt = 0;
+      }
+      publishColabHandoffResult({
+        connected: false,
+        status: 'error',
+        message: String(error && error.message || error)
+      });
+    })
+    .finally(() => {
+      colabHandoffInFlight = false;
+      if (pendingColabHandoffUrl) processPendingColabHandoff();
+    });
+}
+
+function queueColabHandoff(raw) {
+  const endpoint = parseColabHandoffUri(raw);
+  if (!endpoint) return false;
+  pendingColabHandoffUrl = endpoint;
+  if (visionService) processPendingColabHandoff();
+  return true;
+}
+
 function setAutoConnectionStatus(status, error = '') {
   autoConnectionStatus = status;
   autoConnectionError = String(error || '');
@@ -623,13 +712,16 @@ async function attemptAutoConnect() {
   autoConnectInFlight = true;
   try {
     const auth = await githubAuth.getState();
-    if (!auth.authenticated) {
-      setAutoConnectionStatus(auth.error ? 'offline' : 'github', auth.error || 'Sign in to GitHub to connect the mailbox.');
+    broadcastGitHubState(auth);
+    if (!auth.authenticated || auth.verificationPending === true) {
+      const waiting = auth.verificationPending === true;
+      setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
+        auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
       return;
     }
     setAutoConnectionStatus('connecting');
     const started = await repositoryBridge.start();
-    setAutoConnectionStatus(started.running ? 'online' : 'connecting', started.lastError || '');
+    setAutoConnectionStatus(resolveWorkerStatus(started), started.lastPollError || started.lastError || '');
     if (started.running && latestFilesystemIndexSnapshot) {
       // Initial index creation is asynchronous and may finish while the worker is offline.
       // Publish the latest snapshot after reconnect without blocking the online status update.
@@ -651,15 +743,29 @@ async function attemptAutoConnect() {
 function retryConnectionNow() {
   if (!repositoryBridge || !githubAuth) return { scheduled: false };
   const state = repositoryBridge.getState();
+
+  // A user-requested retry must bypass the short pending-auth cache so the app
+  // does a fresh GitHub /user probe. This runs alongside the mailbox poll when
+  // the worker is already up, and restarts the worker immediately on recovery.
+  void githubAuth.getState({ force: true }).then(auth => {
+    broadcastGitHubState(auth);
+    if (!auth.authenticated || auth.verificationPending === true) {
+      const waiting = auth.verificationPending === true;
+      setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
+        auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
+      return;
+    }
+    if (!state.running) void attemptAutoConnect();
+  }).catch(error => {
+    const message = String(error && error.message || error);
+    setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+  });
+
   if (state.running) {
     void repositoryBridge.pollOnce().catch(error => {
       const message = String(error && error.message || error);
       setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
     });
-  } else {
-    // Do not gate on a connectivity probe. Attempts continue during outages and
-    // the periodic loop retries until GitHub becomes reachable.
-    void attemptAutoConnect();
   }
   return { scheduled: true };
 }
@@ -773,11 +879,13 @@ function registerIpc() {
     app.quit();
     return true;
   });
-  ipcMain.handle('app:github-state', event => {
+  ipcMain.handle('app:github-state', async event => {
     assertLocalUi(event, 'index.html');
-    return githubAuth
-      ? githubAuth.getState()
+    const state = githubAuth
+      ? await githubAuth.getState()
       : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
+    broadcastGitHubState(state);
+    return state;
   });
   ipcMain.handle('app:observe-status', event => {
     assertLocalUi(event, 'index.html');
@@ -1068,11 +1176,29 @@ const hasInstanceLock = app.requestSingleInstanceLock();
 if (!hasInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', showMainWindow);
+  app.on('second-instance', (_event, commandLine) => {
+    const deepLink = Array.isArray(commandLine)
+      ? commandLine.find(value => typeof value === 'string' && value.startsWith(COLAB_HANDOFF_SCHEME + '://'))
+      : '';
+    if (deepLink) queueColabHandoff(deepLink);
+    showMainWindow();
+  });
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    queueColabHandoff(url);
+  });
 
   app.whenReady().then(() => {
     appendDiagnosticLog('startup', 'Electron app ready; version=' + app.getVersion() + '; packaged=' + app.isPackaged);
     app.setAppUserModelId('com.hashin997ux.windowsrepositorybridge');
+    try {
+      const registered = app.isPackaged
+        ? app.setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)
+        : app.setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME, process.execPath, [path.resolve(process.argv[1] || '.')]);
+      if (!registered) appendDiagnosticLog('colab-handoff-protocol', 'Native URL protocol registration did not succeed; the notebook output fallback stays available.');
+    } catch (error) {
+      appendDiagnosticLog('colab-handoff-protocol-registration-failed', String(error && error.message || error));
+    }
     settings = loadSettings();
     const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
       ? settings.repositoryBridge : {};
@@ -1183,6 +1309,8 @@ if (!hasInstanceLock) {
         console.warn('Could not start filesystem index:', filesystemIndexSyncError);
       });
       startAutoConnectLoop();
+      if (startupColabHandoffUri) queueColabHandoff(startupColabHandoffUri);
+      else if (pendingColabHandoffUrl) processPendingColabHandoff();
     } else if (appInitializationError) {
       setAutoConnectionStatus('attention', appInitializationError);
     }

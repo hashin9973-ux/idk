@@ -115,6 +115,9 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
   assert.match(main, /'app:retry-connection'/);
+  assert.ok(main.includes('githubAuth.getState({ force: true }).then(auth =>'));
+  assert.ok(main.includes('if (!state.running) void attemptAutoConnect();'),
+    'a successful explicit auth retry restarts the mailbox worker immediately');
   assert.match(main, /AUTO_CONNECT_INTERVAL_MS = 5000/);
   assert.match(main, /ready-to-show/);
   assert.match(main, /did-fail-load/);
@@ -164,7 +167,7 @@ test('main process opens login in the system browser and returns focus after Git
 
 test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState']) {
+  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
@@ -460,7 +463,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.equal(/process\.kill|shutdown.*Colab/i.test(vision), false);
 });
 
-test('Colab connection detects the public endpoint copied by the notebook without a pairing link', () => {
+test('Colab connection hands the discovered public endpoint to Windows without clipboard paste', () => {
   const main = read('desktop', 'main.js');
   const service = read('desktop', 'colab-direct-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
@@ -472,14 +475,20 @@ test('Colab connection detects the public endpoint copied by the notebook withou
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
   assert.match(python, /PUBLIC_VISION_ENDPOINT=/);
   assert.match(python, /navigator\.clipboard\.writeText/);
-  assert.match(python, /Copy endpoint for Windows Bridge/);
+  assert.ok(python.includes('Copy endpoint (fallback)'));
+  assert.match(python, /Connect to Windows Bridge/);
+  assert.ok(python.includes('windows-repository-bridge://connect-colab?endpoint='));
+  assert.ok(python.includes('sendToWindowsBridge(false)'));
   assert.match(python, /document\.createElement\("textarea"\)/);
-  assert.match(python, /Clipboard copy was blocked\. The endpoint is selected/);
+  assert.match(python, /Clipboard access was blocked\. The endpoint is selected/);
   assert.match(python, /Paste URL in Windows Repository Bridge/);
   assert.match(main, /'app:vision-manual-panel'/);
-  assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
+  assert.ok(main.includes('setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)'));
+  assert.ok(main.includes("app.on('open-url'"));
+  assert.ok(main.includes("parseTunnelEndpoint(uri.searchParams.get('endpoint'))"));
+  assert.doesNotMatch(main, /COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
-  assert.doesNotMatch(python, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
+  assert.doesNotMatch(python, /wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
 });
 
 test('Colab vision notebook becomes ready after model download without startup image inference', () => {

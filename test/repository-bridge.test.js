@@ -13,6 +13,7 @@ const {
   sanitizeForRepository,
   createRepositoryBridge
 } = require('../desktop/repository-bridge');
+const { getExecutionFootprint, executionFootprintsConflict } = require('../desktop/tool-bridge');
 
 function encode(value) {
   return Buffer.from(JSON.stringify(value, null, 2) + '\n', 'utf8').toString('base64');
@@ -89,7 +90,9 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
         return { status: 200, result: { ref: 'refs/heads/bridge-mailbox', object: { sha: headCommitSha } } };
       }
       if (method === 'GET' && path === '/repos/test-owner/test-repo/commits') {
-        assert.deepEqual(query, { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 1 });
+        assert.equal(query.sha, 'bridge-mailbox');
+        assert.equal(query.path, 'bridge/requests');
+        assert.ok([1, 20].includes(query.per_page));
         const requestPaths = [...files.keys()]
           .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
           .sort();
@@ -101,6 +104,13 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
               ? [{ sha: String(requestPaths.length).padStart(40, '0') }]
               : []
         };
+      }
+      const restCommitPrefix = '/repos/test-owner/test-repo/commits/';
+      if (method === 'GET' && path.startsWith(restCommitPrefix)) {
+        const requestPaths = [...files.keys()]
+          .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
+          .sort();
+        return { status: 200, result: { sha: path.slice(restCommitPrefix.length), files: requestPaths.map(filename => ({ filename, status: 'added' })) } };
       }
       const treePrefix = '/repos/test-owner/test-repo/git/trees/';
       if (method === 'GET' && path.startsWith(treePrefix)) {
@@ -471,7 +481,7 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('five-second request-tree polling discovers work without awaiting the path-filtered commit endpoint', async () => {
+test('request-tree reconciliation remains authoritative when the fast commit endpoint is stale', async () => {
   assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 5000);
   // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
@@ -494,10 +504,11 @@ test('five-second request-tree polling discovers work without awaiting the path-
     assert.ok(Number.isFinite(lastScanAt), 'the initial request-tree scan should be timestamped');
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
-    assert.equal(
+    await waitFor(() => fake.calls.some(call =>
+      call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'), 1000);
+    assert.ok(
       fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
-      false,
-      'request polling must not put the potentially slow path-filtered commit endpoint ahead of request discovery'
+      'the commit fast path runs separately from the full-tree scan'
     );
 
     Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS - 1;
@@ -508,7 +519,7 @@ test('five-second request-tree polling discovers work without awaiting the path-
       'a poll before the scan interval must not perform another GitHub tree read'
     );
 
-    // Simulate the next five-second scan deadline without sleeping.
+    // Simulate the next request-tree scan deadline without sleeping.
     Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const request = {
       protocol: PROTOCOL,
@@ -542,16 +553,62 @@ test('five-second request-tree polling discovers work without awaiting the path-
     const polling = bridge.getState().requestPolling;
     assert.equal(polling.requestTreeScanCount, 2, 'initialization and due scan should be counted');
     assert.ok(Number.isFinite(polling.lastRequestTreeScanDurationMs));
-    assert.equal(
+    assert.ok(
       fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
-      false,
-      'request polling should not call the slow commit listing endpoint'
+      'request commit polling should remain enabled while full-tree reconciliation recovers the deliberately stale result'
     );
   } finally {
     Date.now = originalDateNow;
     await bridge.stop();
   }
 });
+
+test('fast request-commit probe executes a new request before full-tree reconciliation is due', async () => {
+  const initial = {
+    protocol: PROTOCOL,
+    request_id: 'req-fast-probe-initial',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const fake = fakeGitHub();
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      return { ok: true, result: { id, tool } };
+    },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    const initialTreeScanCount = bridge.getState().requestPolling.requestTreeScanCount;
+    const requestPath = 'bridge/requests/' + initial.request_id + '.json';
+    fake.files.set(requestPath, {
+      name: initial.request_id + '.json',
+      path: requestPath,
+      type: 'file',
+      encoding: 'base64',
+      content: encode(initial),
+      sha: 'sha-fast-probe-request'
+    });
+
+    await waitFor(() => fake.files.has('bridge/results/' + initial.request_id + '.json'), 3500);
+    assert.equal(executions, 1, 'the request from the recent commit should execute exactly once');
+    assert.equal(bridge.getState().requestPolling.requestTreeScanCount, initialTreeScanCount,
+      'fast pickup must not require another full request-folder tree read');
+    assert.ok(fake.calls.some(call => call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/commits/' + String(1).padStart(40, '0')),
+    'the fast path should inspect the changed commit file list');
+    assert.equal(decode(fake.files.get('bridge/results/' + initial.request_id + '.json')).status, 'completed');
+  } finally {
+    await bridge.stop();
+  }
+});
+
 
 test('worker drains queued mailbox requests without a folder re-read for every completion', async () => {
   const requests = Array.from({ length: 40 }, (_, index) => ({
@@ -589,6 +646,73 @@ test('worker drains queued mailbox requests without a folder re-read for every c
     assert.equal(executions, 40);
     assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
     assert.equal(requestFolderTreeGetsAfterDrain, requestFolderTreeGetsAtDispatch, 'request completion should drain queued work without another tree listing when the request-commit cursor is unchanged');
+    for (const request of requests) {
+      const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+      assert.equal(result.status, 'completed');
+      assert.equal(result.result.result.id, request.request_id);
+    }
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('execution footprints serialize ambiguous aliases but allow disjoint paths to run concurrently', () => {
+  const readFile = getExecutionFootprint('read_file', { path: 'same.txt' });
+  const writeFile = getExecutionFootprint('write_file', { path: 'same.txt', content: 'new' });
+  const readOther = getExecutionFootprint('read_file', { path: 'other.txt' });
+  const aliasRead = getExecutionFootprint('read_file', { path: 'folder/../same.txt' });
+  const absoluteRead = getExecutionFootprint('read_file', { path: 'C:\\workspace\\same.txt' });
+  const desktopClick = getExecutionFootprint('computer', { action: 'click', x: 10, y: 10 });
+  const anotherDesktopAction = getExecutionFootprint('computer', { action: 'screenshot' });
+  const unknownSideEffect = getExecutionFootprint('new_tool_not_in_the_catalog', {});
+
+  assert.equal(executionFootprintsConflict(readFile, writeFile), true);
+  assert.equal(executionFootprintsConflict(readFile, readOther), false);
+  assert.equal(aliasRead.barrier, true, 'parent-traversal aliases must not bypass conflict detection');
+  assert.equal(absoluteRead.barrier, true, 'absolute paths cannot be safely matched without the canonical workspace root');
+  assert.equal(unknownSideEffect.barrier, true, 'unknown tools must block concurrent execution conservatively');
+  assert.equal(executionFootprintsConflict(aliasRead, readOther), true);
+  assert.equal(executionFootprintsConflict(desktopClick, readOther), false,
+    'desktop input and independent file reads do not conflict');
+  assert.equal(executionFootprintsConflict(desktopClick, anotherDesktopAction), true,
+    'two desktop operations must not overlap on the same interactive session');
+});
+
+
+test('worker runs disjoint workspace operations concurrently and serializes conflicting paths across requests', async () => {
+  const requests = [
+    { protocol: PROTOCOL, request_id: 'req-conflict-a-read', created_at: new Date().toISOString(), tool: 'read_file', args: { path: 'same.txt' } },
+    { protocol: PROTOCOL, request_id: 'req-conflict-b-write', created_at: new Date().toISOString(), tool: 'write_file', args: { path: 'same.txt', content: 'new' } },
+    { protocol: PROTOCOL, request_id: 'req-disjoint-c-read', created_at: new Date().toISOString(), tool: 'read_file', args: { path: 'other.txt' } }
+  ];
+  const fake = fakeGitHub({ initial: requests.map(request => ['bridge/requests/' + request.request_id + '.json', request]) });
+  const fixture = settingsFixture();
+  const activePaths = [];
+  let active = 0;
+  let maximumActive = 0;
+  let conflictingOverlap = false;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      const isWrite = tool === 'write_file' || tool === 'delete_path' || tool === 'create_directory';
+      if (activePaths.some(item => item.path === args.path && (item.isWrite || isWrite))) conflictingOverlap = true;
+      activePaths.push({ path: args.path, isWrite });
+      active++;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise(resolve => setTimeout(resolve, 50));
+      active--;
+      activePaths.splice(activePaths.findIndex(item => item.path === args.path && item.isWrite === isWrite), 1);
+      return { ok: true, result: { id, path: args.path } };
+    },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
+    assert.equal(conflictingOverlap, false, 'reads and writes touching the same path must never overlap');
+    assert.ok(maximumActive >= 2, 'independent paths should still execute concurrently');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
       assert.equal(result.status, 'completed');

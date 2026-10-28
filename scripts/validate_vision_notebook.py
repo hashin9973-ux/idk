@@ -215,6 +215,29 @@ def validate_context_helpers(code):
     if normalized["objects"][0]["bbox_px"] != [420, 160, 440, 170]:
         raise SystemExit("FAIL: visual object coordinates were not mapped from the focused crop into the original frame.")
 
+    # Some VLM responses contain the complete expected v2 structure but omit or
+    # mislabel schema_version. The notebook may normalize that label only after
+    # checking the canonical fields; bounding-box validation must still run.
+    schema_drift_report = json.loads(json.dumps(crop_report))
+    schema_drift_report["schema_version"] = "windows-vision-context/v1"
+    recovered = normalize_report(schema_drift_report, 1000, 500, accessibility, ocr)
+    if recovered.get("schema_version") != "windows-vision-context/v2":
+        raise SystemExit("FAIL: canonical model structure with a stale schema label was not normalized to v2.")
+    if not any("schema label was normalized" in item for item in recovered["scene"]["uncertainties"]):
+        raise SystemExit("FAIL: normalization of a model schema label was not disclosed as uncertainty.")
+
+    malformed_schema_report = {
+        "schema_version": "unexpected", "scene": {}, "regions": []
+    }
+    try:
+        normalize_report(malformed_schema_report, 1000, 500, accessibility, ocr)
+    except RuntimeError as exc:
+        if "required scene/region/text/control/object structure was not present" not in str(exc):
+            raise SystemExit("FAIL: malformed-schema rejection did not explain the missing structure.")
+    else:
+        raise SystemExit("FAIL: malformed structured context was accepted during schema recovery.")
+    print("PASS: complete v2-shaped model output recovers from a missing/stale schema label without bypassing coordinate validation")
+
     fallback = fallback_builder(
         1000, 500,
         {
@@ -355,6 +378,8 @@ def main():
         "thinking disabled for concise vision output": '"think": False',
         "structured JSON output": '"format": "json"',
         "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v2"',
+        "schema label recovery requires a canonical model structure": "canonical_schema_shape = (",
+        "normalized schema recovery is disclosed as uncertainty": "The model schema label was normalized only after the expected structure was confirmed",
         "truncation is rejected explicitly": "malformed or truncated JSON; the report was rejected.",
         "normalized coordinate conversion": "def normalize_model_box(",
         "derived centers instead of model centers": 'item["center_px"] = [round((pixel_box[0] + pixel_box[2]) / 2, 2)',

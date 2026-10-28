@@ -293,8 +293,12 @@ test('repository API allows only the configured mailbox contents routes', async 
         tree: [{ path: 'req-test.json', type: 'blob', sha: '4444444444444444444444444444444444444444', size: 120 }]
       });
     }
-    if (target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1') {
+    if (target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1' ||
+        target === 'https://api.github.com/repos/example/private-repo/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=20') {
       return response([{ sha: '5555555555555555555555555555555555555555' }]);
+    }
+    if (target === 'https://api.github.com/repos/example/private-repo/commits/5555555555555555555555555555555555555555') {
+      return response({ sha: '5555555555555555555555555555555555555555', files: [{ filename: 'bridge/requests/req-test.json', status: 'added' }] });
     }
     if (target.startsWith('https://api.github.com/repos/example/private-repo/contents/')) {
       if ((options.method || 'GET') === 'PUT') return response({ content: { sha: '0123456789abcdef0123456789abcdef01234567' } }, 201);
@@ -355,6 +359,20 @@ test('repository API allows only the configured mailbox contents routes', async 
   });
   assert.equal(latestRequestCommit.result[0].sha, '5555555555555555555555555555555555555555');
   assert.ok(calls.some(call => call.url.endsWith('/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=1')));
+
+  const recentRequestCommits = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/commits',
+    query: { sha: 'bridge-mailbox', path: 'bridge/requests', per_page: 20 }
+  });
+  assert.equal(recentRequestCommits.result[0].sha, '5555555555555555555555555555555555555555');
+  const commitDetails = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/commits/5555555555555555555555555555555555555555'
+  });
+  assert.equal(commitDetails.result.files[0].filename, 'bridge/requests/req-test.json');
+  assert.ok(calls.some(call => call.url.endsWith('/commits?sha=bridge-mailbox&path=bridge%2Frequests&per_page=20')));
+  assert.ok(calls.some(call => call.url.endsWith('/commits/5555555555555555555555555555555555555555')));
 
   const headSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   const treeSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -423,7 +441,7 @@ test('repository API allows only the configured mailbox contents routes', async 
     method: 'GET',
     path: '/repos/example/private-repo/commits',
     query: { sha: 'other-branch', path: 'bridge/requests', per_page: 1 }
-  }), /limited to the latest commit touching bridge\/requests/i);
+  }), /limited to the latest 20 commits touching bridge\/requests/i);
 
   const resultPayload = {
     protocol: 'chatgpt-local-repo-result/v1',
@@ -590,7 +608,117 @@ test('GitHub CLI token import validates the account before storing the token enc
   assert.equal(settings.github.encryptedToken.includes('gho-imported-test-token'), false);
   assert.equal((await auth.getState()).authenticated, true);
   await assert.rejects(auth.importToken('short'), /valid access token/i);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 1, 'a fresh successful /user validation is reused from the short-lived auth cache');
+});
+
+test('transient GitHub API failures do not erase a recently verified login state', async () => {
+  let failProbe = false;
+  let userCalls = 0;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      userCalls++;
+      if (failProbe) throw new Error('fetch failed');
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth } = fixture(mockFetch);
+  const imported = await auth.importToken('gho-auth-cache-test-token');
+  assert.equal(imported.authenticated, true);
+  assert.equal(imported.login, 'example-user');
+  assert.equal(userCalls, 1);
+
+  failProbe = true;
+  const state = await auth.getState({ force: true });
+  assert.equal(state.authenticated, true);
+  assert.equal(state.login, 'example-user');
+  assert.equal(state.verificationPending, true);
+  assert.match(state.verificationError, /fetch failed/i);
+  const stillPending = await auth.getState();
+  assert.equal(stillPending.verificationPending, true, 'a transient error stays visibly pending during the short retry window');
+  assert.equal(userCalls, 2, 'the pending state should avoid a tight retry loop');
+  failProbe = false;
+  const recovered = await auth.getState({ force: true });
+  assert.equal(recovered.authenticated, true);
+  assert.equal(recovered.verificationPending, false);
+  assert.equal(recovered.login, 'example-user');
+  assert.equal(userCalls, 3);
+});
+
+test('GitHub token import keeps a CLI-authorized token during a transient verification outage and retries', async () => {
+  let failProbe = true;
+  let userCalls = 0;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      userCalls++;
+      if (failProbe) throw new Error('fetch failed');
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  auth.setClientId('Iv1.example-client-id');
+  const imported = await auth.importToken('gho-auth-retry-test-token');
+  assert.equal(imported.authenticated, true);
+  assert.equal(imported.verificationPending, true);
+  assert.equal(Boolean(settings.github.encryptedToken), true);
+  assert.equal(settings.github.encryptedToken.includes('gho-auth-retry-test-token'), false);
+
+  failProbe = false;
+  const recovered = await auth.getState({ force: true });
+  assert.equal(recovered.authenticated, true);
+  assert.equal(recovered.verificationPending, false);
+  assert.equal(recovered.login, 'example-user');
+  assert.equal(userCalls, 2);
+});
+
+test('HTTP 5xx verification errors remain retryable and malformed access tokens with whitespace are rejected', async () => {
+  let failProbe = true;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      if (failProbe) return response({ message: 'Service temporarily unavailable' }, 503);
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  const imported = await auth.importToken('gho-auth-http-retry-test-token');
+  assert.equal(imported.authenticated, true);
+  assert.equal(imported.verificationPending, true);
+  assert.match(imported.error, /HTTP 503/);
+  assert.equal(Boolean(settings.github.encryptedToken), true);
+  await assert.rejects(auth.importToken('gho-test-token with spaces'), /valid access token/i);
+
+  failProbe = false;
+  const recovered = await auth.getState({ force: true });
+  assert.equal(recovered.authenticated, true);
+  assert.equal(recovered.verificationPending, false);
+  assert.equal(recovered.login, 'example-user');
+});
+
+test('concurrent GitHub auth-state probes share one in-flight /user request', async () => {
+  let resolveProfile;
+  let userCalls = 0;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      userCalls++;
+      return new Promise(resolve => { resolveProfile = () => resolve(response({ login: 'example-user' })); });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  auth.setClientId('Iv1.example-client-id');
+  settings.github.encryptedToken = Buffer.from('encrypted:gho-concurrent-test-token', 'utf8').toString('base64');
+
+  const first = auth.getState({ force: true });
+  const second = auth.getState({ force: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(userCalls, 1);
+  resolveProfile();
+  const [left, right] = await Promise.all([first, second]);
+  assert.equal(left.authenticated, true);
+  assert.equal(right.authenticated, true);
+  assert.equal(left.login, right.login);
 });
 
 test('GitHub logout removes the encrypted credential', async () => {

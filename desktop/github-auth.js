@@ -3,12 +3,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { createHash } = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const OAUTH_CLIENT_ID_PATTERN = /^[A-Za-z0-9_.-]{10,100}$/;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_MAILBOX_CONTENT_BYTES = 12 * 1024 * 1024;
+const AUTH_STATE_CACHE_MS = 30 * 1000;
+const AUTH_PENDING_CACHE_MS = 1000;
 
 function cleanError(value) {
   return String(value || 'GitHub request failed').replace(/[\r\n]+/g, ' ').slice(0, 500);
@@ -16,6 +19,46 @@ function cleanError(value) {
 
 function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl = globalThis.fetch, execFileAsyncImpl = promisify(execFile) }) {
   let pendingDevice = null;
+  let cachedAuthState = null;
+  let authProbePromise = null;
+  let authProbeFingerprint = '';
+
+  function tokenFingerprint(token) {
+    return createHash('sha256').update(String(token), 'utf8').digest('hex');
+  }
+
+  function clearAuthStateCache() {
+    cachedAuthState = null;
+    authProbePromise = null;
+    authProbeFingerprint = '';
+  }
+
+  function isTransientAuthFailure(error) {
+    const message = String(error && error.message || error || '');
+    return /(?:GitHub HTTP (?:408|425|429|5\d\d):)|(?:GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked))|fetch failed|failed to fetch|network|offline|ENOTFOUND|EAI_AGAIN|ECONN|ETIMEDOUT|timed out|socket|DNS|temporarily unavailable|connection reset/i.test(message);
+  }
+
+  function isDefinitiveAuthFailure(error) {
+    const message = String(error && error.message || error || '');
+    return /GitHub HTTP (?:401|403):/i.test(message) && !isTransientAuthFailure(error);
+  }
+
+  function cacheVerifiedAuth(token, login) {
+    cachedAuthState = {
+      fingerprint: tokenFingerprint(token),
+      checkedAt: Date.now(),
+      verified: true,
+      state: {
+        configured: typeof githubSettings().clientId === 'string' &&
+          OAUTH_CLIENT_ID_PATTERN.test(githubSettings().clientId),
+        clientId: String(githubSettings().clientId || ''),
+        authenticated: true,
+        login: typeof login === 'string' ? login : '',
+        verificationPending: false,
+        verifiedAt: new Date().toISOString()
+      }
+    };
+  }
 
   function githubSettings() {
     const settings = getSettings();
@@ -46,6 +89,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     const entry = githubSettings();
     entry.encryptedToken = safeStorage.encryptString(token).toString('base64');
+    clearAuthStateCache();
     persistSettings();
   }
 
@@ -58,6 +102,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (entry.clientId !== clientId) {
       delete entry.encryptedToken;
       pendingDevice = null;
+      clearAuthStateCache();
     }
     entry.clientId = clientId;
     persistSettings();
@@ -125,17 +170,25 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       if (method !== 'GET' || input.body !== undefined ||
           keys.join(',') !== 'path,per_page,sha' ||
           query.sha !== branch || query.path !== 'bridge/requests' ||
-          query.per_page !== 1) {
-        throw new Error('Commit polling is limited to the latest commit touching bridge/requests on the configured branch.');
+          !Number.isInteger(query.per_page) || query.per_page < 1 || query.per_page > 20) {
+        throw new Error('Commit polling is limited to the latest 20 commits touching bridge/requests on the configured branch.');
       }
       return {
         method, path: pathValue, query: undefined, body: undefined,
         url: 'https://api.github.com' + pathValue +
-          '?sha=' + encodeURIComponent(branch) + '&path=bridge%2Frequests&per_page=1'
+          '?sha=' + encodeURIComponent(branch) + '&path=bridge%2Frequests&per_page=' + String(query.per_page)
       };
     }
 
     const validSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/i.test(value);
+    const repositoryCommitPrefix = base + '/commits/';
+    if (pathValue.startsWith(repositoryCommitPrefix)) {
+      const sha = pathValue.slice(repositoryCommitPrefix.length);
+      if (method !== 'GET' || !validSha(sha) || input.body !== undefined || input.query !== undefined) {
+        throw new Error('Commit details may only be read by a full commit SHA in the configured mailbox repository.');
+      }
+      return { method, path: pathValue, query: undefined, body: undefined, url: 'https://api.github.com' + pathValue };
+    }
     const cleanupMessage = '[local bridge] retention cleanup of completed mailbox records';
     const validCleanupPath = value => {
       if (typeof value !== 'string') return false;
@@ -321,29 +374,94 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     return { status: response.status, result: await readJson(response) };
   }
 
-  async function getState() {
+  async function getState(options = {}) {
     const settings = githubSettings();
-    const state = {
+    const baseState = {
       configured: typeof settings.clientId === 'string' && OAUTH_CLIENT_ID_PATTERN.test(settings.clientId),
       clientId: typeof settings.clientId === 'string' ? settings.clientId : '',
       authenticated: false,
-      login: '',
+      login: ''
     };
-    const token = getToken();
-    if (!token) return state;
+    let token;
     try {
-      const response = await fetchImpl('https://api.github.com/user', {
-        headers: { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
-        signal: AbortSignal.timeout(12000)
-      });
-      const profile = await readJson(response);
-      state.authenticated = true;
-      state.login = typeof profile.login === 'string' ? profile.login : '';
-      return state;
+      token = getToken();
     } catch (error) {
-      state.authenticated = false;
-      state.error = cleanError(error.message);
-      return state;
+      return { ...baseState, error: cleanError(error.message) };
+    }
+    if (!token) {
+      clearAuthStateCache();
+      return baseState;
+    }
+
+    const fingerprint = tokenFingerprint(token);
+    const ageMs = cachedAuthState && cachedAuthState.fingerprint === fingerprint
+      ? Math.max(0, Date.now() - cachedAuthState.checkedAt) : Infinity;
+    const cachedStatePending = cachedAuthState && cachedAuthState.state && cachedAuthState.state.verificationPending === true;
+    if (options.force !== true && cachedAuthState && cachedAuthState.fingerprint === fingerprint &&
+        ((cachedAuthState.verified && !cachedStatePending && ageMs < AUTH_STATE_CACHE_MS) ||
+         (ageMs < AUTH_PENDING_CACHE_MS))) {
+      return { ...cachedAuthState.state };
+    }
+    if (authProbePromise && authProbeFingerprint === fingerprint) return authProbePromise;
+
+    const cachedVerified = cachedAuthState && cachedAuthState.fingerprint === fingerprint && cachedAuthState.verified
+      ? cachedAuthState.state : null;
+    const probe = (async () => {
+      try {
+        const response = await fetchImpl('https://api.github.com/user', {
+          headers: {
+            Authorization: 'Bearer ' + token,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28'
+          },
+          signal: AbortSignal.timeout(12000)
+        });
+        const profile = await readJson(response);
+        if (typeof profile.login !== 'string' || !profile.login) {
+          throw new Error('GitHub authentication validation did not return an account name.');
+        }
+        cacheVerifiedAuth(token, profile.login);
+        return { ...cachedAuthState.state };
+      } catch (error) {
+        const message = cleanError(error.message);
+        if (isTransientAuthFailure(error)) {
+          // A network/API hiccup is not proof that the saved credential was revoked.
+          // Keep a previously verified account visibly connected, or show a
+          // verification-pending state for a newly saved token while mailbox polling retries.
+          if (cachedVerified) {
+            const pendingState = {
+              ...cachedVerified,
+              verificationPending: true,
+              verificationError: message,
+              stale: true
+            };
+            cachedAuthState = { fingerprint, checkedAt: Date.now(), verified: true, state: pendingState };
+            return { ...pendingState };
+          }
+          const pendingState = {
+            ...baseState,
+            authenticated: true,
+            login: '',
+            verificationPending: true,
+            verificationError: message,
+            error: message
+          };
+          cachedAuthState = { fingerprint, checkedAt: Date.now(), verified: false, state: pendingState };
+          return { ...pendingState };
+        }
+        if (isDefinitiveAuthFailure(error)) clearAuthStateCache();
+        return { ...baseState, error: message, verificationPending: false };
+      }
+    })();
+    authProbeFingerprint = fingerprint;
+    authProbePromise = probe;
+    try {
+      return await probe;
+    } finally {
+      if (authProbePromise === probe) {
+        authProbePromise = null;
+        authProbeFingerprint = '';
+      }
     }
   }
 
@@ -418,9 +536,9 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     saveToken(data.access_token);
     pendingDevice = null;
-    const state = await getState();
+    const state = await getState({ force: true });
     if (!state.authenticated) throw new Error('Token was received but could not be validated with GitHub: ' + (state.error || 'unknown error'));
-    return { status: 'authenticated', login: state.login };
+    return { status: 'authenticated', login: state.login, ...(state.verificationPending ? { verificationPending: true, message: state.verificationError || state.error || 'GitHub account verification will retry automatically.' } : {}) };
   }
 
   async function importToken(rawToken) {
@@ -428,19 +546,39 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     if (token.length < 20 || token.length > 8192 || /\s/.test(token)) {
       throw new Error('GitHub did not return a valid access token.');
     }
-    const response = await fetchImpl('https://api.github.com/user', {
-      headers: {
-        Authorization: 'Bearer ' + token,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      },
-      signal: AbortSignal.timeout(12000)
-    });
-    const profile = await readJson(response);
-    if (typeof profile.login !== 'string' || !profile.login) {
-      throw new Error('GitHub token validation did not return an account name.');
+    let profile;
+    try {
+      const response = await fetchImpl('https://api.github.com/user', {
+        headers: {
+          Authorization: 'Bearer ' + token,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+        signal: AbortSignal.timeout(12000)
+      });
+      profile = await readJson(response);
+      if (typeof profile.login !== 'string' || !profile.login) {
+        throw new Error('GitHub token validation did not return an account name.');
+      }
+    } catch (error) {
+      if (!isTransientAuthFailure(error)) throw error;
+      // The GitHub CLI has already completed device authorization. Preserve its
+      // credential securely and distinguish verification delay from a bad token.
+      saveToken(token);
+      const state = {
+        configured: typeof githubSettings().clientId === 'string' && OAUTH_CLIENT_ID_PATTERN.test(githubSettings().clientId),
+        clientId: String(githubSettings().clientId || ''),
+        authenticated: true,
+        login: '',
+        verificationPending: true,
+        verificationError: cleanError(error.message),
+        error: cleanError(error.message)
+      };
+      cachedAuthState = { fingerprint: tokenFingerprint(token), checkedAt: Date.now(), verified: false, state };
+      return { authenticated: true, login: '', verificationPending: true, error: state.error };
     }
     saveToken(token);
+    cacheVerifiedAuth(token, profile.login);
     return { authenticated: true, login: profile.login };
   }
 
@@ -448,6 +586,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     const entry = githubSettings();
     delete entry.encryptedToken;
     pendingDevice = null;
+    clearAuthStateCache();
     persistSettings();
     return { authenticated: false, loggedOut: true };
   }
