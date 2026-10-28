@@ -121,7 +121,10 @@ test('Observe retains full-resolution pixels locally and publishes matching pass
     getAccessibleSnapshot: async ({ screen, frame }) => ({
       available: true, source: 'windows_uia',
       active_window: { title: 'Desktop', bbox_screen_px: [0, 0, screen.width, screen.height] },
-      controls: [], focused_control: null, truncated: false, node_count: 1, frame
+      controls: [], focused_control: null, cursor: {
+        x_screen_px: 300, y_screen_px: 200, x_px: 300, y_px: 200,
+        source: 'windows_native_cursor', coordinate_space: 'screenshot_jpeg_px'
+      }, truncated: false, node_count: 1, frame
     }),
     analyzeFrame: async ({ frameId, screen }) => ({
       status: 'report_available',
@@ -129,12 +132,14 @@ test('Observe retains full-resolution pixels locally and publishes matching pass
       completed_at: new Date().toISOString(),
       input_image: { frame_id: frameId },
       report: JSON.stringify({
-        schema_version: 'windows-vision-context/v1',
+        schema_version: 'windows-vision-context/v2',
         frame: { width_px: screen.frame_width, height_px: screen.frame_height },
         scene: { summary: 'A full-resolution desktop frame was analyzed.' },
         regions: [{ id: 'r1', label: 'desktop', bbox_px: [0, 0, screen.frame_width, screen.frame_height] }],
         text_spans: [{ text: 'Window', bbox_px: [20, 20, 90, 40] }],
         controls: [{ id: 'c1', label: 'Open', role: 'button', bbox_px: [20, 20, 90, 40] }],
+        objects: [{ id: 'o1', label: 'desktop icon', category: 'icon', appearance: 'small square icon', color: 'blue', shape: 'square', confidence: 'high', bbox_px: [20, 20, 90, 40] }],
+        perception: { mode: 'multimodal_vision+ocr+uia', degraded: false, error: null },
         accessibility: { available: true, controls: [] },
         ocr: { available: true, method: 'tesseract', text_spans: [] }
       })
@@ -158,7 +163,13 @@ test('Observe retains full-resolution pixels locally and publishes matching pass
   assert.ok(matching, 'visual evidence should attach only to the matching frame ID');
   assert.equal(matching.vision_model, 'SmolVLM2-2.2B-Instruct');
   assert.equal(matching.vision.scene.summary, 'A full-resolution desktop frame was analyzed.');
+  assert.equal(matching.coordinate_system.frame_id, matching.frame_id);
+  assert.equal(matching.coordinate_system.width_px, 1920);
+  assert.deepEqual(matching.cursor, { x_screen_px: 300, y_screen_px: 200, x_px: 300, y_px: 200, source: 'windows_native_cursor', coordinate_space: 'screenshot_jpeg_px' });
+  assert.equal(matching.vision.frame_id, matching.frame_id);
   assert.deepEqual(matching.vision.controls[0].bbox_px, [20, 20, 90, 40]);
+  assert.equal(matching.vision.objects[0].label, 'desktop icon');
+  assert.equal(matching.vision.interaction_guidance.coordinate_frame_id, matching.frame_id);
   assert.equal(JSON.stringify(published).includes(rawBytes.toString('utf8')), false,
     'raw screenshot bytes must stay local rather than being published to the GitHub mailbox');
   assert.equal(service.status().passive_vision_status, 'ready');
