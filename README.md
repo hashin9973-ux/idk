@@ -199,7 +199,7 @@ GitHub Actions runs syntax checks, automated tests, and a Windows NSIS installer
 
 ## Colab screenshot analysis (separate from Observe and local inputs)
 
-The status window's **Connect Colab** button opens `vision/vision_worker.ipynb`. In Colab, select a GPU runtime and run **Start the direct Colab vision server**. The existing authenticated HTTPS tunnel and GitHub request/result mailbox remain unchanged; the notebook never executes Windows input or needs a GitHub token.
+The status window's **Connect Colab** button opens `vision/vision_worker.ipynb`. In Colab, select a GPU runtime and run **Start the direct Colab vision server**. The existing authenticated HTTPS tunnel and GitHub request/result mailbox remain unchanged; the notebook never executes Windows input or needs a GitHub token. The worker uses the prebuilt Ollama runtime and does not compile llama.cpp from source.
 
 The worker uses two models with separate roles:
 
