@@ -8,8 +8,8 @@ const { spawn } = require('node:child_process');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
-const VISION_WORKER_API_VERSION = 2;
-const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high']);
+const VISION_WORKER_API_VERSION = 3;
+const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback']);
 const TTS_PROTOCOL = 'piper-libritts-tts/v1';
 const TTS_VOICE = 'en_US-libritts-high';
 const TTS_SPEAKER_ID = 0;
@@ -26,7 +26,7 @@ const DEFAULT_WAIT_MS = 15000;
 const MAX_WAIT_MS = 120000;
 const DIRECT_TIMEOUT_MS = 360000;
 const PAIRING_NONCE_TTL_MS = 10 * 60 * 1000;
-const VISION_CONTEXT_SCHEMA = 'windows-vision-context/v1';
+const VISION_CONTEXT_SCHEMA = 'windows-vision-context/v2';
 const DEFAULT_PROMPT = 'Observe the current desktop as a working computer environment. Identify the active application and its state, group the screen into meaningful regions, transcribe important visible text, explain relationships between controls and their containing region, and list the most task-relevant interactive targets. Coordinates are screenshot-frame pixel coordinates; prefer Windows UI Automation evidence when available and otherwise label visual estimates as unverified. Preserve uncertainty and do not assume hidden state. Observation only: do not click, type, or otherwise interact.';
 
 function messageOf(error) {
@@ -98,14 +98,22 @@ function validateVisionContext(reportText, expectedFrame) {
       typeof report.scene.summary !== 'string' || !report.scene.summary.trim() ||
       typeof report.scene.screen_type !== 'string' ||
       !Array.isArray(report.regions) || !Array.isArray(report.text_spans) ||
-      !Array.isArray(report.controls)) {
+      !Array.isArray(report.controls) || !Array.isArray(report.objects) ||
+      !report.perception || typeof report.perception !== 'object' ||
+      typeof report.perception.degraded !== 'boolean') {
     throw new Error('Vision context is missing required scene, region, text, or control fields.');
   }
-  if (report.regions.length > 10 || report.text_spans.length > 32 || report.controls.length > 16) {
+  if (report.regions.length > 10 || report.text_spans.length > 48 || report.controls.length > 32 || report.objects.length > 32) {
     throw new Error('Vision report exceeds the bounded context size and was rejected.');
   }
   report.regions.forEach((item, index) => validateBoundingBox(item, 'region ' + (index + 1), frame, true));
   report.text_spans.forEach((item, index) => validateBoundingBox(item, 'text span ' + (index + 1), frame, false));
+  report.objects.forEach((item, index) => {
+    if (!item || typeof item.label !== 'string' || typeof item.category !== 'string') {
+      throw new Error('Object ' + (index + 1) + ' is missing its label or category.');
+    }
+    validateBoundingBox(item, 'object ' + (index + 1), frame, false);
+  });
   report.controls.forEach((item, index) => {
     if (!item || typeof item.label !== 'string' || typeof item.role !== 'string') {
       throw new Error('Control ' + (index + 1) + ' is missing its label or role.');
@@ -124,7 +132,7 @@ function validateVisionContext(reportText, expectedFrame) {
   if (!report.ocr || typeof report.ocr.available !== 'boolean' || !Array.isArray(report.ocr.text_spans)) {
     throw new Error('Vision report has no OCR evidence status.');
   }
-  if (report.ocr.text_spans.length > 40) throw new Error('OCR evidence exceeds the size limit.');
+  if (report.ocr.text_spans.length > 80) throw new Error('OCR evidence exceeds the size limit.');
   report.ocr.text_spans.forEach((item, index) =>
     validateBoundingBox(item, 'OCR text span ' + (index + 1), frame, true));
   return JSON.stringify(report);
