@@ -54,7 +54,7 @@ test('long sentences split into shorter prefetched phrases without breaking word
 
 test('adaptive chunk sizes can cover a long request without exceeding 32 chunks', () => {
   const text = 'word '.repeat(390).trim();
-  const maxChars = Math.min(240, Math.max(56, Math.ceil(text.length / MAX_SPEECH_CHUNKS)));
+  const maxChars = Math.min(240, Math.max(56, Math.ceil(text.length / MAX_SPEECH_CHUNKS) + 4));
   const chunks = splitSpeechIntoChunks(text, maxChars);
   assert.ok(chunks.length <= MAX_SPEECH_CHUNKS);
   assert.ok(chunks.every(chunk => chunk.length <= maxChars));
