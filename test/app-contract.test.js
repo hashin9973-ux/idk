@@ -75,6 +75,9 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
+  assert.match(renderer, /incompatible_runtime: 'Colab: update notebook'/);
+  assert.match(renderer, /running notebook is out of date/);
+  assert.doesNotMatch(html, /Vision stays off until enabled/);
   assert.match(renderer, /21 \* 60 \* 1000/);
   assert.match(renderer, /The Colab connection check timed out/);
   assert.match(renderer, /screenshot analysis is disabled, but the model remains loaded/);
@@ -117,8 +120,18 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:vision-manual-panel'/);
   assert.match(main, /VISION_MANUAL_HEIGHT = 500/);
   assert.match(main, /'app:vision-setup-check'/);
-  assert.match(main, /const mailboxCheck = await visionService\.setupCheck\(githubState\)/);
-  assert.match(main, /mailboxCheck\.checks\.mailbox\.status !== 'passed'/);
+  const visionStatusHandler = main.slice(
+    main.indexOf("ipcMain.handle('app:vision-status'"),
+    main.indexOf("ipcMain.handle('app:vision-connect-colab'")
+  );
+  const connectColabHandler = main.slice(
+    main.indexOf("ipcMain.handle('app:vision-connect-colab'"),
+    main.indexOf("ipcMain.handle('app:vision-manual-panel'")
+  );
+  assert.match(visionStatusHandler, /return visionService\.status\(\)/);
+  assert.doesNotMatch(visionStatusHandler, /githubAuth\.getState|githubState\.authenticated/);
+  assert.match(connectColabHandler, /return visionService\.connectColab/);
+  assert.doesNotMatch(connectColabHandler, /githubAuth\.getState|visionService\.setupCheck|mailboxCheck/);
   assert.match(main, /visionService\.setupCheck\(githubState\)/);
   assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);

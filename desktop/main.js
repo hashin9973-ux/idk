@@ -556,15 +556,30 @@ function isNetworkError(message) {
 function resolveWorkerStatus(state) {
   const current = state || (repositoryBridge ? repositoryBridge.getState() : {});
   if (!current.configured) return 'setup';
-  if (current.running) {
-    if (current.lastError) return isNetworkError(current.lastError) ? 'offline' : 'attention';
-    return 'online';
-  }
-  return autoConnectionStatus;
+  if (!current.running) return autoConnectionStatus;
+
+  // Only the mailbox request-tree poll proves the worker can currently reach
+  // its configured transport. A generic lastError can be an ordinary tool or
+  // result-publication error and must not mark a healthy worker as offline.
+  const lastPollAt = Date.parse(String(current.lastPollAt || ''));
+  const scanInterval = Math.max(1000, Number(current.requestPolling && current.requestPolling.requestTreeScanIntervalMs) || 5000);
+  const freshnessWindowMs = Math.max(15000, scanInterval * 3);
+  const pollFresh = Number.isFinite(lastPollAt) && Date.now() - lastPollAt <= freshnessWindowMs;
+  if (pollFresh) return 'online';
+
+  const connectionError = String(current.lastPollError || current.lastError || '');
+  if (connectionError) return isNetworkError(connectionError) ? 'offline' : 'attention';
+  return 'connecting';
 }
 
 function enrichedBridgeState(state) {
-  return { ...(state || {}), workerStatus: resolveWorkerStatus(state), connectionError: autoConnectionError || (state && state.lastError) || '', autoAcceptAll: settings.autoAcceptAll === true };
+  const workerStatus = resolveWorkerStatus(state);
+  const current = state || {};
+  const connectionError = autoConnectionError ||
+    (workerStatus === 'offline' || workerStatus === 'attention'
+      ? (current.lastPollError || current.lastError || '')
+      : '');
+  return { ...current, workerStatus, connectionError, autoAcceptAll: settings.autoAcceptAll === true };
 }
 
 function broadcastBridgeState(state) {
@@ -583,11 +598,13 @@ async function attemptAutoConnect() {
   if (!repositoryBridge || !githubAuth || autoConnectInFlight) return;
   const initial = repositoryBridge.getState();
   if (initial.running) {
-    setAutoConnectionStatus(initial.lastError
-      ? (isNetworkError(initial.lastError) ? 'offline' : 'attention')
-      : 'online', initial.lastError || '');
-    // Force a retry as the connection returns, even if the worker was already
-    // running when the network disappeared. pollOnce prevents overlapping polls.
+    const status = resolveWorkerStatus(initial);
+    const connectionError = status === 'offline' || status === 'attention'
+      ? String(initial.lastPollError || initial.lastError || '')
+      : '';
+    setAutoConnectionStatus(status, connectionError);
+    // Force a poll after startup/reconnect. A task-level lastError does not make
+    // the worker offline; resolveWorkerStatus uses the last successful mailbox scan.
     void repositoryBridge.pollOnce().catch(error => {
       const message = String(error && error.message || error);
       setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
@@ -800,20 +817,8 @@ function registerIpc() {
         message: appInitializationError || 'Vision service is not available in this app session.'
       };
     }
-    const githubState = githubAuth ? await githubAuth.getState() : { authenticated: false };
-    if (!githubState.authenticated) {
-      return {
-        status: 'inactive',
-        enabled: false,
-        runtime_fresh: false,
-        runtime_alive: false,
-        runtime_status: null,
-        model_loaded: false,
-        message: githubState.error
-          ? 'Vision status is unavailable until GitHub connectivity is restored: ' + String(githubState.error).slice(0, 500)
-          : 'Sign in to GitHub before the app can read Colab vision status.'
-      };
-    }
+    // Colab's direct HTTPS health endpoint is independent of the GitHub mailbox.
+    // Do not hide a live Colab runtime because a separate GitHub /user probe timed out.
     return visionService.status();
   });
   ipcMain.handle('app:vision-connect-colab', async (event, endpointUrl) => {
@@ -827,30 +832,9 @@ function registerIpc() {
         message: appInitializationError || 'Colab vision service is unavailable in this app session.'
       };
     }
-    const githubState = githubAuth
-      ? await githubAuth.getState()
-      : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
-    if (!githubState.authenticated) {
-      return {
-        status: 'action_required',
-        connected: false,
-        opened: false,
-        vision_activated: false,
-        message: 'The app must be signed in to GitHub before it can read the shared mailbox and verify a Colab connection. Use Sign in to GitHub first.'
-      };
-    }
-    const mailboxCheck = await visionService.setupCheck(githubState);
-    if (!mailboxCheck.checks || !mailboxCheck.checks.mailbox || mailboxCheck.checks.mailbox.status !== 'passed') {
-      const detail = mailboxCheck.checks && mailboxCheck.checks.mailbox && mailboxCheck.checks.mailbox.message;
-      return {
-        status: 'error',
-        connected: false,
-        opened: false,
-        vision_activated: false,
-        message: 'The app could not verify access to hashin9973-ux/qdqwg on branch bridge-mailbox, so it did not open Colab. ' +
-          String(detail || 'Run Setup check and resolve the mailbox access error first.')
-      };
-    }
+    // Connecting Colab needs only its authenticated, high-entropy HTTPS endpoint.
+    // GitHub mailbox access is checked separately by Setup check and by normal tool
+    // requests; a transient GitHub outage must not prevent opening/reconnecting Colab.
     return visionService.connectColab(typeof endpointUrl === 'string' ? endpointUrl : '');
   });
   ipcMain.handle('app:vision-manual-panel', (event, visible) => {
