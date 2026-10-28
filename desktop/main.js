@@ -608,6 +608,61 @@ function broadcastGitHubState(state) {
   }
 }
 
+function parseColabHandoffUri(raw) {
+  if (typeof raw !== 'string' || raw.length > 1200) return null;
+  try {
+    const uri = new URL(raw);
+    if (uri.protocol !== COLAB_HANDOFF_SCHEME + ':' || uri.hostname !== 'connect-colab' ||
+        (uri.pathname && uri.pathname !== '/') || uri.username || uri.password || uri.hash) return null;
+    const keys = [...uri.searchParams.keys()];
+    if (keys.length !== 1 || keys[0] !== 'endpoint' || uri.searchParams.getAll('endpoint').length !== 1) return null;
+    const endpoint = parseTunnelEndpoint(uri.searchParams.get('endpoint'));
+    return endpoint ? endpoint.url : null;
+  } catch {
+    return null;
+  }
+}
+
+function publishColabHandoffResult(result) {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+  mainWindow.webContents.send('app:colab-handoff-result', {
+    connected: Boolean(result && result.connected === true),
+    status: String(result && result.status || (result && result.connected ? 'connected' : 'error')),
+    message: String(result && (result.message || result.error) || '').slice(0, 500)
+  });
+}
+
+function processPendingColabHandoff() {
+  if (colabHandoffInFlight || !visionService || !pendingColabHandoffUrl) return;
+  const endpoint = pendingColabHandoffUrl;
+  pendingColabHandoffUrl = '';
+  const fingerprint = crypto.createHash('sha256').update(endpoint, 'utf8').digest('hex');
+  const now = Date.now();
+  if (fingerprint === lastColabHandoffFingerprint && now - lastColabHandoffAt < 5000) return;
+  lastColabHandoffFingerprint = fingerprint;
+  lastColabHandoffAt = now;
+  colabHandoffInFlight = true;
+  void visionService.connectColab(endpoint)
+    .then(result => publishColabHandoffResult(result))
+    .catch(error => publishColabHandoffResult({
+      connected: false,
+      status: 'error',
+      message: String(error && error.message || error)
+    }))
+    .finally(() => {
+      colabHandoffInFlight = false;
+      if (pendingColabHandoffUrl) processPendingColabHandoff();
+    });
+}
+
+function queueColabHandoff(raw) {
+  const endpoint = parseColabHandoffUri(raw);
+  if (!endpoint) return false;
+  pendingColabHandoffUrl = endpoint;
+  if (visionService) processPendingColabHandoff();
+  return true;
+}
+
 function setAutoConnectionStatus(status, error = '') {
   autoConnectionStatus = status;
   autoConnectionError = String(error || '');
