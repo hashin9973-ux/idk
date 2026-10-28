@@ -1759,6 +1759,6 @@ module.exports = {
   createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL,
   VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS,
   MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, VISION_CONTEXT_SCHEMA, validateVisionContext, validateBoundingBox, validJobId,
-  safeTunnelUrl, safeApiKey, parseTunnelEndpoint,
+  safeTunnelUrl, safeApiKey, parseTunnelEndpoint, buildGaplessPlaybackScript,
   normalizeSpeechText, splitSpeechIntoChunks
 };

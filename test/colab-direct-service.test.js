@@ -66,7 +66,7 @@ function createVisionReport(width, height) {
 function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
-    vision_worker_api_version: 4,
+    vision_worker_api_version: 5,
     features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies'],
     tts_ready: true,
     tts_model_loaded: true,
@@ -1076,6 +1076,7 @@ test('vision protocol requirements include v4 multimodal capability validation a
   assert.ok(REQUIRED_VISION_FEATURES.includes('unicode-speech-normalization'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('expanded-observe-context-v3'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('passive-latest-frame-scheduling'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('safe-http-request-bodies'));
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);

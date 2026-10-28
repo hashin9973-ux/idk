@@ -305,7 +305,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('runtime_kept_alive: true'));
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 1280 * 1024'));
   assert.ok(vision.includes('input_sha256'));
-  assert.ok(vision.includes('VISION_WORKER_API_VERSION = 4'));
+  assert.ok(vision.includes('VISION_WORKER_API_VERSION = 5'));
   assert.ok(vision.includes('runtime_compatible'));
   assert.ok(vision.includes('async function synthesizeSpeech'));
   assert.ok(vision.includes('function speechPlaybackStatus()'));
@@ -352,7 +352,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('ocr_hint_limit = 32 if model_role == "passive" else 128'));
   assert.ok(python.includes('accessibility_hint_limit = 48 if model_role == "passive" else 160'));
   assert.ok(!python.includes('richardyoung/smolvlm2-2.2b-instruct:Q4_K_M'));
-  assert.ok(python.includes('VISION_WORKER_API_VERSION = 4'));
+  assert.ok(python.includes('VISION_WORKER_API_VERSION = 5'));
   assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
   assert.ok(python.includes('PIPER_SPEAKER_ID = 0'));
   assert.ok(python.includes('def ensure_tts_voice():'));
@@ -463,7 +463,7 @@ test('Colab vision notebook becomes ready after model download without startup i
   assert.doesNotMatch(source, /run_vision_smoke_test|vision_smoke_test|blue-square vision check|generated test image/i);
   assert.match(source, /ollama_model_is_downloaded\(\)/);
   assert.match(source, /No startup image inference was run/);
-  assert.match(source, /VISION_WORKER_API_VERSION = 4/);
+  assert.match(source, /VISION_WORKER_API_VERSION = 5/);
   assert.match(source, /"input_frame_id": record.get\("input_frame_id"\)/);
   assert.match(source, /"model_role": record.get\("model_role"\)/);
   assert.match(source, /Piper TTS/);
