@@ -593,6 +593,83 @@ test('GitHub CLI token import validates the account before storing the token enc
   assert.equal(calls.length, 2);
 });
 
+test('transient GitHub API failures do not erase a recently verified login state', async () => {
+  let failProbe = false;
+  let userCalls = 0;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      userCalls++;
+      if (failProbe) throw new Error('fetch failed');
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth } = fixture(mockFetch);
+  const imported = await auth.importToken('gho-auth-cache-test-token');
+  assert.equal(imported.authenticated, true);
+  assert.equal(imported.login, 'example-user');
+  assert.equal(userCalls, 1);
+
+  failProbe = true;
+  const state = await auth.getState({ force: true });
+  assert.equal(state.authenticated, true);
+  assert.equal(state.login, 'example-user');
+  assert.equal(state.verificationPending, true);
+  assert.match(state.verificationError, /fetch failed/i);
+});
+
+test('GitHub token import keeps a CLI-authorized token during a transient verification outage and retries', async () => {
+  let failProbe = true;
+  let userCalls = 0;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      userCalls++;
+      if (failProbe) throw new Error('fetch failed');
+      return response({ login: 'example-user' });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  auth.setClientId('Iv1.example-client-id');
+  const imported = await auth.importToken('gho-auth-retry-test-token');
+  assert.equal(imported.authenticated, true);
+  assert.equal(imported.verificationPending, true);
+  assert.equal(Boolean(settings.github.encryptedToken), true);
+  assert.equal(settings.github.encryptedToken.includes('gho-auth-retry-test-token'), false);
+
+  failProbe = false;
+  const recovered = await auth.getState({ force: true });
+  assert.equal(recovered.authenticated, true);
+  assert.equal(recovered.verificationPending, false);
+  assert.equal(recovered.login, 'example-user');
+  assert.equal(userCalls, 2);
+});
+
+test('concurrent GitHub auth-state probes share one in-flight /user request', async () => {
+  let resolveProfile;
+  let userCalls = 0;
+  const mockFetch = async url => {
+    if (String(url).endsWith('/user')) {
+      userCalls++;
+      return new Promise(resolve => { resolveProfile = () => resolve(response({ login: 'example-user' })); });
+    }
+    throw new Error('Unexpected URL: ' + url);
+  };
+  const { auth, settings } = fixture(mockFetch);
+  auth.setClientId('Iv1.example-client-id');
+  settings.github.encryptedToken = Buffer.from('encrypted:gho-concurrent-test-token', 'utf8').toString('base64');
+
+  const first = auth.getState({ force: true });
+  const second = auth.getState({ force: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(userCalls, 1);
+  resolveProfile();
+  const [left, right] = await Promise.all([first, second]);
+  assert.equal(left.authenticated, true);
+  assert.equal(right.authenticated, true);
+  assert.equal(left.login, right.login);
+});
+
 test('GitHub logout removes the encrypted credential', async () => {
   const mockFetch = loginServer('gho-test');
   const { auth, settings } = fixture(mockFetch);
