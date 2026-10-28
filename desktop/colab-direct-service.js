@@ -1516,7 +1516,7 @@ function createVisionService(deps) {
     }
     const spokenText = normalizeSpeechText(sourceText);
     let chunks;
-    const targetChunkChars = Math.min(240, Math.max(56, Math.ceil(spokenText.length / MAX_SPEECH_CHUNKS) + 4));
+    const targetChunkChars = Math.min(240, Math.max(40, Math.ceil(spokenText.length / MAX_SPEECH_CHUNKS) + 4));
     try { chunks = splitSpeechIntoChunks(spokenText, targetChunkChars); }
     catch (error) { return { status: 'tts_failed', error: messageOf(error) }; }
     if (!chunks.length) return { status: 'tts_failed', error: 'No speakable text remained after Unicode normalization.' };
