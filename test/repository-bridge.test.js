@@ -661,6 +661,8 @@ test('execution footprints serialize ambiguous aliases but allow disjoint paths 
   const readOther = getExecutionFootprint('read_file', { path: 'other.txt' });
   const aliasRead = getExecutionFootprint('read_file', { path: 'folder/../same.txt' });
   const absoluteRead = getExecutionFootprint('read_file', { path: 'C:\\workspace\\same.txt' });
+  const desktopClick = getExecutionFootprint('computer', { action: 'click', x: 10, y: 10 });
+  const anotherDesktopAction = getExecutionFootprint('computer', { action: 'screenshot' });
   const unknownSideEffect = getExecutionFootprint('new_tool_not_in_the_catalog', {});
 
   assert.equal(executionFootprintsConflict(readFile, writeFile), true);
@@ -669,6 +671,10 @@ test('execution footprints serialize ambiguous aliases but allow disjoint paths 
   assert.equal(absoluteRead.barrier, true, 'absolute paths cannot be safely matched without the canonical workspace root');
   assert.equal(unknownSideEffect.barrier, true, 'unknown tools must block concurrent execution conservatively');
   assert.equal(executionFootprintsConflict(aliasRead, readOther), true);
+  assert.equal(executionFootprintsConflict(desktopClick, readOther), false,
+    'desktop input and independent file reads do not conflict');
+  assert.equal(executionFootprintsConflict(desktopClick, anotherDesktopAction), true,
+    'two desktop operations must not overlap on the same interactive session');
 });
 
 
