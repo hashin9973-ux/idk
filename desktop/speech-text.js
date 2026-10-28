@@ -32,7 +32,6 @@ const SYMBOL_PRONUNCIATION = Object.freeze({
 });
 
 const SPEECH_PUNCTUATION = /[,.!?;:，。！？；：、…—–\n]/u;
-const STRONG_PUNCTUATION = /[.!?。！？\n]$/u;
 const ANY_TRAILING_PUNCTUATION = /[,.!?;:，。！？；：、…—–\n]$/u;
 const MAX_SPEECH_CHUNKS = 32;
 
@@ -69,39 +68,35 @@ function splitSpeechIntoChunks(value, maxChars = 120) {
   }
   let remaining = value.trim().replace(/\s+/gu, ' ');
   const chunks = [];
-  while (remaining.length > maxChars) {
+  while (remaining.length) {
     let cut = -1;
-    const minSentenceBoundary = Math.min(48, Math.floor(maxChars * 0.4));
-    for (let i = minSentenceBoundary; i < Math.min(remaining.length, maxChars); i += 1) {
-      if (STRONG_PUNCTUATION.test(remaining[i])) {
+    const scanLimit = Math.min(remaining.length, maxChars);
+    // Stop at the first punctuation mark, even for short input. This means the
+    // next Piper call can be prefetched while the current phrase is spoken.
+    for (let i = 0; i < scanLimit; i += 1) {
+      if (SPEECH_PUNCTUATION.test(remaining[i])) {
         cut = i + 1;
         break;
       }
     }
-    if (cut < 0) {
-      for (let i = Math.min(maxChars - 1, remaining.length - 1); i >= Math.floor(maxChars * 0.45); i -= 1) {
-        if (SPEECH_PUNCTUATION.test(remaining[i])) {
-          cut = i + 1;
-          break;
-        }
-      }
-    }
+    if (cut < 0 && remaining.length <= maxChars) cut = remaining.length;
     if (cut < 0) {
       cut = remaining.lastIndexOf(' ', maxChars);
       if (cut < Math.floor(maxChars * 0.45)) cut = maxChars;
     }
     let chunk = remaining.slice(0, cut).trim();
     remaining = remaining.slice(cut).trimStart();
-    if (!chunk) throw new Error('Could not split speech text into a non-empty chunk.');
+    if (!chunk) {
+      // A punctuation mark can be first only if malformed/leading whitespace
+      // remains; discard that whitespace without producing an empty WAV.
+      remaining = remaining.slice(1).trimStart();
+      continue;
+    }
     if (!ANY_TRAILING_PUNCTUATION.test(chunk)) chunk += ',';
     chunks.push(chunk);
-    if (chunks.length >= MAX_SPEECH_CHUNKS && remaining.length) {
+    if (chunks.length > MAX_SPEECH_CHUNKS) {
       throw new RangeError('Speech expands to more than ' + MAX_SPEECH_CHUNKS + ' chunks; shorten the text or split the request.');
     }
-  }
-  if (remaining) {
-    if (!ANY_TRAILING_PUNCTUATION.test(remaining)) remaining += ',';
-    chunks.push(remaining);
   }
   if (chunks.length > MAX_SPEECH_CHUNKS) {
     throw new RangeError('Speech expands to more than ' + MAX_SPEECH_CHUNKS + ' chunks; shorten the text or split the request.');

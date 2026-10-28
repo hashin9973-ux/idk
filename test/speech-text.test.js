@@ -34,6 +34,14 @@ test('speech chunks stay bounded and end at punctuation boundaries', () => {
   assert.match(chunks.at(-1), /Sentence 16/);
 });
 
+
+test('short text is split at every punctuation mark instead of waiting for the full paragraph', () => {
+  assert.deepEqual(
+    splitSpeechIntoChunks('First sentence. Second, short phrase; third!', 120),
+    ['First sentence.', 'Second,', 'short phrase;', 'third!']
+  );
+});
+
 test('long unpunctuated text gets a safe pause boundary without cutting words', () => {
   const source = 'visibleword '.repeat(40).trim();
   const chunks = splitSpeechIntoChunks(source, 100);
