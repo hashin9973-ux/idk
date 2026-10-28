@@ -859,7 +859,7 @@ test('successful Colab connection activates the model automatically and supports
   assert.equal(f.service.isControlSessionActive(), false);
 });
 
-test('notebook output clipboard-copy JavaScript parses and contains a direct endpoint, not an app-link handoff', () => {
+test('notebook output JavaScript attempts direct app handoff with clipboard copy as fallback', () => {
   const notebookPath = path.join(__dirname, '..', 'vision', 'vision_worker.ipynb');
   const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
   const source = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
@@ -872,8 +872,11 @@ test('notebook output clipboard-copy JavaScript parses and contains a direct end
   assert.doesNotMatch(browserSource, /__ENDPOINT__/);
   assert.doesNotThrow(() => new vm.Script(browserSource), 'browser clipboard script must parse');
   assert.match(browserSource, /navigator\.clipboard\.writeText/);
-  assert.match(browserSource, /Copy endpoint for Windows Bridge/);
-  assert.doesNotMatch(browserSource, /windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
+  assert.ok(browserSource.includes('Copy endpoint (fallback)'));
+  assert.ok(browserSource.includes('Connect to Windows Bridge'));
+  assert.ok(browserSource.includes('windows-repository-bridge://connect-colab?endpoint='));
+  assert.ok(browserSource.includes('sendToWindowsBridge(false)'));
+  assert.ok(browserSource.includes('windows-repository-bridge://connect-colab?endpoint='));
 });
 
 test('notebook scopes its public API to the random URL path token and keeps the model off', () => {
@@ -888,7 +891,9 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   assert.match(source, /requests\.get\(url, headers=\{"Authorization": "Bearer " \+ API_KEY\}, timeout=2\)/);
   assert.match(source, /DIRECT_PROTOCOL/);
   assert.match(source, /registration\/ack/);
-  assert.doesNotMatch(source, /register_tunnel_with_desktop|display_desktop_pairing_link|windowsrepositorybridge:\/\/connect-colab|wrb_pair_nonce|targetAddressSpace/);
+  assert.ok(source.includes('windows-repository-bridge://connect-colab?endpoint='));
+  assert.match(source, /Connect to Windows Bridge/);
+  assert.doesNotMatch(source, /register_tunnel_with_desktop|display_desktop_pairing_link|wrb_pair_nonce|targetAddressSpace/);
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
 
@@ -900,7 +905,10 @@ test('the desktop uses a clipboard reader only for the explicit Colab connect fl
   assert.match(service, /if \(text\) \{\s*const endpoint = endpointFromClipboard\(text\)/);
   assert.doesNotMatch(service, /text !== watch\.baseline/);
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
-  assert.doesNotMatch(main, /setAsDefaultProtocolClient|COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
+  assert.ok(main.includes('setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)'));
+  assert.ok(main.includes("app.on('open-url'"));
+  assert.ok(main.includes("parseTunnelEndpoint(uri.searchParams.get('endpoint'))"));
+  assert.doesNotMatch(main, /COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /http\.createServer|ensureReceiver|vision\/challenge|vision\/register|wrb_pair_nonce/);
 });
 
