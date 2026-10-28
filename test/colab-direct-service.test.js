@@ -900,7 +900,24 @@ test('Piper TTS supports no-playback mode and reports not-ready runtime state', 
   assert.match(notReady.error, /Piper loading/);
 });
 
-test('vision protocol requirements include v3 multimodal capability validation and the fixed Piper voice', () => {
+test('concurrent TTS playback is reserved before runtime health and synthesis I/O', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts-race');
+  const results = await Promise.all([
+    f.service.synthesizeSpeech({ text: 'First speech request.' }, 'tts-race-a'),
+    f.service.synthesizeSpeech({ text: 'Second speech request.' }, 'tts-race-b')
+  ]);
+  assert.equal(results.filter(result => result.status === 'tts_started').length, 1);
+  assert.equal(results.filter(result => result.status === 'tts_busy').length, 1);
+  for (let i = 0; i < 20 && f.service.speechPlaybackStatus().active_job_id; i += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(f.service.speechPlaybackStatus().jobs.filter(job => job.status === 'completed').length, 1);
+});
+
+test('vision protocol requirements include v4 multimodal capability validation and the fixed Piper voice', () => {
   assert.equal(VISION_WORKER_API_VERSION, 4);
   assert.ok(REQUIRED_VISION_FEATURES.includes('frame-id-validation'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('tts-piper-libritts-high'));

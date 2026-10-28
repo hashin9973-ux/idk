@@ -104,7 +104,7 @@ function validateVisionContext(reportText, expectedFrame) {
       typeof report.perception.degraded !== 'boolean') {
     throw new Error('Vision context is missing required scene, region, text, or control fields.');
   }
-  if (report.regions.length > 24 || report.text_spans.length > 64 || report.controls.length > 160 || report.objects.length > 48) {
+  if (report.regions.length > 240 || report.text_spans.length > 800 || report.controls.length > 800 || report.objects.length > 240) {
     throw new Error('Vision report exceeds the bounded context size and was rejected.');
   }
   report.regions.forEach((item, index) => validateBoundingBox(item, 'region ' + (index + 1), frame, true));
@@ -127,13 +127,13 @@ function validateVisionContext(reportText, expectedFrame) {
       !Array.isArray(report.accessibility.controls)) {
     throw new Error('Vision report has no accessibility evidence status.');
   }
-  if (report.accessibility.controls.length > 240) throw new Error('Accessibility evidence exceeds the size limit.');
+  if (report.accessibility.controls.length > 800) throw new Error('Accessibility evidence exceeds the size limit.');
   report.accessibility.controls.forEach((item, index) =>
     validateBoundingBox(item, 'accessibility control ' + (index + 1), frame, true));
   if (!report.ocr || typeof report.ocr.available !== 'boolean' || !Array.isArray(report.ocr.text_spans)) {
     throw new Error('Vision report has no OCR evidence status.');
   }
-  if (report.ocr.text_spans.length > 160) throw new Error('OCR evidence exceeds the size limit.');
+  if (report.ocr.text_spans.length > 800) throw new Error('OCR evidence exceeds the size limit.');
   report.ocr.text_spans.forEach((item, index) =>
     validateBoundingBox(item, 'OCR text span ' + (index + 1), frame, true));
   return JSON.stringify(report);
@@ -973,7 +973,13 @@ function createVisionService(deps) {
         let nextPromise = null;
         if (nextIndex < job.chunks.length) {
           nextPromise = saveSpeechChunk(job, job.chunks[nextIndex], nextIndex, newTtsRequestId())
-            .then(value => ({ value }), error => ({ error }));
+            .then(async value => {
+              if (job.cancelRequested) {
+                await removeSpeechFile(value.filePath);
+                return { value: null };
+              }
+              return { value };
+            }, error => ({ error }));
         }
         await current.playback.done;
         job.chunks_completed += 1;
@@ -982,6 +988,7 @@ function createVisionService(deps) {
         if (nextIndex >= job.chunks.length) { current = null; break; }
         const next = await nextPromise;
         if (next.error) throw next.error;
+        if (!next.value) break;
         current = next.value;
         current.playback = startAudioPlayback(current.filePath);
         job.currentPlayback = current.playback;
@@ -1053,26 +1060,35 @@ function createVisionService(deps) {
     if (!chunks.length) return { status: 'tts_failed', error: 'No speakable text remained after Unicode normalization.' };
     if (chunks.length > 32) return { status: 'tts_failed', error: 'Speech exceeded the bounded 32-chunk limit.' };
 
-    const state = await queryRuntime();
-    if (state.runtime_compatible !== true) {
-      return { status: 'tts_unavailable', error: state.message || 'The connected Colab notebook is incompatible with the current TTS API.',
-        next_step: 'Interrupt the running Colab cell and run the updated notebook cell.' };
-    }
-    if (!state.runtime_fresh || !state.enabled || state.tts_ready !== true) {
-      return { status: 'tts_unavailable', error: state.tts_error || 'Piper TTS is not ready in Colab yet.',
-        runtime_status: state.runtime_status || state.status,
-        next_step: 'Call computer(action=status) and wait for tts_ready=true before retrying.' };
-    }
-
     const jobId = newTtsRequestId();
     const job = { job_id: jobId, status: 'preparing', chunks, chunks_total: chunks.length,
       chunks_started: 0, chunks_completed: 0, started_at: new Date(now()).toISOString(),
       finished_at: null, error: null, cancelRequested: false, currentPlayback: null };
     speechJobs.set(jobId, job);
+    if (args.play !== false) activeSpeechJobId = jobId;
     while (speechJobs.size > 8) {
       const oldest = speechJobs.keys().next().value;
       if (oldest === activeSpeechJobId) break;
       speechJobs.delete(oldest);
+    }
+
+    const state = await queryRuntime();
+    if (state.runtime_compatible !== true) {
+      job.status = 'failed';
+      job.error = state.message || 'The connected Colab notebook is incompatible with the current TTS API.';
+      job.finished_at = new Date(now()).toISOString();
+      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
+      return { status: 'tts_unavailable', request_id: jobId, error: job.error,
+        next_step: 'Interrupt the running Colab cell and run the updated notebook cell.' };
+    }
+    if (!state.runtime_fresh || !state.enabled || state.tts_ready !== true) {
+      job.status = 'failed';
+      job.error = state.tts_error || 'Piper TTS is not ready in Colab yet.';
+      job.finished_at = new Date(now()).toISOString();
+      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
+      return { status: 'tts_unavailable', request_id: jobId, error: job.error,
+        runtime_status: state.runtime_status || state.status,
+        next_step: 'Call computer(action=status) and wait for tts_ready=true before retrying.' };
     }
 
     if (args.play === false) {
@@ -1106,15 +1122,17 @@ function createVisionService(deps) {
     try { first = await saveSpeechChunk(job, chunks[0], 0, jobId); }
     catch (error) {
       job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
+      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
     try { first.playback = startAudioPlayback(first.filePath); }
     catch (error) {
       await removeSpeechFile(first.filePath);
       job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
+      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
-    activeSpeechJobId = jobId; job.status = 'playing'; job.chunks_started = 1; job.currentPlayback = first.playback;
+    job.status = 'playing'; job.chunks_started = 1; job.currentPlayback = first.playback;
     void continueSpeechJob(job, first);
     return { status: 'tts_started', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID,
       sample_rate: Number.isFinite(first.remote.sample_rate) ? first.remote.sample_rate : state.tts_sample_rate,

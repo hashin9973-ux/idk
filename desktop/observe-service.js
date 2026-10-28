@@ -20,7 +20,7 @@ function intervalForFps(value) {
   return Math.round(1000 / normalizeSampleFps(value));
 }
 const FRAME_LIMIT = 10;
-const MAX_CONTEXT_BYTES = 600000;
+const MAX_CONTEXT_BYTES = 3500000;
 
 function safeText(value, limit = 500) {
   return String(value == null ? '' : value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit);
@@ -231,7 +231,7 @@ function createObserveService(deps = {}) {
           cursor: accessibility && accessibility.cursor || null,
           active_window: accessibility && accessibility.active_window || null,
           focused_control: accessibility && accessibility.focused_control || null,
-          controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 240) : [],
+          controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 800) : [],
           accessibility: {
             available: accessibility && accessibility.available === true,
             source: safeText(accessibility && accessibility.source || 'windows_uia', 40),
@@ -321,14 +321,14 @@ function createObserveService(deps = {}) {
               scene: reportValue.scene || null,
               regions: Array.isArray(reportValue.regions) ? reportValue.regions.slice(0, 24) : [],
               text_spans: Array.isArray(reportValue.text_spans) ? reportValue.text_spans.slice(0, 64) : [],
-              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 160) : [],
+              controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 800) : [],
               objects: Array.isArray(reportValue.objects) ? reportValue.objects.slice(0, 48) : [],
               focused_element: reportValue.focused_element || null,
               cursor: completedFrame.cursor || reportValue.cursor || null,
               ocr: reportValue.ocr && typeof reportValue.ocr === 'object'
                 ? { available: reportValue.ocr.available === true, method: safeText(reportValue.ocr.method || '', 40),
                     reason: safeText(reportValue.ocr.reason || '', 100) || null,
-                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 160) : [] }
+                    text_spans: Array.isArray(reportValue.ocr.text_spans) ? reportValue.ocr.text_spans.slice(0, 800) : [] }
                 : { available: false, text_spans: [] },
               interaction_guidance: {
                 coordinate_frame_id: item.frameId,

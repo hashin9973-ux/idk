@@ -324,7 +324,12 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes("require('./windows-uia')"));
   const uia = read('desktop', 'windows-uia.js');
   assert.ok(uia.includes('GetCursorPos(out WRBPOINT point)'));
-  assert.ok(uia.includes('MAX_UIA_CONTROLS = 160'));
+  assert.ok(uia.includes('MAX_UIA_NODES = 1200'));
+  assert.ok(uia.includes('UIA_TIMEOUT_MS = 8000'));
+  assert.ok(read('desktop', 'observe-service.js').includes('MAX_CONTEXT_BYTES = 3500000'));
+  assert.ok(read('desktop', 'observe-service.js').includes('reportValue.ocr.text_spans.slice(0, 800)'));
+  assert.ok(vision.includes('if (args.play !== false) activeSpeechJobId = jobId;'));
+  assert.ok(uia.includes('MAX_UIA_CONTROLS = 800'));
   assert.ok(main.includes("getAccessibleSnapshot: captureWindowsUiAutomationSnapshot"));
   assert.ok(vision.includes("validateVisionContext(data.report"));
   assert.ok(vision.includes("unverified_visual_estimate"));

@@ -65,9 +65,9 @@ test('PowerShell UI Automation capture executes and serializes a bounded snapsho
   assert.equal(result.source, 'windows_uia');
   assert.equal(result.coordinate_space, 'screenshot_jpeg_px');
   assert.ok(Array.isArray(result.controls));
-  assert.ok(result.controls.length <= 160);
+  assert.ok(result.controls.length <= 800);
   assert.ok(Number.isInteger(result.node_count));
-  assert.ok(result.node_count <= 360);
+  assert.ok(result.node_count <= 1200);
 
   for (const control of result.controls) {
     assert.ok(Array.isArray(control.bbox_px));

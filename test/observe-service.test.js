@@ -169,10 +169,10 @@ test('Observe retains full-resolution pixels locally and publishes matching pass
   assert.equal(matching.vision.frame_id, matching.frame_id);
   assert.deepEqual(matching.vision.controls[0].bbox_px, [20, 20, 90, 40]);
   assert.equal(matching.vision.objects[0].label, 'desktop icon');
-  assert.ok(matching.vision.text_spans.length <= 64);
-  assert.ok(matching.vision.controls.length <= 160);
-  assert.ok(matching.vision.ocr.text_spans.length <= 160);
-  assert.ok(matching.controls.length <= 240);
+  assert.ok(matching.vision.text_spans.length <= 800);
+  assert.ok(matching.vision.controls.length <= 800);
+  assert.ok(matching.vision.ocr.text_spans.length <= 800);
+  assert.ok(matching.controls.length <= 800);
   assert.equal(matching.vision.interaction_guidance.coordinate_frame_id, matching.frame_id);
   assert.equal(JSON.stringify(published).includes(rawBytes.toString('utf8')), false,
     'raw screenshot bytes must stay local rather than being published to the GitHub mailbox');
