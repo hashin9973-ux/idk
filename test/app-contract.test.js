@@ -393,7 +393,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(!python.includes('userdata.get'));
   assert.ok(!python.includes('api.github.com/repos/hashin9973-ux/qdqwg'));
   assert.equal(main.slice(main.indexOf('app.whenReady().then')).includes('visionService.activate('), false);
-  assert.equal(/process\\.kill|shutdown.*Colab/i.test(vision), false);
+  assert.equal(/process\.kill|shutdown.*Colab/i.test(vision), false);
 });
 
 test('Colab connection detects the public endpoint copied by the notebook without a pairing link', () => {

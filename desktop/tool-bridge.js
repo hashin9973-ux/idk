@@ -276,7 +276,7 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   update_plan: 'Returns the current ordered plan with IDs, step text and pending/in_progress/completed status.',
   upload_workspace_file: 'Returns the repository artifact path/URL, media type, byte size, SHA-256, visibility and retrieval note.',
   computer: 'Returns model readiness, screenshot analysis with coordinate-frame metadata, local mouse/keyboard input outcomes, or a batched observe-act-observe result.',
-  tts: 'Returns speech synthesis status, voice and speaker, WAV metadata and checksum, and a local temporary file path without publishing audio bytes to GitHub.'
+  tts: 'Returns speech synthesis status, voice and speaker, WAV metadata and checksum, and a local temporary file path without publishing audio bytes to GitHub.',
   refresh_environment_context: 'Returns the compact context index, including current agent_context, project-native command hints and tool catalog.',
   batch: 'Returns ordered steps with IDs, tool names, success/failed/cancelled status, errors/cancellation details, exit codes, and actual results even for failed commands.',
   get_agent_context: 'Returns a compact environment/project snapshot, project scripts, suggested native commands, instruction file paths/hashes/sizes, bounded tree and complete tool catalog.'
