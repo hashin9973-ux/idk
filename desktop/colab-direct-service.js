@@ -278,20 +278,14 @@ function createVisionService(deps) {
           typeof health.model_loaded !== 'boolean') {
         throw new Error('The public Colab endpoint returned an invalid health response.');
       }
-      const ack = await directRequest('/registration/ack', {
-        method: 'POST',
-        timeoutMs: 15000,
-        connection: candidate,
-        body: { protocol: DIRECT_VISION_PROTOCOL, connected_at: new Date(now()).toISOString() }
-      });
-      if (attemptId !== connectionAttemptSequence) throw new Error('A newer Colab URL connection attempt replaced this one.');
-      if (ack.accepted !== true || ack.desktop_registered !== true) {
-        throw new Error('Colab did not confirm the authenticated HTTPS connection.');
-      }
       const checkedRuntime = stateFromRemote(health);
+      if (attemptId !== connectionAttemptSequence) throw new Error('A newer Colab URL connection attempt replaced this one.');
       if (!checkedRuntime.runtime_compatible) {
-        // Register the live tunnel so the UI can explain the exact version mismatch,
-        // but never activate or send screenshots/audio to a runtime missing required features.
+        // The old notebook's /registration/ack handler activates its runtime. Never
+        // send that side-effecting request until API/version features are verified.
+        // The authenticated health response is enough to report a live-but-outdated tunnel.
+        // Preserve the runtime's reported state; vision_activated below means this
+        // connection attempt did not activate it, not that a pre-existing runtime is off.
         visionEnabled = health.enabled === true;
         endpointWatchError = '';
         endpointWatchAttemptInProgress = false;
@@ -300,6 +294,7 @@ function createVisionService(deps) {
         return {
           ...checkedRuntime,
           connected: true,
+          connection_registered: true,
           opened: false,
           manually_entered: source === 'manual',
           vision_activated: false,
@@ -311,6 +306,16 @@ function createVisionService(deps) {
           ],
           message: checkedRuntime.message
         };
+      }
+      const ack = await directRequest('/registration/ack', {
+        method: 'POST',
+        timeoutMs: 15000,
+        connection: candidate,
+        body: { protocol: DIRECT_VISION_PROTOCOL, connected_at: new Date(now()).toISOString() }
+      });
+      if (attemptId !== connectionAttemptSequence) throw new Error('A newer Colab URL connection attempt replaced this one.');
+      if (ack.accepted !== true || ack.desktop_registered !== true) {
+        throw new Error('Colab did not confirm the authenticated HTTPS connection.');
       }
       // A successful compatible connection is the user's request to prepare vision:
       // activate immediately, then let the existing runtime worker load models in the background.

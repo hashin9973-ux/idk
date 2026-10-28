@@ -575,10 +575,14 @@ function resolveWorkerStatus(state) {
 function enrichedBridgeState(state) {
   const workerStatus = resolveWorkerStatus(state);
   const current = state || {};
-  const connectionError = autoConnectionError ||
+  // Once the last successful mailbox scan is fresh, ignore any stale connection error
+  // from an earlier failed startup/poll. Task errors remain separately visible in the tooltip.
+  const connectionError = workerStatus === 'online' ? '' : (
+    autoConnectionError ||
     (workerStatus === 'offline' || workerStatus === 'attention'
       ? (current.lastPollError || current.lastError || '')
-      : '');
+      : '')
+  );
   return { ...current, workerStatus, connectionError, autoAcceptAll: settings.autoAcceptAll === true };
 }
 

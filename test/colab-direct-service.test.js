@@ -928,7 +928,7 @@ test('old Colab runtimes stay visible but never activate or receive screenshots/
   assert.equal(connected.runtime_compatible, false);
   assert.equal(connected.vision_activated, false, 'the obsolete runtime must not receive an activation request');
   assert.match(connected.message, /out of date/i);
-  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'), true);
+  assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/registration/ack'), false, 'the outdated notebook acknowledgement would activate the old runtime');
   assert.equal(f.calls.some(call => call.type === 'direct_http' && call.route === '/activate'), false);
 
   const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, 'old-runtime-check');
@@ -963,6 +963,8 @@ test('reconnecting to a live incompatible Colab runtime reports connection witho
   assert.equal(retry.vision_activated, false);
   assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/activate').length, activationCallsBefore,
     'reconnecting must not activate a runtime that lacks the required API/features');
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/registration/ack').length, 0,
+    'an incompatible pre-existing runtime must not be registered through its activation-triggering acknowledgement');
 });
 
 test('Piper TTS validates voice and speaker, saves WAV locally, and optionally plays it', async t => {
