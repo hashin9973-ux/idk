@@ -10,6 +10,14 @@ This branch is the mailbox between your existing ChatGPT conversation and the Wi
 4. The app writes the result to `bridge/results/<request_id>.json` and updates `bridge/state/windows-app.json`.
 5. Back in the same ChatGPT conversation, use the GitHub integration to read that result file. Continue reasoning from the returned evidence and create another request only if needed.
 
+## Observe-first interactive loop
+
+When passive Observe is already enabled, first read the latest `bridge/vision/observe.json` through the GitHub integration. Do not require a `get_agent_context` bootstrap or a Colab `computer(action=status)` call before reading this live feed. Use its newest enabled/fresh frame as the current-window/control evidence; it is not a full screenshot and may not contain OCR or text values.
+
+For interaction, repeat **read Observe → publish one justified input request → inspect the same request's result → reread Observe → adapt** until verified. Use the GitHub integration's create-file/write action to publish `bridge/requests/<unique-id>.json`; actually invoke it instead of only reading repository files or looking for a native computer tool. If the write is rejected, report that precise error. If the result is delayed, inspect that same ID's claim/state and reread its result; never replay uncertain inputs. Batch adjacent inputs only when they are already predictable; otherwise observe after each action that can change the next decision. Skip unnecessary status/context calls and intermediate narration.
+
+The updated worker reconciles the request-directory tree every five seconds if its path-filtered commit cursor appears unchanged. This is a fallback bound, not a guarantee on end-to-end response time. Check commit timestamp, claim time and result `timing_ms` separately when diagnosing latency. `created_to_worker_start` begins at the envelope's `created_at`, before the request write has necessarily committed.
+
 ## Request schema
 
 Example for a read-only project status check:
