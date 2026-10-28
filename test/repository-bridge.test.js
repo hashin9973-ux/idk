@@ -146,7 +146,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
             name: child,
             path: childPath,
             type: isFile ? 'file' : 'dir',
-            ...(isFile ? { sha: files.get(childPath).sha } : {})
+            sha: isFile ? files.get(childPath).sha : treeShaForPath(childPath)
           });
         }
         if (children.size) return { status: 200, result: Array.from(children.values()) };
@@ -420,6 +420,13 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
       call.method === 'GET' &&
       ['/repos/test-owner/test-repo/contents/bridge/requests', '/repos/test-owner/test-repo/contents/bridge/results'].includes(call.path)
     ), false, 'large mailbox folders must never use the Contents API directory endpoint');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' && call.path === '/repos/test-owner/test-repo/contents/bridge' &&
+      call.query && call.query.ref === 'bridge-mailbox'
+    ), 'the poller should use the small bridge directory listing to resolve the child tree SHA');
+    assert.equal(fake.calls.some(call =>
+      call.method === 'GET' && call.path === '/repos/test-owner/test-repo/git/trees/bridge-mailbox'
+    ), false, 'a known mailbox subdirectory should avoid a sequential full-root tree lookup');
   } finally {
     await bridge.stop();
   }
