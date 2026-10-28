@@ -123,12 +123,24 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
-        "Ollama Qwen3-VL 4B instruct model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
+        "Ollama Qwen3-VL 4B detailed model": 'OLLAMA_MODEL = "qwen3-vl:4b-instruct"',
+        "SmolVLM2 Q4 passive model": 'PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"',
+        "parked Qwen alias": 'PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"',
         "Ollama native chat API": 'OLLAMA_API + "/api/chat"',
         "vision image payload": '"images": [model_image_b64]',
-        "bounded model image dimensions": "MODEL_MAX_EDGE = 1280",
-        "aspect-preserving model image resize": "bounded_image_dimensions(",
-        "model image resize metadata": '"resized": model_image_resized',
+        "full-resolution image boundary": "MODEL_MAX_EDGE = 16384",
+        "bounded model image processing helper": "bounded_image_dimensions(",
+        "model image dimensions remain explicit": '"resized": model_image_resized',
+        "passive model uses separate context": "PASSIVE_CONTEXT_TOKENS = 8192",
+        "Qwen is unloaded after detailed requests": '"keep_alive": -1 if model_role == "passive" else 0',
+        "CPU-only parked Qwen preload": "num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS",
+        "three model slots permitted": '"OLLAMA_MAX_LOADED_MODELS": "3"',
+        "swap-file path is visible": 'OLLAMA_SWAP_FILE = Path("/content/bridge-qwen-pagefile.swap")',
+        "swap activation result is inspected": 'Path("/proc/swaps").read_text(encoding="utf-8")',
+        "priority scheduler for detailed requests": "def inference_slot(model_role):",
+        "both model roles are reported": '"passive_model_loaded": bool(_passive_model_loaded)',
+        "frame ID returned with result": '"input_frame_id": input_frame_id',
+        "model-role routing": 'model_name = PASSIVE_MODEL if model_role == "passive" else OLLAMA_MODEL',
         "thinking disabled for concise vision output": '"think": False',
         "structured JSON output": '"format": "json"',
         "versioned desktop context schema": 'VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"',
@@ -140,12 +152,11 @@ def main():
         "Windows UI Automation grounding": "windows_ui_automation_hints",
         "generation length exhaustion is a failure": "Vision output hit its generation limit.",
         "model download is checked": "if not ollama_model_is_downloaded():",
-        "readiness based on healthy API and downloaded weights": 'requests.get(OLLAMA_API + "/api/version", timeout=2).ok and ollama_model_is_downloaded()',
-        "no startup image inference": "No startup image inference was run",
+        "readiness uses Ollama's loaded-model API": "refresh_model_runtime_state()",
         "authenticated direct API": "class DirectVisionHandler(",
-        "bounded model download": "timeout=bounded_setup_timeout(420), env=server_env",
+        "bounded model download": "timeout=bounded_setup_timeout(600), env=server_env",
         "visible setup timing": "stage_elapsed_seconds",
-        "bounded setup budget": "SETUP_BUDGET_SECONDS = 480",
+        "bounded two-model setup budget": "SETUP_BUDGET_SECONDS = 900",
         "no automatic retries after setup failure": "_setup_blocked = True",
         "bounded desktop registration wait": "_desktop_registration_event.wait(timeout=90)",
     }
@@ -173,8 +184,8 @@ def main():
     validate_context_helpers(code)
 
     guide = source_of(notebook.get("cells", [{}])[0])
-    if "prebuilt Ollama runtime" not in guide or "fresh Colab runtime must download the model again" not in guide:
-        raise SystemExit("FAIL: notebook guide does not explain the prebuilt runtime and ephemeral model cache")
+    if "prebuilt Ollama runtime" not in guide or "fresh Colab runtimes must download both model packages again" not in guide:
+        raise SystemExit("FAIL: notebook guide does not explain the prebuilt runtime and two-model ephemeral cache")
 
     print("PASS: notebook JSON parsed")
     print("PASS: Python code cell syntax parsed")
