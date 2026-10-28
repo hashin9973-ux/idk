@@ -151,7 +151,7 @@ def main():
     ast.parse(code, filename=str(NOTEBOOK))
 
     required = {
-        "versioned vision worker API": "VISION_WORKER_API_VERSION = 3",
+        "versioned vision worker API": "VISION_WORKER_API_VERSION = 4",
         "actual Ollama vision capabilities are inspected": "def ollama_model_capabilities(model_name):",
         "stale vision model metadata is refreshed": "def refresh_and_verify_vision_capability(",
         "real multimodal errors trigger a repair attempt": "def refresh_passive_model_after_multimodal_error():",
@@ -164,6 +164,10 @@ def main():
         "verified Piper voice checksum": "PIPER_VOICE_SHA256",
         "persistent Piper voice load": "def ensure_tts_voice():",
         "authenticated TTS endpoint": 'if route == "/tts":',
+        "chunked TTS support advertised": '"tts-chunked-playback"',
+        "Unicode speech normalization advertised": '"unicode-speech-normalization"',
+        "expanded Observe schema advertised": '"expanded-observe-context-v3"',
+        "latest-frame scheduling advertised": '"passive-latest-frame-scheduling"',
         "WAV audio checksum": '"audio_sha256": hashlib.sha256(audio).hexdigest()',
         "pending result preserves frame ID": '"input_frame_id": record.get("input_frame_id")',
         "pending result preserves model role": '"model_role": record.get("model_role")',
@@ -198,7 +202,7 @@ def main():
         "generation length exhaustion is a failure": "Vision output hit its generation limit.",
         "model download is checked": "if not ollama_model_is_downloaded(model_name):",
         "passive readiness requires actual vision capability": 'if "vision" not in capabilities:',
-        "expanded control/text budgets are enforced": "len(text_spans) > 48 or len(controls) > 32",
+        "expanded control/text budgets are enforced": "len(text_spans) > 64 or len(controls) > 48",
         "readiness uses Ollama's loaded-model API": "refresh_model_runtime_state()",
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": "timeout=bounded_setup_timeout(600), env=server_env",

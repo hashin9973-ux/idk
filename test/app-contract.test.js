@@ -305,9 +305,13 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('runtime_kept_alive: true'));
   assert.ok(vision.includes('MAX_SCREENSHOT_BYTES = 1280 * 1024'));
   assert.ok(vision.includes('input_sha256'));
-  assert.ok(vision.includes('VISION_WORKER_API_VERSION = 3'));
+  assert.ok(vision.includes('VISION_WORKER_API_VERSION = 4'));
   assert.ok(vision.includes('runtime_compatible'));
   assert.ok(vision.includes('async function synthesizeSpeech'));
+  assert.ok(vision.includes('function speechPlaybackStatus()'));
+  assert.ok(vision.includes("status: 'tts_started'"));
+  assert.ok(vision.includes('splitSpeechIntoChunks'));
+  assert.ok(vision.includes('speech_playback: speechPlaybackStatus()'));
   assert.ok(vision.includes("directRequest('/tts'"));
   assert.ok(bridge.includes("tts: ['text', 'play']"));
   assert.ok(vision.includes('async function setupCheck(githubState = {})'));
@@ -320,7 +324,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(main.includes("require('./windows-uia')"));
   const uia = read('desktop', 'windows-uia.js');
   assert.ok(uia.includes('GetCursorPos(out WRBPOINT point)'));
-  assert.ok(uia.includes('MAX_UIA_CONTROLS = 80'));
+  assert.ok(uia.includes('MAX_UIA_CONTROLS = 160'));
   assert.ok(main.includes("getAccessibleSnapshot: captureWindowsUiAutomationSnapshot"));
   assert.ok(vision.includes("validateVisionContext(data.report"));
   assert.ok(vision.includes("unverified_visual_estimate"));
@@ -335,7 +339,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('PASSIVE_MODEL_REPO = "ahmadwaqar/smolvlm2-2.2b-instruct"'));
   assert.ok(python.includes('PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"'));
   assert.ok(!python.includes('richardyoung/smolvlm2-2.2b-instruct:Q4_K_M'));
-  assert.ok(python.includes('VISION_WORKER_API_VERSION = 3'));
+  assert.ok(python.includes('VISION_WORKER_API_VERSION = 4'));
   assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
   assert.ok(python.includes('PIPER_SPEAKER_ID = 0'));
   assert.ok(python.includes('def ensure_tts_voice():'));
@@ -352,6 +356,9 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes("Vision output hit its generation limit."));
   assert.ok(python.includes("malformed or truncated JSON; the report was rejected."));
   assert.ok(python.includes('"coordinate_space": "screenshot_jpeg_px"'));
+  assert.ok(python.includes('MAX_TTS_TEXT_CHARS = 240'));
+  assert.ok(python.includes('"text_spans": spans[:160]'));
+  assert.ok(python.includes('model_predict = 1500 if model_role == "passive" else 2000'));
   assert.ok(python.includes('https://ollama.com/install.sh'));
   assert.ok(python.includes('OLLAMA_MODELS_DIR = Path("/content/ollama-models")'));
   assert.ok(!python.includes('def run_vision_smoke_test()'));
@@ -443,7 +450,7 @@ test('Colab vision notebook becomes ready after model download without startup i
   assert.doesNotMatch(source, /run_vision_smoke_test|vision_smoke_test|blue-square vision check|generated test image/i);
   assert.match(source, /ollama_model_is_downloaded\(\)/);
   assert.match(source, /No startup image inference was run/);
-  assert.match(source, /VISION_WORKER_API_VERSION = 3/);
+  assert.match(source, /VISION_WORKER_API_VERSION = 4/);
   assert.match(source, /"input_frame_id": record.get\("input_frame_id"\)/);
   assert.match(source, /"model_role": record.get\("model_role"\)/);
   assert.match(source, /Piper TTS/);

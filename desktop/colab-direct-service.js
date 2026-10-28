@@ -5,11 +5,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { normalizeSpeechText, splitSpeechIntoChunks } = require('./speech-text');
 
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
-const VISION_WORKER_API_VERSION = 3;
-const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback']);
+const VISION_WORKER_API_VERSION = 4;
+const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling']);
 const TTS_PROTOCOL = 'piper-libritts-tts/v1';
 const TTS_VOICE = 'en_US-libritts-high';
 const TTS_SPEAKER_ID = 0;
@@ -103,7 +104,7 @@ function validateVisionContext(reportText, expectedFrame) {
       typeof report.perception.degraded !== 'boolean') {
     throw new Error('Vision context is missing required scene, region, text, or control fields.');
   }
-  if (report.regions.length > 10 || report.text_spans.length > 48 || report.controls.length > 32 || report.objects.length > 32) {
+  if (report.regions.length > 24 || report.text_spans.length > 64 || report.controls.length > 160 || report.objects.length > 48) {
     throw new Error('Vision report exceeds the bounded context size and was rejected.');
   }
   report.regions.forEach((item, index) => validateBoundingBox(item, 'region ' + (index + 1), frame, true));
@@ -126,13 +127,13 @@ function validateVisionContext(reportText, expectedFrame) {
       !Array.isArray(report.accessibility.controls)) {
     throw new Error('Vision report has no accessibility evidence status.');
   }
-  if (report.accessibility.controls.length > 80) throw new Error('Accessibility evidence exceeds the size limit.');
+  if (report.accessibility.controls.length > 240) throw new Error('Accessibility evidence exceeds the size limit.');
   report.accessibility.controls.forEach((item, index) =>
     validateBoundingBox(item, 'accessibility control ' + (index + 1), frame, true));
   if (!report.ocr || typeof report.ocr.available !== 'boolean' || !Array.isArray(report.ocr.text_spans)) {
     throw new Error('Vision report has no OCR evidence status.');
   }
-  if (report.ocr.text_spans.length > 80) throw new Error('OCR evidence exceeds the size limit.');
+  if (report.ocr.text_spans.length > 160) throw new Error('OCR evidence exceeds the size limit.');
   report.ocr.text_spans.forEach((item, index) =>
     validateBoundingBox(item, 'OCR text span ' + (index + 1), frame, true));
   return JSON.stringify(report);
@@ -199,6 +200,8 @@ function createVisionService(deps) {
   let latestScreenFrame = null;
   const CONTROL_SESSION_TIMEOUT_MS = 15 * 60 * 1000;
   const jobs = new Map();
+  const speechJobs = new Map();
+  let activeSpeechJobId = null;
 
   function mailboxConfig() {
     const settings = typeof getSettings === 'function' ? getSettings() || {} : {};
@@ -544,7 +547,8 @@ function createVisionService(deps) {
       passive_active_request_id: data.passive_active_request_id || null,
       last_completed_request_id: data.last_completed_request_id || null,
       model_state_refresh_error: data.model_state_refresh_error || null,
-      message: compatibilityMessage || String(data.message || ''), transport: 'direct_https_tunnel'
+      message: compatibilityMessage || String(data.message || ''), transport: 'direct_https_tunnel',
+      speech_playback: speechPlaybackStatus()
     };
   }
 
@@ -553,6 +557,7 @@ function createVisionService(deps) {
       return {
         status: 'disconnected', enabled: visionEnabled, runtime_fresh: false, runtime_alive: false,
         connection_registered: false, model_loaded: false, runtime_compatible: false, tts_ready: false, tts_model_loaded: false,
+        speech_playback: speechPlaybackStatus(),
         message: 'No direct Colab connection is registered. Click Connect Colab and run the updated vision notebook cell; no GitHub token is needed in Colab.'
       };
     }
@@ -860,128 +865,268 @@ function createVisionService(deps) {
     return value;
   }
 
-  async function playAudioFile(filePath) {
-    if (typeof playAudio === 'function') return await playAudio(filePath);
+  function startAudioPlayback(filePath) {
+    if (typeof playAudio === 'function') {
+      let done;
+      try { done = Promise.resolve(playAudio(filePath)); }
+      catch (error) { done = Promise.reject(error); }
+      return { done, stop: () => {} };
+    }
     if (process.platform !== 'win32') throw new Error('Local WAV playback is supported only on Windows. Use play=false to synthesize without playback.');
     const escapedPath = String(filePath).replace(/'/g, "''");
     const script = "$ErrorActionPreference='Stop'; $player=New-Object System.Media.SoundPlayer -ArgumentList '" +
       escapedPath + "'; try { $player.Load(); $player.PlaySync() } finally { $player.Dispose() }";
     const encoded = Buffer.from(script, 'utf16le').toString('base64');
-    await new Promise((resolve, reject) => {
-      const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
-        windowsHide: true, stdio: ['ignore', 'ignore', 'pipe']
-      });
-      let stderr = '';
-      let settled = false;
-      const timer = setTimeout(() => {
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+      windowsHide: true, stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let stderr = '';
+    let settled = false;
+    let timer = null;
+    const done = new Promise((resolve, reject) => {
+      timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         try { child.kill(); } catch {}
-        reject(new Error('Windows audio playback timed out after four minutes.'));
-      }, 240000);
-      child.stderr.on('data', chunk => { if (stderr.length < 2000) stderr += chunk.toString('utf8').slice(0, 2000 - stderr.length); });
+        reject(new Error('Windows audio playback timed out for one speech chunk.'));
+      }, 120000);
+      child.stderr.on('data', chunk => {
+        if (stderr.length < 2000) stderr += chunk.toString('utf8').slice(0, 2000 - stderr.length);
+      });
       child.once('error', error => {
         if (settled) return;
-        settled = true; clearTimeout(timer); reject(error);
+        settled = true;
+        clearTimeout(timer);
+        reject(error);
       });
       child.once('close', (code, signal) => {
         if (settled) return;
-        settled = true; clearTimeout(timer);
+        settled = true;
+        clearTimeout(timer);
         if (code === 0) resolve();
         else reject(new Error('Windows audio playback exited with code ' + code + (signal ? ' (' + signal + ')' : '') +
           (stderr.trim() ? ': ' + stderr.trim().slice(0, 1200) : '.')));
       });
     });
+    return { done, stop: () => { try { child.kill(); } catch {} }, pid: child.pid };
+  }
+
+  async function playAudioFile(filePath) {
+    const player = startAudioPlayback(filePath);
+    await player.done;
     return { played: true };
   }
 
-  async function synthesizeSpeech(args = {}, callId = null) {
-    const text = typeof args.text === 'string' ? args.text.trim() : '';
-    if (!text) return { status: 'tts_failed', error: 'text is required and must not be blank.' };
-    if (text.length > MAX_TTS_TEXT_CHARS) {
-      return { status: 'tts_failed', error: 'text must be no longer than ' + MAX_TTS_TEXT_CHARS + ' characters.' };
-    }
-    if (args.play !== undefined && typeof args.play !== 'boolean') {
-      return { status: 'tts_failed', error: 'play must be a boolean.' };
-    }
-    const state = await queryRuntime();
-    if (state.runtime_compatible !== true) {
-      return { status: 'tts_unavailable', error: state.message || 'The connected Colab notebook is incompatible with TTS API v2.', next_step: 'Interrupt and rerun the updated Colab notebook cell.' };
-    }
-    if (!state.runtime_fresh || !state.enabled || state.tts_ready !== true) {
-      return {
-        status: 'tts_unavailable',
-        error: state.tts_error || 'Piper TTS is not ready in Colab yet.',
-        runtime_status: state.runtime_status || state.status,
-        next_step: 'Call computer(action=status) and wait for tts_ready=true before retrying.'
-      };
-    }
-    const requestId = 'tts-' + crypto.randomBytes(12).toString('hex');
-    let remote;
-    try {
-      remote = await directRequest('/tts', {
-        method: 'POST',
-        timeoutMs: 240000,
-        body: {
-          protocol: DIRECT_VISION_PROTOCOL,
-          request_id: requestId,
-          voice: TTS_VOICE,
-          speaker_id: TTS_SPEAKER_ID,
-          text
-        }
-      });
-    } catch (error) {
-      return { status: 'tts_failed', request_id: requestId, error: messageOf(error) };
-    }
+  function speechPlaybackStatus() {
+    return {
+      active_job_id: activeSpeechJobId,
+      jobs: Array.from(speechJobs.values()).slice(-8).map(job => ({
+        job_id: job.job_id, status: job.status, chunks_total: job.chunks_total,
+        chunks_started: job.chunks_started, chunks_completed: job.chunks_completed,
+        started_at: job.started_at, finished_at: job.finished_at, error: job.error || null
+      }))
+    };
+  }
+
+  function newTtsRequestId() {
+    return 'tts-' + crypto.randomBytes(12).toString('hex');
+  }
+
+  async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
+    const remote = await directRequest('/tts', {
+      method: 'POST', timeoutMs,
+      body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+    });
     if (remote.protocol !== DIRECT_VISION_PROTOCOL || remote.tts_protocol !== TTS_PROTOCOL ||
         remote.request_id !== requestId || remote.status !== 'completed' ||
         remote.voice !== TTS_VOICE || remote.speaker_id !== TTS_SPEAKER_ID ||
         remote.content_type !== 'audio/wav' || typeof remote.audio_base64 !== 'string') {
-      return { status: 'tts_failed', request_id: requestId, error: String(remote.error || 'Piper returned an incomplete or mismatched TTS result; audio was rejected.').slice(0, 1000) };
+      throw new Error(String(remote.error || 'Piper returned an incomplete or mismatched TTS result; audio was rejected.').slice(0, 1000));
     }
-    let audio;
-    try { audio = Buffer.from(remote.audio_base64, 'base64'); } catch {
-      return { status: 'tts_failed', request_id: requestId, error: 'Piper returned invalid base64 audio.' };
-    }
+    const audio = Buffer.from(remote.audio_base64, 'base64');
     if (!audio.length || audio.length > MAX_TTS_AUDIO_BYTES ||
-        audio.subarray(0, 4).toString('ascii') !== 'RIFF' ||
-        audio.subarray(8, 12).toString('ascii') !== 'WAVE') {
-      return { status: 'tts_failed', request_id: requestId, error: 'Piper audio was empty, over the output limit or not a WAV file.' };
+        audio.subarray(0, 4).toString('ascii') !== 'RIFF' || audio.subarray(8, 12).toString('ascii') !== 'WAVE') {
+      throw new Error('Piper audio was empty, over the output limit or not a WAV file.');
     }
     const actualHash = crypto.createHash('sha256').update(audio).digest('hex');
-    if (remote.audio_sha256 !== actualHash) {
-      return { status: 'tts_failed', request_id: requestId, error: 'Piper WAV SHA-256 did not match the returned audio.' };
-    }
-    const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + requestId + '.wav');
-    try {
-      await fsImpl.promises.writeFile(filePath, audio, { flag: 'wx' });
-    } catch (error) {
-      return { status: 'tts_failed', request_id: requestId, error: 'Could not save the synthesized WAV locally: ' + messageOf(error) };
-    }
-    let played = false;
-    let playbackError = null;
-    if (args.play !== false) {
-      try { await playAudioFile(filePath); played = true; }
-      catch (error) { playbackError = messageOf(error); }
-    }
-    return {
-      status: 'tts_completed',
-      request_id: requestId,
-      voice: TTS_VOICE,
-      speaker_id: TTS_SPEAKER_ID,
-      sample_rate: Number.isFinite(remote.sample_rate) ? remote.sample_rate : state.tts_sample_rate,
-      channels: Number.isFinite(remote.channels) ? remote.channels : 1,
-      duration_seconds: Number.isFinite(remote.duration_seconds) ? remote.duration_seconds : null,
-      audio_bytes: audio.length,
-      audio_sha256: actualHash,
-      local_file: filePath,
-      played,
-      playback_error: playbackError,
-      audio_transport: 'audio is saved to Windows temporary storage; raw audio is not published to the GitHub mailbox'
-    };
+    if (remote.audio_sha256 !== actualHash) throw new Error('Piper WAV SHA-256 did not match the returned audio.');
+    return { audio, remote, audioHash: actualHash, requestId };
   }
 
-  async function waitForRemoteResult(jobId, expectedHash, expectedFrameId, expectedModelRole) {
+  async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
+    const generated = await requestTtsAudio(text, requestId, 45000);
+    const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
+    await fsImpl.promises.writeFile(filePath, generated.audio, { flag: 'wx' });
+    return { ...generated, filePath, index, text };
+  }
+
+  async function removeSpeechFile(filePath) {
+    try { await fsImpl.promises.unlink(filePath); } catch {}
+  }
+
+  async function continueSpeechJob(job, firstChunk) {
+    let current = firstChunk;
+    try {
+      while (current && !job.cancelRequested) {
+        job.currentPlayback = current.playback;
+        const nextIndex = current.index + 1;
+        let nextPromise = null;
+        if (nextIndex < job.chunks.length) {
+          nextPromise = saveSpeechChunk(job, job.chunks[nextIndex], nextIndex, newTtsRequestId())
+            .then(value => ({ value }), error => ({ error }));
+        }
+        await current.playback.done;
+        job.chunks_completed += 1;
+        await removeSpeechFile(current.filePath);
+        if (job.cancelRequested) break;
+        if (nextIndex >= job.chunks.length) { current = null; break; }
+        const next = await nextPromise;
+        if (next.error) throw next.error;
+        current = next.value;
+        current.playback = startAudioPlayback(current.filePath);
+        job.currentPlayback = current.playback;
+        job.chunks_started += 1;
+      }
+      job.status = job.cancelRequested ? 'cancelled' : 'completed';
+    } catch (error) {
+      if (current && current.filePath) await removeSpeechFile(current.filePath);
+      job.status = job.cancelRequested ? 'cancelled' : 'failed';
+      job.error = messageOf(error);
+      if (job.currentPlayback && job.currentPlayback.stop) job.currentPlayback.stop();
+    } finally {
+      if (activeSpeechJobId === job.job_id) activeSpeechJobId = null;
+      job.currentPlayback = null;
+      job.finished_at = new Date(now()).toISOString();
+    }
+  }
+
+  function combineWavBuffers(buffers) {
+    if (!Array.isArray(buffers) || !buffers.length) throw new Error('No synthesized speech chunks were returned.');
+    if (buffers.length === 1) return buffers[0];
+    function parseWav(buffer) {
+      if (!Buffer.isBuffer(buffer) || buffer.length < 44 ||
+          buffer.subarray(0, 4).toString('ascii') !== 'RIFF' || buffer.subarray(8, 12).toString('ascii') !== 'WAVE') {
+        throw new Error('A Piper chunk was not a valid WAV file.');
+      }
+      let offset = 12, formatChunk = null, dataChunk = null;
+      while (offset + 8 <= buffer.length) {
+        const name = buffer.subarray(offset, offset + 4).toString('ascii');
+        const size = buffer.readUInt32LE(offset + 4);
+        const end = offset + 8 + size;
+        if (end > buffer.length) throw new Error('A Piper chunk contains a truncated WAV section.');
+        if (name === 'fmt ' && !formatChunk) formatChunk = buffer.subarray(offset, end);
+        if (name === 'data' && !dataChunk) dataChunk = buffer.subarray(offset + 8, end);
+        offset = end + (size % 2);
+      }
+      if (!formatChunk || !dataChunk) throw new Error('A Piper chunk is missing its WAV format or PCM data section.');
+      return { formatChunk, dataChunk };
+    }
+    const parsed = buffers.map(parseWav), format = parsed[0].formatChunk;
+    for (const item of parsed.slice(1)) if (!item.formatChunk.equals(format)) {
+      throw new Error('Piper returned inconsistent WAV formats across speech chunks.');
+    }
+    const data = Buffer.concat(parsed.map(item => item.dataChunk));
+    const dataHeader = Buffer.alloc(8);
+    dataHeader.write('data', 0, 'ascii'); dataHeader.writeUInt32LE(data.length, 4);
+    const header = Buffer.alloc(12);
+    header.write('RIFF', 0, 'ascii');
+    header.writeUInt32LE(4 + format.length + dataHeader.length + data.length - 8, 4);
+    header.write('WAVE', 8, 'ascii');
+    return Buffer.concat([header, format, dataHeader, data]);
+  }
+
+  async function synthesizeSpeech(args = {}, callId = null) {
+    const sourceText = typeof args.text === 'string' ? args.text.trim() : '';
+    if (!sourceText) return { status: 'tts_failed', error: 'text is required and must not be blank.' };
+    if (sourceText.length > MAX_TTS_TEXT_CHARS) {
+      return { status: 'tts_failed', error: 'text must be no longer than ' + MAX_TTS_TEXT_CHARS + ' characters.' };
+    }
+    if (args.play !== undefined && typeof args.play !== 'boolean') return { status: 'tts_failed', error: 'play must be a boolean.' };
+    if (args.play !== false && activeSpeechJobId) {
+      return { status: 'tts_busy', active_job_id: activeSpeechJobId, speech_playback: speechPlaybackStatus(),
+        error: 'A speech sequence is already playing. Check computer(action=status) for chunk progress before retrying.' };
+    }
+    const spokenText = normalizeSpeechText(sourceText);
+    let chunks;
+    try { chunks = splitSpeechIntoChunks(spokenText, 120); }
+    catch (error) { return { status: 'tts_failed', error: messageOf(error) }; }
+    if (!chunks.length) return { status: 'tts_failed', error: 'No speakable text remained after Unicode normalization.' };
+    if (chunks.length > 32) return { status: 'tts_failed', error: 'Speech exceeded the bounded 32-chunk limit.' };
+
+    const state = await queryRuntime();
+    if (state.runtime_compatible !== true) {
+      return { status: 'tts_unavailable', error: state.message || 'The connected Colab notebook is incompatible with the current TTS API.',
+        next_step: 'Interrupt the running Colab cell and run the updated notebook cell.' };
+    }
+    if (!state.runtime_fresh || !state.enabled || state.tts_ready !== true) {
+      return { status: 'tts_unavailable', error: state.tts_error || 'Piper TTS is not ready in Colab yet.',
+        runtime_status: state.runtime_status || state.status,
+        next_step: 'Call computer(action=status) and wait for tts_ready=true before retrying.' };
+    }
+
+    const jobId = newTtsRequestId();
+    const job = { job_id: jobId, status: 'preparing', chunks, chunks_total: chunks.length,
+      chunks_started: 0, chunks_completed: 0, started_at: new Date(now()).toISOString(),
+      finished_at: null, error: null, cancelRequested: false, currentPlayback: null };
+    speechJobs.set(jobId, job);
+    while (speechJobs.size > 8) {
+      const oldest = speechJobs.keys().next().value;
+      if (oldest === activeSpeechJobId) break;
+      speechJobs.delete(oldest);
+    }
+
+    if (args.play === false) {
+      const generated = [];
+      let duration = 0;
+      try {
+        for (let index = 0; index < chunks.length; index += 1) {
+          const result = await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
+          generated.push(result.audio);
+          duration += Number(result.remote.duration_seconds) || 0;
+          job.chunks_started += 1; job.chunks_completed += 1;
+        }
+        const audio = combineWavBuffers(generated);
+        if (audio.length > MAX_TTS_AUDIO_BYTES) throw new Error('Combined Piper audio exceeds the local WAV size limit.');
+        const hash = crypto.createHash('sha256').update(audio).digest('hex');
+        const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + jobId + '.wav');
+        await fsImpl.promises.writeFile(filePath, audio, { flag: 'wx' });
+        job.status = 'completed'; job.finished_at = new Date(now()).toISOString();
+        return { status: 'tts_completed', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE,
+          speaker_id: TTS_SPEAKER_ID, sample_rate: state.tts_sample_rate || 22050, channels: 1,
+          duration_seconds: duration, audio_bytes: audio.length, audio_sha256: hash,
+          local_file: filePath, played: false, playback_error: null, chunks_total: chunks.length,
+          chunks_completed: chunks.length, audio_transport: 'Audio is saved to Windows temporary storage; raw audio is not published to the GitHub mailbox.' };
+      } catch (error) {
+        job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
+        return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
+      }
+    }
+
+    let first;
+    try { first = await saveSpeechChunk(job, chunks[0], 0, jobId); }
+    catch (error) {
+      job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
+      return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
+    }
+    try { first.playback = startAudioPlayback(first.filePath); }
+    catch (error) {
+      await removeSpeechFile(first.filePath);
+      job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
+      return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
+    }
+    activeSpeechJobId = jobId; job.status = 'playing'; job.chunks_started = 1; job.currentPlayback = first.playback;
+    void continueSpeechJob(job, first);
+    return { status: 'tts_started', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID,
+      sample_rate: Number.isFinite(first.remote.sample_rate) ? first.remote.sample_rate : state.tts_sample_rate,
+      channels: Number.isFinite(first.remote.channels) ? first.remote.channels : 1,
+      duration_seconds: Number.isFinite(first.remote.duration_seconds) ? first.remote.duration_seconds : null,
+      first_chunk_audio_bytes: first.audio.length, first_chunk_sha256: first.audioHash,
+      chunks_total: chunks.length, chunks_started: 1, chunks_completed: 0,
+      played: true, playback_status: 'playing',
+      audio_transport: 'The first chunk is playing; remaining punctuation-bounded chunks are synthesized ahead of playback. Query computer(action=status) for progress.' };
+  }
+
+    async function waitForRemoteResult(jobId, expectedHash, expectedFrameId, expectedModelRole) {
     const deadline = now() + DIRECT_TIMEOUT_MS;
     let lastTransientError = '';
     while (now() < deadline) {
@@ -1308,6 +1453,12 @@ function createVisionService(deps) {
 
   async function dispose() {
     disposed = true;
+    for (const job of speechJobs.values()) {
+      if (job.status === 'playing' || job.status === 'preparing') {
+        job.cancelRequested = true;
+        if (job.currentPlayback && typeof job.currentPlayback.stop === 'function') job.currentPlayback.stop();
+      }
+    }
     endpointWatch = null;
     if (controlSessionTimer) clearTimeout(controlSessionTimer);
     controlSessionTimer = null;
@@ -1320,6 +1471,7 @@ function createVisionService(deps) {
   return {
     activate, deactivate, status, setupCheck, connectColab, connectPublicEndpoint, analyzeScreenshot, analyzeFrame, wait, inputAction, synthesizeSpeech,
     isControlSessionActive: () => controlSessionActive,
+    speechPlaybackStatus,
     dispose,
     constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, VISION_CONTEXT_SCHEMA, VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
@@ -1329,5 +1481,6 @@ module.exports = {
   createVisionService, DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, COLAB_NOTEBOOK_URL,
   VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS,
   MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, VISION_CONTEXT_SCHEMA, validateVisionContext, validateBoundingBox, validJobId,
-  safeTunnelUrl, safeApiKey, parseTunnelEndpoint
+  safeTunnelUrl, safeApiKey, parseTunnelEndpoint,
+  normalizeSpeechText, splitSpeechIntoChunks
 };

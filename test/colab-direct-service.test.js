@@ -64,8 +64,8 @@ function createVisionReport(width, height) {
 function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
-    vision_worker_api_version: 3,
-    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback'],
+    vision_worker_api_version: 4,
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling'],
     tts_ready: true,
     tts_model_loaded: true,
     tts_error: null,
@@ -862,14 +862,16 @@ test('Piper TTS validates voice and speaker, saves WAV locally, and optionally p
   await openAndPublishEndpoint(f);
   await f.service.activate({}, 'activate-for-tts');
   const result = await f.service.synthesizeSpeech({ text: 'Hello from Piper.', play: true }, 'tts-test-call');
-  assert.equal(result.status, 'tts_completed');
+  assert.equal(result.status, 'tts_started');
+  assert.equal(result.chunks_total, 1);
+  assert.equal(result.playback_status, 'playing');
   assert.equal(result.voice, TTS_VOICE);
   assert.equal(result.speaker_id, TTS_SPEAKER_ID);
   assert.equal(result.played, true);
-  assert.match(result.local_file, /\.wav$/i);
-  madeFiles.push(result.local_file);
-  assert.equal(fs.readFileSync(result.local_file).subarray(0, 4).toString('ascii'), 'RIFF');
-  assert.deepEqual(played, [result.local_file]);
+  assert.equal(result.local_file, undefined, 'async playback must not return a path that is removed after the chunk plays');
+  assert.equal(played.length, 1);
+  for (let i = 0; i < 20 && f.service.speechPlaybackStatus().active_job_id; i += 1) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.service.speechPlaybackStatus().jobs.at(-1).status, 'completed');
   const apiCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/tts');
   assert.equal(apiCall.body.protocol, DIRECT_VISION_PROTOCOL);
   assert.equal(apiCall.body.voice, 'en_US-libritts-high');
@@ -899,12 +901,16 @@ test('Piper TTS supports no-playback mode and reports not-ready runtime state', 
 });
 
 test('vision protocol requirements include v3 multimodal capability validation and the fixed Piper voice', () => {
-  assert.equal(VISION_WORKER_API_VERSION, 3);
+  assert.equal(VISION_WORKER_API_VERSION, 4);
   assert.ok(REQUIRED_VISION_FEATURES.includes('frame-id-validation'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('tts-piper-libritts-high'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('passive-vision-capability-validation'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('coordinate-rich-context-v2'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('ocr-accessibility-fallback'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('tts-chunked-playback'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('unicode-speech-normalization'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('expanded-observe-context-v3'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('passive-latest-frame-scheduling'));
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);
