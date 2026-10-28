@@ -8,6 +8,11 @@ const vm = require('node:vm');
 const {
   createVisionService,
   DIRECT_VISION_PROTOCOL,
+  VISION_WORKER_API_VERSION,
+  REQUIRED_VISION_FEATURES,
+  TTS_PROTOCOL,
+  TTS_VOICE,
+  TTS_SPEAKER_ID,
   validateVisionContext,
   safeTunnelUrl,
   safeApiKey,
@@ -57,6 +62,16 @@ function createVisionReport(width, height) {
 function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
+    vision_worker_api_version: 2,
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high'],
+    tts_ready: true,
+    tts_model_loaded: true,
+    tts_error: null,
+    tts_voice: 'en_US-libritts-high',
+    tts_speaker_id: 0,
+    tts_sample_rate: 22050,
+    passive_model_loaded: true,
+    detailed_model_parked: true,
     status: 'inactive',
     enabled: false,
     model_loaded: false,
@@ -109,6 +124,7 @@ function fixture(options = {}) {
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
     inputControl,
+    playAudio: options.playAudio,
     clipboardPollIntervalMs: options.clipboardPollIntervalMs || 5,
     clipboardWatchTimeoutMs: options.clipboardWatchTimeoutMs || 2000,
     pollIntervalMs: 10,
@@ -147,6 +163,22 @@ function fixture(options = {}) {
         state = { ...state, status: 'inactive', enabled: false };
         return response(200, { protocol: DIRECT_VISION_PROTOCOL, accepted: true, enabled: false, runtime_kept_alive: true });
       }
+      if (route === '/tts') {
+        const audio = Buffer.alloc(48);
+        audio.write('RIFF', 0, 'ascii'); audio.writeUInt32LE(40, 4); audio.write('WAVE', 8, 'ascii');
+        audio.write('fmt ', 12, 'ascii'); audio.writeUInt32LE(16, 16); audio.writeUInt16LE(1, 20);
+        audio.writeUInt16LE(1, 22); audio.writeUInt32LE(22050, 24); audio.writeUInt32LE(44100, 28);
+        audio.writeUInt16LE(2, 32); audio.writeUInt16LE(16, 34); audio.write('data', 36, 'ascii');
+        audio.writeUInt32LE(4, 40);
+        const audioHash = require('node:crypto').createHash('sha256').update(audio).digest('hex');
+        return response(200, {
+          protocol: DIRECT_VISION_PROTOCOL, tts_protocol: 'piper-libritts-tts/v1',
+          request_id: body.request_id, status: 'completed', voice: 'en_US-libritts-high',
+          speaker_id: 0, sample_rate: 22050, channels: 1, duration_seconds: 0.001,
+          content_type: 'audio/wav', audio_bytes: audio.length, audio_sha256: audioHash,
+          audio_base64: audio.toString('base64')
+        });
+      }
       if (route.startsWith('/result/')) {
         const requestId = route.slice('/result/'.length);
         const pending = asyncResults.get(requestId);
@@ -154,7 +186,8 @@ function fixture(options = {}) {
         if (Date.now() < pending.readyAt) {
           return response(202, {
             protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, status: 'processing',
-            input_sha256: pending.result.input_sha256, poll_after_ms: 5
+            input_sha256: pending.result.input_sha256, input_frame_id: pending.result.input_frame_id,
+            model_role: pending.result.model_role, poll_after_ms: 5
           });
         }
         return response(200, pending.result);
@@ -795,4 +828,77 @@ test('structured vision context rejects invalid control bounds instead of accept
   const report = createVisionReport(640, 360);
   report.controls[0].bbox_px = [630, 350, 650, 370];
   assert.throws(() => validateVisionContext(JSON.stringify(report), { width_px: 640, height_px: 360 }), /outside the submitted screenshot frame/i);
+});
+
+
+test('old single-model Colab runtimes are rejected before any screenshot upload', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  f.setState({
+    protocol: DIRECT_VISION_PROTOCOL, status: 'ready', enabled: true, model_loaded: true,
+    model: 'qwen3-vl:4b-instruct', vision_worker_api_version: undefined, features: undefined,
+    passive_model_loaded: false, tts_ready: false
+  });
+  const result = await f.service.analyzeScreenshot({ source: 'desktop', waitMs: 0 }, 'old-runtime-check');
+  assert.equal(result.status, 'incompatible_runtime');
+  assert.equal(result.runtime_compatible, false);
+  assert.match(result.message, /out of date/i);
+  assert.equal(f.calls.filter(call => call.type === 'direct_http' && call.route === '/analyze').length, 0);
+});
+
+test('Piper TTS validates voice and speaker, saves WAV locally, and optionally plays it', async t => {
+  const played = [];
+  const f = fixture({ playAudio: async filePath => { played.push(filePath); } });
+  const madeFiles = [];
+  t.after(async () => {
+    await f.service.dispose();
+    for (const filePath of madeFiles) { try { fs.unlinkSync(filePath); } catch {} }
+  });
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts');
+  const result = await f.service.synthesizeSpeech({ text: 'Hello from Piper.', play: true }, 'tts-test-call');
+  assert.equal(result.status, 'tts_completed');
+  assert.equal(result.voice, TTS_VOICE);
+  assert.equal(result.speaker_id, TTS_SPEAKER_ID);
+  assert.equal(result.played, true);
+  assert.match(result.local_file, /\.wav$/i);
+  madeFiles.push(result.local_file);
+  assert.equal(fs.readFileSync(result.local_file).subarray(0, 4).toString('ascii'), 'RIFF');
+  assert.deepEqual(played, [result.local_file]);
+  const apiCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/tts');
+  assert.equal(apiCall.body.protocol, DIRECT_VISION_PROTOCOL);
+  assert.equal(apiCall.body.voice, 'en_US-libritts-high');
+  assert.equal(apiCall.body.speaker_id, 0);
+  assert.equal(apiCall.body.text, 'Hello from Piper.');
+  assert.equal(result.audio_base64, undefined, 'audio bytes must not be included in the mailbox tool result');
+});
+
+test('Piper TTS supports no-playback mode and reports not-ready runtime state', async t => {
+  const f = fixture();
+  const madeFiles = [];
+  t.after(async () => {
+    await f.service.dispose();
+    for (const filePath of madeFiles) { try { fs.unlinkSync(filePath); } catch {} }
+  });
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-tts-no-play');
+  const result = await f.service.synthesizeSpeech({ text: 'Silent synthesis.', play: false }, 'tts-no-play');
+  assert.equal(result.status, 'tts_completed');
+  assert.equal(result.played, false);
+  assert.equal(result.playback_error, null);
+  madeFiles.push(result.local_file);
+  f.setState({ tts_ready: false, tts_error: 'Piper loading.' });
+  const notReady = await f.service.synthesizeSpeech({ text: 'Wait.' }, 'tts-not-ready');
+  assert.equal(notReady.status, 'tts_unavailable');
+  assert.match(notReady.error, /Piper loading/);
+});
+
+test('vision protocol requirements include v2 frame matching and the fixed Piper voice', () => {
+  assert.equal(VISION_WORKER_API_VERSION, 2);
+  assert.ok(REQUIRED_VISION_FEATURES.includes('frame-id-validation'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('tts-piper-libritts-high'));
+  assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
+  assert.equal(TTS_VOICE, 'en_US-libritts-high');
+  assert.equal(TTS_SPEAKER_ID, 0);
 });
