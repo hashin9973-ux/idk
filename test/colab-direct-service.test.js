@@ -1136,7 +1136,7 @@ test('gapless WASAPI script invokes the C# type it declares', () => {
     'the PowerShell entry point must reference the compiled C# type name exactly');
   assert.doesNotMatch(script, /if \(EndRequested && InputClosed\) continue;/,
     'commands read before END must not be discarded if END arrives before the consumer drains the input queue');
-  assert.match(script, /Console\.WriteLine\("GAP\\\\t"/,
+  assert.match(script, /Console\.WriteLine\("GAP\\t"/,
     'the WASAPI player must report measured playback-buffer starvation gaps');
   const source = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'colab-direct-service.js'), 'utf8');
   assert.match(source, /audio_underrun_count/);
