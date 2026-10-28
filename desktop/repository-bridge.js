@@ -325,7 +325,10 @@ function createRepositoryBridge(deps) {
         // is unavailable for a reason other than a missing mailbox root.
       }
 
-      if (bridgeEntries) {
+      if (bridgeEntries && segments.length === 2) {
+        // The bridge-directory shortcut resolves only an immediate child. For
+        // nested request-scoped folders (such as artifacts/<request-id>), retain
+        // the full tree traversal so callers get the exact requested directory.
         const directory = bridgeEntries.find(item => item && item.type === 'dir' && item.name === segments[1]);
         if (!directory) return [];
         if (typeof directory.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(directory.sha)) {
