@@ -66,6 +66,7 @@ function fixture(options = {}) {
     vram_mib: 16384
   };
   let clipboardText = options.initialClipboard || '';
+  let latestPassiveFrame = options.latestFrame || null;
   const calls = [];
   const inputCalls = [];
   const asyncResults = new Map();
@@ -99,7 +100,11 @@ function fixture(options = {}) {
       ...(Number.isFinite(options.capturedAt) ? { captured_at: options.capturedAt } : {})
     }),
     getAccessibleSnapshot: options.getAccessibleSnapshot,
-    getLatestFrame: options.getLatestFrame || (() => null),
+    getLatestFrame: maxAgeMs => {
+      if (!latestPassiveFrame) return null;
+      const ageMs = Math.max(0, Date.now() - Number(latestPassiveFrame.captured_at || 0));
+      return ageMs <= maxAgeMs ? { ...latestPassiveFrame, age_ms: ageMs } : null;
+    },
     encodeJpeg: async bytes => ({ bytes: Buffer.from('compressed-jpeg-' + bytes.toString()), width: 640, height: 360, quality: 72 }),
     openColabNotebook: async url => { calls.push({ type: 'opened_colab', url }); return { opened: true }; },
     readClipboardText: () => clipboardText,
@@ -193,7 +198,8 @@ function fixture(options = {}) {
     getState: () => state,
     setState: patch => { state = { ...state, ...patch }; },
     setClipboard: value => { clipboardText = value; },
-    getClipboard: () => clipboardText
+    getClipboard: () => clipboardText,
+    setLatestFrame: value => { latestPassiveFrame = value; }
   };
 }
 
@@ -461,6 +467,71 @@ test('screenshot bytes upload directly to the Colab endpoint and its report retu
   assert.equal(analyzeCall.body.frame.width_px, 640);
   assert.equal(analyzeCall.body.accessibility.available, false);
   assert.equal(f.calls.some(call => call.method === 'PUT'), false);
+});
+
+test('passive Smol vision can analyze the exact Observe frame while detailed Qwen is busy', async t => {
+  const f = fixture();
+  t.after(() => f.service.dispose());
+  await openAndPublishEndpoint(f);
+  await f.service.activate({}, 'activate-for-passive-analysis');
+
+  const frameId = 'c'.repeat(64);
+  const capturedAt = Date.now();
+  f.setLatestFrame({
+    frame_id: frameId, bytes: Buffer.from('desktop-source-image'),
+    width: 640, height: 360, screen_width: 640, screen_height: 360,
+    captured_at: capturedAt, display_id: 'primary'
+  });
+  f.setState({
+    status: 'processing', enabled: true, model_loaded: true,
+    passive_model_loaded: true, detailed_model_parked: true,
+    detailed_model_loaded: true, active_request_id: 'computer-' + 'd'.repeat(24)
+  });
+
+  const result = await f.service.analyzeFrame({
+    frameId,
+    captured: {
+      frame_id: frameId, bytes: Buffer.from('desktop-source-image'),
+      width: 640, height: 360, screen_width: 640, screen_height: 360,
+      captured_at: capturedAt, display_id: 'primary'
+    },
+    screen: { width: 640, height: 360, frame_width: 640, frame_height: 360, display_id: 'primary' },
+    accessibility: { available: false, source: 'windows_uia', reason: 'not_available', controls: [] },
+    waitMs: 1000
+  });
+  assert.equal(result.status, 'report_available');
+  assert.equal(result.model_role, 'passive');
+  assert.equal(result.model, 'SmolVLM2-2.2B-Instruct');
+  assert.equal(result.input_image.frame_id, frameId);
+  const analyzeCall = f.calls.find(call => call.type === 'direct_http' && call.route === '/analyze');
+  assert.equal(analyzeCall.body.model_role, 'passive');
+  assert.equal(analyzeCall.body.frame_id, frameId);
+  assert.equal(analyzeCall.body.frame.width_px, 640);
+  assert.equal(analyzeCall.body.frame.height_px, 360);
+});
+
+test('mouse input accepts a fresh matching passive frame and rejects a mismatched frame ID', async t => {
+  const frameId = 'e'.repeat(64);
+  const f = fixture({ latestFrame: {
+    frame_id: frameId, width: 640, height: 360,
+    captured_at: Date.now(), age_ms: 0
+  } });
+  t.after(() => f.service.dispose());
+
+  const accepted = await f.service.inputAction({
+    action: 'click', x: 100, y: 80, frame_id: frameId
+  }, 'computer-' + '1'.repeat(24));
+  assert.equal(accepted.status, 'input_completed');
+  assert.equal(f.inputCalls.length, 1);
+  assert.equal(f.inputCalls[0].frame.frame_id, frameId);
+  assert.equal(f.inputCalls[0].frame.width, 640);
+
+  const rejected = await f.service.inputAction({
+    action: 'click', x: 100, y: 80, frame_id: 'f'.repeat(64)
+  }, 'computer-' + '2'.repeat(24));
+  assert.equal(rejected.status, 'error');
+  assert.match(rejected.error, /does not match a fresh passive Observe frame/i);
+  assert.equal(f.inputCalls.length, 1, 'mismatched frame IDs must be rejected before local input');
 });
 
 test('a screenshot wait timeout returns pending and the same request ID can be resumed', async t => {
