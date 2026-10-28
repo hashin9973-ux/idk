@@ -973,8 +973,14 @@ function createVisionService(deps) {
       const previous = jobs.get(jobId);
       if (previous) return previous.result || waitForJob(jobId, safeWaitMs(args.waitMs));
       const state = await queryRuntime();
-      if (!state.runtime_fresh || !state.enabled || !state.model_loaded || state.status !== 'ready') {
-        return { ...state, request_id: jobId, error: 'Colab is not connected, activated, and model-ready. No screenshot was captured or sent.', next_step: 'Call computer(action=enable) and wait until computer(action=status) reports ready.' };
+      const modelReady = modelRole === 'passive'
+        ? state.passive_model_loaded === true
+        : state.model_loaded === true && state.status === 'ready';
+      if (!state.runtime_fresh || !state.enabled || !modelReady) {
+        return { ...state, request_id: jobId, error: modelRole === 'passive'
+          ? 'Colab is not connected, activated, and passive SmolVLM2-ready. No screenshot was captured or sent.'
+          : 'Colab is not connected, activated, and ready for detailed Qwen inference. No screenshot was captured or sent.',
+          next_step: 'Call computer(action=status); if either model is loading or unavailable, wait for the reported readiness state before retrying this same task.' };
       }
       const screenshot = await prepareScreenshot({ ...args, _model_role: modelRole }, jobId, args._capturedFrame || null);
       const job = { request_id: jobId, metadata: screenshot.metadata, createdAt: new Date(now()).toISOString(), result: null };
