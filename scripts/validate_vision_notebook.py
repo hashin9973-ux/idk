@@ -30,6 +30,8 @@ def validate_context_helpers(code):
         "build_passive_fallback_report",
         "is_swapfile_layout_error",
         "is_client_disconnect_error",
+        "parse_content_length",
+        "decode_request_body",
         "read_exact_request_body",
     }
     nodes = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
@@ -41,6 +43,8 @@ def validate_context_helpers(code):
     exec(compile(ast.Module(body=nodes, type_ignores=[]), "<vision-context-helpers>", "exec"), namespace)
 
     is_disconnect = namespace["is_client_disconnect_error"]
+    parse_content_length = namespace["parse_content_length"]
+    decode_request_body = namespace["decode_request_body"]
     read_exact_body = namespace["read_exact_request_body"]
 
     class ShortBodyReader:
@@ -69,7 +73,64 @@ def validate_context_helpers(code):
         raise SystemExit("FAIL: disconnected-client socket errors were not classified")
     if is_disconnect(ValueError("invalid input")):
         raise SystemExit("FAIL: non-socket errors must not be swallowed as disconnects")
+
+    class HeaderBag:
+        def __init__(self, fields):
+            self.fields = list(fields)
+
+        def get_all(self, name, default=None):
+            values = [value for key, value in self.fields if key.lower() == name.lower()]
+            return values if values else default
+
+    parse_cases = [
+        ([("Content-Length", "2")], 2),
+        ([("content-length", " 0002\t")], 2),
+        ([("Content-Length", "2000000")], 2000000),
+    ]
+    for fields, expected in parse_cases:
+        actual = parse_content_length(HeaderBag(fields))
+        if actual != expected:
+            raise SystemExit(f"FAIL: valid Content-Length {fields!r} parsed as {actual!r}")
+    invalid_headers = [
+        [],
+        [("Content-Length", "2"), ("Content-Length", "2")],
+        [("Content-Length", "")],
+        [("Content-Length", "0")],
+        [("Content-Length", "-1")],
+        [("Content-Length", "+2")],
+        [("Content-Length", "1.5")],
+        [("Content-Length", "٢")],
+        [("Content-Length", "2, 2")],
+        [("Content-Length", "2"), ("Transfer-Encoding", "chunked")],
+        [("Transfer-Encoding", "chunked")],
+    ]
+    for fields in invalid_headers:
+        try:
+            parse_content_length(HeaderBag(fields))
+        except ValueError:
+            pass
+        else:
+            raise SystemExit(f"FAIL: unsafe or malformed HTTP framing was accepted: {fields!r}")
+    for oversized in ("2000001", "999999999999999999999999999999999"):
+        try:
+            parse_content_length(HeaderBag([("Content-Length", oversized)]))
+        except OverflowError:
+            pass
+        else:
+            raise SystemExit(f"FAIL: oversized Content-Length was not rejected: {oversized!r}")
+    if decode_request_body(b'{"protocol":"test"}') != {"protocol": "test"}:
+        raise SystemExit("FAIL: valid UTF-8 JSON request body could not be decoded")
+    for malformed in (b'{"protocol":', b"\xff"):
+        try:
+            decode_request_body(malformed)
+        except ValueError as exc:
+            if str(exc) != "Malformed JSON":
+                raise SystemExit("FAIL: malformed HTTP body leaked a parser diagnostic")
+        else:
+            raise SystemExit("FAIL: malformed UTF-8/JSON request body was accepted")
     print("PASS: exact HTTP body reading handles short reads and rejects incomplete uploads")
+    print("PASS: strict Content-Length parsing rejects duplicates, invalid numbers, TE framing, and oversized bodies")
+    print("PASS: malformed UTF-8/JSON returns a bounded error instead of an uncaught traceback")
     print("PASS: peer disconnect writes are handled without a secondary traceback")
 
     swap_layout_error = namespace["is_swapfile_layout_error"]
@@ -266,7 +327,14 @@ def main():
         "CPU-only parked Qwen preload": "num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS",
         "three model slots permitted": '"OLLAMA_MAX_LOADED_MODELS": "3"',
         "safe HTTP body parsing advertised": '"safe-http-request-bodies"',
+        "body read validates HTTP framing": "parse_content_length(self.headers)",
+        "strict bounded Content-Length helper": "def parse_content_length(headers, max_length=2_000_000):",
+        "malformed UTF-8/JSON is rejected uniformly": "def decode_request_body(raw_body):",
         "body read checks declared length": "read_exact_request_body(self.rfile, length)",
+        "passive output budget avoids previous 1,500-token cutoff": "PASSIVE_MAX_OUTPUT_TOKENS = 2400",
+        "vision output budget uses per-model limits": "model_predict = PASSIVE_MAX_OUTPUT_TOKENS if model_role == \"passive\" else DETAILED_MAX_OUTPUT_TOKENS",
+        "per-chunk TTS synthesis latency is emitted": '"synthesis_ms": synthesis_ms',
+        "per-chunk TTS lock wait is emitted": '"tts_lock_wait_ms": tts_lock_wait_ms',
         "streamed TTS prefetch is advertised": '"tts-streamed-prefetch"',
         "streamed TTS uses chunked HTTP response": 'self.send_header("Transfer-Encoding", "chunked")',
         "streamed TTS caps the aggregate audio body": "MAX_TTS_BATCH_AUDIO_BYTES = 25 * 1024 * 1024",
@@ -299,8 +367,12 @@ def main():
         "tenfold OCR spans": '"text_spans": spans[:800]',
         "tenfold UIA fallback": "raw_controls[:800]",
         "tenfold fallback access is compactly duplicated": '"accessibility": {**access, "controls": access_controls[:64], "controls_truncated": len(access_controls) > 64}',
-        "bounded passive OCR hints": 'ocr_hint_limit = 32 if model_role == "passive" else 128',
-        "bounded passive UIA hints": 'accessibility_hint_limit = 48 if model_role == "passive" else 160',
+        "expanded passive OCR hints": 'ocr_hint_limit = 96 if model_role == "passive" else 128',
+        "expanded passive UIA hints": 'accessibility_hint_limit = 128 if model_role == "passive" else 160',
+        "passive model receives a denser structured-report budget": "PASSIVE OBSERVE MODE: produce a dense, high-signal live screen map",
+        "passive structured report includes text and control locations": "up to 96 task-relevant visible text spans",
+        "passive structured report expands object coverage": "up to 40 other visible objects",
+        "detailed Qwen structured report retains its compact budget": "at most 8 regions, 24 text spans, 16 controls, and 12 objects",
         "larger passive context window": "PASSIVE_CONTEXT_TOKENS = 16384",
         "bounded structured report size": "MAX_STRUCTURED_REPORT_CHARS = 1000000",
         "compact fallback text preview": "enumerate(ocr_spans[:64])",
