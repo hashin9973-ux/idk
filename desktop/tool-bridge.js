@@ -986,13 +986,15 @@ function createToolBridge(deps) {
                 ? await visionService.synthesizeSpeech(args, id)
                 : await executeLocalTool(root, tool, args, id);
             if ((isComputerTool && computerOutputFailed(args.action, output)) ||
-                (isTtsTool && (!output || output.status !== 'tts_completed')) ||
+                (isTtsTool && (!output || output.status !== 'tts_completed' || (args.play !== false && output.playback_error))) ||
                 (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
               result = {
                 ok: false,
                 error: isComputerTool
                   ? (output && (output.error || output.message) || 'The computer action did not complete successfully.')
-                  : tool + ' exited with code ' + output.exitCode + '.',
+                  : isTtsTool
+                    ? (output && (output.playback_error || output.error || output.message) || 'Speech synthesis did not complete successfully.')
+                    : tool + ' exited with code ' + output.exitCode + '.',
                 result: output
               };
             } else {
@@ -1006,13 +1008,15 @@ function createToolBridge(deps) {
               ? await visionService.synthesizeSpeech(args, id)
               : await executeLocalTool(root, tool, args, id);
           if ((isComputerTool && computerOutputFailed(args.action, output)) ||
-              (isTtsTool && (!output || output.status !== 'tts_completed')) ||
+              (isTtsTool && (!output || output.status !== 'tts_completed' || (args.play !== false && output.playback_error))) ||
               (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
             result = {
               ok: false,
               error: isComputerTool
                 ? (output && (output.error || output.message) || 'The computer action did not complete successfully.')
-                : tool + ' exited with code ' + output.exitCode + '.',
+                : isTtsTool
+                  ? (output && (output.playback_error || output.error || output.message) || 'Speech synthesis did not complete successfully.')
+                  : tool + ' exited with code ' + output.exitCode + '.',
               result: output
             };
           } else {
