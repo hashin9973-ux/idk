@@ -67,7 +67,7 @@ function fixture(options = {}) {
   let state = {
     protocol: DIRECT_VISION_PROTOCOL,
     vision_worker_api_version: 5,
-    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch'],
+    features: ['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch', 'tts-server-synthesis-metrics-v1'],
     tts_ready: true,
     tts_model_loaded: true,
     tts_error: null,
@@ -1218,6 +1218,7 @@ test('vision protocol requirements include v4 multimodal capability validation a
   assert.ok(REQUIRED_VISION_FEATURES.includes('passive-latest-frame-scheduling'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('safe-http-request-bodies'));
   assert.ok(REQUIRED_VISION_FEATURES.includes('tts-streamed-prefetch'));
+  assert.ok(REQUIRED_VISION_FEATURES.includes('tts-server-synthesis-metrics-v1'));
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);
