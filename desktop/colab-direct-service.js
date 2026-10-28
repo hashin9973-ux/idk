@@ -18,7 +18,7 @@ const { normalizeSpeechText, splitSpeechIntoChunks } = require('./speech-text');
 const DIRECT_VISION_PROTOCOL = 'chatgpt-colab-vision-direct/v1';
 const RESULT_PROTOCOL = 'chatgpt-colab-vision-result/v1';
 const VISION_WORKER_API_VERSION = 5;
-const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies']);
+const REQUIRED_VISION_FEATURES = Object.freeze(['passive-smolvlm2', 'detailed-qwen', 'frame-id-validation', 'tts-piper-libritts-high', 'passive-vision-capability-validation', 'coordinate-rich-context-v2', 'ocr-accessibility-fallback', 'tts-chunked-playback', 'unicode-speech-normalization', 'expanded-observe-context-v3', 'passive-latest-frame-scheduling', 'safe-http-request-bodies', 'tts-streamed-prefetch']);
 const TTS_PROTOCOL = 'piper-libritts-tts/v1';
 const TTS_VOICE = 'en_US-libritts-high';
 const TTS_SPEAKER_ID = 0;
@@ -26,6 +26,8 @@ const MAX_TTS_TEXT_CHARS = 2000;
 const MAX_TTS_AUDIO_BYTES = 25 * 1024 * 1024;
 const MAX_TTS_PREFETCH_CONCURRENCY = 3;
 const TTS_PLAYBACK_TIMEOUT_MS = 10 * 60 * 1000;
+const TTS_STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+const MAX_TTS_STREAM_RESPONSE_BYTES = 36 * 1024 * 1024;
 const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
 const MODEL_ID = 'ollama/qwen3-vl';
@@ -1098,25 +1100,7 @@ function createVisionService(deps) {
     return 'tts-' + crypto.randomBytes(12).toString('hex');
   }
 
-  async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
-    let remote;
-    try {
-      remote = await directRequest('/tts', {
-        method: 'POST', timeoutMs,
-        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
-      });
-    } catch (error) {
-      const message = messageOf(error);
-      const retryable = /Malformed JSON|HTTP (?:408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(message);
-      if (!retryable) throw error;
-      // A disconnect while the notebook is reading the short JSON body is safe to retry:
-      // /tts has no external side effect, and the same immutable ID ties both attempts together.
-      await sleep(120);
-      remote = await directRequest('/tts', {
-        method: 'POST', timeoutMs,
-        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
-      });
-    }
+  function validateTtsAudioResponse(remote, requestId) {
     if (remote.protocol !== DIRECT_VISION_PROTOCOL || remote.tts_protocol !== TTS_PROTOCOL ||
         remote.request_id !== requestId || remote.status !== 'completed' ||
         remote.voice !== TTS_VOICE || remote.speaker_id !== TTS_SPEAKER_ID ||
@@ -1132,6 +1116,183 @@ function createVisionService(deps) {
     if (remote.audio_sha256 !== actualHash) throw new Error('Piper WAV SHA-256 did not match the returned audio.');
     return { audio, remote, audioHash: actualHash, requestId };
   }
+
+  async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
+    let remote;
+    try {
+      remote = await directRequest('/tts', {
+        method: 'POST', timeoutMs,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+      });
+    } catch (error) {
+      const message = messageOf(error);
+      const retryable = /Malformed JSON|HTTP (?:408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(message);
+      if (!retryable) throw error;
+      // A disconnected/partial request body is safe to retry before any audio exists.
+      await sleep(120);
+      remote = await directRequest('/tts', {
+        method: 'POST', timeoutMs,
+        body: { protocol: DIRECT_VISION_PROTOCOL, request_id: requestId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID, text }
+      });
+    }
+    return validateTtsAudioResponse(remote, requestId);
+  }
+
+  async function streamRemainingSpeech(job, playback) {
+    const chunks = job.chunks.slice(1).map((text, offset) => ({
+      index: offset + 1, request_id: newTtsRequestId(), text
+    }));
+    if (!chunks.length) return;
+
+    const batchRequestId = newTtsRequestId();
+    let streamChunkIndex = 0;
+
+    async function readOneAttempt(attempt) {
+      const controller = new AbortController();
+      let reader = null;
+      let timer = null;
+      let streamStarted = false;
+      let acceptedChunks = 0;
+      let batchTerminal = false;
+      let batchFailed = null;
+      let responseBytes = 0;
+      let textBuffer = '';
+      const decoder = new TextDecoder();
+
+      const processRecord = async rawLine => {
+        if (!rawLine.trim()) return;
+        let record;
+        try { record = JSON.parse(rawLine); }
+        catch { throw new Error('Colab returned malformed JSON in its streamed TTS response.'); }
+        if (record.protocol !== DIRECT_VISION_PROTOCOL || record.tts_protocol !== TTS_PROTOCOL) {
+          throw new Error('Colab streamed TTS protocol did not match the current worker.');
+        }
+        if (record.request_id === batchRequestId) {
+          if (record.status === 'stream_started') {
+            if (streamStarted || record.chunks_total !== chunks.length ||
+                record.voice !== TTS_VOICE || record.speaker_id !== TTS_SPEAKER_ID) {
+              throw new Error('Colab streamed TTS start metadata was invalid.');
+            }
+            streamStarted = true;
+            return;
+          }
+          if (record.status === 'completed') {
+            if (!streamStarted || acceptedChunks !== chunks.length ||
+                record.chunks_total !== chunks.length) {
+              throw new Error('Colab ended the TTS stream before every chunk arrived.');
+            }
+            batchTerminal = true;
+            return;
+          }
+          if (record.status === 'failed') {
+            batchTerminal = true;
+            batchFailed = String(record.error || 'Colab TTS stream failed.').slice(0, 1000);
+            return;
+          }
+          throw new Error('Colab returned an unknown streamed TTS terminal status.');
+        }
+        if (!streamStarted || batchTerminal) throw new Error('Colab sent TTS audio outside the active stream.');
+        const expected = chunks[streamChunkIndex];
+        if (!expected || record.batch_request_id !== batchRequestId ||
+            record.request_id !== expected.request_id) {
+          throw new Error('Colab streamed TTS chunk order or request identity did not match.');
+        }
+        const generated = validateTtsAudioResponse(record, expected.request_id);
+        const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id +
+          '-chunk-' + String(expected.index + 1).padStart(2, '0') + '.wav');
+        await fsImpl.promises.writeFile(filePath, generated.audio, { flag: 'wx' });
+        try {
+          await playback.queue(filePath, expected.index);
+          job.chunks_queued += 1;
+          job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
+          acceptedChunks += 1;
+          streamChunkIndex += 1;
+        } finally {
+          await removeSpeechFile(filePath);
+        }
+      };
+
+      try {
+        timer = setTimeout(() => controller.abort(), TTS_STREAM_TIMEOUT_MS);
+        const response = await fetchImpl(colabConnection.url + '/tts/stream', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + colabConnection.apiKey,
+            Accept: 'application/x-ndjson',
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            protocol: DIRECT_VISION_PROTOCOL,
+            request_id: batchRequestId,
+            voice: TTS_VOICE,
+            speaker_id: TTS_SPEAKER_ID,
+            chunks: chunks.map(item => ({ request_id: item.request_id, text: item.text }))
+          }),
+          signal: controller.signal,
+          cache: 'no-store',
+          redirect: 'error'
+        });
+        if (!response.ok) {
+          let detail = 'request failed';
+          try {
+            const data = await response.json();
+            detail = String(data.error || data.message || detail).slice(0, 600);
+          } catch {}
+          throw new Error('Colab TTS stream returned HTTP ' + response.status + ': ' + detail);
+        }
+        const contentType = response.headers && response.headers.get
+          ? String(response.headers.get('content-type') || '') : '';
+        if (contentType && !/application\/x-ndjson/i.test(contentType)) {
+          throw new Error('Colab TTS stream returned an unexpected content type.');
+        }
+        if (!response.body || typeof response.body.getReader !== 'function') {
+          throw new Error('Colab TTS streaming response did not expose a readable body.');
+        }
+        reader = response.body.getReader();
+        while (true) {
+          const packet = await reader.read();
+          if (packet.done) break;
+          responseBytes += packet.value.byteLength;
+          if (responseBytes > MAX_TTS_STREAM_RESPONSE_BYTES) {
+            throw new Error('Colab TTS stream exceeded the 36 MiB bounded response size.');
+          }
+          textBuffer += decoder.decode(packet.value, { stream: true });
+          if (textBuffer.length > MAX_TTS_STREAM_RESPONSE_BYTES) {
+            throw new Error('Colab TTS stream exceeded the bounded JSON line size.');
+          }
+          let newline;
+          while ((newline = textBuffer.indexOf('\n')) >= 0) {
+            const line = textBuffer.slice(0, newline);
+            textBuffer = textBuffer.slice(newline + 1);
+            await processRecord(line);
+          }
+        }
+        textBuffer += decoder.decode();
+        if (textBuffer.trim()) await processRecord(textBuffer);
+        if (!batchTerminal) throw new Error('Colab closed the TTS stream before its terminal record.');
+        if (batchFailed) throw new Error('Colab TTS stream failed: ' + batchFailed);
+      } catch (error) {
+        controller.abort();
+        if (reader) {
+          try { await reader.cancel(); } catch {}
+        }
+        const retryable = !streamStarted && acceptedChunks === 0 &&
+          /Malformed JSON|HTTP (?:400|408|425|429|5\d{2})|aborted|timed out|network|fetch failed|ECONNRESET|ECONNREFUSED|EPIPE|socket hang up/i.test(messageOf(error));
+        if (attempt === 0 && retryable) {
+          await sleep(120);
+          return readOneAttempt(1);
+        }
+        throw error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        if (reader) {
+          try { reader.releaseLock(); } catch {}
+        }
+      }
+    }
+
+    await readOneAttempt(0);
+  }
   async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
     const generated = await requestTtsAudio(text, requestId, 45000);
     const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
@@ -1144,75 +1305,11 @@ function createVisionService(deps) {
   }
 
   async function queueRemainingSpeech(job, playback) {
-    const ready = new Map();
-    const running = new Map();
-    let launchIndex = 1;
-    let nextQueueIndex = 1;
-    let failure = null;
-    let failureIndex = Infinity;
-
-    const launch = () => {
-      while (!failure && launchIndex < job.chunks.length && running.size < MAX_TTS_PREFETCH_CONCURRENCY) {
-        const index = launchIndex++;
-        const task = saveSpeechChunk(job, job.chunks[index], index, newTtsRequestId())
-          .then(value => ({ index, value }), error => ({ index, error }));
-        running.set(index, task);
-      }
-    };
-
-    launch();
-    while (running.size) {
-      const outcome = await Promise.race(running.values());
-      running.delete(outcome.index);
-      if (outcome.error) {
-        if (outcome.index < failureIndex) {
-          failure = outcome.error;
-          failureIndex = outcome.index;
-        }
-      } else {
-        ready.set(outcome.index, outcome.value);
-      }
-
-      while (ready.has(nextQueueIndex) && nextQueueIndex < failureIndex) {
-        const chunk = ready.get(nextQueueIndex);
-        ready.delete(nextQueueIndex);
-        try {
-          await playback.queue(chunk.filePath, nextQueueIndex);
-          job.chunks_queued += 1;
-          job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
-          await removeSpeechFile(chunk.filePath);
-          nextQueueIndex += 1;
-        } catch (error) {
-          if (nextQueueIndex < failureIndex) {
-            failure = error;
-            failureIndex = nextQueueIndex;
-          }
-          await removeSpeechFile(chunk.filePath);
-          break;
-        }
-      }
-
-      if (!failure) {
-        launch();
-      } else {
-        // Already-started lower indexes may still be needed to preserve audio order.
-        launchIndex = job.chunks.length;
-      }
-      for (const [index, chunk] of ready.entries()) {
-        if (index >= failureIndex) {
-          ready.delete(index);
-          await removeSpeechFile(chunk.filePath);
-        }
-      }
-    }
-
-    for (const chunk of ready.values()) await removeSpeechFile(chunk.filePath);
-    if (failure) throw failure;
-    if (nextQueueIndex !== job.chunks.length) {
-      throw new Error('Speech prefetch ended before every chunk was queued.');
+    await streamRemainingSpeech(job, playback);
+    if (job.chunks_queued !== job.chunks_total) {
+      throw new Error('TTS streaming ended before every chunk was queued.');
     }
   }
-
   async function continueSpeechJob(job, playback) {
     job.currentPlayback = playback;
     let pipelineError = null;
