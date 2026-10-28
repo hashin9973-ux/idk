@@ -480,6 +480,7 @@ function createToolBridge(deps) {
         barrier = true;
         break;
       default:
+        barrier = true;
         break;
     }
     return { reads, writes, barrier };
@@ -490,6 +491,20 @@ function createToolBridge(deps) {
     const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
     return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
       right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+  }
+
+  function getExecutionFootprint(tool, args = {}) {
+    if (tool !== 'batch') return batchFootprint({ tool, args });
+    const steps = Array.isArray(args.steps) ? args.steps : [];
+    if (!steps.length) return { reads: [], writes: [], barrier: true };
+    const combined = { reads: [], writes: [], barrier: false };
+    for (const step of steps) {
+      const footprint = batchFootprint(step);
+      combined.reads.push(...footprint.reads);
+      combined.writes.push(...footprint.writes);
+      if (footprint.barrier) combined.barrier = true;
+    }
+    return combined;
   }
 
   function inferBatchDependencies(steps, index) {
@@ -1052,6 +1067,8 @@ function createToolBridge(deps) {
 module.exports = {
   createToolBridge,
   TOOL_ARGUMENT_KEYS,
+  getExecutionFootprint,
+  executionFootprintsConflict: batchFootprintsConflict,
   BLOCKED_TOOLS_FOR_MAILBOX,
   GITHUB_GIT_TOOLS
 };
