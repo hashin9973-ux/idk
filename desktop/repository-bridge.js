@@ -4,7 +4,7 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
-const { TOOL_ARGUMENT_KEYS } = require('./tool-bridge');
+const { TOOL_ARGUMENT_KEYS, getExecutionFootprint, executionFootprintsConflict } = require('./tool-bridge');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
@@ -13,7 +13,7 @@ const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 1000;
 // Bound recovery when GitHub's path-filtered commit cursor is stale/eventually consistent.
-const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 5_000;
+const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 1_500;
 const MAX_CONCURRENT_REQUESTS = 32;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
@@ -177,6 +177,8 @@ function createRepositoryBridge(deps) {
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
+  const activeExecutionFootprints = new Map();
+  const executionWaitQueue = [];
   const requestTelemetry = new AsyncLocalStorage();
   let lastPollAt = null;
   let lastPollError = '';
@@ -1474,6 +1476,34 @@ function createRepositoryBridge(deps) {
     return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry));
   }
 
+  function drainExecutionWaitQueue() {
+    for (let index = 0; index < executionWaitQueue.length;) {
+      const waiting = executionWaitQueue[index];
+      const conflictsActive = [...activeExecutionFootprints.values()]
+        .some(active => executionFootprintsConflict(waiting.footprint, active));
+      const blockedByEarlierRequest = executionWaitQueue.slice(0, index)
+        .some(earlier => executionFootprintsConflict(waiting.footprint, earlier.footprint));
+      if (conflictsActive || blockedByEarlierRequest) {
+        index++;
+        continue;
+      }
+      executionWaitQueue.splice(index, 1);
+      activeExecutionFootprints.set(waiting.requestId, waiting.footprint);
+      waiting.resolve(() => {
+        activeExecutionFootprints.delete(waiting.requestId);
+        drainExecutionWaitQueue();
+      });
+    }
+  }
+
+  function acquireExecutionSlot(requestId, tool, args) {
+    const footprint = getExecutionFootprint(tool, args);
+    return new Promise(resolve => {
+      executionWaitQueue.push({ requestId, footprint, resolve });
+      drainExecutionWaitQueue();
+    });
+  }
+
   async function processRequestInner(filename, telemetry) {
     const workerStartedAt = telemetry.startedAt;
     let requestLoadedAt = workerStartedAt;
@@ -1526,7 +1556,12 @@ function createRepositoryBridge(deps) {
     toolStartedAt = Date.now();
 
     let report;
+    let releaseExecutionSlot = null;
+    let executionQueueWaitMs = 0;
     try {
+      const waitStartedAt = Date.now();
+      releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args);
+      executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
       if (request.tool === CONTEXT_REQUEST_TOOL) {
         report = { ok: true, result: await publishEnvironmentContext() };
       } else {
@@ -1534,6 +1569,8 @@ function createRepositoryBridge(deps) {
       }
     } catch (error) {
       report = { ok: false, error: cleanError(error.message), tool: request.tool, call_id: requestId };
+    } finally {
+      if (releaseExecutionSlot) releaseExecutionSlot();
     }
 
     toolFinishedAt = Date.now();
@@ -1582,6 +1619,7 @@ function createRepositoryBridge(deps) {
         request_fetch: Math.max(0, requestLoadedAt - workerStartedAt),
         claim_acquisition: Math.max(0, claimAcquiredAt - claimStartedAt),
         tool_wall_time: Math.max(0, toolFinishedAt - toolStartedAt),
+        execution_queue_wait_ms: executionQueueWaitMs,
         result_preparation: Math.max(0, Date.now() - toolFinishedAt),
         worker_before_result_publish: Math.max(0, Date.now() - workerStartedAt),
         bridge_api_calls_before_result_publish: telemetry.githubApiCalls,
