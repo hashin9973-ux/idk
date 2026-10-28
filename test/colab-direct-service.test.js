@@ -269,7 +269,9 @@ test('Colab vision notebook uses a 16,384-token context and reports the configur
 
   assert.match(pythonSource, /VISION_CONTEXT_TOKENS = 16384/);
   assert.match(pythonSource, /PASSIVE_CONTEXT_TOKENS = 8192/);
-  assert.match(pythonSource, /PASSIVE_MODEL = "richardyoung\/smolvlm2-2\.2b-instruct:Q4_K_M"/);
+  assert.match(pythonSource, /PASSIVE_MODEL_REPO = "ahmadwaqar\\/smolvlm2-2\\.2b-instruct"/);
+  assert.match(pythonSource, /PASSIVE_MODEL = "ahmadwaqar\\/smolvlm2-2\\.2b-instruct:latest"/);
+  assert.doesNotMatch(pythonSource, /PASSIVE_MODEL = "richardyoung\\/smolvlm2-2\\.2b-instruct:Q4_K_M"/);
   assert.match(pythonSource, /PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"/);
   assert.match(pythonSource, /options = \{"num_ctx": int\(context_tokens\), "num_predict": 1\}/);
   assert.match(pythonSource, /context_tokens=VISION_CONTEXT_TOKENS/);
