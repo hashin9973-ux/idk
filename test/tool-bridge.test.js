@@ -632,6 +632,42 @@ test('tts is a first-class local tool and routes Piper synthesis through the vis
   }
 });
 
+test('tts reports an asynchronous chunked playback start as successful initiation', async () => {
+  const root = fixture();
+  try {
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {},
+      getAutoAcceptAll: () => true,
+      visionService: {
+        async synthesizeSpeech(args) {
+          assert.equal(args.play, undefined);
+          return {
+            status: 'tts_started',
+            request_id: 'tts-' + 'a'.repeat(24),
+            speech_job_id: 'tts-' + 'a'.repeat(24),
+            played: true,
+            playback_status: 'playing',
+            chunks_total: 15,
+            chunks_started: 1,
+            chunks_completed: 0
+          };
+        }
+      }
+    });
+    const result = await bridge.runTool('tts', { text: 'A punctuation-bounded speech sequence.' }, 'tts-async-start');
+    assert.equal(result.ok, true);
+    assert.equal(result.result.status, 'tts_started');
+    assert.equal(result.result.playback_status, 'playing');
+    assert.equal(result.result.chunks_total, 15);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('tts reports playback failure distinctly from successful WAV synthesis', async () => {
   const root = fixture();
   try {

@@ -91,7 +91,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   computer: 'Native local computer tool for the real Windows workspace. This fast interaction mode is an optional path: when the user requests rapid interaction, inspect the latest live state as needed and use one computer(action=sequence, mode=fast, steps=[...]) call for ordered local input without intermediate narration. The fast mode skips automatic post-action Colab inference unless observe=true, avoiding an extra model/tunnel round trip; request a fresh observation when verification or the next action depends on screen changes. This is an optional tool-loop optimization, not a switch that disables ChatGPT internal reasoning. Observe and detailed screenshots use the primary display at full physical pixel dimensions; JPEG compression lowers quality rather than spatially downscaling. The screenshot report includes active app/window, screen regions, readable text, control relationships, OCR and Windows UI Automation bounds when exposed, plus uncertainty. For closer inspection, pass region=[left,top,right,bottom] in the latest screenshot pixel frame; returned boxes are mapped back to the original full-frame coordinates. When using passive Observe coordinates, pass the matching frame_id with the input action; changed or stale frame IDs are rejected. Accessibility-grounded bounds are preferred to visual estimates. All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab. Ordered local mouse/keyboard inputs, up to 50 steps, can be submitted in one sequence; sequence batches up to 50 inputs. start_control enables a control session; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
-  tts: 'Synthesize speech with Piper en_US-libritts-high using speaker ID 0. By default, play the WAV locally on Windows; set play=false to save without playback. The actual audio bytes stay local and are not published to GitHub.',
+  tts: 'Synthesize speech with Piper en_US-libritts-high using speaker ID 0. By default, start local playback as soon as the first punctuation-bounded chunk is ready; returns tts_started plus speech_job_id while remaining chunks play, and computer(action=status) reports progress. Set play=false to save without playback. The actual audio bytes stay local and are not published to GitHub.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
   batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
 });
@@ -276,7 +276,7 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   update_plan: 'Returns the current ordered plan with IDs, step text and pending/in_progress/completed status.',
   upload_workspace_file: 'Returns the repository artifact path/URL, media type, byte size, SHA-256, visibility and retrieval note.',
   computer: 'Returns model readiness, screenshot analysis with coordinate-frame metadata, local mouse/keyboard input outcomes, or a batched observe-act-observe result.',
-  tts: 'Returns speech synthesis status, voice and speaker, WAV metadata and checksum, and a local temporary file path without publishing audio bytes to GitHub.',
+  tts: 'Returns synthesis metadata and status. A tts_started result means the first chunk is playing; use computer(action=status) to monitor chunks_completed and any terminal error. A tts_completed result means the full WAV was synthesized without playback. Audio bytes stay local.',
   refresh_environment_context: 'Returns the compact context index, including current agent_context, project-native command hints and tool catalog.',
   batch: 'Returns ordered steps with IDs, tool names, success/failed/cancelled status, errors/cancellation details, exit codes, and actual results even for failed commands.',
   get_agent_context: 'Returns a compact environment/project snapshot, project scripts, suggested native commands, instruction file paths/hashes/sizes, bounded tree and complete tool catalog.'
@@ -336,6 +336,15 @@ function computerOutputFailed(action, output) {
   if (action === 'sequence') return output.status === 'error';
   if (action === 'wait') return ['inactive', 'needs_authentication', 'gpu_unavailable', 'disconnected'].includes(output.status);
   return false;
+}
+
+function ttsOutputFailed(args = {}, output) {
+  if (!output || typeof output !== 'object') return true;
+  if (args.play === false) return output.status !== 'tts_completed';
+  if (output.status === 'tts_started') {
+    return output.played !== true || !/^tts-[a-f0-9]{24}$/.test(String(output.speech_job_id || ''));
+  }
+  return output.status !== 'tts_completed' || output.played !== true || Boolean(output.playback_error);
 }
 
 function createToolBridge(deps) {
@@ -986,7 +995,7 @@ function createToolBridge(deps) {
                 ? await visionService.synthesizeSpeech(args, id)
                 : await executeLocalTool(root, tool, args, id);
             if ((isComputerTool && computerOutputFailed(args.action, output)) ||
-                (isTtsTool && (!output || output.status !== 'tts_completed' || (args.play !== false && output.playback_error))) ||
+                (isTtsTool && ttsOutputFailed(args, output)) ||
                 (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
               result = {
                 ok: false,
@@ -1008,7 +1017,7 @@ function createToolBridge(deps) {
               ? await visionService.synthesizeSpeech(args, id)
               : await executeLocalTool(root, tool, args, id);
           if ((isComputerTool && computerOutputFailed(args.action, output)) ||
-              (isTtsTool && (!output || output.status !== 'tts_completed' || (args.play !== false && output.playback_error))) ||
+              (isTtsTool && ttsOutputFailed(args, output)) ||
               (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
             result = {
               ok: false,
