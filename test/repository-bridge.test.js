@@ -420,8 +420,9 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
   }
 });
 
-test('default request-tree reconciliation is five seconds and recovers new requests when the commit cursor is stale', async () => {
+test('five-second request-tree polling discovers work without awaiting the path-filtered commit endpoint', async () => {
   assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 5000);
+  // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
   let executions = 0;
@@ -438,10 +439,24 @@ test('default request-tree reconciliation is five seconds and recovers new reque
   const originalNow = Date.now;
   try {
     await bridge.start();
-    // Simulate the five-second fallback deadline without sleeping in the test.
-    Date.now = () => originalNow() + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
+    assert.equal(
+      fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
+      false,
+      'request polling must not put the potentially slow path-filtered commit endpoint ahead of request discovery'
+    );
+
+    Date.now = () => originalNow() + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS - 1;
+    await bridge.pollOnce();
+    assert.equal(
+      fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length,
+      initialTreeReads,
+      'a poll before the scan interval must not perform another GitHub tree read'
+    );
+
+    // Simulate the next five-second scan deadline without sleeping.
+    Date.now = () => originalNow() + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
     const request = {
       protocol: PROTOCOL,
       request_id: 'req-cursor-stale-reconcile',
@@ -466,11 +481,19 @@ test('default request-tree reconciliation is five seconds and recovers new reque
     assert.equal(executions, 1, 'the new request should execute exactly once');
     assert.ok(
       fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length > initialTreeReads,
-      'a due reconciliation must re-read the bounded request tree even when the commit cursor is unchanged'
+      'a due scan must re-read the bounded request tree without needing a commit-cursor result'
     );
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     assert.equal(result.status, 'completed');
     assert.equal(result.request_id, request.request_id);
+    const polling = bridge.getState().requestPolling;
+    assert.equal(polling.requestTreeScanCount, 2, 'initialization and due scan should be counted');
+    assert.ok(Number.isFinite(polling.lastRequestTreeScanDurationMs));
+    assert.equal(
+      fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
+      false,
+      'request polling should not call the slow commit listing endpoint'
+    );
   } finally {
     Date.now = originalNow;
     await bridge.stop();
