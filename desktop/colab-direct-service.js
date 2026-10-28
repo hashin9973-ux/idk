@@ -1403,7 +1403,7 @@ function createVisionService(deps) {
     const requestStartedAt = now();
     const generated = await requestTtsAudio(text, requestId, 45000);
     const receivedAt = now();
-    const filePath = path.join(os.tmpdir, 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
+    const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
     const writeStartedAt = now();
     await fsImpl.promises.writeFile(filePath, generated.audio, { flag: 'wx' });
     const fileWrittenAt = now();
