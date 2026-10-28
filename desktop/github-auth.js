@@ -567,7 +567,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     }
     saveToken(token);
     cacheVerifiedAuth(token, profile.login);
-    return { authenticated: true, login: profile.login, verificationPending: false };
+    return { authenticated: true, login: profile.login };
   }
 
   function logout() {
