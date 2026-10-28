@@ -43,6 +43,14 @@ Every local operation is published and returned through GitHub, so avoid avoidab
 - Use request commit time to measure commit-to-claim pickup. `created_to_worker_start` starts from the request JSON's `created_at`, which is set before the integration write has necessarily committed, so it also includes pre-publication time. Compare commit timestamp, claim `claimed_at`, result `timing_ms`, and API errors instead of guessing where the delay occurred.
 - If `output_truncated` is true, status is `partial`, or a field says `OUTPUT EXTERNALIZED`, fetch all artifacts referenced in `artifacts[]`. For `tool_output_part`, concatenate all parts for the field in numeric part order; for `complete_result_part`, reconstruct the full result JSON before following its manifest. Check `artifact_errors`, stdout/stderr truncation and EOF/page markers before claiming complete output.
 
+## Compact diagnostics and long-running installs
+
+Prefer bounded PowerShell summaries over returning whole files, process objects, command lines, environment snapshots or full transcripts. Return only the fields that determine the next action, and cap log output by both lines and characters. Huge stdout can create many numbered artifacts and extra GitHub commits; retrieve all parts only when complete output is necessary, and never infer from a preview alone.
+
+For installs/downloads that may outlive a shell wrapper, record a small status file with stage, expected/actual asset size and SHA-256, installer exit code, before/after app archive hashes and process status. A wrapper timeout is an uncertain outcome when a child may still be running: issue a new read-only status request and reconcile that same operation before any retry. A new worker ID indicates a restart but is not by itself proof of success. Do not duplicate installers or side effects while status is ambiguous.
+
+For pickup latency, measure from the actual GitHub commit time to the matching claim's `claimed_at`; `created_to_worker_start` includes time before the write is committed. Use request-tree scan/poll telemetry where available to tell whether delay belongs to local discovery, tool execution, or result publication.
+
 ## 4. Trust results, recover carefully
 
 1. Publish a new immutable JSON request at `bridge/requests/<id>.json` with protocol `chatgpt-local-repo-bridge/v1`, exact `tool`, schema-valid `args`, and matching `request_id`.
