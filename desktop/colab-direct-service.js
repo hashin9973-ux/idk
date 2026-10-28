@@ -1601,6 +1601,11 @@ function createVisionService(deps) {
       };
       first.playback = startAudioPlayback(first.filePath, onChunkDone, onGap);
       job.currentPlayback = first.playback;
+      // Reserve the first queued index before the producer can enqueue continuation chunks.
+      // Otherwise early network results could make the total queued count miss chunk zero.
+      job.chunks_queued = 1;
+      job.chunks_started = 1;
+      job.max_queue_depth = Math.max(job.max_queue_depth, 1);
       // Begin the next-chunk request while the first WASAPI buffer is being primed.
       // The persistent player accepts queued FILE commands before reporting STARTED.
       prefetchPromise = queueRemainingSpeech(job, first.playback);
