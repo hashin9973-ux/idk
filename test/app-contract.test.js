@@ -60,8 +60,10 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.doesNotMatch(main, /void observeService\.dispose\(\)\.catch/);
   assert.match(main, /height: 402/);
   assert.match(main, /createObserveService/);
-  assert.match(main, /OBSERVE_CAPTURE_THUMBNAIL_SIZE = Object\.freeze\(\{ width: 640, height: 360 \}\)/);
-  assert.match(main, /thumbnailSize: OBSERVE_CAPTURE_THUMBNAIL_SIZE/);
+  assert.match(main, /const screenWidth = Math\.max\(1, Math\.round\(primaryDisplay\.size\.width \* scaleFactor\)\)/);
+  assert.match(main, /thumbnailSize: \{ width: screenWidth, height: screenHeight \}/);
+  assert.match(main, /size\.width !== screenWidth \|\| size\.height !== screenHeight/);
+  assert.match(main, /frame_id: crypto\.createHash\('sha256'\)\.update\(bytes\)\.digest\('hex'\)/);
   assert.match(main, /fingerprintDesktopScreenshot/);
   assert.match(renderer, /windowsBridge\.connectColab/);
   assert.match(renderer, /windowsBridge\.setVisionManualPanel/);
@@ -322,6 +324,10 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(compatibility.includes("require('./colab-direct-service')"));
   assert.ok(python.includes('cloudflared'));
   assert.ok(python.includes('OLLAMA_MODEL = "qwen3-vl:4b-instruct"'));
+  assert.ok(python.includes('PASSIVE_MODEL = "richardyoung/smolvlm2-2.2b-instruct:Q4_K_M"'));
+  assert.ok(python.includes('PARKED_QWEN_MODEL = "bridge-qwen3-vl-4b-parked:latest"'));
+  assert.ok(python.includes('num_gpu=0, context_tokens=VISION_CONTEXT_TOKENS'));
+  assert.ok(python.includes('OLLAMA_SWAP_BYTES = 4 * 1024**3'));
   assert.ok(python.includes('"think": False'));
   assert.ok(python.includes('"format": "json"'));
   assert.ok(python.includes('VISION_CONTEXT_SCHEMA = "windows-vision-context/v1"'));
@@ -335,11 +341,11 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(!python.includes('def run_vision_smoke_test()'));
   assert.ok(!python.includes('vision_smoke_test'));
   assert.ok(python.includes('No startup image inference was run'));
-  assert.ok(python.includes('ollama_model_is_downloaded()'));
+  assert.ok(python.includes('ollama_model_is_downloaded(model_name)'));
   assert.ok(python.includes('"images": [model_image_b64]'));
   assert.ok(python.includes('OLLAMA_API + "/api/chat"'));
   assert.ok(python.includes('model_loaded=True'));
-  assert.ok(python.includes('SETUP_BUDGET_SECONDS = 480'));
+  assert.ok(python.includes('SETUP_BUDGET_SECONDS = 900'));
   assert.ok(python.includes('_setup_blocked = True'));
   assert.ok(python.includes('_desktop_registration_event.wait(timeout=90)'));
   assert.doesNotMatch(python, /hf_hub_download|--mmproj|cudart-llama|cmake|nvcc|drive\.mount\(|\/v1\/chat\/completions/i);
