@@ -367,8 +367,12 @@ function createObserveService(deps = {}) {
       };
       latestCapturedFrame = captured;
       const fingerprint = await fingerprintScreenshot(captured);
-      if (!fingerprint || fingerprint === lastFingerprint) return;
-      lastFingerprint = fingerprint;
+      // Use the full captured frame identity when available. The 64x36 fingerprint is
+      // only a cheap change hint and can miss small UI changes; it must never make stale
+      // visual bounds appear to describe a newer full-resolution frame.
+      const frameChangeKey = captured.frame_id || fingerprint;
+      if (!fingerprint || !frameChangeKey || frameChangeKey === lastFingerprint) return;
+      lastFingerprint = frameChangeKey;
       lastChangeAt = capturedAt;
       // If UI Automation is still processing, keep only the newest changed frame.
       // Sampling itself remains independent and continues at the 250 ms cadence.
