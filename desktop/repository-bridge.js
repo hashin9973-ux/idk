@@ -460,48 +460,65 @@ function createRepositoryBridge(deps) {
   async function writeRemoteContent(relativePath, content, message) {
     const config = currentConfig();
     const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
-    const existing = await readRemoteContent(relativePath);
     const contentHash = createHash('sha256').update(bytes).digest('hex');
-    if (existing) {
-      const existingHash = existing.content
-        ? createHash('sha256').update(existing.content).digest('hex')
-        : null;
-      const gitBlobSha = createHash('sha1')
-        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
-        .update(bytes)
-        .digest('hex');
-      if (existingHash === contentHash || (!existing.content && existing.sha === gitBlobSha)) {
-        return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: contentHash };
+    const gitBlobSha = createHash('sha1')
+      .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
+      .update(bytes)
+      .digest('hex');
+    const maxAttempts = 4;
+    let existing = await readRemoteContent(relativePath);
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (existing) {
+        const existingHash = existing.content
+          ? createHash('sha256').update(existing.content).digest('hex')
+          : null;
+        if (existingHash === contentHash || (!existing.content && existing.sha === gitBlobSha)) {
+          return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: contentHash };
+        }
+        throw new Error('Artifact path already exists with different content: ' + relativePath);
       }
-      throw new Error('Artifact path already exists with different content: ' + relativePath);
-    }
-    try {
-      const response = await api('PUT', apiPath(relativePath), {
-        message: message || '[local bridge] publish artifact ' + path.posix.basename(relativePath),
-        content: bytes.toString('base64'),
-        branch: config.branch
-      });
-      return {
-        ok: true,
-        sha: response.result && response.result.content && response.result.content.sha || null,
-        bytes: bytes.length,
-        sha256: contentHash
-      };
-    } catch (error) {
-      // A previous attempt may have published the same immutable artifact but lost its response.
-      const reread = await readRemoteContent(relativePath).catch(() => null);
-      const gitBlobSha = createHash('sha1')
-        .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
-        .update(bytes)
-        .digest('hex');
-      if (reread && (
-        (reread.content && createHash('sha256').update(reread.content).digest('hex') === contentHash) ||
-        (!reread.content && reread.sha === gitBlobSha)
-      )) {
-        return { ok: true, unchanged: true, sha: reread.sha, bytes: bytes.length, sha256: contentHash };
+
+      try {
+        const response = await api('PUT', apiPath(relativePath), {
+          message: message || '[local bridge] publish artifact ' + path.posix.basename(relativePath),
+          content: bytes.toString('base64'),
+          branch: config.branch
+        });
+        return {
+          ok: true,
+          sha: response.result && response.result.content && response.result.content.sha || null,
+          bytes: bytes.length,
+          sha256: contentHash
+        };
+      } catch (error) {
+        // The target is immutable and request-scoped. A 409 can mean that an
+        // unrelated concurrent mailbox write advanced the branch head. Verify
+        // the exact target first; accept only the identical artifact, otherwise
+        // retry the create only while the target is still absent.
+        let reread;
+        try {
+          reread = await readRemoteContent(relativePath);
+        } catch (verifyError) {
+          throw new Error(
+            'Artifact upload for ' + relativePath + ' failed and the target state could not be verified: ' +
+            cleanError(verifyError.message) + ' (original write error: ' + cleanError(error.message) + ')'
+          );
+        }
+        if (reread) {
+          const rereadHash = reread.content ? createHash('sha256').update(reread.content).digest('hex') : null;
+          if (rereadHash === contentHash || (!reread.content && reread.sha === gitBlobSha)) {
+            return { ok: true, unchanged: true, sha: reread.sha, bytes: bytes.length, sha256: contentHash };
+          }
+          throw new Error('Artifact path already exists with different content: ' + relativePath);
+        }
+        if (!isConflict(error) || attempt === maxAttempts) throw error;
+        await new Promise(resolve => setTimeout(resolve, 40 * attempt));
+        existing = null;
       }
-      throw error;
     }
+
+    throw new Error('Artifact upload exhausted branch-conflict retries: ' + relativePath);
   }
 
   function safeArtifactName(raw, fallback) {

@@ -30,7 +30,7 @@ async function waitFor(predicate, timeoutMs = 3000) {
   }
 }
 
-function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null, falseConflictCreatePaths = [] } = {}) {
+function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null, falseConflictCreatePaths = [], transientCreateConflictPaths = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
   for (const [path, value] of initial) {
@@ -38,6 +38,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
   }
   const calls = [];
   const falseConflictPaths = new Set(falseConflictCreatePaths);
+  const transientCreateConflictTargets = new Set(transientCreateConflictPaths);
   let headCommitSha = 'f'.repeat(40);
   let gitObjectCounter = 1;
   const treePathsBySha = new Map();
@@ -155,6 +156,10 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
         const existing = files.get(rel);
         // Test double: model a one-time GitHub 422 response even though no target
         // file was created, to catch false "already exists" conflict handling.
+        if (!existing && !body.sha && transientCreateConflictTargets.has(rel)) {
+          transientCreateConflictTargets.delete(rel);
+          throw new Error('GitHub HTTP 409: branch head advanced during create-only upload');
+        }
         if (!existing && !body.sha && falseConflictPaths.has(rel)) {
           falseConflictPaths.delete(rel);
           throw new Error('GitHub HTTP 422: Validation Failed');
@@ -813,7 +818,12 @@ test('large textual tool output is preserved in retrievable text artifacts with 
     tool: 'read_file',
     args: { path: 'large.txt' }
   };
-  const fake = fakeGitHub({ initial: [['bridge/requests/req-large-output.json', request]] });
+  const artifactName = 'output-' + require('node:crypto').createHash('sha256').update('output.result.content').digest('hex').slice(0, 12) + '.txt';
+  const artifactPath = 'bridge/artifacts/' + request.request_id + '/' + artifactName;
+  const fake = fakeGitHub({
+    initial: [['bridge/requests/req-large-output.json', request]],
+    transientCreateConflictPaths: [artifactPath]
+  });
   const fixture = settingsFixture();
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture,
@@ -834,6 +844,13 @@ test('large textual tool output is preserved in retrievable text artifacts with 
     assert.ok(Buffer.byteLength(inline, 'utf8') <= 32 * 1024 + 256);
     const refs = record.artifacts.filter(item => item.kind === 'tool_output_part' && item.field === 'output.result.content');
     assert.ok(refs.length >= 1, 'the result must include a retrievable artifact reference');
+    assert.equal(record.artifact_errors.length, 0, 'a transient unrelated branch-head conflict must not break artifact publication');
+    assert.ok(fake.files.has(artifactPath), 'the artifact should be published after retrying the transient 409');
+    assert.equal(
+      fake.calls.filter(call => call.method === 'PUT' && call.path === '/repos/test-owner/test-repo/contents/' + artifactPath).length,
+      2,
+      'the same immutable artifact target should be retried exactly once after the branch-head conflict'
+    );
     const recovered = refs.sort((a, b) => a.part - b.part).map(ref => {
       const artifact = fake.files.get(ref.path);
       assert.ok(artifact, 'full output artifact must exist: ' + ref.path);
