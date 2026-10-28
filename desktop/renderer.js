@@ -55,6 +55,17 @@
 
   function renderGitHub(state) {
     githubState = state || {};
+    if (githubState.verificationPending === true) {
+      githubButton.disabled = false;
+      githubButton.setAttribute('aria-label', 'Retry GitHub connection verification');
+      githubLabel.textContent = githubState.login ? 'GitHub connected · checking' : 'GitHub sign-in saved · checking';
+      githubLabel.title = githubState.verificationError || githubState.error || 'The saved GitHub credential is being rechecked. A temporary API/network failure is not treated as a logout.';
+      githubButton.textContent = 'Retry connection';
+      githubButton.title = 'Retry GitHub/mailbox verification without signing out';
+      setDot(githubDot, 'waiting');
+      return;
+    }
+
     if (githubState.authenticated) {
       githubButton.disabled = false;
       githubButton.setAttribute('aria-label', 'Sign in again to GitHub');
@@ -752,6 +763,12 @@
       void copyGitHubDeviceCode();
       return;
     }
+    if (githubState && githubState.verificationPending === true) {
+      void window.windowsBridge.retryConnection().then(() => refreshState()).catch(error => {
+        renderGitHub({ ...githubState, verificationPending: true, error: String(error && error.message || error) });
+      });
+      return;
+    }
     void connectGitHub();
   });
   window.windowsBridge.onGitHubDeviceCode(code => {
@@ -787,12 +804,26 @@
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
   window.windowsBridge.onBridgeState(renderWorker);
+  window.windowsBridge.onGitHubState(state => renderGitHub(state));
+  window.windowsBridge.onColabHandoffResult(result => {
+    void refreshVisionStatus().finally(() => {
+      const message = String(result && result.message || '');
+      if (message && visionMessage) {
+        visionMessage.textContent = message;
+        visionMessage.title = message;
+        visionMessage.dataset.state = result.connected === true ? 'passed' : 'failed';
+      }
+    });
+  });
   window.addEventListener('online', () => {
     window.windowsBridge.retryConnection().catch(() => {});
     void refreshState();
   });
   document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) window.windowsBridge.retryConnection().catch(() => {});
+    if (!document.hidden) {
+      window.windowsBridge.retryConnection().catch(() => {});
+      void refreshState();
+    }
   });
   window.addEventListener('beforeunload', () => {
     stopAuthPolling();
