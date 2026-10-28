@@ -258,3 +258,72 @@ test('startup cleanup clears a stale live Observe document without enabling samp
   assert.equal(writes[0].sample_fps, 2);
   await service.dispose();
 });
+
+
+test('Observe publishes marked degraded OCR/UIA coordinates instead of dropping a frame when passive VLM inference fails', async () => {
+  let fingerprint = 'degraded-frame';
+  const published = [];
+  const rawBytes = Buffer.from('private-degraded-frame');
+  const service = createObserveService({
+    githubAuth: {
+      requestApi: async input => {
+        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
+        const payload = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
+        published.push(payload);
+        return { result: { content: { sha: 'c'.repeat(40) } } };
+      }
+    },
+    captureScreenshot: async () => ({
+      bytes: rawBytes, width: 1920, height: 1080, screen_width: 1920, screen_height: 1080,
+      captured_at: Date.now(), display_id: 'primary'
+    }),
+    fingerprintScreenshot: async () => fingerprint,
+    getAccessibleSnapshot: async ({ screen }) => ({
+      available: true, source: 'windows_uia',
+      active_window: { title: 'Test browser', bbox_px: [0, 0, screen.width, screen.height] },
+      focused_control: null,
+      controls: [{ id: 'uia-run', label: 'Run', role: 'Button', enabled: true, bbox_px: [800, 700, 900, 740] }],
+      cursor: { x_screen_px: 1234, y_screen_px: 567, x_px: 1234, y_px: 567, source: 'windows_native_cursor', coordinate_space: 'screenshot_jpeg_px' },
+      truncated: false, node_count: 2
+    }),
+    analyzeFrame: async ({ frameId, screen }) => ({
+      status: 'report_available',
+      model: 'OCR/UIA fallback (multimodal inference degraded)',
+      model_error: 'Ollama HTTP 400: model does not support multimodal requests',
+      completed_at: new Date().toISOString(),
+      input_image: { frame_id: frameId },
+      report: JSON.stringify({
+        schema_version: 'windows-vision-context/v2',
+        frame: { width_px: screen.frame_width, height_px: screen.frame_height, coordinate_space: 'screenshot_jpeg_px', origin: 'top-left' },
+        scene: { summary: 'Multimodal inference failed; OCR and UI Automation only.' },
+        regions: [{ id: 'r1', label: 'desktop', bbox_px: [0, 0, screen.frame_width, screen.frame_height] }],
+        text_spans: [{ text: 'Run now', source: 'tesseract_ocr', bbox_px: [790, 670, 910, 745] }],
+        controls: [{ id: 'uia-run', label: 'Run', role: 'Button', coordinate_source: 'windows_uia', position_verification: 'accessibility_grounded', bbox_px: [800, 700, 900, 740] }],
+        objects: [],
+        perception: { mode: 'ocr_accessibility_fallback', degraded: true, error: 'Ollama rejected multimodal request.' },
+        focused_element: null, cursor: { visible: false, bbox_1000: null, location: 'native cursor in frame metadata' },
+        accessibility: { available: true, controls: [{ id: 'uia-run', label: 'Run', role: 'Button', bbox_px: [800, 700, 900, 740] }] },
+        ocr: { available: true, method: 'tesseract', text_spans: [{ text: 'Run now', bbox_px: [790, 670, 910, 745] }] },
+        limitations: ['Degraded OCR/UIA-only context.']
+      })
+    }),
+    sleep: async () => {},
+    setIntervalImpl: fn => { return 1; },
+    clearIntervalImpl: () => {}
+  });
+
+  await service.setEnabled(true);
+  for (let i = 0; i < 12; i += 1) await new Promise(resolve => setImmediate(resolve));
+  const matching = published.flatMap(item => item.frames || []).find(frame => frame.vision_status === 'degraded');
+  assert.ok(matching, 'degraded but useful perception must be published for the exact frame');
+  assert.equal(matching.vision.perception.mode, 'ocr_accessibility_fallback');
+  assert.equal(matching.vision_error, 'Ollama rejected multimodal request.');
+  assert.deepEqual(matching.vision.controls[0].bbox_px, [800, 700, 900, 740]);
+  assert.deepEqual(matching.cursor, {
+    x_screen_px: 1234, y_screen_px: 567, x_px: 1234, y_px: 567,
+    source: 'windows_native_cursor', coordinate_space: 'screenshot_jpeg_px'
+  });
+  assert.equal(service.status().passive_vision_status, 'degraded');
+  await service.setEnabled(false);
+  await service.dispose();
+});
