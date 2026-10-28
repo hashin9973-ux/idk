@@ -13,7 +13,9 @@ const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 1000;
 // Bound recovery when GitHub's path-filtered commit cursor is stale/eventually consistent.
-const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 1_000;
+const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 5_000;
+const FAST_REQUEST_COMMIT_POLL_INTERVAL_MS = 2_000;
+const MAX_RECENT_REQUEST_COMMITS = 20;
 const MAX_CONCURRENT_REQUESTS = 32;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
@@ -177,6 +179,13 @@ function createRepositoryBridge(deps) {
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
+  let requestCommitProbeTimer = null;
+  let requestCommitProbeInFlight = false;
+  let requestCommitProbePromise = null;
+  let lastRequestCommitSha = null;
+  let lastRequestCommitProbeAt = null;
+  let lastRequestCommitProbeDurationMs = null;
+  let lastRequestCommitProbeError = null;
   const activeExecutionFootprints = new Map();
   const executionWaitQueue = [];
   const requestTelemetry = new AsyncLocalStorage();
@@ -263,7 +272,11 @@ function createRepositoryBridge(deps) {
         lastRequestTreeScanDurationMs: lastRequestTreeReconcileDurationMs,
         lastRequestTreeEntryCount,
         requestTreeScanCount: requestTreeReconcileCount,
-        lastPollDurationMs
+        lastPollDurationMs,
+        requestCommitProbeIntervalMs: FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
+        lastRequestCommitProbeAt,
+        lastRequestCommitProbeDurationMs,
+        lastRequestCommitProbeError
       }
     };
   }
@@ -452,7 +465,11 @@ function createRepositoryBridge(deps) {
         last_request_tree_scan_duration_ms: lastRequestTreeReconcileDurationMs,
         last_request_tree_entry_count: lastRequestTreeEntryCount,
         request_tree_scan_count: requestTreeReconcileCount,
-        last_poll_duration_ms: lastPollDurationMs
+        last_poll_duration_ms: lastPollDurationMs,
+        request_commit_probe_interval_ms: FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
+        last_request_commit_probe_at: lastRequestCommitProbeAt,
+        last_request_commit_probe_duration_ms: lastRequestCommitProbeDurationMs,
+        last_request_commit_probe_error: lastRequestCommitProbeError
       },
       last_error: lastError || null,
       workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
@@ -1758,6 +1775,100 @@ function createRepositoryBridge(deps) {
     announce();
   }
 
+  async function pollRecentRequestCommits() {
+    if (!running || requestCommitProbeInFlight || knownResultFiles === null) return;
+    requestCommitProbeInFlight = true;
+    const startedAt = Date.now();
+    const task = (async () => {
+      const config = currentConfig();
+      const commitList = await api(
+        'GET',
+        '/repos/' + config.owner + '/' + config.repo + '/commits',
+        null,
+        { sha: config.branch, path: 'bridge/requests', per_page: MAX_RECENT_REQUEST_COMMITS }
+      );
+      if (!Array.isArray(commitList && commitList.result)) {
+        throw new Error('GitHub returned an invalid request-commit listing.');
+      }
+      const commits = commitList.result.filter(commit =>
+        commit && typeof commit.sha === 'string' && /^[a-f0-9]{40}$/i.test(commit.sha)
+      ).slice(0, MAX_RECENT_REQUEST_COMMITS);
+      if (!commits.length) {
+        lastRequestCommitProbeError = null;
+        return;
+      }
+
+      // The list endpoint can be eventually consistent. Treat this as a fast path,
+      // not the source of truth: the independent full-tree scan still reconciles
+      // missed commits. On first observation, inspect the recent bounded window.
+      const cursorIndex = lastRequestCommitSha
+        ? commits.findIndex(commit => commit.sha === lastRequestCommitSha)
+        : -1;
+      const newCommits = cursorIndex >= 0 ? commits.slice(0, cursorIndex) : commits;
+      if (!newCommits.length) {
+        lastRequestCommitSha = commits[0].sha;
+        lastRequestCommitProbeError = null;
+        return;
+      }
+
+      const details = await Promise.all(newCommits.map(async commit => {
+        try {
+          const detail = await api(
+            'GET',
+            '/repos/' + config.owner + '/' + config.repo + '/commits/' + commit.sha
+          );
+          return { commitSha: commit.sha, files: detail && detail.result && detail.result.files, error: null };
+        } catch (error) {
+          return { commitSha: commit.sha, files: null, error: cleanError(error.message) };
+        }
+      }));
+      const failedDetail = details.find(detail => detail.error || !Array.isArray(detail.files));
+      if (failedDetail) {
+        throw new Error('Could not read changed files for request commit ' + failedDetail.commitSha + ': ' +
+          (failedDetail.error || 'GitHub did not return a files array.'));
+      }
+      if (!running) return;
+
+      const requestFilenames = new Set();
+      for (const detail of details) {
+        for (const file of detail.files) {
+          if (!file || !['added', 'modified', 'renamed'].includes(file.status) ||
+              typeof file.filename !== 'string' || !file.filename.startsWith('bridge/requests/')) continue;
+          const filename = file.filename.slice('bridge/requests/'.length);
+          if (!filename.endsWith('.json') || !SAFE_ID.test(filename.slice(0, -5))) continue;
+          requestFilenames.add(filename);
+        }
+      }
+      if (requestFilenames.size) {
+        enqueuePendingRequests([...requestFilenames]);
+        dispatchPendingRequests();
+      }
+      lastRequestCommitSha = commits[0].sha;
+      lastRequestCommitProbeError = null;
+    })();
+    requestCommitProbePromise = task;
+    try {
+      await task;
+    } catch (error) {
+      lastRequestCommitProbeError = cleanError(error.message);
+    } finally {
+      lastRequestCommitProbeAt = new Date().toISOString();
+      lastRequestCommitProbeDurationMs = Math.max(0, Date.now() - startedAt);
+      requestCommitProbeInFlight = false;
+      if (requestCommitProbePromise === task) requestCommitProbePromise = null;
+      announce();
+    }
+  }
+
+  function startRequestCommitProbe() {
+    if (!running) return;
+    if (requestCommitProbeTimer) clearInterval(requestCommitProbeTimer);
+    void pollRecentRequestCommits();
+    requestCommitProbeTimer = setInterval(() => {
+      void pollRecentRequestCommits();
+    }, FAST_REQUEST_COMMIT_POLL_INTERVAL_MS);
+  }
+
   async function pollOnce() {
     if (pollInFlight || !running) return;
     pollInFlight = true;
@@ -1872,6 +1983,7 @@ function createRepositoryBridge(deps) {
     announce();
     // The first poll publishes the initial heartbeat; avoid a duplicate GET+PUT.
     await pollOnce();
+    startRequestCommitProbe();
     scheduleNextPoll();
     return stateSnapshot();
   }
@@ -1880,6 +1992,12 @@ function createRepositoryBridge(deps) {
     running = false;
     clearTimeout(timer);
     timer = null;
+    if (requestCommitProbeTimer) clearInterval(requestCommitProbeTimer);
+    requestCommitProbeTimer = null;
+    const activeCommitProbe = requestCommitProbePromise;
+    if (activeCommitProbe) {
+      try { await activeCommitProbe; } catch {}
+    }
     const activePoll = pollPromise;
     if (activePoll) {
       try { await activePoll; } catch {}
