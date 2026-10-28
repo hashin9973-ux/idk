@@ -115,6 +115,9 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
   assert.match(main, /'app:retry-connection'/);
+  assert.ok(main.includes('githubAuth.getState({ force: true }).then(auth =>'));
+  assert.ok(main.includes('if (!state.running) void attemptAutoConnect();'),
+    'a successful explicit auth retry restarts the mailbox worker immediately');
   assert.match(main, /AUTO_CONNECT_INTERVAL_MS = 5000/);
   assert.match(main, /ready-to-show/);
   assert.match(main, /did-fail-load/);
