@@ -60,6 +60,8 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.doesNotMatch(main, /void observeService\.dispose\(\)\.catch/);
   assert.match(main, /height: 402/);
   assert.match(main, /createObserveService/);
+  assert.match(main, /OBSERVE_CAPTURE_THUMBNAIL_SIZE = Object\.freeze\(\{ width: 640, height: 360 \}\)/);
+  assert.match(main, /thumbnailSize: OBSERVE_CAPTURE_THUMBNAIL_SIZE/);
   assert.match(main, /fingerprintDesktopScreenshot/);
   assert.match(renderer, /windowsBridge\.connectColab/);
   assert.match(renderer, /windowsBridge\.setVisionManualPanel/);
