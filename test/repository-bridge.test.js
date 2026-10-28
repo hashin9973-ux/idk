@@ -504,6 +504,8 @@ test('request-tree reconciliation remains authoritative when the fast commit end
     assert.ok(Number.isFinite(lastScanAt), 'the initial request-tree scan should be timestamped');
     const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
     const initialTreeReads = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
+    await waitFor(() => fake.calls.some(call =>
+      call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'), 1000);
     assert.ok(
       fake.calls.some(call => call.method === 'GET' && call.path === '/repos/test-owner/test-repo/commits'),
       'the commit fast path runs separately from the full-tree scan'
