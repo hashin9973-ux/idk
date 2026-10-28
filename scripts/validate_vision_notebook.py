@@ -151,7 +151,7 @@ def main():
         "bounded Tesseract dependency": "tesseract-ocr",
         "Windows UI Automation grounding": "windows_ui_automation_hints",
         "generation length exhaustion is a failure": "Vision output hit its generation limit.",
-        "model download is checked": "if not ollama_model_is_downloaded():",
+        "model download is checked": "if not ollama_model_is_downloaded(model_name):",
         "readiness uses Ollama's loaded-model API": "refresh_model_runtime_state()",
         "authenticated direct API": "class DirectVisionHandler(",
         "bounded model download": "timeout=bounded_setup_timeout(600), env=server_env",
@@ -184,7 +184,7 @@ def main():
     validate_context_helpers(code)
 
     guide = source_of(notebook.get("cells", [{}])[0])
-    if "prebuilt Ollama runtime" not in guide or "fresh Colab runtimes must download both model packages again" not in guide:
+    if "prebuilt Ollama runtime" not in guide or "Fresh Colab runtimes must download both model packages again" not in guide:
         raise SystemExit("FAIL: notebook guide does not explain the prebuilt runtime and two-model ephemeral cache")
 
     print("PASS: notebook JSON parsed")
