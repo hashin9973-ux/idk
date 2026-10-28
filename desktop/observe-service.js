@@ -324,7 +324,7 @@ function createObserveService(deps = {}) {
               controls: Array.isArray(reportValue.controls) ? reportValue.controls.slice(0, 32) : [],
               objects: Array.isArray(reportValue.objects) ? reportValue.objects.slice(0, 32) : [],
               focused_element: reportValue.focused_element || null,
-              cursor: reportValue.cursor || completedFrame.cursor || null,
+              cursor: completedFrame.cursor || reportValue.cursor || null,
               ocr: reportValue.ocr && typeof reportValue.ocr === 'object'
                 ? { available: reportValue.ocr.available === true, method: safeText(reportValue.ocr.method || '', 40),
                     reason: safeText(reportValue.ocr.reason || '', 100) || null,
