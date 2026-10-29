@@ -463,7 +463,7 @@ function publishBrowserTabs() { dashboardSend('app:browser-tabs-changed', browse
 
 function applyPageFocusCompatibility(tab, enabled = settings.browserKeepActive === true && tab.id === activeBrowserTabId) {
   if (!tab || !tab.view || tab.view.webContents.isDestroyed()) return;
-  const script = `(() => {
+  const script = `((enabled) => {
     const key = Symbol.for('windows-repository-bridge.focus-descriptors');
     if (!window[key]) Object.defineProperty(window, key, { configurable: false, value: {
       visibilityState: Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState'),
@@ -486,7 +486,7 @@ function applyPageFocusCompatibility(tab, enabled = settings.browserKeepActive =
     } else {
       try { document.dispatchEvent(new Event('visibilitychange')); } catch {}
     }
-  })();`;
+  })(${JSON.stringify(enabled)});`;
   void tab.view.webContents.executeJavaScript(script).catch(() => {});
 }
 
