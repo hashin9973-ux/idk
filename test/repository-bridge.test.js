@@ -225,7 +225,7 @@ test('config validation rejects invalid owner, repository and branch input', () 
   assert.throws(() => validateConfig({ owner: 'owner', repo: 'repo', branch: '/main' }), /branch/i);
 });
 
-test('request validation requires matching protocol/ID and rejects extra arguments and unsupported GitHub tools', () => {
+test('request validation bootstraps sessions once and requires the session ID for every other tool', () => {
   const base = {
     protocol: PROTOCOL,
     request_id: 'req-20261024-001',
@@ -233,23 +233,26 @@ test('request validation requires matching protocol/ID and rejects extra argumen
     tool: 'project_status',
     args: {}
   };
-  assert.deepEqual(validateRequest(base.request_id, base), {
-    request_id: base.request_id,
-    tool: 'project_status',
-    args: {}
+  const sessionId = 'session-' + 'a'.repeat(32);
+  const ordinary = { ...base, session_id: sessionId };
+  assert.deepEqual(validateRequest(ordinary.request_id, ordinary), {
+    request_id: ordinary.request_id, tool: 'project_status', args: {}, session_id: sessionId
   });
-  assert.throws(() => validateRequest('different-id', base), /does not match/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, protocol: 'wrong' }), /protocol/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, tool: 'github_api', args: { method: 'PUT' } }), /unsupported local tool/i);
-  assert.throws(() => validateRequest('../bad-id', { ...base, request_id: '../bad-id' }), /invalid ID/i);
-  const identified = { ...base, agent_id: 'agent-001', agent_token: 'a'.repeat(64) };
-  assert.equal(validateRequest(base.request_id, identified).agent_id, 'agent-001');
-  assert.equal(validateRequest(base.request_id, identified).agent_token, 'a'.repeat(64));
-  assert.throws(() => validateRequest(base.request_id, { ...base, agent_id: 'agent-001' }), /requires both/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, agent_token: 'a'.repeat(64) }), /requires both/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, agent_id: '../agent', agent_token: 'a'.repeat(64) }), /invalid format/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, tool: 'agent_register', args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
+  assert.throws(() => validateRequest(base.request_id, base), /SESSION_ID_REQUIRED/);
+  const bootstrap = { ...base, tool: 'session_start', args: {} };
+  assert.deepEqual(validateRequest(bootstrap.request_id, bootstrap), {
+    request_id: bootstrap.request_id, tool: 'session_start', args: {}
+  });
+  assert.throws(() => validateRequest('different-id', ordinary), /does not match/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, protocol: 'wrong' }), /protocol/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, tool: 'github_api', args: { method: 'PUT' } }), /unsupported local tool/i);
+  assert.throws(() => validateRequest('../bad-id', { ...ordinary, request_id: '../bad-id' }), /invalid ID/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, session_id: 'not-a-session' }), /session_id has an invalid format/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, agent_id: 'agent-001' }), /legacy agent_id\/agent_token/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, agent_token: 'a'.repeat(64) }), /legacy agent_id\/agent_token/i);
+  assert.throws(() => validateRequest(base.request_id, { ...bootstrap, session_id: sessionId }), /bootstrap request and must omit session_id/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, tool: 'agent_register' }), /unsupported local tool/i);
 });
 
 test('repository sanitization strips local identity fields and redacts credentials and local paths', () => {
