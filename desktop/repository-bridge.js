@@ -5,7 +5,7 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS, getExecutionFootprint, executionFootprintsConflict } = require('./tool-bridge');
-const { createAgentRegistry, AGENT_RECORD_PROTOCOL, AGENT_STALE_AFTER_MS } = require('./agent-registry');
+const { createAgentRegistry } = require('./agent-registry');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';

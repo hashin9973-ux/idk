@@ -337,7 +337,13 @@ test('agent identity appears in claim/result and status returns to idle after ex
     executeTool: async (tool, args, id) => { executions++; return { ok: true, tool, call_id: id, result: { ready: true } }; }, intervalMs: 5000 });
   try {
     await bridge.start();
-    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    await waitFor(() => {
+      if (!fake.files.has('bridge/results/' + request.request_id + '.json')) return false;
+      const agentEntry = fake.files.get('bridge/agents/' + agentId + '.json');
+      if (!agentEntry) return false;
+      const currentAgent = decode(agentEntry);
+      return currentAgent.status === 'idle' && currentAgent.active_request_ids.length === 0;
+    });
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
     const updatedAgent = decode(fake.files.get('bridge/agents/' + agentId + '.json'));

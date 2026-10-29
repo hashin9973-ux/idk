@@ -261,8 +261,8 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(agentRegistry, /AGENT_RECORD_PROTOCOL/);
   assert.match(agentRegistry, /AGENT_STALE_AFTER_MS/);
   const toolBridge = read('desktop', 'tool-bridge.js');
-  assert.match(toolBridge, /agent_register: \\['agent_id', 'agent_token', 'label'\\]/);
-  assert.match(toolBridge, /agent_status: \\['agent_id'\\]/);
+  assert.ok(toolBridge.includes("agent_register: ['agent_id', 'agent_token', 'label']"));
+  assert.ok(toolBridge.includes("agent_status: ['agent_id']"));
 });
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
