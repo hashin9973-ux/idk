@@ -1353,13 +1353,15 @@ function normalizeDashboardState(input) {
   if (!seen.has('main')) tabs.unshift({ id: 'main', kind: 'main', label: 'Main', order: 0, closable: false });
   const widgetSource = source.widgets && typeof source.widgets === 'object' && !Array.isArray(source.widgets) ? source.widgets : {};
   const widgets = {};
-  for (const id of ['queues', 'controls']) {
+  const widgetIds = ['queues', 'controls', ...Object.keys(widgetSource)
+    .filter(id => /^agent-[0-9]{3,}$/.test(id)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).slice(0, 200)];
+  for (const id of [...new Set(widgetIds)]) {
     const widget = widgetSource[id];
-    if (!widget || typeof widget !== 'object') continue;
+    if (!widget || typeof widget !== 'object' || Array.isArray(widget)) continue;
     const n = (key, fallback, min, max) => Number.isFinite(widget[key]) ? Math.round(Math.max(min, Math.min(max, widget[key]))) : fallback;
     widgets[id] = {
       x: n('x', 24, 0, 10000), y: n('y', 24, 0, 10000),
-      width: n('width', id === 'queues' ? 600 : 420, 180, 4000),
+      width: n('width', id === 'queues' ? 360 : 420, 180, 4000),
       height: n('height', 160, 80, 3000)
     };
   }
