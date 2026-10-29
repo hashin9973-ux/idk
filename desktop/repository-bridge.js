@@ -76,27 +76,27 @@ function validateRequest(requestId, request) {
   if (!isPlainObject(request)) throw new Error('Request must be a JSON object.');
   if (request.protocol !== PROTOCOL) throw new Error('Unsupported request protocol.');
   if (request.request_id !== requestId) throw new Error('Request ID does not match its filename.');
-  if (typeof request.created_at !== 'string' || request.created_at.length > 80) {
-    throw new Error('Request must include a created_at timestamp.');
-  }
+  if (typeof request.created_at !== 'string' || request.created_at.length > 80) throw new Error('Request must include a created_at timestamp.');
   const isContextRequest = request.tool === CONTEXT_REQUEST_TOOL;
+  const isSessionBootstrap = request.tool === 'session_start';
   if (typeof request.tool !== 'string' ||
       (!isContextRequest && !Object.hasOwn(TOOL_ARGUMENT_KEYS, request.tool)) ||
-      BLOCKED_TOOLS.has(request.tool)) {
-    throw new Error('Unknown or unsupported local tool.');
-  }
+      BLOCKED_TOOLS.has(request.tool)) throw new Error('Unknown or unsupported local tool.');
   if (!isPlainObject(request.args)) throw new Error('Request args must be a JSON object.');
   const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
-  const hasAgentId = request.agent_id !== undefined && request.agent_id !== null && request.agent_id !== '';
-  const hasAgentToken = request.agent_token !== undefined && request.agent_token !== null && request.agent_token !== '';
-  if (hasAgentId !== hasAgentToken) throw new Error('Agent identity requires both agent_id and agent_token.');
-  if (hasAgentId && (typeof request.agent_id !== 'string' || !/^agent-[0-9]{3,}$/.test(request.agent_id))) throw new Error('Agent ID has an invalid format.');
-  if (hasAgentToken && (typeof request.agent_token !== 'string' || !/^[a-f0-9]{64}$/.test(request.agent_token))) throw new Error('Agent registration token has an invalid format.');
-  return { request_id: requestId, tool: request.tool, args: { ...request.args }, ...(hasAgentId ? { agent_id: request.agent_id, agent_token: request.agent_token } : {}) };
+  if (request.agent_id !== undefined || request.agent_token !== undefined) {
+    throw new Error('Legacy agent_id/agent_token request identity is no longer supported. Call session_start and include session_id.');
+  }
+  const hasSessionId = request.session_id !== undefined && request.session_id !== null && request.session_id !== '';
+  if (isSessionBootstrap && hasSessionId) throw new Error('session_start is the bootstrap request and must omit session_id.');
+  if (!isSessionBootstrap && !hasSessionId) throw new Error('SESSION_ID_REQUIRED: Call session_start first, then include its session_id on every bridge request.');
+  if (hasSessionId && (typeof request.session_id !== 'string' || !/^session-[a-f0-9]{32}$/.test(request.session_id))) {
+    throw new Error('session_id has an invalid format. Call session_start to obtain a valid session_id.');
+  }
+  return { request_id: requestId, tool: request.tool, args: { ...request.args }, ...(hasSessionId ? { session_id: request.session_id } : {}) };
 }
-
 function redactText(text, workspaceRoot) {
   let value = String(text);
   const os = require('node:os');
@@ -184,6 +184,7 @@ function createRepositoryBridge(deps) {
   let pollPromise = null;
   const activeRequestIds = new Set();
   const requestAgents = new Map();
+  const requestSessions = new Map();
   const pendingRequestQueue = [];
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
@@ -1558,6 +1559,7 @@ function createRepositoryBridge(deps) {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
       ...(requestAgents.get(requestId) ? { agent_id: requestAgents.get(requestId) } : {}),
+      ...(requestSessions.get(requestId) ? { session_id: requestSessions.get(requestId) } : {}),
       worker_id: workerId,
       tool: null,
       status: 'processing',
@@ -1782,13 +1784,20 @@ function createRepositoryBridge(deps) {
       const raw = JSON.stringify(remote.value);
       if (Buffer.byteLength(raw, 'utf8') > MAX_REQUEST_BYTES) throw new Error('Request exceeds the 1 MiB limit.');
       request = validateRequest(requestId, remote.value);
-      requestAgents.set(requestId, request.agent_id || null);
+      requestAgents.set(requestId, null);
+      requestSessions.set(requestId, request.session_id || null);
       updateMailboxUiRecord(requestId, {
         tool: request.tool,
-        agentId: request.agent_id || (mailboxUiRecords.get(requestId) || {}).agentId || null,
+        agentId: (mailboxUiRecords.get(requestId) || {}).agentId || null,
         status: 'validating', progress: 14, requestJson: consoleJson(remote.value), created_at: remote.value.created_at
       });
-      if (request.agent_id) await agentRegistry.authenticate(request);
+      if (request.tool !== 'session_start') {
+        const identity = await agentRegistry.authenticate(request);
+        Object.assign(request, identity);
+        requestAgents.set(requestId, request.agent_id);
+        requestSessions.set(requestId, request.session_id);
+        updateMailboxUiRecord(requestId, { agentId: request.agent_id, agentLabel: request.agent_label || request.agent_id });
+      }
     } catch (error) {
       const rejected = {
         protocol: RESULT_PROTOCOL,
@@ -1796,7 +1805,8 @@ function createRepositoryBridge(deps) {
         status: 'rejected',
         completed_at: new Date().toISOString(),
         error: cleanError(error.message),
-        ...(requestAgents.get(requestId) ? { agent_id: requestAgents.get(requestId) } : {})
+        ...(requestAgents.get(requestId) ? { agent_id: requestAgents.get(requestId) } : {}),
+        ...(request.session_id ? { session_id: request.session_id } : {})
       };
       await publishResult(requestId, rejected);
       updateMailboxUiRecord(requestId, { status: 'rejected', progress: 100, error: rejected.error, resultJson: consoleJson(rejected) });
@@ -1828,7 +1838,7 @@ function createRepositoryBridge(deps) {
     let executionQueueWaitMs = 0;
     let agentActivityStarted = false;
     try {
-      if (request.agent_id) agentActivityStarted = await agentRegistry.requestStarted(request);
+      if (request.session_id) agentActivityStarted = await agentRegistry.requestStarted(request);
       const waitStartedAt = Date.now();
       releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args);
       executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
