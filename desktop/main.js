@@ -799,6 +799,7 @@ function createDashboardWindow() {
   win.on('closed', () => {
     for (const tab of browserTabs.values()) {
       if (tab.view) disposeEmbeddedBrowserView(tab);
+    }
     if (dashboardWindow === win) dashboardWindow = null;
     if (mainWindow === win) mainWindow = null;
   });
