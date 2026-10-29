@@ -1756,10 +1756,11 @@ function createRepositoryBridge(deps) {
     // Store the completed result in the claim journal before publishing the
     // result file. This preserves crash recovery while eliminating the old
     // result-pending PUT + claim reread + final claim PUT sequence.
+    const claimAgentId = request.agent_id || (request.tool === 'agent_register' ? resultRecord.agent_id : null);
     const completedClaim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
-      ...(request.agent_id ? { agent_id: request.agent_id } : {}),
+      ...(claimAgentId ? { agent_id: claimAgentId } : {}),
       worker_id: workerId,
       tool: request.tool,
       status: 'completed',

@@ -306,6 +306,12 @@ test('concurrent agent registration allocates unique IDs and stores only token h
     assert.notEqual(agentA.agent_token, agentB.agent_token);
     assert.equal(resultA.agent_id, agentA.agent_id);
     assert.equal(resultB.agent_id, agentB.agent_id);
+    const claimA = decode(fake.files.get('bridge/claims/' + first.request_id + '.json'));
+    const claimB = decode(fake.files.get('bridge/claims/' + second.request_id + '.json'));
+    assert.equal(claimA.agent_id, agentA.agent_id, 'registration claim must expose the newly allocated Agent ID');
+    assert.equal(claimB.agent_id, agentB.agent_id, 'registration claim must expose the newly allocated Agent ID');
+    assert.equal(claimA.result.agent_id, agentA.agent_id);
+    assert.equal(claimB.result.agent_id, agentB.agent_id);
     for (const agent of [agentA, agentB]) {
       const record = decode(fake.files.get('bridge/agents/' + agent.agent_id + '.json'));
       assert.equal(record.status, 'idle');
