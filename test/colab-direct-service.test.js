@@ -888,7 +888,7 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   const source = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
     .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\n');
   assert.ok(source.includes('PUBLIC_VISION_ENDPOINT generated; the raw URL is kept in the handoff panel, not notebook text output.'));
-  assert.doesNotMatch(source, /print\\(\\"PUBLIC_VISION_ENDPOINT=\\" \\+ endpoint_url/);
+  assert.equal(source.includes('print("PUBLIC_VISION_ENDPOINT=" + endpoint_url'), false);
   assert.match(source, /def display_public_endpoint/);
   assert.match(source, /navigator\.clipboard\.writeText/);
   assert.match(source, /def _route_path\(self\)/);
