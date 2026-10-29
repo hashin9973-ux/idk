@@ -653,6 +653,8 @@ test('in-app browser defaults off, never leaves an overlay attached when disable
   const renderer = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'dashboard-renderer.js'), 'utf8');
   assert.match(main, /settings\.browserEnabled = settings\.browserEnabled === true/);
   assert.match(main, /settings\.browserEnabled = enabled/);
+  assert.match(main, /function clampBrowserBounds\(value, size\)/);
+  assert.match(main, /browserBounds = clampBrowserBounds\(browserBounds, dashboardWindow\.getContentBounds\(\)\)/);
   assert.match(main, /settings\.browserEnabled !== true\) return \{ applied: false, disabled: true \}/);
   assert.match(main, /tabs: current\.tabs\.filter\(tab => tab\.kind !== 'browser'\)/);
   assert.match(main, /await shell\.openExternal\(parsed\.href\)/);
