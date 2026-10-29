@@ -649,32 +649,51 @@ test('cloud sync implementation and tests are included in package validation', (
 
 test('dashboard browser-tab IPC does not feed back into an unbounded renderer event loop', () => {
   const main = read('desktop', 'main.js');
-  const activation = main.slice(
-    main.indexOf('function setBrowserTabActive(id) {'),
-    main.indexOf('async function openBrowserTab', main.indexOf('function setBrowserTabActive(id) {'))
-  );
-  assert.match(activation, /activeBrowserTabId === idValue[\s\S]*return \{ active: true, unchanged: true \}/);
-  assert.match(activation, /if \(changed\) publishBrowserTabs\(\)/);
-  assert.match(activation, /unchanged: !changed/);
-  assert.match(activation, /hasLiveViews = \[\.\.\.browserTabs\.values\(\)\]\.some\(tab => tab\.view \|\| tab\.memoryTimer\)/);
-  assert.match(activation, /Only broadcast an actual activation\/deactivation change/);
+  const start = main.indexOf('function setBrowserTabActive(id) {');
+  const end = main.indexOf('async function openBrowserTab', start);
+  const activation = main.slice(start, end);
+  assert.ok(activation.includes('activeBrowserTabId === idValue'));
+  assert.ok(activation.includes('return { active: true, unchanged: true }'));
+  assert.ok(activation.includes('if (changed) publishBrowserTabs()'));
+  assert.ok(activation.includes('for (const view of [...embeddedBrowserViews])'));
+  assert.ok(activation.includes('detachEmbeddedBrowserView(view, tab)'));
+});
+
+test('inactive embedded-browser views are force-detached, throttled, and bounded', () => {
+  const main = read('desktop', 'main.js');
+  assert.ok(main.includes('const embeddedBrowserViews = new Set()'));
+  assert.ok(main.includes('const attachedBrowserViews = new Set()'));
+  const start = main.indexOf('function detachEmbeddedBrowserView(view, tab = null) {');
+  const end = main.indexOf('function disposeEmbeddedBrowserView(tab)', start);
+  const detach = main.slice(start, end);
+  assert.ok(detach.includes('contentView.removeChildView(view)'));
+  assert.ok(detach.includes('view.setBounds({ x: 0, y: 0, width: 1, height: 1 })'));
+  assert.ok(detach.includes('contents.setBackgroundThrottling(true)'));
+  assert.ok(main.includes('embeddedBrowserViews.add(view)'));
+  assert.ok(main.includes('attachedBrowserViews.add(tab.view)'));
+  assert.ok(main.includes('disposeEmbeddedBrowserView(previous)'));
+  assert.ok(main.includes('dashboard-renderer-unresponsive'));
+  assert.ok(main.includes('dashboard-renderer-responsive'));
 });
 
 test('dashboard saves do not rebroadcast unchanged browser tabs into a renderer save loop', () => {
   const main = read('desktop', 'main.js');
-  const syncStart = main.indexOf('function syncBrowserRegistryFromDashboardState(value) {');
-  const syncEnd = main.indexOf('function collectSharedPreferences', syncStart);
-  const sync = main.slice(syncStart, syncEnd);
-  assert.match(sync, /const previousSnapshot = JSON\.stringify\(browserTabSnapshot\(\)\)/);
-  assert.match(sync, /if \(previousSnapshot !== JSON\.stringify\(browserTabSnapshot\(\)\)\) publishBrowserTabs\(\)/);
-  assert.doesNotMatch(sync, /^\s*publishBrowserTabs\(\);\s*$/m);
+  const start = main.indexOf('function syncBrowserRegistryFromDashboardState(value) {');
+  const end = main.indexOf('function collectSharedPreferences', start);
+  const sync = main.slice(start, end);
+  assert.ok(sync.includes('const previousSnapshot = JSON.stringify(browserTabSnapshot())'));
+  assert.ok(sync.includes('if (previousSnapshot !== JSON.stringify(browserTabSnapshot())) publishBrowserTabs()'));
+  assert.ok(!/^\s*publishBrowserTabs\(\);\s*$/m.test(sync));
+});
 
-  const activationStart = main.indexOf('function setBrowserTabActive(id) {');
-  const activationEnd = main.indexOf('async function openBrowserTab', activationStart);
-  const activation = main.slice(activationStart, activationEnd);
-  assert.match(activation, /new Set\([\s\S]*dashboardWindow\.contentView\.children/);
-  assert.match(activation, /const attached = attachedViews\.has\(tab\.view\)/);
-  assert.match(activation, /if \(attached \|\| wasActive\)/);
+test('dashboard renderer coalesces status refreshes and avoids redundant browser activation IPC', () => {
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  assert.ok(renderer.includes('let refreshInFlight=false,refreshRequested=false'));
+  assert.ok(renderer.includes('if(refreshInFlight){refreshRequested=true;return}'));
+  assert.ok(renderer.includes('if(refreshRequested){refreshRequested=false;queueMicrotask(()=>void refresh())}'));
+  assert.ok(renderer.includes('const browserTarget=b?t.browserId:null'));
+  assert.ok(renderer.includes('if(lastBrowserActivation!==browserTarget)'));
+  assert.ok(renderer.includes('lastBrowserActivation=Symbol(\'retry\')'));
 });
 
 test('in-app browser defaults off, never leaves an overlay attached when disabled, and is wired to Settings', () => {

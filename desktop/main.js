@@ -125,6 +125,9 @@ let captionPlaybackInFlight = false;
 let trayUnloadPromise = null;
 const trayStateResolvers = new Map();
 const browserTabs = new Map();
+// Keep a complete inventory of native browser views, independent of tab state.
+const embeddedBrowserViews = new Set();
+const attachedBrowserViews = new Set();
 let activeBrowserTabId = null;
 let browserBounds = { x: 0, y: 0, width: 1, height: 1 };
 let nextBrowserTabId = 0;
@@ -440,6 +443,42 @@ function browserTabSnapshot() {
 }
 function publishBrowserTabs() { dashboardSend('app:browser-tabs-changed', browserTabSnapshot()); }
 
+function detachEmbeddedBrowserView(view, tab = null) {
+  if (!view) return false;
+  let wasAttached = attachedBrowserViews.has(view);
+  const win = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null;
+  if (win) {
+    try {
+      if (win.contentView.children.includes(view)) wasAttached = true;
+    } catch {}
+    // Always attempt the native removal; do not trust a possibly stale child-list snapshot.
+    try { win.contentView.removeChildView(view); } catch {}
+  }
+  attachedBrowserViews.delete(view);
+  // Even if native removal fails, never leave an inactive web view with full-page bounds.
+  try { view.setBounds({ x: 0, y: 0, width: 1, height: 1 }); } catch {}
+  const contents = view.webContents;
+  if (contents && !contents.isDestroyed()) {
+    try { contents.setBackgroundThrottling(true); } catch {}
+    if (tab && (wasAttached || activeBrowserTabId === tab.id)) applyPageFocusCompatibility(tab, false);
+  }
+  return wasAttached;
+}
+
+function disposeEmbeddedBrowserView(tab) {
+  if (!tab || !tab.view) return;
+  const view = tab.view;
+  detachEmbeddedBrowserView(view, tab);
+  if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+  tab.memoryTimer = null;
+  try {
+    if (view.webContents && !view.webContents.isDestroyed()) view.webContents.close();
+  } catch {}
+  attachedBrowserViews.delete(view);
+  embeddedBrowserViews.delete(view);
+  tab.view = null;
+}
+
 function applyPageFocusCompatibility(tab, enabled = settings.browserKeepActive === true && tab.id === activeBrowserTabId) {
   if (!tab || !tab.view || tab.view.webContents.isDestroyed()) return;
   const script = `((enabled) => {
@@ -475,6 +514,11 @@ function createBrowserView(tab) {
     partition: 'persist:windows-bridge-browser', backgroundThrottling: !settings.browserKeepActive
   }});
   tab.view = view;
+  embeddedBrowserViews.add(view);
+  view.webContents.once('destroyed', () => {
+    embeddedBrowserViews.delete(view);
+    attachedBrowserViews.delete(view);
+  });
   view.webContents.setBackgroundThrottling(!settings.browserKeepActive);
   view.webContents.setWindowOpenHandler(({ url }) => {
     const safe = safeBrowserUrl(url);
@@ -532,88 +576,73 @@ function attachBrowserTab(id) {
   if (settings.browserEnabled !== true) return false;
   const tab = browserTabs.get(id);
   if (!dashboardWindow || dashboardWindow.isDestroyed() || !tab) return false;
-  // Re-clamp on every attach; the window may have changed size since the last renderer measurement.
   browserBounds = clampBrowserBounds(browserBounds, dashboardWindow.getContentBounds());
-  for (const other of browserTabs.values()) if (other.view) {
-    try { dashboardWindow.contentView.removeChildView(other.view); } catch {}
-    if (other.id !== id) {
-      other.view.webContents.setBackgroundThrottling(true);
-      applyPageFocusCompatibility(other, false);
-    }
+  // Detach every other known view, including any view no longer represented by the registry.
+  for (const otherView of [...embeddedBrowserViews]) {
+    if (tab.view && otherView === tab.view) continue;
+    const otherTab = [...browserTabs.values()].find(item => item.view === otherView) || null;
+    detachEmbeddedBrowserView(otherView, otherTab);
   }
   if (!tab.view || tab.view.webContents.isDestroyed()) createBrowserView(tab);
   tab.view.setBounds(browserBounds);
-  dashboardWindow.contentView.addChildView(tab.view);
+  let attached = false;
+  try { attached = dashboardWindow.contentView.children.includes(tab.view); } catch {}
+  if (!attached) {
+    try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
+    dashboardWindow.contentView.addChildView(tab.view);
+  }
+  attachedBrowserViews.add(tab.view);
   activeBrowserTabId = id;
   tab.view.webContents.setBackgroundThrottling(!settings.browserKeepActive);
   applyPageFocusCompatibility(tab, settings.browserKeepActive === true);
   if (settings.browserLowMemory) for (const other of browserTabs.values()) {
-    if (other.id !== id && other.view) {
-      if (other.memoryTimer) clearInterval(other.memoryTimer);
-      other.memoryTimer = null;
-      try { other.view.webContents.close(); } catch {}
-      other.view = null;
-    }
+    if (other.id !== id && other.view) disposeEmbeddedBrowserView(other);
   }
-  publishBrowserTabs(); measureBrowserMemory(tab); return true;
+  publishBrowserTabs();
+  measureBrowserMemory(tab);
+  return true;
 }
 function setBrowserTabActive(id) {
   const idValue = typeof id === 'string' && browserTabs.has(id) ? id : null;
   if (settings.browserEnabled !== true) {
-    // Tab selection is called on every dashboard page change. Do not emit a
-    // browser-tabs-changed event for an already-empty/disabled browser: the
-    // renderer handles that event by syncing tabs and selecting the current
-    // page again, which otherwise creates an unbounded IPC/render feedback loop.
-    const hasLiveViews = [...browserTabs.values()].some(tab => tab.view || tab.memoryTimer);
-    if (hasLiveViews) destroyEmbeddedBrowserViews();
-    const changed = activeBrowserTabId !== null || hasLiveViews;
+    const hadLiveViews = embeddedBrowserViews.size > 0 ||
+      [...browserTabs.values()].some(tab => tab.view || tab.memoryTimer);
+    if (hadLiveViews) destroyEmbeddedBrowserViews();
+    const changed = activeBrowserTabId !== null || hadLiveViews;
     activeBrowserTabId = null;
     if (changed) publishBrowserTabs();
     return { active: false, disabled: true, unchanged: !changed };
   }
   if (idValue) {
-    // attachBrowserTab publishes the tab list. Re-entering it from the
-    // renderer's resulting sync event must be a no-op, or it loops forever.
     const activeTab = browserTabs.get(idValue);
+    let isAttached = false;
+    try {
+      isAttached = Boolean(activeTab && activeTab.view &&
+        attachedBrowserViews.has(activeTab.view) &&
+        dashboardWindow && !dashboardWindow.isDestroyed() &&
+        dashboardWindow.contentView.children.includes(activeTab.view));
+    } catch {}
     if (activeBrowserTabId === idValue && activeTab && activeTab.view &&
-        !activeTab.view.webContents.isDestroyed()) {
+        !activeTab.view.webContents.isDestroyed() && isAttached) {
       return { active: true, unchanged: true };
     }
     return attachBrowserTab(idValue);
   }
   let changed = activeBrowserTabId !== null;
-  const attachedViews = new Set(
-    dashboardWindow && !dashboardWindow.isDestroyed()
-      ? dashboardWindow.contentView.children
-      : []
-  );
-  if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
-    if (!tab.view) continue;
-    const attached = attachedViews.has(tab.view);
-    const wasActive = activeBrowserTabId === tab.id;
-    if (attached) {
-      changed = true;
-      try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
-    }
-    // Detached browser tabs need no repeated JS injection on every Main/Settings
-    // render. Only reset throttling/focus when detaching an attached or active view.
-    if (attached || wasActive) {
-      tab.view.webContents.setBackgroundThrottling(true);
-      applyPageFocusCompatibility(tab, false);
-    }
+  for (const view of [...embeddedBrowserViews]) {
+    const tab = [...browserTabs.values()].find(item => item.view === view) || null;
+    if (detachEmbeddedBrowserView(view, tab)) changed = true;
   }
   activeBrowserTabId = null;
-  if (settings.browserLowMemory) for (const tab of browserTabs.values()) {
-    if (tab.view) {
-      changed = true;
-      if (tab.memoryTimer) clearInterval(tab.memoryTimer);
-      tab.memoryTimer = null;
-      try { tab.view.webContents.close(); } catch {}
-      tab.view = null;
+  if (settings.browserLowMemory) {
+    for (const tab of browserTabs.values()) {
+      if (tab.view) {
+        changed = true;
+        disposeEmbeddedBrowserView(tab);
+      }
     }
   }
-  // Only broadcast an actual activation/deactivation change. Broadcasting an
-  // unchanged null selection makes the renderer call this IPC again forever.
+  // A non-browser page must leave no native web view attached above app controls.
   if (changed) publishBrowserTabs();
   return { active: false, unchanged: !changed };
 }
@@ -646,13 +675,13 @@ function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
   return openBrowserTab(parsed.href);
 }
 function closeBrowserTab(id) {
-  const tab = browserTabs.get(String(id || '')); if (!tab) return { closed: false };
-  if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
-  if (tab.memoryTimer) clearInterval(tab.memoryTimer);
-  tab.memoryTimer = null;
-  if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
-  browserTabs.delete(tab.id); if (activeBrowserTabId === tab.id) activeBrowserTabId = null;
-  publishBrowserTabs(); return { closed: true };
+  const tab = browserTabs.get(String(id || ''));
+  if (!tab) return { closed: false };
+  disposeEmbeddedBrowserView(tab);
+  browserTabs.delete(tab.id);
+  if (activeBrowserTabId === tab.id) activeBrowserTabId = null;
+  publishBrowserTabs();
+  return { closed: true };
 }
 function showDashboardWindow() {
   showMainWindow();
@@ -661,13 +690,15 @@ function showDashboardWindow() {
 
 function destroyEmbeddedBrowserViews() {
   saveBrowserTabMetadata();
-  for (const tab of browserTabs.values()) {
-    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
-    tab.memoryTimer = null;
-    if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
-    if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
-    tab.view = null;
+  for (const tab of browserTabs.values()) disposeEmbeddedBrowserView(tab);
+  // Dispose any orphaned view even if its tab record was lost or replaced.
+  for (const view of [...embeddedBrowserViews]) {
+    detachEmbeddedBrowserView(view);
+    try { if (view.webContents && !view.webContents.isDestroyed()) view.webContents.close(); } catch {}
+    embeddedBrowserViews.delete(view);
+    attachedBrowserViews.delete(view);
   }
+  attachedBrowserViews.clear();
 }
 
 function destroyDashboardWindowToTray() {
@@ -748,15 +779,26 @@ function createDashboardWindow() {
     persistSettings();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('unresponsive', () => {
+    appendDiagnosticLog('dashboard-renderer-unresponsive', { pid: win.webContents.getOSProcessId() });
+  });
+  win.webContents.on('responsive', () => {
+    appendDiagnosticLog('dashboard-renderer-responsive', { pid: win.webContents.getOSProcessId() });
+  });
+  win.webContents.on('console-message', (_event, details) => {
+    if (!details || Number(details.level) < 2) return;
+    appendDiagnosticLog('dashboard-console-error', {
+      level: Number(details.level),
+      message: String(details.message || '').slice(0, 1000),
+      line: Number(details.lineNumber) || 0
+    });
+  });
   win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
     if (isMainFrame && code !== -3) appendDiagnosticLog('dashboard-load-failed', { code, description, url });
   });
   win.on('closed', () => {
     for (const tab of browserTabs.values()) {
-      if (tab.memoryTimer) clearInterval(tab.memoryTimer);
-      tab.memoryTimer = null;
-      if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
-      tab.view = null;
+      if (tab.view) disposeEmbeddedBrowserView(tab);
     }
     if (dashboardWindow === win) dashboardWindow = null;
     if (mainWindow === win) mainWindow = null;
@@ -840,10 +882,7 @@ function setBrowserSettings(value) {
   }
   if (lowMemory) for (const tab of browserTabs.values()) {
     if (tab.id === activeBrowserTabId || !tab.view) continue;
-    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
-    tab.memoryTimer = null;
-    try { tab.view.webContents.close(); } catch {}
-    tab.view = null;
+    disposeEmbeddedBrowserView(tab);
   }
   dashboardSend('app:preferences', getUiState().settings);
   return getBrowserSettings();
@@ -1388,20 +1427,14 @@ function syncBrowserRegistryFromDashboardState(value) {
     if (wanted.has(id)) continue;
     if (tab.memoryTimer) clearInterval(tab.memoryTimer);
     tab.memoryTimer = null;
-    if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) {
-      try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
-    }
-    if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    disposeEmbeddedBrowserView(tab);
     browserTabs.delete(id);
     if (activeBrowserTabId === id) activeBrowserTabId = null;
   }
   for (const [id, item] of wanted) {
     const previous = browserTabs.get(id);
     if (previous && previous.url !== item.url && previous.view) {
-      if (previous.memoryTimer) clearInterval(previous.memoryTimer);
-      try { previous.view.webContents.close(); } catch {}
-      previous.view = null;
-      previous.memoryTimer = null;
+      disposeEmbeddedBrowserView(previous);
     }
     browserTabs.set(id, {
       ...(previous || {}), id, url: item.url,
