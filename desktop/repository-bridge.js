@@ -12,8 +12,9 @@ const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 1000;
-// Bound recovery when GitHub's path-filtered commit cursor is stale/eventually consistent.
-const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 1_500;
+// Full request-tree reads scan 1,800+ historical request entries and can take several seconds.
+// Keep the independent 2-second commit probe as the fast path; use the full tree as recovery fallback.
+const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 10_000;
 const FAST_REQUEST_COMMIT_POLL_INTERVAL_MS = 2_000;
 const MAX_RECENT_REQUEST_COMMITS = 20;
 const MAX_CONCURRENT_REQUESTS = 32;
