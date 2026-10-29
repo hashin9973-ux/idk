@@ -480,7 +480,7 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.match(service, /if \(text\) \{\s*const endpoint = endpointFromClipboard\(text\)/);
   assert.doesNotMatch(service, /text !== watch\.baseline/);
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
-  assert.match(python, /PUBLIC_VISION_ENDPOINT=/);
+  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT generated; the raw URL is kept in the handoff panel, not notebook text output.'));
   assert.match(python, /navigator\.clipboard\.writeText/);
   assert.ok(python.includes('Copy endpoint (fallback)'));
   assert.match(python, /Connect to Windows Bridge/);
@@ -503,9 +503,16 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.ok(service.includes('once allowed, future endpoint URLs are sent automatically'));
   assert.ok(main.includes("app.on('open-url'"));
   assert.ok(main.includes("parseTunnelEndpoint(uri.searchParams.get('endpoint'))"));
+  const receiver = read('desktop', 'colab-handoff-server.js');
+  assert.ok(receiver.includes("const DEFAULT_PORT = 43817;"));
+  assert.ok(receiver.includes("const HANDOFF_PATH = '/handoff';"));
+  assert.ok(receiver.includes('isAllowedColabOrigin(origin)'));
+  assert.ok(receiver.includes('parseEndpoint(parsed.endpoint)'));
+  assert.ok(receiver.includes('request.resume()'));
   assert.doesNotMatch(main, /COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
   assert.doesNotMatch(python, /wrb_pair_nonce/);
+  assert.doesNotMatch(python, /print\("PUBLIC_VISION_ENDPOINT=" \+ endpoint_url/);
 });
 
 test('Colab vision notebook becomes ready after model download without startup image inference', () => {
