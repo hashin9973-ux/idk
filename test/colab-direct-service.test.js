@@ -347,8 +347,8 @@ test('Colab vision notebook uses a 16,384-token context and reports the configur
     .join('\n');
 
   assert.match(pythonSource, /VISION_CONTEXT_TOKENS = 16384/);
-  assert.match(pythonSource, /PASSIVE_CONTEXT_TOKENS = 16384/);
-  assert.match(pythonSource, /PASSIVE_MAX_OUTPUT_TOKENS = 2400/);
+  assert.match(pythonSource, /PASSIVE_CONTEXT_TOKENS = 8192/);
+  assert.match(pythonSource, /PASSIVE_MAX_OUTPUT_TOKENS = 1400/);
   assert.match(pythonSource, /model_predict = PASSIVE_MAX_OUTPUT_TOKENS if model_role == "passive" else DETAILED_MAX_OUTPUT_TOKENS/);
   assert.ok(pythonSource.includes('PASSIVE_MODEL_REPO = "ahmadwaqar/smolvlm2-2.2b-instruct"'));
   assert.ok(pythonSource.includes('PASSIVE_MODEL = "ahmadwaqar/smolvlm2-2.2b-instruct:latest"'));

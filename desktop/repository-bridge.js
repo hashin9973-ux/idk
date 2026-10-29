@@ -13,7 +13,7 @@ const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
 const DEFAULT_BRANCH = 'bridge-mailbox';
 const DEFAULT_INTERVAL_MS = 1000;
 // Bound recovery when GitHub's path-filtered commit cursor is stale/eventually consistent.
-const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 5_000;
+const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 1_500;
 const FAST_REQUEST_COMMIT_POLL_INTERVAL_MS = 2_000;
 const MAX_RECENT_REQUEST_COMMITS = 20;
 const MAX_CONCURRENT_REQUESTS = 32;
@@ -1923,8 +1923,8 @@ function createRepositoryBridge(deps) {
         } else {
           // Use bounded request-tree polling as the discovery source instead of
           // awaiting the path-filtered commit cursor on every cycle. A slow
-          // commit query previously blocked this timer and made the five-second
-          // recovery interval ineffective. Skip network I/O between tree scans.
+          // commit query previously blocked this timer and delayed the 1.5-second
+          // recovery interval. Skip network I/O between tree scans.
           const reconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS);
           const reconciliationDue = Date.now() - lastRequestTreeReconcileAt >= reconciliationInterval;
           if (reconciliationDue) {
