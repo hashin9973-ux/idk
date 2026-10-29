@@ -28,6 +28,7 @@ const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint } = require('./colab-direct-service');
+const { ensureAutomaticColabProtocolPolicy, restoreAutomaticColabProtocolPolicy } = require('./colab-protocol-policy');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
@@ -126,6 +127,9 @@ let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let finishingVisionDispose = false;
+let finishingColabPolicyRestore = false;
+let automaticColabProtocolPolicyLease = null;
+let automaticColabProtocolPolicyState = { configured: false, reason: 'not_attempted' };
 let pendingGitHubCliLogin = null;
 let pendingColabHandoffUrl = '';
 let colabHandoffInFlight = false;
@@ -931,7 +935,13 @@ function registerIpc() {
     }
     // Colab's direct HTTPS health endpoint is independent of the GitHub mailbox.
     // Do not hide a live Colab runtime because a separate GitHub /user probe timed out.
-    return visionService.status();
+    const state = visionService.status();
+    return {
+      ...state,
+      automatic_handoff_policy_configured: automaticColabProtocolPolicyState.configured === true,
+      automatic_handoff_policy_browser: automaticColabProtocolPolicyState.browser || '',
+      automatic_handoff_policy_reason: automaticColabProtocolPolicyState.reason || ''
+    };
   });
   ipcMain.handle('app:vision-connect-colab', async (event, endpointUrl) => {
     assertLocalUi(event, 'index.html');
@@ -945,9 +955,34 @@ function registerIpc() {
       };
     }
     // Connecting Colab needs only its authenticated, high-entropy HTTPS endpoint.
-    // GitHub mailbox access is checked separately by Setup check and by normal tool
-    // requests; a transient GitHub outage must not prevent opening/reconnecting Colab.
-    return visionService.connectColab(typeof endpointUrl === 'string' ? endpointUrl : '');
+    // A user-initiated notebook open also configures the Chromium policy that lets
+    // this app's registered protocol launch automatically from the exact Colab origin.
+    // Existing policy entries are preserved; machine-managed policy is never overridden.
+    const endpointText = typeof endpointUrl === 'string' ? endpointUrl : '';
+    if (!endpointText.trim()) {
+      try {
+        const policy = await ensureAutomaticColabProtocolPolicy();
+        automaticColabProtocolPolicyState = policy;
+        if (policy.changed === true) automaticColabProtocolPolicyLease = policy;
+        if (policy.configured === true) {
+          appendDiagnosticLog('colab-auto-handoff-policy', {
+            configured: true, browser: policy.browser || '', scope: policy.scope || '', changed: policy.changed === true
+          });
+        } else {
+          appendDiagnosticLog('colab-auto-handoff-policy-unavailable', {
+            reason: policy.reason || 'unknown', browser: policy.browser || '', message: policy.message || ''
+          });
+        }
+      } catch (error) {
+        automaticColabProtocolPolicyState = {
+          configured: false,
+          reason: 'policy_setup_failed',
+          message: String(error && error.message || error).slice(0, 240)
+        };
+        appendDiagnosticLog('colab-auto-handoff-policy-failed', automaticColabProtocolPolicyState.message);
+      }
+    }
+    return visionService.connectColab(endpointText);
   });
   ipcMain.handle('app:vision-manual-panel', (event, visible) => {
     assertLocalUi(event, 'index.html');
@@ -1377,6 +1412,22 @@ app.on('before-quit', event => {
     if (visionService && typeof visionService.dispose === 'function') disposals.push(visionService.dispose());
     else if (windowsInputController && typeof windowsInputController.dispose === 'function') disposals.push(windowsInputController.dispose());
     Promise.allSettled(disposals).finally(() => app.quit());
+    return;
+  }
+  if (automaticColabProtocolPolicyLease && !finishingColabPolicyRestore) {
+    event.preventDefault();
+    finishingColabPolicyRestore = true;
+    const lease = automaticColabProtocolPolicyLease;
+    void restoreAutomaticColabProtocolPolicy(lease).then(result => {
+      if (!result.restored && result.reason !== 'no_owned_policy_change') {
+        appendDiagnosticLog('colab-auto-handoff-policy-restore', result);
+      }
+    }).catch(error => {
+      appendDiagnosticLog('colab-auto-handoff-policy-restore-failed', String(error && error.message || error));
+    }).finally(() => {
+      automaticColabProtocolPolicyLease = null;
+      app.quit();
+    });
     return;
   }
 });
