@@ -492,6 +492,7 @@ function createBrowserView(tab) {
   });
   view.webContents.on('dom-ready', () => { if (settings.browserKeepActive) applyPageFocusCompatibility(tab); measureBrowserMemory(tab); });
   view.webContents.on('render-process-gone', (_event, details) => appendDiagnosticLog('embedded-browser-renderer-gone', { tabId: tab.id, details }));
+  tab.memoryTimer = setInterval(() => measureBrowserMemory(tab), 10000);
   view.webContents.loadURL(tab.url).catch(error => { tab.error = String(error && error.message || error).slice(0, 400); publishBrowserTabs(); });
   return view;
 }
@@ -512,7 +513,12 @@ function attachBrowserTab(id) {
   activeBrowserTabId = id;
   if (settings.browserKeepActive) applyPageFocusCompatibility(tab);
   if (settings.browserLowMemory) for (const other of browserTabs.values()) {
-    if (other.id !== id && other.view) { try { other.view.webContents.close(); } catch {} other.view = null; }
+    if (other.id !== id && other.view) {
+      if (other.memoryTimer) clearInterval(other.memoryTimer);
+      other.memoryTimer = null;
+      try { other.view.webContents.close(); } catch {}
+      other.view = null;
+    }
   }
   publishBrowserTabs(); measureBrowserMemory(tab); return true;
 }
@@ -524,7 +530,12 @@ function setBrowserTabActive(id) {
   }
   activeBrowserTabId = null;
   if (settings.browserLowMemory) for (const tab of browserTabs.values()) {
-    if (tab.view) { try { tab.view.webContents.close(); } catch {} tab.view = null; }
+    if (tab.view) {
+      if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+      tab.memoryTimer = null;
+      try { tab.view.webContents.close(); } catch {}
+      tab.view = null;
+    }
   }
   publishBrowserTabs(); return { active: false };
 }
@@ -547,6 +558,8 @@ function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
 function closeBrowserTab(id) {
   const tab = browserTabs.get(String(id || '')); if (!tab) return { closed: false };
   if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
+  if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+  tab.memoryTimer = null;
   if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
   browserTabs.delete(tab.id); if (activeBrowserTabId === tab.id) activeBrowserTabId = null;
   publishBrowserTabs(); return { closed: true };
@@ -578,7 +591,11 @@ function createDashboardWindow() {
   dashboardWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   dashboardWindow.once('ready-to-show', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.show(); });
   dashboardWindow.on('closed', () => {
-    for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    for (const tab of browserTabs.values()) {
+      if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+      tab.memoryTimer = null;
+      if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    }
     browserTabs.clear(); activeBrowserTabId = null; dashboardWindow = null;
   });
   dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html')).catch(error => appendDiagnosticLog('dashboard-load-failed', error));
@@ -603,7 +620,15 @@ function setBrowserSettings(value) {
   if (keepActive && lowMemory) throw new Error('Choose background focus compatibility or low-memory tab unloading, not both.');
   settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
-    tab.view.webContents.setBackgroundThrottling(!keepActive); if (keepActive) applyPageFocusCompatibility(tab);
+    tab.view.webContents.setBackgroundThrottling(!keepActive);
+    if (keepActive) applyPageFocusCompatibility(tab);
+  }
+  if (lowMemory) for (const tab of browserTabs.values()) {
+    if (tab.id === activeBrowserTabId || !tab.view) continue;
+    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+    tab.memoryTimer = null;
+    try { tab.view.webContents.close(); } catch {}
+    tab.view = null;
   }
   return getBrowserSettings();
 }
