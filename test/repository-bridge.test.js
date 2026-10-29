@@ -884,6 +884,60 @@ test('a terminal claim with a missing result is quarantined instead of re-execut
   }
 });
 
+test('processing claims from a confirmed previous worker restart are quarantined without replay', async () => {
+  const claimedAt = Date.now() - 20_000;
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-abandoned-worker-claim',
+    created_at: new Date(claimedAt).toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const priorClaim = {
+    protocol: 'chatgpt-local-repo-claim/v1',
+    request_id: request.request_id,
+    worker_id: 'previous-worker',
+    tool: 'project_status',
+    status: 'processing',
+    claimed_at: new Date(claimedAt).toISOString(),
+    lease_expires_at_ms: Date.now() + 30 * 60 * 1000
+  };
+  const priorState = {
+    protocol: 'chatgpt-local-repo-state/v1',
+    worker_id: 'previous-worker',
+    updated_at: new Date(claimedAt + 1_000).toISOString(),
+    status: 'processing',
+    active_request_id: request.request_id
+  };
+  const fake = fakeGitHub({ initial: [
+    ['bridge/requests/' + request.request_id + '.json', request],
+    ['bridge/claims/' + request.request_id + '.json', priorClaim],
+    ['bridge/state/windows-app.json', priorState]
+  ] });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => { executions++; return { ok: true, result: 'must not run' }; },
+    intervalMs: 1000,
+    requestReconciliationIntervalMs: 1
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    assert.equal(executions, 0, 'the abandoned local action must never be replayed');
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(result.status, 'needs_manual_recovery');
+    assert.match(result.error, /previous worker stopped before publishing/i);
+    const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
+    assert.equal(claim.status, 'needs_manual_recovery');
+    assert.equal(claim.previous_worker_id, 'previous-worker');
+  } finally {
+    await bridge.stop();
+  }
+});
+
 test('duplicate polls do not execute a request again after its result exists', async () => {
   const request = {
     protocol: PROTOCOL, request_id: 'req-once', created_at: new Date().toISOString(),
