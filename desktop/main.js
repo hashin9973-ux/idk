@@ -576,6 +576,7 @@ function setBrowserTabActive(id) {
   publishBrowserTabs(); return { active: false };
 }
 async function openBrowserTab(raw) {
+  if (settings.browserEnabled !== true) throw new Error('The in-app browser is disabled. Enable it in Settings to open web tabs.');
   const parsed = safeBrowserUrl(raw);
   if (!parsed) throw new Error('The embedded browser only accepts public HTTPS URLs.');
   if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
@@ -587,6 +588,7 @@ async function openBrowserTab(raw) {
   return { id: tab.id, url: tab.url, title: tab.title, reused: false };
 }
 function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
+  if (settings.browserEnabled !== true) throw new Error('The in-app browser is disabled. Enable it in Settings to open Colab inside the app.');
   const parsed = safeBrowserUrl(raw);
   if (!parsed || parsed.hostname !== 'colab.research.google.com') throw new Error('The Colab action can only open Google Colab notebook URLs.');
   return openBrowserTab(parsed.href);
@@ -731,7 +733,7 @@ function setBrowserBounds(value) {
   return { applied: true, bounds: browserBounds };
 }
 function getBrowserSettings() {
-  return { keepActive: settings.browserKeepActive === true, lowMemory: settings.browserLowMemory === true, volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100 };
+  return { enabled: settings.browserEnabled === true, keepActive: settings.browserKeepActive === true, lowMemory: settings.browserLowMemory === true, volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100 };
 }
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
@@ -1675,6 +1677,7 @@ function getUiState() {
       dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
       ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
       ttsSettings: getTtsSettings(),
+      browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
       observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
@@ -2129,6 +2132,7 @@ if (!hasInstanceLock) {
     restoreBrowserTabsFromSettings();
     settings.dashboardState = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
     syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    settings.browserEnabled = settings.browserEnabled === true;
     settings.browserKeepActive = settings.browserKeepActive === true;
     settings.browserLowMemory = settings.browserLowMemory === true;
     settings.repositoryBridge = {
