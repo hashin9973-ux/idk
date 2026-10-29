@@ -686,6 +686,16 @@ test('dashboard saves do not rebroadcast unchanged browser tabs into a renderer 
   assert.ok(!/^\s*publishBrowserTabs\(\);\s*$/m.test(sync));
 });
 
+test('dashboard renderer coalesces status refreshes and avoids redundant browser activation IPC', () => {
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  assert.ok(renderer.includes('let refreshInFlight=false,refreshRequested=false'));
+  assert.ok(renderer.includes('if(refreshInFlight){refreshRequested=true;return}'));
+  assert.ok(renderer.includes('if(refreshRequested){refreshRequested=false;queueMicrotask(()=>void refresh())}'));
+  assert.ok(renderer.includes('const browserTarget=b?t.browserId:null'));
+  assert.ok(renderer.includes('if(lastBrowserActivation!==browserTarget)'));
+  assert.ok(renderer.includes('lastBrowserActivation=Symbol(\'retry\')'));
+});
+
 test('in-app browser defaults off, never leaves an overlay attached when disabled, and is wired to Settings', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'main.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'dashboard.html'), 'utf8');
