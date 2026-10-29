@@ -107,7 +107,7 @@ const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
   branch: 'bridge-mailbox',
   allowPublicMailbox: false
 });
-const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest', 'sunset', 'rose', 'high-contrast']);
+const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest', 'sunset', 'rose', 'high-contrast', 'aurora', 'cyberpunk', 'dracula', 'nord', 'solarized-light', 'terminal', 'lavender', 'graphite']);
 
 let mainWindow = null;
 let dashboardWindow = null;
