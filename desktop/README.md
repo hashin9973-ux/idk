@@ -64,4 +64,4 @@ Quick Colab connect opens the existing notebook in an embedded tab using the app
 
 ## Dashboard color themes
 
-The dashboard Settings tab includes a local color-theme selector: Midnight (default), Light, Ocean, Forest, Sunset, Rose, and High contrast. The selected theme is persisted in the app's settings and restored at dashboard startup. Theme names are validated in the main process; theme choices only affect the dashboard's visual presentation.
+The dashboard Settings tab includes a visual theme gallery with 15 selectable designs: Midnight (default), Light, Ocean, Forest, Sunset, Rose, High contrast, Aurora, Cyberpunk, Dracula, Nord, Solarized light, Terminal, Lavender, and Graphite. Each card includes a miniature dashboard preview; the presets vary color palette and selected surface, border, glow, shape, and typography treatments as well as accents. The selected theme is persisted in the app's settings and restored at dashboard startup. Theme names are validated in the main process; theme choices only affect the dashboard's visual presentation.
