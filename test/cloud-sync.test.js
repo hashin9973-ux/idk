@@ -27,6 +27,8 @@ test('shared state is allow-listed and rejects credentials, local paths, and tun
   assert.equal(state.widgets[0].x, 40);
   assert.equal(safeShareUrl('file:///C:/private.txt'), null);
   assert.equal(safeShareUrl('https://example.com/?api_key=abc'), null);
+  assert.equal(safeShareUrl('https://example.com/' + 'a'.repeat(64)), null);
+  assert.equal(safeShareUrl('https://example.com/docs#private-fragment'), null);
 });
 
 test('state merge combines independently edited preferences, tabs, and widgets deterministically', () => {
@@ -71,4 +73,32 @@ test('folder synchronization replicates local state and does not need a cloud AP
   const syncDir = path.join(folder, '.windows-repository-bridge');
   const records = (await fs.readdir(syncDir)).filter(file => file.endsWith('.json'));
   assert.equal(records.length, 2);
+});
+
+
+test('newer tab tombstones remove deleted tabs deterministically', () => {
+  const deviceA = '11111111-1111-4111-8111-111111111111';
+  const deviceB = '22222222-2222-4222-8222-222222222222';
+  const older = '2026-02-01T00:00:00.000Z';
+  const newer = '2026-02-02T00:00:00.000Z';
+  const mainTab = { id: 'main', kind: 'main', label: 'Main', order: 0, updatedAt: older, deviceId: deviceA };
+  const browserTab = {
+    id: 'tab-web-5', kind: 'browser', browserId: 'web-5-11111111-1111-4111-8111-111111111111',
+    url: 'https://example.com/docs', label: 'Docs', title: 'Docs', order: 1, updatedAt: older, deviceId: deviceA
+  };
+  const a = {
+    schemaVersion: 1, deviceId: deviceA, updatedAt: older, preferences: {}, preferenceStamps: {},
+    tabs: [mainTab, browserTab], widgets: [], activeTabId: 'main', activeTabUpdatedAt: older
+  };
+  const b = {
+    schemaVersion: 1, deviceId: deviceB, updatedAt: newer, preferences: {}, preferenceStamps: {},
+    tabs: [
+      { ...mainTab, deviceId: deviceB },
+      { id: browserTab.id, deleted: true, updatedAt: newer, deviceId: deviceB }
+    ],
+    widgets: [], activeTabId: 'main', activeTabUpdatedAt: newer
+  };
+  const merged = mergeRecords([a, b]);
+  assert.equal(merged.state.tabs.some(tab => tab.id === browserTab.id), false);
+  assert.ok(merged.state.tabs.some(tab => tab.id === 'main'));
 });

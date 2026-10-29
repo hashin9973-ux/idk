@@ -308,7 +308,7 @@ function createCloudSync(options = {}) {
   async function readRecords() {
     let names = [];
     try { names = await fs.promises.readdir(directory); } catch { return []; }
-    names = names.filter(name => /^device-[0-9a-f-]{36}\.json$/i.test(name)).slice(0, MAX_RECORDS);
+    names = names.filter(name => /^device-[0-9a-f-]{36}\.json$/i.test(name)).sort((a, b) => a.localeCompare(b)).slice(0, MAX_RECORDS);
     const records = [];
     for (const name of names) {
       try {

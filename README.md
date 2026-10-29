@@ -154,20 +154,27 @@ Read-only inspection and path-checked file operations inside the selected worksp
 
 **PowerShell is not sandboxed.** An approved command runs as the signed-in Windows user and may access files outside the selected workspace. Workspace path checks reject traversal and symlink escapes for workspace file tools, but they do not sandbox an approved shell command.
 
+## Dashboard, speech captions, and shared-folder sync
+
+The main dashboard is the only application window; the old compact overlay is not loaded. Its tab selection, browser-tab references, widget positions/sizes, and normal window bounds are saved locally. Minimizing/closing to the tray waits for a bounded renderer acknowledgement, then destroys the dashboard renderer and embedded browser views to release their memory. The Windows worker remains active. Embedded browser pages—including Colab—can need to reload when the dashboard is reopened.
+
+Text-to-speech supports:
+- **Autoplay:** begin speech immediately; a separate caption window can display the currently spoken chunk, status, and errors.
+- **Notification:** show the text and a **Play** button without synthesizing audio until the user activates playback.
+- Caption placement (top/center/bottom/custom), transparent background, and app/system/light/dark caption themes.
+
+Local settings are persisted automatically, with a separate **Save now** action. Cross-device settings sync is opt-in and uses a directory that the user selects inside an already synchronized local folder (for example, OneDrive or Dropbox). Each device writes its own .windows-repository-bridge/device-UUID.json record; file watching and a short polling fallback reconcile tabs, widgets and allowlisted preferences. This does not create a hosted cloud service or require a cloud API key. Sync deliberately excludes GitHub tokens, workspace paths, worker state and temporary Colab tunnel endpoints. Only HTTPS browser URLs that pass the safety filter may be shared; do not use URLs with credentials or sensitive query parameters.
+
 ## Install and connect
 
 Requirements: Windows 10/11, Node.js 22+, npm, Git for Windows, and internet access.
 
-```powershell
-npm install
-npm start
-```
-
-1. Launch the app. It uses the previously saved workspace, or `Documents/ChatGPTWorkspace` on first launch.
-2. If the first status says **GitHub not connected**, click that row to start GitHub's official browser authorization flow. Approve access in the browser; no custom OAuth client ID is needed.
-3. Once GitHub authorization and internet access are available, the worker starts automatically, publishes context to `bridge/context/`, and keeps retrying if the connection drops. There is no Start Worker button.
-4. The compact window shows only GitHub and worker status. Minimize it with the `−` control or `Ctrl+Shift+Space`; it remains running in the system tray. Reopen it by clicking the tray icon. Use the `×` control or tray menu to quit.
-5. In your existing ChatGPT conversation, use the GitHub integration to read the context index, create requests, and retrieve result and artifact files.
+1. Launch the app. It opens the full Windows Bridge dashboard with tabs, status/queue widgets, an embedded-browser area and settings. The app uses the previously saved workspace, or Documents/ChatGPTWorkspace on first launch.
+2. If the first status says **GitHub not connected**, click that status to start GitHub's official browser authorization flow. Approve access in the browser; no custom OAuth client ID is needed.
+3. Once GitHub authorization and internet access are available, the worker starts automatically, publishes context to bridge/context/, and keeps retrying if the connection drops. There is no Start Worker button.
+4. Minimize or close the dashboard to the system tray. The app saves the tab/widget layout, destroys the dashboard renderer and embedded browser views, and keeps the worker and tray process running. Reopen it from the tray; the tabs and layout should return. Embedded pages may need to reload when selected.
+5. In Settings, use Text-to-speech to choose autoplay or a Play notification, configure caption placement/transparency/theme, and preview a caption. In Save and sync, local save is always available; cross-device sync is opt-in and requires selecting a folder already synchronized by a provider such as OneDrive or Dropbox.
+6. In your existing ChatGPT conversation, use the GitHub integration to read the context index, create requests, and retrieve result and artifact files.
 
 ## Privacy and visibility
 

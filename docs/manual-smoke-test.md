@@ -13,13 +13,13 @@ This is a manual test because GitHub Actions cannot prove the app can connect to
 
 ## 1. Start and verify environment publication
 
-1. Launch the Windows Repository Bridge and wait for the two status rows to appear.
+1. Launch the Windows Repository Bridge and wait for the full dashboard to appear. Confirm there is no separate compact overlay window.
 2. If needed, click **GitHub not connected** and complete the official GitHub CLI device flow in your browser. Do not register a separate OAuth App or enter a client ID.
 3. Verify **Worker online** appears after authorization and internet connectivity are available; no Start Worker action should be required. If offline, verify the app continues retrying and updates status after connectivity returns.
 4. In GitHub, open `bridge/context/latest.json` on the `bridge-mailbox` branch.
 5. Confirm the index points to the environment, project, capabilities, directory tree, and instruction inventory snapshots.
 6. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
-7. Click `−` to minimize. Verify the window disappears but the system-tray icon remains and the worker keeps polling. Click the tray icon to reopen the status window.
+7. Minimize or close the dashboard to the tray. Verify its window disappears, the tray icon remains, and the worker keeps polling. Reopen it from the tray and verify the last selected tab and widget layout return. Confirm an embedded page can reload after the dashboard was unloaded.
 
 Expected outcome: the worker reports running, the mailbox has a heartbeat, and the context index and snapshot files are committed to the private branch.
 
@@ -77,6 +77,14 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 3. Confirm no output is injected into the ChatGPT conversation.
 4. If any request is `needs_manual_recovery`, inspect the disposable workspace and claim/result files before attempting another request. Never replay an uncertain side-effecting request with the same ID.
 
+## 6. Test speech captions and shared-folder synchronization
+
+1. In Settings, toggle between **Autoplay speech** and **Notification with Play button**. Use **Preview caption** to check the separate caption window, placement, transparency, and theme. Confirm notification mode does not start audio before **Play** is clicked.
+2. With Colab connected and TTS ready, run one short speech request in autoplay mode. Verify the caption advances with completed speech chunks and closes after playback finishes. Repeat in notification mode and verify clicking Play starts playback. A preview alone is not a TTS integration test.
+3. Choose an empty folder already synchronized by a local cloud provider. Keep sync disabled initially, then enable it; inspect .windows-repository-bridge and verify one device record is written. Change the theme and a widget position, trigger **Sync now**, and verify the record updates.
+4. On a second test installation/device using the same synchronized folder, verify a shared theme/tab/widget change appears there and a separate preference change merges back. Test concurrent preference edits and deletion of a shared tab. Do not include credentials, absolute workspace paths, secret URLs, or private content in test state.
+5. Disable cloud sync and verify no new writes occur after disabling. Local settings should continue to save and restore.
+
 ## Acceptance criteria
 
 - [ ] The app connects to the private repo and dedicated branch.
@@ -88,7 +96,12 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 - [ ] A declined shell command remains unexecuted and returns `cancelled`.
 - [ ] File upload requires a local approval and returns the exact bytes.
 - [ ] Worker auto-starts and retries when internet/GitHub is unavailable.
-- [ ] Minimizing hides the status window to the tray without stopping the worker; tray click restores it.
+- [ ] The full dashboard is the only main window; no compact overlay is launched.
+- [ ] Minimizing/closing to tray saves the current tab/widget layout, unloads the dashboard and embedded browser views, and leaves the worker alive.
+- [ ] Reopening restores the dashboard layout and browser-tab references.
+- [ ] Local settings save and restore; Save now reports completion.
+- [ ] Autoplay captions, notification-mode Play, caption configuration, and chunk-progress updates work against a connected TTS service.
+- [ ] Opt-in shared-folder sync safely merges multiple device records and excludes credentials, workspace paths, and temporary endpoints.
 - [ ] Quit stops the worker and removes the tray icon; no output is inserted into the ChatGPT conversation.
 
 Automated tests and a successful installer build are necessary but not substitutes for this smoke test.
