@@ -1,264 +1,614 @@
 'use strict';
 
-const { createHash, randomUUID } = require('node:crypto');
+const { randomBytes } = require('node:crypto');
 
-const AGENT_RECORD_PROTOCOL = 'chatgpt-local-agent-record/v1';
+const AGENT_RECORD_PROTOCOL = 'chatgpt-local-agent-seat/v2';
+const SESSION_RECORD_PROTOCOL = 'chatgpt-local-agent-session/v1';
 const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
-const AGENT_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+const SESSION_ID_PATTERN = /^session-[a-f0-9]{32}$/;
+const MESSAGE_ID_PATTERN = /^msg-[0-9]{13}-[a-f0-9]{32}$/;
+const SESSION_INACTIVE_AFTER_MS = 10 * 60 * 1000;
+const AGENT_STALE_AFTER_MS = SESSION_INACTIVE_AFTER_MS;
 
-function tokenHash(token) {
-  return createHash('sha256').update(String(token || '')).digest('hex');
-}
-
-function sanitizeLabel(value, fallback) {
+function safeLabel(value, fallback) {
   const label = String(value || '').replace(/[\r\n\t]/g, ' ').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
   return label || fallback;
 }
 
-function newToken() {
-  return createHash('sha256').update(randomUUID() + randomUUID()).digest('hex');
+function cleanMessage(value, maxLength, field) {
+  if (typeof value !== 'string') throw new Error(field + ' must be a string.');
+  const result = value.replace(/\u0000/g, '').trim();
+  if (!result) throw new Error(field + ' must not be empty.');
+  if (result.length > maxLength) throw new Error(field + ' exceeds the ' + maxLength + '-character limit.');
+  return result;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict }) {
+function formatAgentMessage(session, value) {
+  const body = cleanMessage(value, 20000, 'message');
+  const prefix = '[' + session.session_id + '][' + session.agent_id + ']';
+  return body.startsWith(prefix) ? body : prefix + ' ' + body;
+}
+
+function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict, clock = () => Date.now() }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
   }
 
-  const activeRequestCounts = new Map();
   const locks = new Map();
 
-  function recordPath(agentId) {
+  function timestamp() { return new Date(clock()).toISOString(); }
+  function seatPath(agentId) {
     if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid Agent ID.');
     return 'bridge/agents/' + agentId + '.json';
   }
+  function sessionPath(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id. Call session_start to create a session.');
+    return 'bridge/sessions/' + sessionId + '.json';
+  }
+  function inboxPath(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
+    return 'bridge/agent-messages/' + sessionId;
+  }
+  function messagePath(sessionId, messageId) {
+    if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
+    return inboxPath(sessionId) + '/' + messageId + '.json';
+  }
+  function messageReceiptPath(sessionId, messageId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
+    if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
+    return 'bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json';
+  }
 
-  async function withAgentLock(agentId, operation) {
-    const prior = locks.get(agentId) || Promise.resolve();
+  async function withLock(key, operation) {
+    const prior = locks.get(key) || Promise.resolve();
     let unlock;
     const gate = new Promise(resolve => { unlock = resolve; });
     const queued = prior.catch(() => {}).then(() => gate);
-    locks.set(agentId, queued);
+    locks.set(key, queued);
     await prior.catch(() => {});
-    try {
-      return await operation();
-    } finally {
+    try { return await operation(); }
+    finally {
       unlock();
-      if (locks.get(agentId) === queued) locks.delete(agentId);
+      if (locks.get(key) === queued) locks.delete(key);
     }
   }
 
-  async function readRecord(agentId) {
-    const remote = await readRemoteFile(recordPath(agentId));
-    if (!remote) return null;
-    const record = remote.value;
-    if (!record || typeof record !== 'object' || Array.isArray(record) ||
-        record.protocol !== AGENT_RECORD_PROTOCOL || record.agent_id !== agentId ||
-        typeof record.token_hash !== 'string' || !/^[a-f0-9]{64}$/.test(record.token_hash)) {
-      throw new Error('The Agent ID registry record is malformed; refusing to overwrite it.');
+  function isConflictError(error) {
+    try { return Boolean(isConflict(error)); }
+    catch { return /conflict|sha was not supplied|does not match|409|422/i.test(String(error && error.message || error)); }
+  }
+
+  function validateSessionRecord(value, sessionId) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        value.protocol !== SESSION_RECORD_PROTOCOL || value.session_id !== sessionId ||
+        !AGENT_ID_PATTERN.test(String(value.agent_id || ''))) {
+      throw new Error('Session record ' + sessionId + ' is malformed; refusing to overwrite it.');
     }
+    return value;
+  }
+
+  function validateSeatRecord(value, agentId) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || value.agent_id !== agentId) {
+      throw new Error('Agent seat record ' + agentId + ' is malformed; refusing to overwrite it.');
+    }
+    if (value.protocol !== AGENT_RECORD_PROTOCOL && value.protocol !== 'chatgpt-local-agent-record/v1') {
+      throw new Error('Agent seat record ' + agentId + ' has an unsupported protocol.');
+    }
+    if (value.protocol === AGENT_RECORD_PROTOCOL &&
+        value.current_session_id && !SESSION_ID_PATTERN.test(String(value.current_session_id))) {
+      throw new Error('Agent seat record ' + agentId + ' has a malformed current_session_id.');
+    }
+    return value;
+  }
+
+  async function readSeat(agentId) {
+    const remote = await readRemoteFile(seatPath(agentId));
+    if (!remote) return null;
+    validateSeatRecord(remote.value, agentId);
     return remote;
   }
 
-  async function mutateRecord(agentId, token, mutator) {
-    return withAgentLock(agentId, async () => {
-      const expectedTokenHash = tokenHash(token);
-      for (let attempt = 0; attempt < 6; attempt++) {
-        const remote = await readRecord(agentId);
-        if (!remote) throw new Error('Agent ID ' + agentId + ' is not registered. Do not borrow an ID from another conversation.');
-        if (remote.value.token_hash !== expectedTokenHash) {
-          throw new Error('Agent registration token does not match ' + agentId + '. Recover this conversation’s original token or register a new Agent ID.');
+  async function readSession(sessionId) {
+    const remote = await readRemoteFile(sessionPath(sessionId));
+    if (!remote) return null;
+    validateSessionRecord(remote.value, sessionId);
+    return remote;
+  }
+
+  async function writeNewJson(path, value) {
+    const saved = await writeRemoteJson(path, value, null, true);
+    if (!saved || !saved.ok) throw new Error('Could not create immutable mailbox record ' + path + '.');
+    return saved;
+  }
+
+  async function mutateJson(path, validate, mutator, retries = 6) {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      const remote = await readRemoteFile(path);
+      if (!remote) throw new Error('Mailbox record was not found: ' + path);
+      const current = validate(remote.value);
+      const next = { ...mutator({ ...current }), updated_at: timestamp() };
+      try {
+        const saved = await writeRemoteJson(path, next, remote.sha, false);
+        if (saved && saved.ok) return next;
+        throw new Error('Mailbox record update conflicted: ' + path);
+      } catch (error) {
+        if (!isConflictError(error) || attempt === retries - 1) throw error;
+      }
+    }
+    throw new Error('Could not update mailbox record after repeated conflicts: ' + path);
+  }
+
+  async function mutateSession(sessionId, mutator) {
+    return mutateJson(sessionPath(sessionId), value => validateSessionRecord(value, sessionId), mutator);
+  }
+
+  async function listSeatIds() {
+    const entries = await listFolder('bridge/agents');
+    return [...new Set(entries
+      .filter(item => item && typeof item.name === 'string')
+      .map(item => item.name.split('/').pop())
+      .filter(name => /^agent-[0-9]{3,}\.json$/.test(name))
+      .map(name => name.slice(0, -5)))]
+      .sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+  }
+
+  function activityTime(seat, session) {
+    const values = [
+      seat && seat.last_activity_at, seat && seat.last_seen_at, seat && seat.updated_at,
+      session && session.last_activity_at, session && session.updated_at,
+      seat && seat.created_at, session && session.created_at
+    ].map(value => Date.parse(String(value || ''))).filter(Number.isFinite);
+    return values.length ? Math.max(...values) : 0;
+  }
+
+  function isBusy(seat, session) {
+    return Boolean(
+      (Array.isArray(seat && seat.active_request_ids) && seat.active_request_ids.length) ||
+      (Array.isArray(session && session.active_request_ids) && session.active_request_ids.length)
+    );
+  }
+
+  function isInactive(seat, session) {
+    if (!seat) return true;
+    if (isBusy(seat, session)) return false;
+    const last = activityTime(seat, session);
+    if (seat.protocol !== AGENT_RECORD_PROTOCOL) return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
+    if (!seat.current_session_id) return true;
+    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || session.status === 'expired';
+  }
+
+  async function readSeatAndSession(agentId) {
+    const remote = await readSeat(agentId);
+    if (!remote) return { agent_id: agentId, remote: null, seat: null, sessionRemote: null, session: null };
+    const seat = remote.value;
+    let sessionRemote = null;
+    if (seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id) {
+      sessionRemote = await readSession(seat.current_session_id);
+    }
+    return { agent_id: agentId, remote, seat, sessionRemote, session: sessionRemote && sessionRemote.value || null };
+  }
+
+  async function expireSession(sessionId, replacementSessionId) {
+    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) return;
+    try {
+      const existing = await readSession(sessionId);
+      if (!existing || existing.value.status === 'expired') return;
+      await mutateSession(sessionId, current => ({
+        ...current, status: 'expired', ended_at: timestamp(),
+        ...(replacementSessionId ? { replaced_by_session_id: replacementSessionId } : {}),
+        active_request_ids: []
+      }));
+    } catch { /* Seat reassignment is authoritative even if marking history fails. */ }
+  }
+
+  async function startSession(args = {}) {
+    const label = safeLabel(args.label, 'ChatGPT session');
+    return withLock('seat-allocation', async () => {
+      for (let attempt = 0; attempt < 64; attempt++) {
+        const ids = await listSeatIds();
+        const rows = await Promise.all(ids.map(readSeatAndSession));
+        const candidate = rows.find(row => !row.remote || !row.seat || isInactive(row.seat, row.session));
+
+        let agentId;
+        let priorSessionId = null;
+        if (candidate) {
+          agentId = candidate.agent_id;
+          priorSessionId = candidate.seat && candidate.seat.protocol === AGENT_RECORD_PROTOCOL
+            ? candidate.seat.current_session_id || null : null;
+        } else {
+          const highest = ids.reduce((max, id) => Math.max(max, Number(id.slice(6)) || 0), 0);
+          agentId = 'agent-' + String(highest + 1).padStart(3, '0');
         }
-        const next = { ...mutator({ ...remote.value }), updated_at: new Date().toISOString() };
+
+        const sessionId = 'session-' + randomBytes(16).toString('hex');
+        const now = timestamp();
+        const session = {
+          protocol: SESSION_RECORD_PROTOCOL, session_id: sessionId, agent_id: agentId,
+          label, status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+          last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+        };
+        try { await writeNewJson(sessionPath(sessionId), session); }
+        catch (error) {
+          if (isConflictError(error)) continue;
+          throw error;
+        }
+
         try {
-          await writeRemoteJson(recordPath(agentId), next, remote.sha, false);
-          return next;
+          const allocated = await withLock('seat:' + agentId, async () => {
+            const current = await readSeat(agentId);
+            const seat = current && current.value;
+            const currentSession = seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id
+              ? (await readSession(seat.current_session_id))?.value || null : null;
+            if (seat && !isInactive(seat, currentSession)) {
+              return null;
+            }
+            const nextSeat = {
+              protocol: AGENT_RECORD_PROTOCOL, agent_id: agentId, current_session_id: sessionId,
+              label, status: 'active', created_at: seat && seat.created_at || now,
+              updated_at: now, last_activity_at: now, last_request_id: null, last_completed_at: null,
+              recent_request_ids: [], active_request_ids: []
+            };
+            const saved = await writeRemoteJson(seatPath(agentId), nextSeat, current ? current.sha : null, !current);
+            if (!saved || !saved.ok) return null;
+            if (priorSessionId && priorSessionId !== sessionId) await expireSession(priorSessionId, sessionId);
+            return {
+              session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
+              last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
+              note: 'Session created. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
+            };
+          });
+          if (!allocated) {
+            await expireSession(sessionId);
+            continue;
+          }
+          return allocated;
         } catch (error) {
-          if (!isConflict(error) || attempt === 5) throw error;
+          await expireSession(sessionId);
+          if (isConflictError(error)) continue;
+          throw error;
         }
       }
-      throw new Error('Could not update Agent ID status after resolving repository write conflicts.');
+      throw new Error('Could not lease an available agent seat after repeated concurrent allocation attempts.');
     });
   }
 
-  async function register(args = {}) {
-    const hasId = Boolean(args.agent_id);
-    const hasToken = Boolean(args.agent_token);
-    if (hasId || hasToken) {
-      if (!(hasId && hasToken)) throw new Error('Restoring an Agent ID requires both agent_id and agent_token.');
-      if (typeof args.agent_id !== 'string' || !AGENT_ID_PATTERN.test(args.agent_id) ||
-          typeof args.agent_token !== 'string' || !/^[a-f0-9]{64}$/.test(args.agent_token)) {
-        throw new Error('The supplied Agent ID or registration token is malformed.');
-      }
-      const now = new Date().toISOString();
-      const record = await mutateRecord(args.agent_id, args.agent_token, current => ({
-        ...current,
-        status: (activeRequestCounts.get(args.agent_id) || 0) > 0 ? 'active' : 'idle',
-        last_seen_at: now,
-        active_request_ids: Array.isArray(current.active_request_ids) ? current.active_request_ids : []
-      }));
-      return {
-        agent_id: record.agent_id,
-        agent_token: args.agent_token,
-        label: record.label,
-        status: record.status,
-        restored: true,
-        created_at: record.created_at,
-        last_seen_at: record.last_seen_at,
-        note: 'Restored this conversation’s existing Agent ID. Reuse this ID and token on all subsequent mailbox requests.'
-      };
-    }
-
-    const requestedLabel = sanitizeLabel(args.label, '');
-    for (let attempt = 0; attempt < 32; attempt++) {
-      const entries = await listFolder('bridge/agents');
-      const used = new Set(entries
-        .filter(item => item && typeof item.name === 'string' && /^agent-[0-9]+\.json$/.test(item.name))
-        .map(item => item.name.slice(0, -5)));
-      let ordinal = 1;
-      while (used.has('agent-' + String(ordinal).padStart(3, '0'))) ordinal++;
-      const agentId = 'agent-' + String(ordinal).padStart(3, '0');
-      const token = newToken();
-      const now = new Date().toISOString();
-      const record = {
-        protocol: AGENT_RECORD_PROTOCOL,
-        agent_id: agentId,
-        token_hash: tokenHash(token),
-        label: requestedLabel || 'Agent ' + ordinal,
-        status: 'idle',
-        created_at: now,
-        updated_at: now,
-        last_seen_at: now,
-        last_completed_at: null,
-        last_request_id: null,
-        recent_request_ids: [],
-        active_request_ids: []
-      };
-      try {
-        const saved = await writeRemoteJson(recordPath(agentId), record, null, true);
-        if (saved.ok) {
-          return {
-            agent_id: agentId,
-            agent_token: token,
-            label: record.label,
-            status: record.status,
-            restored: false,
-            created_at: now,
-            last_seen_at: now,
-            note: 'Allocated the next unused Agent ID. Keep the ID and token in this conversation; the bridge updates status on later requests.'
-          };
-        }
-      } catch (error) {
-        if (!isConflict(error) || attempt === 31) throw error;
-      }
-    }
-    throw new Error('Could not allocate a unique Agent ID after repeated concurrent registration attempts.');
-  }
-
   async function authenticate(request) {
-    if (!request.agent_id) return true;
-    const remote = await readRecord(request.agent_id);
-    if (!remote) throw new Error('Agent ID ' + request.agent_id + ' is not registered.');
-    if (remote.value.token_hash !== tokenHash(request.agent_token)) {
-      throw new Error('Agent registration token does not match ' + request.agent_id + '. Check this conversation’s registration result.');
+    const sessionId = request && request.session_id;
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
+      throw new Error('SESSION_ID_REQUIRED: Call session_start once at the beginning of this conversation, then include its session_id on every bridge tool request.');
     }
-    return true;
+    const remote = await readSession(sessionId);
+    if (!remote) throw new Error('SESSION_EXPIRED: This session is missing. Call session_start to lease a new agent seat.');
+    const session = remote.value;
+    if (session.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation no longer owns its previous seat. Call session_start to lease a fresh seat.');
+    const seatRemote = await readSeat(session.agent_id);
+    if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
+        seatRemote.value.current_session_id !== sessionId) {
+      throw new Error('SESSION_EXPIRED: The reusable seat has been leased to another conversation. Call session_start for a new session_id.');
+    }
+    if (!isBusy(seatRemote.value, session) && isInactive(seatRemote.value, session)) {
+      throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window. Call session_start to obtain a current session_id.');
+    }
+    return { session_id: sessionId, agent_id: session.agent_id, agent_label: session.label || session.agent_id };
   }
 
   async function requestStarted(request) {
-    if (!request.agent_id) return false;
-    const agentId = request.agent_id;
-    const count = (activeRequestCounts.get(agentId) || 0) + 1;
-    activeRequestCounts.set(agentId, count);
-    try {
-      await mutateRecord(agentId, request.agent_token, record => {
-        const recent = Array.isArray(record.recent_request_ids) ? record.recent_request_ids : [];
-        const active = Array.isArray(record.active_request_ids) ? record.active_request_ids : [];
+    if (!request || !request.session_id || !request.agent_id) return false;
+    return withLock('seat:' + request.agent_id, async () => {
+      const seatRemote = await readSeat(request.agent_id);
+      if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
+          seatRemote.value.current_session_id !== request.session_id) {
+        throw new Error('SESSION_EXPIRED: This conversation no longer owns its assigned seat. Call session_start.');
+      }
+      const sessionRemote = await readSession(request.session_id);
+      if (!sessionRemote || sessionRemote.value.status === 'expired') {
+        throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+      }
+      if (!isBusy(seatRemote.value, sessionRemote.value) && isInactive(seatRemote.value, sessionRemote.value)) {
+        throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window before execution. Call session_start.');
+      }
+      const now = timestamp();
+      await mutateSession(request.session_id, current => {
+        if (current.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+        const active = Array.isArray(current.active_request_ids) ? current.active_request_ids : [];
+        const recent = Array.isArray(current.recent_request_ids) ? current.recent_request_ids : [];
         return {
-          ...record,
-          status: 'active',
-          last_seen_at: new Date().toISOString(),
-          last_request_id: request.request_id,
-          recent_request_ids: [...recent.filter(id => id !== request.request_id), request.request_id].slice(-25),
+          ...current, status: 'active', last_activity_at: now, last_request_id: request.request_id,
+          recent_request_ids: [...recent.filter(id => id !== request.request_id), request.request_id].slice(-50),
           active_request_ids: [...new Set([...active, request.request_id])]
         };
       });
+      await mutateJson(seatPath(request.agent_id), value => validateSeatRecord(value, request.agent_id), current => {
+        if (current.protocol !== AGENT_RECORD_PROTOCOL || current.current_session_id !== request.session_id) {
+          throw new Error('SESSION_EXPIRED: This conversation no longer owns its assigned seat. Call session_start.');
+        }
+        return {
+          ...current, status: 'active', last_activity_at: now, last_request_id: request.request_id,
+          recent_request_ids: [...(Array.isArray(current.recent_request_ids) ? current.recent_request_ids.filter(id => id !== request.request_id) : []), request.request_id].slice(-50),
+          active_request_ids: [...new Set([...(Array.isArray(current.active_request_ids) ? current.active_request_ids : []), request.request_id])]
+        };
+      });
       return true;
-    } catch (error) {
-      if (count <= 1) activeRequestCounts.delete(agentId);
-      else activeRequestCounts.set(agentId, count - 1);
-      throw error;
-    }
+    });
   }
 
   async function requestCompleted(request) {
-    if (!request.agent_id) return;
-    const agentId = request.agent_id;
-    const remaining = Math.max(0, (activeRequestCounts.get(agentId) || 1) - 1);
-    if (remaining === 0) activeRequestCounts.delete(agentId);
-    else activeRequestCounts.set(agentId, remaining);
-    const now = new Date().toISOString();
-    return mutateRecord(agentId, request.agent_token, record => ({
-      ...record,
-      status: remaining > 0 ? 'active' : 'idle',
-      last_seen_at: now,
-      last_completed_at: now,
-      active_request_ids: (Array.isArray(record.active_request_ids) ? record.active_request_ids : [])
-        .filter(id => id !== request.request_id)
-    }));
+    if (!request || !request.session_id || !request.agent_id) return;
+    return withLock('seat:' + request.agent_id, async () => {
+      const seat = await readSeat(request.agent_id);
+      if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
+          seat.value.current_session_id !== request.session_id) return;
+      const now = timestamp();
+      try {
+        await mutateSession(request.session_id, current => ({
+          ...current, status: 'active', last_activity_at: now, last_completed_at: now,
+          active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
+        }));
+      } catch (error) {
+        if (!/SESSION_EXPIRED/i.test(String(error && error.message || error))) throw error;
+      }
+      return mutateJson(seatPath(request.agent_id), value => validateSeatRecord(value, request.agent_id), current => ({
+        ...current, status: 'active', last_activity_at: now, last_completed_at: now,
+        active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
+      }));
+    });
   }
 
   async function statuses(filterAgentId = null) {
-    if (filterAgentId && !AGENT_ID_PATTERN.test(filterAgentId)) throw new Error('Agent ID has an invalid format.');
-    const entries = await listFolder('bridge/agents');
-    const ids = entries
-      .filter(item => item && typeof item.name === 'string' && /^agent-[0-9]+\.json$/.test(item.name))
-      .map(item => item.name.slice(0, -5))
-      .filter(id => !filterAgentId || id === filterAgentId)
-      .sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+    if (filterAgentId && !AGENT_ID_PATTERN.test(filterAgentId)) throw new Error('agent_id has an invalid format.');
+    const ids = filterAgentId ? [filterAgentId] : await listSeatIds();
     const rows = await Promise.all(ids.map(async agentId => {
-      const remote = await readRecord(agentId);
-      if (!remote) return null;
-      const record = remote.value;
-      const activeCount = activeRequestCounts.get(agentId) || 0;
-      const lastSeen = Date.parse(record.last_seen_at || record.created_at || '');
-      const inactiveFor = Number.isFinite(lastSeen) ? Math.max(0, Date.now() - lastSeen) : Infinity;
-      const status = record.status === 'released' ? 'released' : activeCount > 0 ? 'active' :
-        record.status === 'active' || inactiveFor > AGENT_STALE_AFTER_MS ? 'stale' : 'idle';
+      const row = await readSeatAndSession(agentId);
+      if (!row.remote) return null;
+      const seat = row.seat;
+      if (seat.protocol !== AGENT_RECORD_PROTOCOL) {
+        const lastActivity = activityTime(seat, null);
+        const busy = isBusy(seat, null);
+        const active = Boolean(lastActivity && clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
+        return {
+          agent_id: agentId, label: seat.label || agentId, status: active ? 'active' : 'inactive', busy,
+          session_id: null, last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
+          last_request_id: seat.last_request_id || null, last_completed_at: seat.last_completed_at || null,
+          recent_request_ids: Array.isArray(seat.recent_request_ids) ? seat.recent_request_ids.slice(-50) : [],
+          active_request_ids: Array.isArray(seat.active_request_ids) ? seat.active_request_ids.slice(-50) : [],
+          reusable: !busy && !active, legacy_record: true
+        };
+      }
+      const session = row.session;
+      const lastActivity = activityTime(seat, session);
+      const busy = isBusy(seat, session);
+      const active = Boolean(session && session.status !== 'expired' && lastActivity &&
+        clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
       return {
-        agent_id: agentId,
-        label: record.label || agentId,
-        status,
-        created_at: record.created_at || null,
-        updated_at: record.updated_at || null,
-        last_seen_at: record.last_seen_at || null,
-        last_completed_at: record.last_completed_at || null,
-        last_request_id: record.last_request_id || null,
-        recent_request_ids: Array.isArray(record.recent_request_ids) ? record.recent_request_ids.slice(-25) : [],
-        active_request_ids: activeCount > 0 && Array.isArray(record.active_request_ids) ? record.active_request_ids : []
+        agent_id: agentId, label: seat.label || (session && session.label) || agentId,
+        status: active ? 'active' : 'inactive', busy,
+        session_id: seat.current_session_id || null, session_status: session && session.status || 'missing',
+        last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
+        last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
+        last_completed_at: seat.last_completed_at || (session && session.last_completed_at) || null,
+        recent_request_ids: Array.isArray(seat.recent_request_ids) ? seat.recent_request_ids.slice(-50) : [],
+        active_request_ids: [...new Set([
+          ...(Array.isArray(seat.active_request_ids) ? seat.active_request_ids : []),
+          ...(Array.isArray(session && session.active_request_ids) ? session.active_request_ids : [])
+        ])].slice(-50),
+        reusable: !busy && !active
       };
     }));
     const agents = rows.filter(Boolean);
     return {
-      agents,
-      count: agents.length,
+      agents, count: agents.length,
       counts: {
         active: agents.filter(agent => agent.status === 'active').length,
-        idle: agents.filter(agent => agent.status === 'idle').length,
-        stale: agents.filter(agent => agent.status === 'stale').length,
-        released: agents.filter(agent => agent.status === 'released').length
+        inactive: agents.filter(agent => agent.status === 'inactive').length,
+        busy: agents.filter(agent => agent.busy).length,
+        available: agents.filter(agent => agent.reusable).length
       },
+      inactivity_after_ms: SESSION_INACTIVE_AFTER_MS,
       status_legend: {
-        active: 'A request from this agent is currently executing in this Windows worker.',
-        idle: 'The agent has checked in within the last 24 hours and has no active request.',
-        stale: 'The agent has not checked in recently, or a worker stopped while it was marked active. Its ID is not reused automatically.',
-        released: 'Registered IDs are never recycled; explicit release support is not enabled.'
+        active: 'This seat has received bridge-tool activity within the inactivity window.',
+        inactive: 'No bridge-tool activity has arrived within the inactivity window. A non-busy seat may be leased to another conversation.',
+        busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned even when activity becomes old.',
+        session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
       },
-      note: 'Registration tokens are omitted. Agent IDs are routing labels, not access-control boundaries for a shared mailbox.'
+      note: 'The session_id is stable for one ChatGPT conversation. The agent_id is a reusable seat, recycled after inactivity. Status includes every seat record found in bridge/agents; no credentials are included.'
     };
   }
 
-  return { register, authenticate, requestStarted, requestCompleted, statuses, recordPath, AGENT_RECORD_PROTOCOL };
+  async function currentSession(sessionId) {
+    const remote = await readSession(sessionId);
+    if (!remote || remote.value.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session is no longer valid.');
+    const session = remote.value;
+    const seat = await readSeat(session.agent_id);
+    if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
+        seat.value.current_session_id !== sessionId) {
+      throw new Error('SESSION_EXPIRED: The seat has been reassigned; start a new session before messaging.');
+    }
+    if (!isBusy(seat.value, session) && isInactive(seat.value, session)) {
+      throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window. Call session_start before messaging.');
+    }
+    return { session, seat: seat.value };
+  }
+
+  async function writeMessage(recipientSessionId, record) {
+    const path = messagePath(recipientSessionId, record.message_id);
+    const saved = await writeRemoteJson(path, record, null, true);
+    if (!saved || !saved.ok) throw new Error('Message publication conflicted. Do not send a duplicate until the original message path has been checked.');
+    return record;
+  }
+
+  async function sendMessage(sessionId, args = {}) {
+    const sender = await currentSession(sessionId);
+    const hasAgent = Boolean(args.to_agent_id);
+    const hasSession = Boolean(args.to_session_id);
+    if (hasAgent === hasSession) throw new Error('Specify exactly one recipient: to_agent_id or to_session_id.');
+    let recipientSessionId, recipientAgentId, recipientLabel;
+    if (hasAgent) {
+      if (!AGENT_ID_PATTERN.test(String(args.to_agent_id))) throw new Error('to_agent_id has an invalid format.');
+      const recipientSeat = await readSeat(args.to_agent_id);
+      if (!recipientSeat || recipientSeat.value.protocol !== AGENT_RECORD_PROTOCOL || !recipientSeat.value.current_session_id) {
+        throw new Error('The recipient seat has no current session.');
+      }
+      recipientSessionId = recipientSeat.value.current_session_id;
+      recipientAgentId = args.to_agent_id;
+      recipientLabel = recipientSeat.value.label || recipientAgentId;
+    } else {
+      if (!SESSION_ID_PATTERN.test(String(args.to_session_id))) throw new Error('to_session_id has an invalid format.');
+      recipientSessionId = args.to_session_id;
+      const recipient = await currentSession(recipientSessionId);
+      recipientAgentId = recipient.session.agent_id;
+      recipientLabel = recipient.seat.label || recipient.session.label || recipientAgentId;
+    }
+    if (recipientSessionId === sessionId) throw new Error('Cannot send an agent message to your own current session.');
+    const recipient = await currentSession(recipientSessionId);
+    const last = activityTime(recipient.seat, recipient.session);
+    if (!last || clock() - last > SESSION_INACTIVE_AFTER_MS) {
+      throw new Error('Recipient is inactive. Use agent_status to choose a currently active seat/session.');
+    }
+    const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
+    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+    const record = {
+      protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+      sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
+      recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
+      sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
+      subject, message: formatAgentMessage(sender.session, args.message),
+      created_at: timestamp(), read_at: null, in_reply_to: null
+    };
+    await writeMessage(recipientSessionId, record);
+    return {
+      message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
+      to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
+      subject, created_at: record.created_at, status: 'sent',
+      note: 'Message delivered to that conversation session. The recipient can use read_agent_messages and reply_to_agent_message.'
+    };
+  }
+
+  async function markMessageRead(sessionId, messageId, knownRecord = null) {
+    const path = messagePath(sessionId, messageId);
+    let value = knownRecord;
+    if (!value) {
+      const remote = await readRemoteFile(path);
+      if (!remote) return null;
+      value = remote.value;
+    }
+    if (!value || value.protocol !== 'chatgpt-local-agent-message/v1' ||
+        value.message_id !== messageId || value.recipient_session_id !== sessionId) {
+      throw new Error('Message record is malformed or addressed to another session.');
+    }
+    const receiptPath = messageReceiptPath(sessionId, messageId);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existing = await readRemoteFile(receiptPath);
+      if (existing) {
+        const receipt = existing.value;
+        if (!receipt || receipt.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
+            receipt.message_id !== messageId || receipt.recipient_session_id !== sessionId ||
+            typeof receipt.read_at !== 'string') {
+          throw new Error('Message read receipt is malformed or addressed to another session.');
+        }
+        return { ...value, read_at: receipt.read_at };
+      }
+      const readAt = timestamp();
+      const receipt = {
+        protocol: 'chatgpt-local-agent-message-receipt/v1',
+        message_id: messageId, recipient_session_id: sessionId,
+        created_at: readAt, read_at: readAt
+      };
+      try {
+        const saved = await writeRemoteJson(receiptPath, receipt, null, true);
+        if (saved && saved.ok) return { ...value, read_at: readAt };
+      } catch (error) {
+        if (!isConflictError(error) || attempt === 4) throw error;
+      }
+    }
+    throw new Error('Could not publish a read receipt after repeated mailbox conflicts.');
+  }
+
+  async function readMessages(sessionId, args = {}) {
+    await currentSession(sessionId);
+    const unreadOnly = args.unread_only !== false;
+    const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
+    let entries;
+    try { entries = await listFolder(inboxPath(sessionId)); }
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
+      .sort().slice(-200);
+    const found = [];
+    for (let start = 0; start < names.length; start += 16) {
+      const group = names.slice(start, start + 16);
+      const rows = await Promise.all(group.map(async name => {
+        const messageId = name.slice(0, -5);
+        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        if (!remote) return null;
+        const record = remote.value;
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+        }
+        return record;
+      }));
+      found.push(...rows.filter(Boolean));
+    }
+    found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    let receiptEntries;
+    try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = []; else throw error; }
+    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
+      .map(name => name.slice(0, -5)));
+    const selected = found.filter(record => !unreadOnly ||
+      (!receiptIds.has(record.message_id) && !record.read_at)).slice(-limit);
+    const read = [];
+    for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
+    return {
+      session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
+      scanned_recent_limit: 200, messages: read.filter(Boolean),
+      note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
+    };
+  }
+
+  async function replyToMessage(sessionId, args = {}) {
+    const sender = await currentSession(sessionId);
+    const originalId = String(args.message_id || '');
+    const remote = await readRemoteFile(messagePath(sessionId, originalId));
+    if (!remote) throw new Error('No message with this message_id exists in the current session inbox.');
+    const original = remote.value;
+    if (!original || original.protocol !== 'chatgpt-local-agent-message/v1' ||
+        original.message_id !== originalId || original.recipient_session_id !== sessionId) {
+      throw new Error('Only a message addressed to this session can be replied to.');
+    }
+    const recipientSessionId = original.sender_session_id;
+    const recipient = await currentSession(recipientSessionId);
+    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+    const record = {
+      protocol: 'chatgpt-local-agent-message/v1', message_id: id,
+      thread_id: original.thread_id || original.message_id,
+      sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
+      recipient_session_id: recipientSessionId, recipient_agent_id: recipient.session.agent_id,
+      sender_label: sender.session.label || sender.session.agent_id,
+      recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
+      subject: original.subject || '', message: formatAgentMessage(sender.session, args.message),
+      created_at: timestamp(), read_at: null, in_reply_to: original.message_id
+    };
+    await writeMessage(recipientSessionId, record);
+    await markMessageRead(sessionId, original.message_id, original);
+    return {
+      message_id: id, thread_id: record.thread_id, in_reply_to: original.message_id,
+      sender_agent_id: record.sender_agent_id, to_agent_id: record.recipient_agent_id,
+      to_session_id: recipientSessionId, created_at: record.created_at, status: 'sent'
+    };
+  }
+
+  return {
+    startSession, authenticate, requestStarted, requestCompleted, statuses,
+    sendMessage, readMessages, replyToMessage, seatPath, sessionPath, messagePath,
+    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
+  };
 }
 
-module.exports = { createAgentRegistry, AGENT_RECORD_PROTOCOL, AGENT_ID_PATTERN, AGENT_STALE_AFTER_MS };
+module.exports = {
+  createAgentRegistry, AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL,
+  AGENT_ID_PATTERN, SESSION_ID_PATTERN, MESSAGE_ID_PATTERN,
+  SESSION_INACTIVE_AFTER_MS, AGENT_STALE_AFTER_MS
+};

@@ -256,14 +256,23 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(bridge, /publishState/);
   assert.match(bridge, /allowPublicMailbox/);
   assert.match(bridge, /public-mailbox warning checkbox/i);
-  assert.match(bridge, /agent_register/);
+  assert.match(bridge, /session_start/);
   assert.match(bridge, /agent_status/);
+  assert.match(bridge, /send_agent_message/);
+  assert.match(bridge, /read_agent_messages/);
+  assert.match(bridge, /reply_to_agent_message/);
+  assert.match(bridge, /SESSION_ID_REQUIRED/);
   const agentRegistry = read('desktop', 'agent-registry.js');
   assert.match(agentRegistry, /AGENT_RECORD_PROTOCOL/);
-  assert.match(agentRegistry, /AGENT_STALE_AFTER_MS/);
+  assert.match(agentRegistry, /SESSION_INACTIVE_AFTER_MS/);
+  assert.match(agentRegistry, /SESSION_RECORD_PROTOCOL/);
   const toolBridge = read('desktop', 'tool-bridge.js');
-  assert.ok(toolBridge.includes("agent_register: ['agent_id', 'agent_token', 'label']"));
+  assert.ok(toolBridge.includes("session_start: ['label']"));
   assert.ok(toolBridge.includes("agent_status: ['agent_id']"));
+  assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
+  assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));
+  assert.ok(toolBridge.includes("reply_to_agent_message: ['message_id', 'message']"));
+  assert.match(toolBridge, /catalog_version = 3/);
 });
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
@@ -748,9 +757,16 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   const html = read('desktop', 'dashboard.html');
   const renderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'dashboard.css');
-  assert.ok(html.includes('id="agent-mailbox-list"'));
+  assert.ok(html.includes('id="agent-widget-host"'));
   assert.ok(html.includes('id="agent-mailbox-count"'));
+  assert.doesNotMatch(html, /id="agent-mailbox-list"/, 'seat consoles must not be nested in the aggregate queue widget');
   assert.match(renderer, /function renderAgentMailboxes\(rawAgents\)/);
+  assert.match(renderer, /function makeAgentWidget\(/);
+  assert.match(renderer, /function agentLayoutFor\(/);
+  assert.match(renderer, /previous session history is hidden/);
+  assert.match(renderer, /agentWidgets\.set\(agent\.agent_id,card\)/);
+  assert.match(renderer, /savedWidgetLayout\[agent\.agent_id\]/);
+  assert.match(read('desktop', 'repository-bridge.js'), /item\.sessionId === group\.session_id/);
   assert.match(renderer, /appendConsoleJsonDetails/);
   assert.match(renderer, /request\.tool/);
   assert.match(renderer, /request\.request_json/);
@@ -758,8 +774,9 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.match(renderer, /request\.result_json/);
   assert.match(renderer, /request\.progress/);
   assert.match(styles, /\.agent-console\s*\{/);
-  assert.match(styles, /background:#020403/);
+  assert.match(styles, /\.agent-console\s*\{[^}]*background:#000/);
   assert.match(styles, /\.agent-json-details/);
-  assert.match(renderer, /details,summary,pre,\.agent-console,\[data-no-widget-drag\]/);
+  assert.match(styles, /#main-page\{overflow:auto/);
+  assert.match(renderer, /isAgent&&!resize&&!e\.target\.closest\('\.agent-console-header'\)/);
   assert.doesNotMatch(renderer, /innerHTML\s*=/, 'console output must be rendered as text, not HTML');
 });

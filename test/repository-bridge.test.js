@@ -31,11 +31,68 @@ async function waitFor(predicate, timeoutMs = 3000) {
   }
 }
 
-function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null, falseConflictCreatePaths = [], transientCreateConflictPaths = [] } = {}) {
+const DEFAULT_TEST_SESSION_ID = 'session-' + 'c'.repeat(32);
+
+function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null,
+  falseConflictCreatePaths = [], transientCreateConflictPaths = [], unscopedRequestIds = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
-  for (const [path, value] of initial) {
+  const normalizedInitial = initial.map(([path, value]) => {
+    if (!path.startsWith('bridge/requests/') || !value || typeof value !== 'object' ||
+        value.tool === 'session_start' || value.session_id ||
+        unscopedRequestIds.includes(value.request_id)) return [path, value];
+    // Most tests focus on worker behavior, so use a standard test lease for
+    // old fixtures. Explicit identity tests opt out and exercise rejection.
+    return [path, { ...value, session_id: DEFAULT_TEST_SESSION_ID }];
+  });
+  for (const [path, value] of normalizedInitial) {
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
+  }
+  const queuedSessions = new Set();
+  for (const [path, stored] of files) {
+    if (!path.startsWith('bridge/requests/') || !path.endsWith('.json')) continue;
+    let request;
+    try { request = decode(stored); } catch { continue; }
+    if (request.tool !== 'session_start' && typeof request.session_id === 'string' &&
+        /^session-[a-f0-9]{32}$/.test(request.session_id)) queuedSessions.add(request.session_id);
+  }
+  for (const sessionId of queuedSessions) seedSession(sessionId);
+
+  function seedSession(sessionId = DEFAULT_TEST_SESSION_ID, label = 'Test agent') {
+    if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) throw new Error('Invalid test session ID');
+    const sessionPath = 'bridge/sessions/' + sessionId + '.json';
+    const existingSession = files.get(sessionPath);
+    if (existingSession) return decode(existingSession);
+    let agentId = null;
+    for (const [filePath, stored] of files) {
+      if (!/^bridge\/agents\/agent-[0-9]{3,}\.json$/.test(filePath)) continue;
+      try {
+        const value = decode(stored);
+        if (value.current_session_id === sessionId) { agentId = value.agent_id; break; }
+      } catch {}
+    }
+    if (!agentId) {
+      let number = 1;
+      do { agentId = 'agent-' + String(number++).padStart(3, '0'); }
+      while (files.has('bridge/agents/' + agentId + '.json'));
+    }
+    const now = new Date().toISOString();
+    const seatPath = 'bridge/agents/' + agentId + '.json';
+    if (!files.has(seatPath)) {
+      const seat = {
+        protocol: 'chatgpt-local-agent-seat/v2', agent_id: agentId, current_session_id: sessionId,
+        label, status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+        last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+      };
+      files.set(seatPath, { name: agentId + '.json', path: seatPath, type: 'file', encoding: 'base64', content: encode(seat), sha: 'sha-' + nextSha++ });
+    }
+    const session = {
+      protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: agentId,
+      label, status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+      last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+    };
+    files.set(sessionPath, { name: sessionId + '.json', path: sessionPath, type: 'file', encoding: 'base64', content: encode(session), sha: 'sha-' + nextSha++ });
+    return session;
   }
   const calls = [];
   let requestTreeFailuresRemaining = 0;
@@ -197,7 +254,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
     }
   };
   return {
-    githubAuth, files, calls,
+    githubAuth, files, calls, seedSession,
     treeRef: relativePath => treeShaForPath(relativePath),
     failNextRequestTreeReads: count => { requestTreeFailuresRemaining = Math.max(0, Number(count) || 0); }
   };
@@ -225,7 +282,7 @@ test('config validation rejects invalid owner, repository and branch input', () 
   assert.throws(() => validateConfig({ owner: 'owner', repo: 'repo', branch: '/main' }), /branch/i);
 });
 
-test('request validation requires matching protocol/ID and rejects extra arguments and unsupported GitHub tools', () => {
+test('request validation bootstraps sessions once and requires the session ID for every other tool', () => {
   const base = {
     protocol: PROTOCOL,
     request_id: 'req-20261024-001',
@@ -233,23 +290,26 @@ test('request validation requires matching protocol/ID and rejects extra argumen
     tool: 'project_status',
     args: {}
   };
-  assert.deepEqual(validateRequest(base.request_id, base), {
-    request_id: base.request_id,
-    tool: 'project_status',
-    args: {}
+  const sessionId = 'session-' + 'a'.repeat(32);
+  const ordinary = { ...base, session_id: sessionId };
+  assert.deepEqual(validateRequest(ordinary.request_id, ordinary), {
+    request_id: ordinary.request_id, tool: 'project_status', args: {}, session_id: sessionId
   });
-  assert.throws(() => validateRequest('different-id', base), /does not match/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, protocol: 'wrong' }), /protocol/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, tool: 'github_api', args: { method: 'PUT' } }), /unsupported local tool/i);
-  assert.throws(() => validateRequest('../bad-id', { ...base, request_id: '../bad-id' }), /invalid ID/i);
-  const identified = { ...base, agent_id: 'agent-001', agent_token: 'a'.repeat(64) };
-  assert.equal(validateRequest(base.request_id, identified).agent_id, 'agent-001');
-  assert.equal(validateRequest(base.request_id, identified).agent_token, 'a'.repeat(64));
-  assert.throws(() => validateRequest(base.request_id, { ...base, agent_id: 'agent-001' }), /requires both/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, agent_token: 'a'.repeat(64) }), /requires both/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, agent_id: '../agent', agent_token: 'a'.repeat(64) }), /invalid format/i);
-  assert.throws(() => validateRequest(base.request_id, { ...base, tool: 'agent_register', args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
+  assert.throws(() => validateRequest(base.request_id, base), /SESSION_ID_REQUIRED/);
+  const bootstrap = { ...base, tool: 'session_start', args: {} };
+  assert.deepEqual(validateRequest(bootstrap.request_id, bootstrap), {
+    request_id: bootstrap.request_id, tool: 'session_start', args: {}
+  });
+  assert.throws(() => validateRequest('different-id', ordinary), /does not match/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, protocol: 'wrong' }), /protocol/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, tool: 'github_api', args: { method: 'PUT' } }), /unsupported local tool/i);
+  assert.throws(() => validateRequest('../bad-id', { ...ordinary, request_id: '../bad-id' }), /invalid ID/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, session_id: 'not-a-session' }), /session_id has an invalid format/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, agent_id: 'agent-001' }), /legacy agent_id\/agent_token/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, agent_token: 'a'.repeat(64) }), /legacy agent_id\/agent_token/i);
+  assert.throws(() => validateRequest(base.request_id, { ...bootstrap, session_id: sessionId }), /bootstrap request and must omit session_id/i);
+  assert.throws(() => validateRequest(base.request_id, { ...ordinary, tool: 'agent_register' }), /unsupported local tool/i);
 });
 
 test('repository sanitization strips local identity fields and redacts credentials and local paths', () => {
@@ -282,98 +342,130 @@ test('repository sanitization strips local identity fields and redacts credentia
   assert.match(json, /REDACTED_GITHUB_TOKEN/);
 });
 
-test('concurrent agent registration allocates unique IDs and stores only token hashes in registry records', async () => {
-  const makeRegistration = requestId => ({ protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(), tool: 'agent_register', args: {} });
-  const first = makeRegistration('register-agent-first');
-  const second = makeRegistration('register-agent-second');
+test('concurrent session bootstrap allocates distinct conversation IDs and reusable seats', async () => {
+  const makeBootstrap = requestId => ({
+    protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(),
+    tool: 'session_start', args: {}
+  });
+  const first = makeBootstrap('session-start-first');
+  const second = makeBootstrap('session-start-second');
   const fake = fakeGitHub({ initial: [
     ['bridge/requests/' + first.request_id + '.json', first],
     ['bridge/requests/' + second.request_id + '.json', second]
   ] });
   const fixture = settingsFixture();
   let localExecutions = 0;
-  const bridge = createRepositoryBridge({ githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; }, intervalMs: 5000 });
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
+    intervalMs: 5000
+  });
   try {
     await bridge.start();
-    await waitFor(() => fake.files.has('bridge/results/' + first.request_id + '.json') && fake.files.has('bridge/results/' + second.request_id + '.json'));
+    await waitFor(() => fake.files.has('bridge/results/' + first.request_id + '.json') &&
+      fake.files.has('bridge/results/' + second.request_id + '.json'));
     const resultA = decode(fake.files.get('bridge/results/' + first.request_id + '.json'));
     const resultB = decode(fake.files.get('bridge/results/' + second.request_id + '.json'));
-    const agentA = resultA.result.result;
-    const agentB = resultB.result.result;
-    assert.notEqual(agentA.agent_id, agentB.agent_id);
-    assert.deepEqual([agentA.agent_id, agentB.agent_id].sort(), ['agent-001', 'agent-002']);
-    assert.notEqual(agentA.agent_token, agentB.agent_token);
-    assert.equal(resultA.agent_id, agentA.agent_id);
-    assert.equal(resultB.agent_id, agentB.agent_id);
+    const sessionA = resultA.result.result;
+    const sessionB = resultB.result.result;
+    assert.notEqual(sessionA.session_id, sessionB.session_id);
+    assert.match(sessionA.session_id, /^session-[a-f0-9]{32}$/);
+    assert.match(sessionB.session_id, /^session-[a-f0-9]{32}$/);
+    assert.deepEqual([sessionA.agent_id, sessionB.agent_id].sort(), ['agent-001', 'agent-002']);
+    assert.equal(resultA.session_id, sessionA.session_id);
+    assert.equal(resultB.session_id, sessionB.session_id);
+    assert.equal(resultA.agent_id, sessionA.agent_id);
+    assert.equal(resultB.agent_id, sessionB.agent_id);
+    for (const session of [sessionA, sessionB]) {
+      const seat = decode(fake.files.get('bridge/agents/' + session.agent_id + '.json'));
+      const sessionRecord = decode(fake.files.get('bridge/sessions/' + session.session_id + '.json'));
+      assert.equal(seat.protocol, 'chatgpt-local-agent-seat/v2');
+      assert.equal(seat.current_session_id, session.session_id);
+      assert.equal(seat.status, 'active');
+      assert.equal(sessionRecord.protocol, 'chatgpt-local-agent-session/v1');
+      assert.equal(sessionRecord.session_id, session.session_id);
+      assert.equal('token_hash' in seat, false);
+    }
     const claimA = decode(fake.files.get('bridge/claims/' + first.request_id + '.json'));
     const claimB = decode(fake.files.get('bridge/claims/' + second.request_id + '.json'));
-    assert.equal(claimA.agent_id, agentA.agent_id, 'registration claim must expose the newly allocated Agent ID');
-    assert.equal(claimB.agent_id, agentB.agent_id, 'registration claim must expose the newly allocated Agent ID');
-    assert.equal(claimA.result.agent_id, agentA.agent_id);
-    assert.equal(claimB.result.agent_id, agentB.agent_id);
-    for (const agent of [agentA, agentB]) {
-      const record = decode(fake.files.get('bridge/agents/' + agent.agent_id + '.json'));
-      assert.equal(record.status, 'idle');
-      assert.equal(JSON.stringify(record).includes(agent.agent_token), false);
-      assert.match(record.token_hash, /^[a-f0-9]{64}$/);
-    }
-    assert.equal(localExecutions, 0, 'mailbox agent management never enters the workspace tool runner');
+    assert.equal(claimA.agent_id, sessionA.agent_id);
+    assert.equal(claimB.agent_id, sessionB.agent_id);
+    assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
   } finally { await bridge.stop(); }
 });
 
-test('agent identity appears in claim/result and status returns to idle after execution', async () => {
-  const { createHash } = require('node:crypto');
+test('session identity appears in claim/result and recent activity stays separate from busy state', async () => {
   const agentId = 'agent-001';
-  const agentToken = 'b'.repeat(64);
+  const sessionId = 'session-' + 'b'.repeat(32);
   const now = new Date().toISOString();
-  const record = { protocol: 'chatgpt-local-agent-record/v1', agent_id: agentId,
-    token_hash: createHash('sha256').update(agentToken).digest('hex'), label: 'Agent 1', status: 'idle',
-    created_at: now, updated_at: now, last_seen_at: now, last_completed_at: null, last_request_id: null,
-    recent_request_ids: [], active_request_ids: [] };
-  const request = { protocol: PROTOCOL, request_id: 'agent-001-project-status-test', agent_id: agentId, agent_token: agentToken,
-    created_at: new Date().toISOString(), tool: 'project_status', args: {} };
+  const seat = {
+    protocol: 'chatgpt-local-agent-seat/v2', agent_id: agentId, current_session_id: sessionId,
+    label: 'Agent 1', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+    last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+  };
+  const session = {
+    protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: agentId,
+    label: 'Agent 1', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+    last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+  };
+  const request = {
+    protocol: PROTOCOL, request_id: 'session-agent001-project-status-test', session_id: sessionId,
+    created_at: now, tool: 'project_status', args: {}
+  };
   const fake = fakeGitHub({ initial: [
-    ['bridge/agents/' + agentId + '.json', record],
+    ['bridge/agents/' + agentId + '.json', seat],
+    ['bridge/sessions/' + sessionId + '.json', session],
     ['bridge/requests/' + request.request_id + '.json', request]
   ] });
   const fixture = settingsFixture();
   let executions = 0;
-  const bridge = createRepositoryBridge({ githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    executeTool: async (tool, args, id) => { executions++; return { ok: true, tool, call_id: id, result: { ready: true } }; }, intervalMs: 5000 });
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => { executions++; return { ok: true, tool, call_id: id, result: { ready: true } }; },
+    intervalMs: 5000
+  });
   try {
     await bridge.start();
     await waitFor(() => {
       if (!fake.files.has('bridge/results/' + request.request_id + '.json')) return false;
-      const agentEntry = fake.files.get('bridge/agents/' + agentId + '.json');
-      if (!agentEntry) return false;
-      const currentAgent = decode(agentEntry);
-      return currentAgent.status === 'idle' && currentAgent.active_request_ids.length === 0;
+      const updated = fake.files.get('bridge/agents/' + agentId + '.json');
+      const current = updated && decode(updated);
+      return current && current.status === 'active' && current.active_request_ids.length === 0 &&
+        current.recent_request_ids.includes(request.request_id);
     });
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
-    const updatedAgent = decode(fake.files.get('bridge/agents/' + agentId + '.json'));
+    const updatedSeat = decode(fake.files.get('bridge/agents/' + agentId + '.json'));
+    const updatedSession = decode(fake.files.get('bridge/sessions/' + sessionId + '.json'));
     assert.equal(executions, 1);
     assert.equal(result.agent_id, agentId);
+    assert.equal(result.session_id, sessionId);
     assert.equal(claim.agent_id, agentId);
-    assert.equal(updatedAgent.status, 'idle');
-    assert.equal(updatedAgent.last_request_id, request.request_id);
-    assert.ok(updatedAgent.recent_request_ids.includes(request.request_id));
-    assert.deepEqual(updatedAgent.active_request_ids, []);
-    const agentMailbox = bridge.getState().agentMailboxes.find(item => item.agent_id === agentId);
-    assert.ok(agentMailbox, 'agent appears in the mailbox monitor');
-    const task = agentMailbox.requests.find(item => item.request_id === request.request_id);
-    assert.ok(task, 'executed request appears in its agent mailbox');
-    assert.equal(task.tool, 'project_status', 'the monitor uses the registered local tool name');
+    assert.equal(claim.session_id, sessionId);
+    assert.equal(updatedSeat.current_session_id, sessionId);
+    assert.equal(updatedSeat.last_request_id, request.request_id);
+    assert.deepEqual(updatedSeat.active_request_ids, []);
+    assert.ok(updatedSeat.recent_request_ids.includes(request.request_id));
+    assert.equal(updatedSession.last_request_id, request.request_id);
+    assert.deepEqual(updatedSession.active_request_ids, []);
+    const state = bridge.getState();
+    const status = state.agentStatus.find(item => item.agent_id === agentId);
+    assert.equal(status.status, 'active');
+    assert.equal(status.busy, false);
+    const mailbox = state.agentMailboxes.find(item => item.agent_id === agentId);
+    assert.ok(mailbox, 'agent seat appears in the mailbox monitor');
+    const task = mailbox.requests.find(item => item.request_id === request.request_id);
+    assert.ok(task, 'executed request appears in its agent console');
+    assert.equal(task.tool, 'project_status');
     assert.equal(task.status, 'completed');
     assert.equal(task.progress, 100);
-    assert.ok(task.request_json.includes('"agent_token": "[REDACTED]"'));
-    assert.doesNotMatch(task.request_json, /b{64}/);
+    assert.ok(task.request_json.includes('"session_id": "' + sessionId + '"'));
+    assert.doesNotMatch(task.request_json, /agent_token|token_hash/);
     assert.ok(task.claim_json.includes(request.request_id));
-    assert.doesNotMatch(task.claim_json, /b{64}/);
+    assert.ok(task.claim_json.includes(sessionId));
     assert.ok(task.result_json.includes('"status": "completed"'));
-    assert.doesNotMatch(task.result_json, /b{64}/);
-    assert.doesNotMatch(bridge.getState().lastError, /Agent status update failed/i);
+    assert.ok(task.result_json.includes(sessionId));
+    assert.doesNotMatch(state.lastError, /Agent status update failed/i);
   } finally { await bridge.stop(); }
 });
 
@@ -630,11 +722,13 @@ test('request-tree reconciliation remains authoritative when the fast commit end
     const request = {
       protocol: PROTOCOL,
       request_id: 'req-cursor-stale-reconcile',
+      session_id: DEFAULT_TEST_SESSION_ID,
       created_at: new Date().toISOString(),
       tool: 'project_status',
       args: {}
     };
     const requestPath = 'bridge/requests/' + request.request_id + '.json';
+    fake.seedSession(request.session_id);
     fake.files.set(requestPath, {
       name: request.request_id + '.json',
       path: requestPath,
@@ -673,6 +767,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
   const initial = {
     protocol: PROTOCOL,
     request_id: 'req-fast-probe-initial',
+    session_id: DEFAULT_TEST_SESSION_ID,
     created_at: new Date().toISOString(),
     tool: 'project_status',
     args: {}
@@ -693,6 +788,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
     await bridge.start();
     const initialTreeScanCount = bridge.getState().requestPolling.requestTreeScanCount;
     const requestPath = 'bridge/requests/' + initial.request_id + '.json';
+    fake.seedSession(initial.session_id);
     fake.files.set(requestPath, {
       name: initial.request_id + '.json',
       path: requestPath,
@@ -897,7 +993,7 @@ test('invalid request JSON is reported and does not block later work', async () 
   const fake = fakeGitHub({ initial: [
     ['bridge/requests/req-a-bad.json', first],
     ['bridge/requests/req-z-good.json', second]
-  ] });
+  ], unscopedRequestIds: [first.request_id] });
   fake.files.set('bridge/requests/req-a-bad.json', {
     name: 'req-a-bad.json', type: 'file', encoding: 'base64',
     content: Buffer.from('not-json', 'utf8').toString('base64'), sha: 'sha-corrupt'
@@ -1261,6 +1357,61 @@ test('mailbox cleanup removes only old terminal request groups and associated ar
   }
 });
 
+test('message retention deletes only expired messages with valid read receipts', async () => {
+  const now = Date.now();
+  const oldTimestamp = String(now - 60 * 24 * 60 * 60 * 1000).padStart(13, '0');
+  const recentTimestamp = String(now).padStart(13, '0');
+  const sessionId = 'session-' + 'b'.repeat(32);
+  const oldReadId = 'msg-' + oldTimestamp + '-' + 'a'.repeat(32);
+  const oldUnreadId = 'msg-' + oldTimestamp + '-' + 'c'.repeat(32);
+  const recentReadId = 'msg-' + recentTimestamp + '-' + 'd'.repeat(32);
+  const nowIso = new Date().toISOString();
+  const session = {
+    protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: 'agent-001',
+    label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
+    last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+  };
+  const seat = {
+    protocol: 'chatgpt-local-agent-seat/v2', agent_id: 'agent-001', current_session_id: sessionId,
+    label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
+    last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+  };
+  const message = (messageId, createdAt) => ({
+    protocol: 'chatgpt-local-agent-message/v1', message_id: messageId, thread_id: messageId,
+    sender_session_id: 'session-' + 'e'.repeat(32), sender_agent_id: 'agent-002',
+    recipient_session_id: sessionId, recipient_agent_id: 'agent-001', subject: 'retention test',
+    message: 'test message', created_at: createdAt, in_reply_to: null, read_at: null
+  });
+  const receipt = messageId => ({
+    protocol: 'chatgpt-local-agent-message-receipt/v1', message_id: messageId,
+    recipient_session_id: sessionId, created_at: nowIso, read_at: nowIso
+  });
+  const oldDate = new Date(Number(oldTimestamp)).toISOString();
+  const recentDate = new Date(Number(recentTimestamp)).toISOString();
+  const fake = fakeGitHub({ initial: [
+    ['bridge/sessions/' + sessionId + '.json', session],
+    ['bridge/agents/agent-001.json', seat],
+    ['bridge/agent-messages/' + sessionId + '/' + oldReadId + '.json', message(oldReadId, oldDate)],
+    ['bridge/agent-message-receipts/' + sessionId + '/' + oldReadId + '.json', receipt(oldReadId)],
+    ['bridge/agent-messages/' + sessionId + '/' + oldUnreadId + '.json', message(oldUnreadId, oldDate)],
+    ['bridge/agent-messages/' + sessionId + '/' + recentReadId + '.json', message(recentReadId, recentDate)],
+    ['bridge/agent-message-receipts/' + sessionId + '/' + recentReadId + '.json', receipt(recentReadId)]
+  ] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true, result: {} }), intervalMs: 5000, cleanupIntervalMs: 1000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => !fake.files.has('bridge/agent-messages/' + sessionId + '/' + oldReadId + '.json'), 5000);
+    assert.equal(fake.files.has('bridge/agent-message-receipts/' + sessionId + '/' + oldReadId + '.json'), false);
+    assert.equal(fake.files.has('bridge/agent-messages/' + sessionId + '/' + oldUnreadId + '.json'), true, 'old unread messages must be retained');
+    assert.equal(fake.files.has('bridge/agent-messages/' + sessionId + '/' + recentReadId + '.json'), true, 'recent read messages must be retained');
+    assert.equal(fake.files.has('bridge/agent-message-receipts/' + sessionId + '/' + recentReadId + '.json'), true);
+  } finally { await bridge.stop(); }
+});
+
 test('filesystem index publishes to a stable path and skips unchanged snapshots', async () => {
   const fake = fakeGitHub();
   const fixture = settingsFixture();
@@ -1366,11 +1517,13 @@ test('mailbox polling dispatches new requests while a background context refresh
     const request = {
       protocol: PROTOCOL,
       request_id: requestId,
+      session_id: DEFAULT_TEST_SESSION_ID,
       created_at: new Date().toISOString(),
       tool: 'project_status',
       args: {}
     };
     const requestPath = 'bridge/requests/' + requestId + '.json';
+    fake.seedSession(request.session_id);
     fake.files.set(requestPath, {
       name: requestId + '.json',
       path: requestPath,
@@ -1485,7 +1638,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.equal(invocation.request_example.protocol, PROTOCOL);
     assert.equal(invocation.request_example.tool, 'get_agent_context');
     assert.deepEqual(invocation.request_example.args, {});
-    assert.match(invocation.calling_contract, /publish the request JSON.*read the result/i);
+    assert.match(invocation.calling_contract, /publish requests through GitHub MCP and read the matching result/i);
     assert.equal(index.agent_context.tool_catalog.tools[0].parameters.properties.path.description, 'Workspace-relative path');
     assert.equal(JSON.stringify(index.agent_context).includes('do not publish this instruction body'), false);
     assert.equal(JSON.stringify(index.agent_context).includes('private-host'), false);

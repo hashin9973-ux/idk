@@ -31,6 +31,16 @@ The ChatGPT GitHub integration and the app's GitHub authorization are separate. 
 
 The app defaults to `hashin9973-ux/qdqwg`, branch `bridge-mailbox`, and reuses any previously saved mailbox configuration. There is no configuration screen in the minimal status UI. Use the same repository and branch in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
 
+## Conversation sessions and agent collaboration
+
+The session-aware tool catalog uses reusable seats rather than permanently registered agents. When `session_start` is published, the first local bridge call in each ChatGPT conversation creates a randomized `session_id` and leases the next inactive seat (or creates one). Preserve that `session_id` for the conversation and include it as a top-level field on every subsequent request. Requests that omit or use an expired session are rejected. Older installed builds may still publish `agent_register`; clients should follow only the tool names and request envelope in the currently published `bridge/context/capabilities.json`.
+
+Each seat's activity status means recent bridge-tool activity (the default lease timeout is ten minutes). `busy` is reported separately and prevents reassignment while a request is executing. The generated context and `agent_status` list every known seat's status, current session, last activity, and request IDs without exposing registration credentials.
+
+For collaboration, use the published `send_agent_message`, `read_agent_messages`, and `reply_to_agent_message` tools. Messages target the current recipient `session_id` (or a currently active seat selector), are stored in that session's inbox, and carry a thread ID and reply linkage. The bridge prefixes message bodies as `[session_id][agent_id]`; it routes replies to the original sender session so reusing a seat does not redirect a conversation's inbox. This is mailbox delivery: the recipient conversation must read its inbox to see a message, and send success does not mean the recipient has read or answered it. When using bridge tools, conversation-visible progress/status messages are instructed to use the same `[session_id][agent_id]` prefix as a coordination convention.
+
+The dashboard presents one independent black-and-gray terminal widget per seat. Its position, size, scroll position, and open request/claim/result details are kept independent from the other seats. Seat IDs are reusable labels; the session ID is the conversation identity.
+
 ## Sandbox and approval boundary
 
 The shared mailbox repository uses `sandbox/` for ordinary ChatGPT-authored work files. Keep normal files, drafts, project notes, and deliverables there. The `bridge/` directory is the transport layer: create new immutable requests only in `bridge/requests/<id>.json`, read results from `bridge/results/`, and retrieve context from `bridge/context/`. Do not edit or delete other bridge files.

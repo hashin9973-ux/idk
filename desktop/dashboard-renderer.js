@@ -1,9 +1,9 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),api=window.windowsBridge;
-const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list'),agentMailboxList=$('agent-mailbox-list');
+const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list'),agentWidgetHost=$('agent-widget-host');
 const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),browserEnabled=$('browser-enabled'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
-let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const grid=12,minW=44,minH=36;
+let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const agentWidgets=new Map(),openAgentDetails=new Set();let savedWidgetLayout={};const grid=12,minW=180,minH=100;
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
 let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
@@ -14,6 +14,14 @@ function dashboardSnapshot(){
     const raw=parseFloat(el.style[property]);const n=Number.isFinite(raw)?raw:fallback;
     return Math.round(Math.max(min,Math.min(max,n)));
   };
+  const widgets={
+    queues:{x:dim(queue,'left',24,0,10000),y:dim(queue,'top',28,0,10000),width:dim(queue,'width',360,180,4000),height:dim(queue,'height',queue.scrollHeight||160,80,3000)},
+    controls:{x:dim(controls,'left',24,0,10000),y:dim(controls,'top',210,0,10000),width:dim(controls,'width',360,180,4000),height:dim(controls,'height',controls.scrollHeight||207,80,3000)}
+  };
+  for(const [id,el] of agentWidgets)widgets[id]={
+    x:dim(el,'left',420,0,10000),y:dim(el,'top',24,0,10000),
+    width:dim(el,'width',360,180,4000),height:dim(el,'height',320,100,3000)
+  };
   return {
     tabs:tabs.map((tab,order)=>{
       const saved=tab.kind==='browser'?records.get(tab.browserId):null;
@@ -21,10 +29,7 @@ function dashboardSnapshot(){
         ...(tab.kind==='browser'?{browserId:tab.browserId,url:saved&&saved.url||tab.url,title:saved&&saved.title||tab.title||tab.label}: {})};
     }),
     activeTabId:active,
-    widgets:{
-      queues:{x:dim(queue,'left',24,0,10000),y:dim(queue,'top',28,0,10000),width:dim(queue,'width',Math.max(180,mainPage.clientWidth-48),180,4000),height:dim(queue,'height',queue.scrollHeight||120,80,3000)},
-      controls:{x:dim(controls,'left',24,0,10000),y:dim(controls,'top',180,0,10000),width:dim(controls,'width',420,180,4000),height:dim(controls,'height',controls.scrollHeight||180,80,3000)}
-    }
+    widgets
   };
 }
 function scheduleSaveDashboardState(){
@@ -52,13 +57,29 @@ function applyDashboardState(value){
       if(!tabs.some(t=>t.id==='settings'))tabs.splice(Math.min(1,tabs.length),0,{id:'settings',kind:'settings',label:'Settings',closable:true});
     }
     const widgets=source.widgets&&typeof source.widgets==='object'?source.widgets:{};
+    savedWidgetLayout={};
+    for(const [id,layout] of Object.entries(widgets)){
+      if(/^agent-[0-9]{3,}$/.test(id)&&layout&&typeof layout==='object'){
+        savedWidgetLayout[id]={x:layout.x,y:layout.y,width:layout.width,height:layout.height};
+      }
+    }
+    for(const [id,el] of agentWidgets){
+      const layout=savedWidgetLayout[id];
+      if(layout&&Number.isFinite(layout.x)&&Number.isFinite(layout.y)&&Number.isFinite(layout.width)&&Number.isFinite(layout.height)){
+        Object.assign(el.style,{left:layout.x+'px',top:layout.y+'px',width:layout.width+'px',height:layout.height+'px'});
+      }
+    }
+    const savedSeatLayouts=Object.keys(savedWidgetLayout).length>0;
     for(const [id,el] of [['queues',queue],['controls',controls]]){
-      const w=widgets[id];if(!w||typeof w!=='object')continue;
+      const w=widgets[id]&&typeof widgets[id]==='object'?widgets[id]:{};
       const num=(key,def,min,max)=>Number.isFinite(w[key])?Math.max(min,Math.min(max,Math.round(w[key]))):def;
-      Object.assign(el.style,{left:num('x',24,0,10000)+'px',top:num('y',id==='queues'?28:180,0,10000)+'px',
-        width:num('width',id==='queues'?Math.max(180,mainPage.clientWidth-48):420,180,4000)+'px',
-        height:num('height',el.scrollHeight||150,80,3000)+'px'});
-      widgetMoved[id]=true;
+      const widthDefault=id==='queues'?360:360;
+      let width=num('width',widthDefault,180,4000);
+      if(!savedSeatLayouts&&id==='queues'&&width>650)width=360;
+      if(!savedSeatLayouts&&id==='controls'&&width>520)width=380;
+      Object.assign(el.style,{left:num('x',24,0,10000)+'px',top:num('y',id==='queues'?28:210,0,10000)+'px',
+        width:width+'px',height:num('height',id==='queues'?160:207,80,3000)+'px'});
+      widgetMoved[id]=Boolean(w&&Object.keys(w).length);
     }
     active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
   }finally{suppressDashboardSave=false}
@@ -135,11 +156,12 @@ function renderQueues(a,p){
     row.append(label,track,pct);$('queue-list').append(row);
   }
   if(!widgetMoved.queues){
-    queue.style.left='24px';queue.style.top='28px';queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';
-    // Keep the controls widget visible; long console histories scroll inside this widget.
+    const viewportWidth=mainPage.clientWidth||window.innerWidth||1200;
+    queue.style.left='24px';queue.style.top='28px';
+    queue.style.width=Math.min(360,Math.max(270,Math.round(viewportWidth*0.28)))+'px';
     const controlsHeight=controls.offsetHeight||207;
-    const maxHeight=Math.max(180,mainPage.clientHeight-28-controlsHeight-26);
-    queue.style.height=Math.min(Math.max(180,queue.scrollHeight+4),maxHeight)+'px';
+    const maxHeight=Math.max(160,(mainPage.clientHeight||window.innerHeight||800)-28-controlsHeight-26);
+    queue.style.height=Math.min(Math.max(150,queue.scrollHeight+4),maxHeight)+'px';
   }
   positionControls();
 }
@@ -150,52 +172,125 @@ function appendConsoleJsonDetails(parent,label,value){
   pre.textContent=typeof value==='string'&&value.length?value:'Not available yet.';
   details.append(summary,pre);parent.append(details);
 }
-function renderAgentMailboxes(rawAgents){
-  if(!agentMailboxList)return;
-  const agents=Array.isArray(rawAgents)?rawAgents:[];
-  const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' agent'+(agents.length===1?'':'s');
-  agentMailboxList.replaceChildren();
-  if(!agents.length){
-    const empty=document.createElement('div');empty.className='agent-console-empty';
-    empty.textContent='No mailbox activity published yet. Agents appear after their first registration or request.';
-    agentMailboxList.append(empty);return;
+function agentLayoutFor(agentId,index){
+  const saved=savedWidgetLayout[agentId];
+  if(saved&&Number.isFinite(saved.x)&&Number.isFinite(saved.y)&&Number.isFinite(saved.width)&&Number.isFinite(saved.height)){
+    return {x:saved.x,y:saved.y,width:saved.width,height:saved.height};
   }
-  for(const agent of agents){
-    const card=document.createElement('section');card.className='agent-console';
-    const header=document.createElement('div');header.className='agent-console-header';
-    const identity=document.createElement('div');identity.className='agent-console-identity';
-    const name=document.createElement('strong');name.className='agent-console-name';name.textContent=String(agent.label||agent.agent_id||'Legacy / unassigned');
-    const identityLine=document.createElement('div');identityLine.className='agent-console-id';
-    identityLine.textContent=agent.agent_id?'ID '+agent.agent_id:'NO AGENT ID';
-    identity.append(name,identityLine);
-    const status=document.createElement('span');status.className='agent-console-status '+(agent.status==='active'?'is-active':agent.status==='idle'?'is-idle':'is-unknown');
-    status.textContent=String(agent.status||'unknown').toUpperCase();
-    const counts=document.createElement('span');counts.className='agent-console-counts';
-    counts.textContent=(Number(agent.active_count||0)+' active · '+Number(agent.queued_count||0)+' queued');
-    header.append(identity,status,counts);card.append(header);
+  const viewportWidth=mainPage.clientWidth||window.innerWidth||1200;
+  const viewportHeight=mainPage.clientHeight||window.innerHeight||800;
+  const width=Math.min(360,Math.max(220,viewportWidth-48));
+  const height=Math.min(320,Math.max(180,viewportHeight-48));
+  const gap=18,utilityWidth=Math.min(360,Math.max(270,Math.round(viewportWidth*0.28)));
+  const rightX=24+utilityWidth+gap,hasRightColumn=rightX+width<=viewportWidth-12;
+  const baseX=hasRightColumn?rightX:24;
+  const baseY=hasRightColumn?24:Math.max((queue.offsetTop||28)+(queue.offsetHeight||150)+18,(controls.offsetTop||220)+(controls.offsetHeight||207)+18);
+  const columns=hasRightColumn?Math.max(1,Math.floor((viewportWidth-baseX-24+gap)/(width+gap))):1;
+  const overlaps=(x,y)=>{
+    const rects=[
+      {left:queue.offsetLeft,top:queue.offsetTop,right:queue.offsetLeft+queue.offsetWidth,bottom:queue.offsetTop+queue.offsetHeight},
+      {left:controls.offsetLeft,top:controls.offsetTop,right:controls.offsetLeft+controls.offsetWidth,bottom:controls.offsetTop+controls.offsetHeight},
+      ...[...agentWidgets.entries()].filter(([id])=>id!==agentId).map(([,el])=>({left:el.offsetLeft,top:el.offsetTop,right:el.offsetLeft+el.offsetWidth,bottom:el.offsetTop+el.offsetHeight}))
+    ];
+    return rects.some(r=>x<r.right+1&&x+width>r.left-1&&y<r.bottom+1&&y+height>r.top-1);
+  };
+  for(let slot=0;slot<500;slot++){
+    const x=baseX+(slot%columns)*(width+gap),y=baseY+Math.floor(slot/columns)*(height+gap);
+    if(!overlaps(x,y))return {x,y,width,height};
+  }
+  return {x:baseX,y:baseY+index*(height+gap),width,height};
+}
+function attachWidgetGesture(el){
+  el.addEventListener('pointerdown',e=>beginGesture(e,el));
+  el.addEventListener('pointermove',moveGesture);
+  el.addEventListener('pointerup',endGesture);
+  el.addEventListener('pointercancel',endGesture);
+}
+function makeAgentWidget(agent,index){
+  const card=document.createElement('section');card.id='agent-widget-'+agent.agent_id;
+  card.className='widget agent-console';card.dataset.widget=agent.agent_id;
+  card.setAttribute('aria-label','Terminal for '+agent.agent_id);
+  const layout=agentLayoutFor(agent.agent_id,index);
+  Object.assign(card.style,{left:layout.x+'px',top:layout.y+'px',width:layout.width+'px',height:layout.height+'px'});
+  const header=document.createElement('div');header.className='agent-console-header';header.dataset.agentDragHandle='true';
+  const identity=document.createElement('div');identity.className='agent-console-identity';
+  const name=document.createElement('strong');name.className='agent-console-name';
+  const identityLine=document.createElement('div');identityLine.className='agent-console-id';
+  const sessionLine=document.createElement('div');sessionLine.className='agent-console-session';
+  identity.append(name,identityLine,sessionLine);
+  const status=document.createElement('span');status.className='agent-console-status';
+  const busy=document.createElement('span');busy.className='agent-console-busy';
+  const counts=document.createElement('span');counts.className='agent-console-counts';
+  header.append(identity,status,busy,counts);
+  const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
+  card.append(header,body);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  return card;
+}
+function renderAgentMailboxes(rawAgents){
+  if(!agentWidgetHost)return;
+  const all=Array.isArray(rawAgents)?rawAgents:[];
+  const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^agent-[0-9]{3,}$/.test(agent.agent_id));
+  const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' seat'+(agents.length===1?'':'s');
+  agents.forEach((agent,index)=>{
+    let card=agentWidgets.get(agent.agent_id);
+    if(!card)card=makeAgentWidget(agent,index);
+    if(!savedWidgetLayout[agent.agent_id]&&!widgetMoved[agent.agent_id]){
+      const layout=agentLayoutFor(agent.agent_id,index);
+      Object.assign(card.style,{left:layout.x+'px',top:layout.y+'px',width:layout.width+'px',height:layout.height+'px'});
+    }
+    const header=card.querySelector('.agent-console-header');
+    const name=header.querySelector('.agent-console-name');
+    const identityLine=header.querySelector('.agent-console-id');
+    const sessionLine=header.querySelector('.agent-console-session');
+    const status=header.querySelector('.agent-console-status');
+    const busy=header.querySelector('.agent-console-busy');
+    const counts=header.querySelector('.agent-console-counts');
+    name.textContent=String(agent.label||agent.agent_id);
+    identityLine.textContent='ID '+agent.agent_id;
+    sessionLine.textContent='SESSION '+String(agent.session_id||'none');
+    sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
+    const active=agent.status==='active';
+    status.className='agent-console-status '+(active?'is-active':'is-inactive');
+    status.textContent=active?'ACTIVE':'INACTIVE';
+    busy.className='agent-console-busy '+(agent.busy?'is-busy':'');
+    busy.textContent=agent.busy?'BUSY':'IDLE';
+    counts.textContent=Number(agent.active_count||0)+' active · '+Number(agent.queued_count||0)+' queued';
+    const body=card.querySelector('.agent-console-body');
+    const previousSessionId=card.dataset.sessionId||'';
+    const currentSessionId=String(agent.session_id||'');
+    const sessionChanged=Boolean(previousSessionId&&previousSessionId!==currentSessionId);
+    const scrollTop=sessionChanged?0:body.scrollTop;
+    if(sessionChanged){
+      const prefix=agent.agent_id+'|';
+      for(const key of openAgentDetails)if(key.startsWith(prefix))openAgentDetails.delete(key);
+    }
+    card.dataset.sessionId=currentSessionId;
+    for(const detail of body.querySelectorAll('details[data-detail-key]'))if(detail.open)openAgentDetails.add(detail.dataset.detailKey);
+    body.replaceChildren();
+    if(sessionChanged){
+      const handoff=document.createElement('div');handoff.className='agent-console-empty';
+      handoff.textContent='Seat reassigned from '+previousSessionId+'; previous session history is hidden.';
+      body.append(handoff);
+    }
     const requests=Array.isArray(agent.requests)?agent.requests:[];
     if(!requests.length){
       const idle=document.createElement('div');idle.className='agent-console-empty';
-      const last=agent.last_seen_at?'Last check-in '+String(agent.last_seen_at):'No request history cached yet';
-      idle.textContent=last;card.append(idle);
-    } else {
+      const last=agent.last_activity_at||agent.last_seen_at;
+      idle.textContent=last?'Last activity '+String(last):'No bridge-tool activity recorded yet';
+      body.append(idle);
+    }else{
       for(const request of requests){
         const row=document.createElement('article');row.className='agent-request';
         const titleLine=document.createElement('div');titleLine.className='agent-request-title';
         const tool=document.createElement('strong');tool.className='agent-tool-name';
-        // This is the exact tool string stored in the mailbox request, not a friendly alias.
-        tool.textContent=String(request.tool||'unknown tool');
-        tool.title='Registered local tool name';
+        tool.textContent=String(request.tool||'unknown tool');tool.title='Exact registered tool name';
         const reqStatus=String(request.status||'queued');
         const stage=document.createElement('span');
         stage.className='agent-request-stage '+(['completed','partial','failed','rejected','cancelled'].includes(reqStatus)?'is-terminal':['queued','loading','claiming'].includes(reqStatus)?'is-queued':'is-running');
-        stage.textContent=reqStatus;
-        titleLine.append(tool,stage);
+        stage.textContent=reqStatus;titleLine.append(tool,stage);
         const id=document.createElement('div');id.className='agent-request-id';id.textContent=String(request.request_id||'');id.title=String(request.request_id||'');
         row.append(titleLine,id);
-        if(request.error){
-          const error=document.createElement('div');error.className='agent-request-error';error.textContent=String(request.error);row.append(error);
-        }
+        if(request.error){const error=document.createElement('div');error.className='agent-request-error';error.textContent=String(request.error);row.append(error)}
         const progressLine=document.createElement('div');progressLine.className='agent-progress-line';
         const progress=document.createElement('progress');progress.className='agent-progress';progress.max=100;
         progress.value=Math.max(0,Math.min(100,Number(request.progress)||0));progress.setAttribute('aria-label',String(request.tool||'request')+' stage progress');
@@ -205,13 +300,19 @@ function renderAgentMailboxes(rawAgents){
         appendConsoleJsonDetails(json,'Request JSON',request.request_json);
         appendConsoleJsonDetails(json,'Claim JSON',request.claim_json);
         appendConsoleJsonDetails(json,'Result JSON',request.result_json);
-        row.append(json);card.append(row);
+        for(const detail of json.querySelectorAll('details')){
+          const key=agent.agent_id+'|'+String(request.request_id||'')+'|'+detail.querySelector('summary').textContent;
+          detail.dataset.detailKey=key;
+          detail.open=openAgentDetails.has(key);
+          detail.addEventListener('toggle',()=>{if(detail.open)openAgentDetails.add(key);else openAgentDetails.delete(key)});
+        }
+        row.append(json);body.append(row);
       }
     }
-    agentMailboxList.append(card);
-  }
+    body.scrollTop=scrollTop;
+  });
 }
-function positionControls(){if(widgetMoved.controls)return;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||120)+18)+'px';controls.style.width=Math.min(590,Math.max(330,mainPage.clientWidth-48))+'px'}
+function positionControls(){if(widgetMoved.controls)return;const width=mainPage.clientWidth||window.innerWidth||1200;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||150)+18)+'px';controls.style.width=Math.min(360,Math.max(270,Math.round(width*0.28)))+'px'}
 function renderWorker(v){bridge=v||{};const s=String(bridge.workerStatus||bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='reconnecting'?'Worker reconnecting · retrying mailbox':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderAgentMailboxes(bridge.agentMailboxes);renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
 function renderGitHub(v){github=v||{};githubStatus.textContent=github.authenticated?'GitHub connected':github.verificationPending?'GitHub verifying…':'GitHub not connected';$('github-detail').textContent=github.authenticated?'Signed in as '+(github.login||'GitHub user'):'GitHub not connected';$('github-connect').textContent=github.authenticated?'Reconnect':'Sign in'}
 function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root;$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root}
@@ -258,10 +359,10 @@ async function refresh(){
 }
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
-function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label,details,summary,pre,.agent-console,[data-no-widget-drag]'))return;const r=el.getBoundingClientRect(),edge=9,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;gesture={el,mode:L||R||T||B?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
+function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label,details,summary,pre'))return;const r=el.getBoundingClientRect(),edge=10,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;const resize=L||R||T||B;const isAgent=el.classList.contains('agent-console');if(isAgent&&!resize&&!e.target.closest('.agent-console-header'))return;if(!isAgent&&!resize&&e.target.closest('[data-no-widget-drag]'))return;gesture={el,mode:resize?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
 function moveGesture(e){if(!gesture)return;const g=gesture,dx=e.clientX-g.sx,dy=e.clientY-g.sy;let x=g.x,y=g.y,w=g.w,h=g.h;if(g.mode==='drag'){x+=dx;y+=dy}else{if(g.R)w+=dx;if(g.B)h+=dy;if(g.L){x+=dx;w-=dx}if(g.T){y+=dy;h-=dy}if(w<minW){if(g.L)x-=minW-w;w=minW}if(h<minH){if(g.T)y-=minH-h;h=minH}}g.el.style.left=x+'px';g.el.style.top=y+'px';if(g.mode==='resize'){g.el.style.width=w+'px';g.el.style.height=h+'px'}}
 function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,Math.min(Math.max(0,r.height-h),y));Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls();scheduleSaveDashboardState()}
-for(const el of [queue,controls]){el.addEventListener('pointerdown',e=>beginGesture(e,el));el.addEventListener('pointermove',moveGesture);el.addEventListener('pointerup',endGesture);el.addEventListener('pointercancel',endGesture)}
+for(const el of [queue,controls])attachWidgetGesture(el)
 obs.addEventListener('click',async()=>{if(busy.observe)return;busy.observe=true;obs.disabled=true;try{observe=await api.setObserveEnabled(!observe.enabled);renderObserve();note('Observe mode updated.','success')}catch(e){note(e.message,'error')}finally{busy.observe=false;obs.disabled=false}});
 acceptBtn.addEventListener('click',async()=>{if(busy.accept)return;busy.accept=true;acceptBtn.disabled=true;try{const r=await api.setAutoAcceptAll(!autoAccept);autoAccept=Boolean(r.autoAcceptAll);renderAccept();note(autoAccept?'Auto-accept enabled after confirmation.':'Auto-accept disabled.','success')}catch(e){note(e.message,'error')}finally{busy.accept=false;acceptBtn.disabled=false}});
 fps.addEventListener('change',async()=>{try{observe=await api.setObserveFps(Number(fps.value));renderObserve()}catch(e){note(e.message,'error')}});
@@ -333,6 +434,25 @@ api.onPrepareForTray(async payload=>{
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
 api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
-window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
+window.addEventListener('resize',()=>{
+  if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
+  positionControls();
+  let layoutChanged=false;
+  if(!mainPage.hidden&&mainPage.clientWidth>0){
+    for(const [id,el] of agentWidgets){
+      const width=Math.min(el.offsetWidth,Math.max(180,mainPage.clientWidth-24));
+      const left=Math.max(0,Math.min(Math.max(0,mainPage.clientWidth-width),el.offsetLeft));
+      const top=Math.max(0,el.offsetTop);
+      if(width!==el.offsetWidth||left!==el.offsetLeft||top!==el.offsetTop){
+        Object.assign(el.style,{left:left+'px',top:top+'px',width:width+'px'});
+        savedWidgetLayout[id]={x:left,y:top,width,height:el.offsetHeight};
+        layoutChanged=true;
+      }
+    }
+  }
+  renderAgentMailboxes(bridge.agentMailboxes);
+  if(layoutChanged)scheduleSaveDashboardState();
+  updateBrowserBounds()
+});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
 applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();
