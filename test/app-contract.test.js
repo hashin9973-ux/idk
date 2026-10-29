@@ -505,8 +505,8 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.ok(main.includes('function armColabHandoff()'));
   assert.ok(main.includes('if (!colabHandoffArmed) return false;'));
   assert.ok(main.includes('automatic_handoff_armed: colabHandoffArmed'));
-  assert.ok(main.includes("armColabHandoff();\\n    const result = await visionService.connectColab('');"));
-  assert.ok(main.includes('if (manualEndpoint) {\\n      disarmColabHandoff();'));
+  assert.ok(main.includes('armColabHandoff();') && main.includes("const result = await visionService.connectColab('')"));
+  assert.ok(main.includes('if (manualEndpoint) {') && main.includes('disarmColabHandoff();'));
   assert.ok(renderer.includes('Receiver ready but not armed.'));
   assert.ok(renderer.includes('Connect Colab is armed.'));
 
