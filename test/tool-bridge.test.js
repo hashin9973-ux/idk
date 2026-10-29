@@ -525,7 +525,7 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(result.result.retrieval_rules.some(rule => /does not expose these local tools as native functions/i.test(rule)));
     assert.ok(result.result.retrieval_rules.some(rule => rule.includes('create bridge/requests') && rule.includes('read bridge/results')));
     assert.ok(result.result.retrieval_rules.some(rule => /before asking for machine facts/i.test(rule)));
-    assert.ok(result.result.development_workflow.rules.some(rule => /Start with get_agent_context/i.test(rule)));
+    assert.ok(result.result.development_workflow.rules.some(rule => /After session_start, start with get_agent_context/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /Never replay an uncertain side-effecting request/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /measurable acceptance criteria/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /integrated vertical slices/i.test(rule)));
