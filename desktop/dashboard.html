@@ -13,7 +13,12 @@
 </header>
 <main id="page-stage">
 <section id="main-page" class="page" aria-label="Main widgets">
-<section id="queues-widget" class="widget queue-widget" data-widget="queues" aria-label="Current Queues"><h2>Current Queues</h2><div id="queue-list" class="queue-list"></div></section>
+<section id="queues-widget" class="widget queue-widget" data-widget="queues" aria-label="Agent mailboxes and current queues">
+<h2>Mailbox Monitor</h2>
+<div id="queue-list" class="queue-list" aria-label="Aggregate queue summary"></div>
+<div class="agent-mailbox-heading"><h3>Agent Mailboxes</h3><span id="agent-mailbox-count">0 agents</span></div>
+<div id="agent-mailbox-list" class="agent-mailbox-list" data-no-widget-drag aria-live="polite"><div class="agent-console-empty">Waiting for mailbox activity…</div></div>
+</section>
 <section id="controls-widget" class="widget controls-widget" data-widget="controls" aria-label="Bridge controls">
 <h2>Controls</h2><div class="control-grid">
 <button id="observe-toggle" class="setting-toggle" type="button" aria-pressed="false"><span class="toggle-glyph"></span><span class="toggle-copy"><strong>Observe</strong><small id="observe-status">OFF · 2 fps</small></span></button>
