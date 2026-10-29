@@ -1579,8 +1579,8 @@ function startCaptionProgress(requestId, speechJobId) {
 function finishSpeechCaption(request, output) {
   if (!request || !activeCaptionPayload || request.id !== activeCaptionPayload.id) return;
   if (request.mode === 'notification') {
-    if (output && output.status === 'tts_completed') {
-      activeCaptionPayload.status = 'Speech ready · press Play';
+    if (output && output.status === 'tts_notification_pending') {
+      activeCaptionPayload.status = 'Ready to play · click Play to begin';
       activeCaptionPayload.error = '';
     } else {
       activeCaptionPayload.status = 'Speech preparation failed';

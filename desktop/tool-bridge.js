@@ -439,7 +439,7 @@ function computerOutputFailed(action, output) {
 
 function ttsOutputFailed(args = {}, output) {
   if (!output || typeof output !== 'object') return true;
-  if (output.notification_pending === true && output.status === 'tts_completed' && output.played === false) return false;
+  if (output.notification_pending === true && output.status === 'tts_notification_pending' && output.played === false) return false;
   if (args.play === false) return output.status !== 'tts_completed';
   if (output.status === 'tts_started') {
     return output.played !== true || !/^tts-[a-f0-9]{24}$/.test(String(output.speech_job_id || ''));
@@ -458,10 +458,19 @@ function createToolBridge(deps) {
     const mode = config.mode === 'notification' ? 'notification' : 'autoplay';
     const request = { id: 'speech-' + randomUUID(), text: String(args.text || '').trim(), mode };
     if (typeof onTtsRequest === 'function') { try { onTtsRequest(request); } catch {} }
-    const effectiveArgs = mode === 'notification' ? { ...args, play: false } : args;
+    if (mode === 'notification') {
+      const output = {
+        status: 'tts_notification_pending',
+        request_id: id,
+        played: false,
+        notification_pending: true,
+        message: 'Speech text is queued in the local notification. Click Play to begin synthesis and playback.'
+      };
+      if (typeof onTtsResult === 'function') { try { onTtsResult(request, output); } catch {} }
+      return output;
+    }
     try {
-      let output = await visionService.synthesizeSpeech(effectiveArgs, id);
-      if (mode === 'notification' && output && output.status === 'tts_completed' && output.played === false) output = { ...output, notification_pending: true };
+      const output = await visionService.synthesizeSpeech(args, id);
       if (typeof onTtsResult === 'function') { try { onTtsResult(request, output); } catch {} }
       return output;
     } catch (error) {
