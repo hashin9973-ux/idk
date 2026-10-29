@@ -485,17 +485,27 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.ok(python.includes('Copy endpoint (fallback)'));
   assert.match(python, /Connect to Windows Bridge/);
   assert.ok(python.includes('windows-repository-bridge://connect-colab?endpoint='));
-  assert.ok(python.includes('sendToWindowsBridge(false)'));
+  assert.ok(python.includes('http://127.0.0.1:43817/handoff'));
+  assert.ok(python.includes('body: JSON.stringify({ endpoint })'));
+  assert.ok(python.includes('navigator.permissions.query({ name: "loopback-network" })'));
+  assert.ok(python.includes('targetAddressSpace: "loopback"'));
+  assert.ok(python.includes('if (loopbackPermission === "granted" && loopbackPolicyAllowed)'));
+  assert.ok(python.includes('This request originates directly by this click'));
+  assert.doesNotMatch(python, /sendToWindowsBridge\(false\)/);
   assert.match(python, /document\.createElement\("textarea"\)/);
-  assert.match(python, /Clipboard access was blocked\. The endpoint is selected/);
-  assert.match(python, /Paste URL in Windows Repository Bridge/);
+  assert.match(python, /Clipboard access was blocked\. Use the one-click app handoff/);
+  assert.match(python, /copying and pasting is the last resort/);
   assert.match(main, /'app:vision-manual-panel'/);
   assert.ok(main.includes('setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)'));
+  assert.ok(main.includes('createColabHandoffServer({'));
+  assert.ok(main.includes('onEndpoint: queueColabEndpoint'));
+  assert.ok(main.includes('automatic_handoff_ready: handoff.ready === true'));
+  assert.ok(service.includes('once allowed, future endpoint URLs are sent automatically'));
   assert.ok(main.includes("app.on('open-url'"));
   assert.ok(main.includes("parseTunnelEndpoint(uri.searchParams.get('endpoint'))"));
   assert.doesNotMatch(main, /COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
-  assert.doesNotMatch(python, /wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
+  assert.doesNotMatch(python, /wrb_pair_nonce/);
 });
 
 test('Colab vision notebook becomes ready after model download without startup image inference', () => {
