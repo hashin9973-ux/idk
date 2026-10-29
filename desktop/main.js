@@ -761,7 +761,13 @@ function setBrowserBounds(value) {
   return { applied: true, bounds: browserBounds };
 }
 function getBrowserSettings() {
-  return { enabled: settings.browserEnabled === true, keepActive: settings.browserKeepActive === true, lowMemory: settings.browserLowMemory === true, volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100 };
+  const enabled = settings.browserEnabled === true;
+  return {
+    enabled,
+    keepActive: enabled && settings.browserKeepActive === true,
+    lowMemory: enabled && settings.browserLowMemory === true,
+    volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100
+  };
 }
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
@@ -1370,8 +1376,8 @@ function collectSharedPreferences() {
   return {
     dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
     ttsVolume: Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, settings.ttsVolume)) : 100,
-    browserKeepActive: settings.browserKeepActive === true,
-    browserLowMemory: settings.browserLowMemory === true,
+    browserKeepActive: settings.browserEnabled === true && settings.browserKeepActive === true,
+    browserLowMemory: settings.browserEnabled === true && settings.browserLowMemory === true,
     observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS,
     ttsMode: tts.mode, captionsOnAutoplay: tts.captionsOnAutoplay,
     captionTransparent: tts.captionTransparent, captionPosition: tts.captionPosition,
@@ -1402,8 +1408,13 @@ function applyCloudRemoteState(shared) {
   const preferences = source.preferences && typeof source.preferences === 'object' ? source.preferences : {};
   if (DASHBOARD_THEME_IDS.includes(preferences.dashboardTheme)) settings.dashboardTheme = preferences.dashboardTheme;
   if (Number.isFinite(preferences.ttsVolume)) settings.ttsVolume = Math.round(Math.max(0, Math.min(100, preferences.ttsVolume)));
-  if (typeof preferences.browserKeepActive === 'boolean') settings.browserKeepActive = preferences.browserKeepActive;
-  if (typeof preferences.browserLowMemory === 'boolean') settings.browserLowMemory = preferences.browserLowMemory;
+  if (settings.browserEnabled === true) {
+    if (typeof preferences.browserKeepActive === 'boolean') settings.browserKeepActive = preferences.browserKeepActive;
+    if (typeof preferences.browserLowMemory === 'boolean') settings.browserLowMemory = preferences.browserLowMemory;
+  } else {
+    settings.browserKeepActive = false;
+    settings.browserLowMemory = false;
+  }
   if ([0.5, 1, 2, 4, 8].includes(preferences.observeFps)) settings.observeFps = preferences.observeFps;
   settings.ttsSettings = normalizeTtsSettings({
     ...getTtsSettings(),
@@ -1415,10 +1426,13 @@ function applyCloudRemoteState(shared) {
     ...(Number.isFinite(preferences.captionY) ? { captionY: preferences.captionY } : {}),
     ...(typeof preferences.captionTheme === 'string' ? { captionTheme: preferences.captionTheme } : {})
   });
-  const remoteTabs = Array.isArray(source.tabs) ? source.tabs : [];
+  const remoteTabs = (Array.isArray(source.tabs) ? source.tabs : []).filter(tab =>
+    settings.browserEnabled === true || !tab || tab.kind !== 'browser');
   const remoteIds = new Set(remoteTabs.map(tab => tab && tab.id).filter(Boolean));
-  const localPrivateTabs = normalizeDashboardState(settings.dashboardState || defaultDashboardState()).tabs.filter(tab =>
-    tab.kind === 'browser' && !safeShareUrl(tab.url) && !remoteIds.has(tab.id));
+  const localPrivateTabs = settings.browserEnabled === true
+    ? normalizeDashboardState(settings.dashboardState || defaultDashboardState()).tabs.filter(tab =>
+      tab.kind === 'browser' && !safeShareUrl(tab.url) && !remoteIds.has(tab.id))
+    : [];
   settings.dashboardState = normalizeDashboardState({
     tabs: [...remoteTabs, ...localPrivateTabs],
     activeTabId: source.activeTabId,
@@ -1748,7 +1762,13 @@ function getUiState() {
 }
 
 function saveDashboardState(value) {
-  const normalized = normalizeDashboardState(value);
+  const incoming = normalizeDashboardState(value);
+  const browserWasActive = incoming.tabs.some(tab => tab.id === incoming.activeTabId && tab.kind === 'browser');
+  const normalized = settings.browserEnabled === true ? incoming : normalizeDashboardState({
+    ...incoming,
+    tabs: incoming.tabs.filter(tab => tab.kind !== 'browser'),
+    activeTabId: browserWasActive ? 'main' : incoming.activeTabId
+  });
   settings.dashboardState = normalized;
   syncBrowserRegistryFromDashboardState(normalized);
   saveBrowserTabMetadata();
