@@ -482,7 +482,7 @@ test('large historical mailbox folders are listed with bounded Git trees, not Co
 });
 
 test('request-tree reconciliation remains authoritative when the fast commit endpoint is stale', async () => {
-  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 1500);
+  assert.equal(DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS, 10000);
   // A deliberately stale response from the old path-filtered commit endpoint must not delay request discovery.
   const fake = fakeGitHub({ requestCommitShaOverride: 'a'.repeat(40) });
   const fixture = settingsFixture();
