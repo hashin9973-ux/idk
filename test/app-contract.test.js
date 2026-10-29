@@ -501,6 +501,15 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.ok(main.includes('createColabHandoffServer({'));
   assert.ok(main.includes('onEndpoint: queueColabEndpoint'));
   assert.ok(main.includes('automatic_handoff_ready: handoff.ready === true'));
+  assert.ok(main.includes('const COLAB_HANDOFF_ARM_TIMEOUT_MS = 20 * 60 * 1000;'));
+  assert.ok(main.includes('function armColabHandoff()'));
+  assert.ok(main.includes('if (!colabHandoffArmed) return false;'));
+  assert.ok(main.includes('automatic_handoff_armed: colabHandoffArmed'));
+  assert.ok(main.includes("armColabHandoff();\\n    const result = await visionService.connectColab('');"));
+  assert.ok(main.includes('if (manualEndpoint) {\\n      disarmColabHandoff();'));
+  assert.ok(renderer.includes('Receiver ready but not armed.'));
+  assert.ok(renderer.includes('Connect Colab is armed.'));
+
   assert.ok(service.includes('once allowed, future endpoint URLs are sent automatically'));
   assert.ok(main.includes("app.on('open-url'"));
   assert.ok(main.includes("parseTunnelEndpoint(uri.searchParams.get('endpoint'))"));
