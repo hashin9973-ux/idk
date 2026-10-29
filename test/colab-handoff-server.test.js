@@ -22,7 +22,7 @@ function makeServer(options = {}) {
     host: DEFAULT_HOST,
     port: 0,
     parseEndpoint: value => value === ENDPOINT ? { url: value, apiKey: 'do-not-return-this' } : null,
-    onEndpoint: endpoint => { deliveries.push(endpoint); },
+    onEndpoint: endpoint => { deliveries.push(endpoint); return true; },
     ...options
   });
   return { server, deliveries };
