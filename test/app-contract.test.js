@@ -79,7 +79,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.checkVisionSetup/);
   assert.match(renderer, /runVisionSetupCheck/);
   assert.match(renderer, /Vision: ready/);
-  assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
+  assert.match(renderer, /Colab endpoint received\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
   assert.match(renderer, /incompatible_runtime: 'Colab: update notebook'/);
@@ -142,7 +142,8 @@ test('main process opens login in the system browser and returns focus after Git
     main.indexOf("ipcMain.handle('app:vision-connect-colab'"),
     main.indexOf("ipcMain.handle('app:vision-manual-panel'")
   );
-  assert.match(visionStatusHandler, /return visionService\.status\(\)/);
+  assert.match(visionStatusHandler, /const state = visionService\.status\(\)/);
+  assert.match(visionStatusHandler, /automatic_handoff_ready/);
   assert.doesNotMatch(visionStatusHandler, /githubAuth\.getState|githubState\.authenticated/);
   assert.match(connectColabHandler, /return visionService\.connectColab/);
   assert.doesNotMatch(connectColabHandler, /githubAuth\.getState|visionService\.setupCheck|mailboxCheck/);
@@ -460,7 +461,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('original_frame_region_px'));
   assert.ok(python.includes('region_px must be an in-frame crop'));
   assert.ok(python.includes('display_public_endpoint'));
-  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT='));
+  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT generated; the raw URL is kept in the handoff panel, not notebook text output.'));
   assert.ok(python.includes('navigator.clipboard.writeText'));
   assert.ok(python.includes('def _route_path(self)'));
   assert.ok(!python.includes('QDQWG_TOKEN'));
