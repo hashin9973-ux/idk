@@ -268,13 +268,13 @@ test('inline GitHub auth stores an encrypted app-side credential and does not re
 
 test('the single dashboard unloads to the system tray while the worker stays alive', () => {
   const main = read('desktop', 'main.js');
-  const html = read('desktop', 'index.html');
+  const html = read('desktop', 'dashboard.html');
   assert.match(main, /new Tray\(/);
   assert.match(main, /tray\.setContextMenu/);
   assert.match(main, /label: 'Open Windows Bridge'/);
   assert.match(main, /label: 'Quit'/);
-  assert.match(main, /win\.on\('minimize', event => \{\s*event\.preventDefault\(\);\s*destroyDashboardWindowToTray\(\);/);
-  assert.match(main, /win\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*destroyDashboardWindowToTray\(\);/);
+  assert.match(main, /win\.on\('minimize', event => \{\s*event\.preventDefault\(\);\s*if \(tray\) void destroyDashboardWindowToTray\(\);/);
+  assert.match(main, /win\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*if \(tray\) void destroyDashboardWindowToTray\(\);/);
   assert.match(main, /function startAutoConnectLoop\(\)/);
   assert.match(main, /setInterval\(\(\) => \{ void attemptAutoConnect\(\); \}, AUTO_CONNECT_INTERVAL_MS\)/);
   assert.match(main, /owner: 'hashin9973-ux'/);
@@ -282,7 +282,7 @@ test('the single dashboard unloads to the system tray while the worker stays ali
   assert.match(main, /branch: 'bridge-mailbox'/);
   assert.match(main, /startAutoConnectLoop\(\)/);
   assert.doesNotMatch(main, /app:start-bridge|app:stop-bridge/);
-  assert.doesNotMatch(html, /Start worker|worker-toggle|titlebar|settings-panel/);
+  assert.doesNotMatch(html, /Start worker|worker-toggle|titlebar|open-overlay/);
   assert.match(main, /function destroyDashboardWindowToTray\(\)/);
   assert.match(main, /trayStateResolvers = new Map\(\)/);
   assert.match(main, /loadFile\(path\.join\(__dirname, 'dashboard\.html'\)\)/);
