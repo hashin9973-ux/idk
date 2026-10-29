@@ -162,7 +162,11 @@ test('main process opens login in the system browser and returns focus after Git
   assert.doesNotMatch(main, /clearGitHubCliCredentials|auth', 'logout/);
   assert.doesNotMatch(main, /const connected = await githubAuth\.importToken\(token\)/);
   assert.match(main, /repositoryBridge\.stop\(\)/);
-  assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|conversation-mirror|installChatToolBridge/);\n  assert.match(main, /WebContentsView/);\n  assert.match(main, /function createDashboardWindow/);\n  assert.match(main, /'app:browser-settings'/);\n  assert.match(main, /'app:repository-bridge-config'/);
+  assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|conversation-mirror|installChatToolBridge/);
+  assert.match(main, /WebContentsView/);
+  assert.match(main, /function createDashboardWindow/);
+  assert.match(main, /'app:browser-settings'/);
+  assert.match(main, /'app:repository-bridge-config'/);
 });
 
 test('the separate dashboard implements tabbed widgets, settings, and embedded-browser controls', () => {
