@@ -23,6 +23,12 @@
 </div><p id="dashboard-message" class="inline-message" role="status" aria-live="polite"></p></section>
 </section>
 <section id="settings-page" class="page settings-page" aria-label="Settings" hidden><div class="settings-scroll">
+<section class="settings-panel appearance-panel"><div class="section-heading"><h2>Appearance</h2><p>Choose the dashboard color theme. Your selection is saved locally.</p></div>
+<div class="setting-row"><label for="theme-select">Color theme</label><select id="theme-select" aria-label="Dashboard color theme">
+<option value="midnight">Midnight · Teal</option><option value="light">Light · Slate</option><option value="ocean">Ocean · Blue</option><option value="forest">Forest · Green</option><option value="sunset">Sunset · Amber</option><option value="rose">Rose · Pink</option><option value="high-contrast">High contrast</option>
+</select></div>
+<div class="theme-swatches" aria-hidden="true"><span class="swatch midnight"></span><span class="swatch light"></span><span class="swatch ocean"></span><span class="swatch forest"></span><span class="swatch sunset"></span><span class="swatch rose"></span><span class="swatch contrast"></span></div>
+</section>
 <section class="settings-panel"><div class="section-heading"><h2>GitHub access</h2><p>Authenticate this Windows app.</p></div><div class="setting-row"><div><strong id="github-detail">GitHub not connected</strong><small>Uses existing encrypted app-side sign-in.</small></div><button id="github-connect" class="action-button compact" type="button">Sign in</button></div></section>
 <section class="settings-panel"><div class="section-heading"><h2>Bridge environment repository</h2><p>Existing repository and branch used for bridge requests and results.</p></div>
 <form id="repo-form" class="repo-form"><label>Owner<input id="repo-owner" name="owner" maxlength="100" required autocomplete="off"></label><label>Repository<input id="repo-name" name="repo" maxlength="100" required autocomplete="off"></label><label>Branch<input id="repo-branch" name="branch" maxlength="120" required autocomplete="off"></label>
