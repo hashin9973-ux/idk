@@ -37,15 +37,64 @@ acceptBtn.addEventListener('click',async()=>{if(busy.accept)return;busy.accept=t
 fps.addEventListener('change',async()=>{try{observe=await api.setObserveFps(Number(fps.value));renderObserve()}catch(e){note(e.message,'error')}});
 async function chooseWorkspace(){if(busy.workspace)return;busy.workspace=true;try{const r=await api.selectWorkspace();if(!r.canceled){renderWorkspace(r.workspace);note('Workspace updated.','success')}}catch(e){note(e.message,'error')}finally{busy.workspace=false}}
 workspace.addEventListener('click',()=>void chooseWorkspace());$('settings-workspace-button').addEventListener('click',()=>void chooseWorkspace());
-$('open-overlay').addEventListener('click',()=>void api.showOverlay().catch(e=>note(e.message,'error')));
+$('minimize-to-tray').addEventListener('click',()=>void api.minimizeToTray().catch(e=>note(e.message,'error')));
+$('quit-app').addEventListener('click',()=>void api.quit().catch(e=>note(e.message,'error')));
 colab.addEventListener('click',async()=>{if(busy.colab)return;busy.colab=true;colab.disabled=true;colab.querySelector('small').textContent='Opening Colab…';try{const opened=await api.openColabTab();syncBrowserTabs(await api.getBrowserTabs());const tab=tabs.find(v=>v.kind==='browser'&&v.browserId===opened.id);if(tab){active=tab.id;setPage()}const result=await api.connectColab();const currentTabs=await api.getBrowserTabs();syncBrowserTabs(currentTabs);const colabTab=currentTabs.find(v=>v.url&&v.url.startsWith('https://colab.research.google.com/'));const activeColabTab=colabTab&&tabs.find(v=>v.kind==='browser'&&v.browserId===colabTab.id);if(activeColabTab){active=activeColabTab.id;setPage()}$('colab-status').textContent=result.message||result.status||'Connection requested';note(result.message||'Colab connection requested.',result.connected?'success':'')}catch(e){$('colab-status').textContent=e.message;note(e.message,'error')}finally{busy.colab=false;colab.disabled=false}});
 $('github-connect').addEventListener('click',async()=>{if(busy.github)return;busy.github=true;$('github-connect').disabled=true;try{const cur=await api.getGitHubState(),flow=cur.authenticated?await api.reconnectGitHub():await api.startGitHubLogin();if(flow&&flow.userCode){note('GitHub device code: '+flow.userCode+' — complete authorization in the browser.');let n=0;const poll=async()=>{if(!busy.github)return;try{const s=await api.pollGitHubLogin();if(s.status==='authenticated'){busy.github=false;$('github-connect').disabled=false;await refresh();return}if(s.status==='error'){note(s.message||'GitHub sign-in failed.','error');busy.github=false;$('github-connect').disabled=false;return}}catch{}if(++n<200)window.setTimeout(poll,3000);else{busy.github=false;$('github-connect').disabled=false;note('GitHub authorization polling stopped.','error')}};window.setTimeout(poll,3000)}else{await refresh();busy.github=false;$('github-connect').disabled=false}}catch(e){note(e.message,'error');busy.github=false;$('github-connect').disabled=false}});
 repoForm.addEventListener('submit',async e=>{e.preventDefault();if(busy.repo)return;busy.repo=true;repoMsg.textContent='Validating and switching repository…';try{const r=await api.setRepositoryBridgeConfig({owner:$('repo-owner').value.trim(),repo:$('repo-name').value.trim(),branch:$('repo-branch').value.trim(),allowPublicMailbox:$('allow-public-mailbox').checked});repoMsg.textContent='Repository saved and worker restarted.';repoMsg.dataset.state='success';note('Bridge environment repository updated.','success');renderWorker(r.bridge||{})}catch(e){repoMsg.textContent=e.message;repoMsg.dataset.state='error';note(e.message,'error');await refresh()}finally{busy.repo=false}});
 themeSelect.addEventListener('change',()=>void chooseTheme(themeSelect.value));themeGallery.addEventListener('click',e=>{const card=e.target.closest('[data-theme-id]');if(card&&themeIds.includes(card.dataset.themeId))void chooseTheme(card.dataset.themeId)});
 volume.addEventListener('input',()=>volumeValue.textContent=volume.value+'%');volume.addEventListener('change',async()=>{if(busy.volume)return;busy.volume=true;try{const v=await api.setTtsVolume(Number(volume.value));volumeValue.textContent=v.volume+'%';note('TTS volume saved.','success')}catch(e){note(e.message,'error')}finally{busy.volume=false}});
+
+for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){
+  $(id).addEventListener('change',()=>{applyTtsSettings(readTtsSettings());void saveTtsSettings()});
+}
+for(const id of ['tts-caption-x','tts-caption-y']){
+  $(id).addEventListener('input',()=>{ $(id+'-value').textContent=$(id).value+'%'; $('tts-custom-position').hidden=$('tts-caption-position').value!=='custom'; });
+  $(id).addEventListener('change',()=>void saveTtsSettings());
+}
+$('tts-caption-preview').addEventListener('click',async()=>{try{await api.previewCaptions();note('Caption preview opened.','success')}catch(e){note(e.message,'error')}});
+$('save-now').addEventListener('click',async()=>{
+  const b=$('save-now');b.disabled=true;
+  try{if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}await api.saveDashboardState(dashboardSnapshot());const result=await api.saveNow();$('save-status').textContent='Saved locally at '+new Date(result.savedAt).toLocaleTimeString();note('Application state saved locally.','success')}
+  catch(e){note('Could not save application state: '+e.message,'error')}
+  finally{b.disabled=false}
+});
+$('cloud-folder-choose').addEventListener('click',async()=>{
+  const b=$('cloud-folder-choose');b.disabled=true;
+  try{const r=await api.chooseCloudFolder();if(!r.canceled){renderCloudStatus({...r.status,folder:r.folder,enabled:$('cloud-sync-enabled').checked});note('Cloud folder configured. Enable live sync to share state.','success')}}
+  catch(e){note('Could not configure cloud folder: '+e.message,'error')}
+  finally{b.disabled=false}
+});
+$('cloud-sync-enabled').addEventListener('change',async()=>{
+  const checkbox=$('cloud-sync-enabled');checkbox.disabled=true;
+  try{const r=await api.configureCloudSync({enabled:checkbox.checked});renderCloudStatus({...r,folder:$('cloud-folder-path').textContent});if(r.error)note(r.error,'error');else note(r.enabled?'Live cloud sync enabled.':'Live cloud sync disabled.','success')}
+  catch(e){checkbox.checked=!checkbox.checked;note(e.message,'error')}
+  finally{checkbox.disabled=false}
+});
+$('cloud-sync-now').addEventListener('click',async()=>{
+  const b=$('cloud-sync-now');b.disabled=true;
+  try{const r=await api.syncCloudNow();renderCloudStatus({...r,folder:$('cloud-folder-path').textContent});if(r.error)note(r.error,'error');else note('Cloud sync completed.','success')}
+  catch(e){note('Cloud sync failed: '+e.message,'error')}
+  finally{b.disabled=!$('cloud-sync-enabled').checked}
+});
+$('vision-endpoint-connect').addEventListener('click',async()=>{
+  const b=$('vision-endpoint-connect'),endpoint=$('vision-endpoint-url').value.trim();
+  if(!endpoint){$('vision-status-details').textContent='Enter the HTTPS endpoint shown by the running Colab notebook.';return}
+  b.disabled=true;$('vision-status-details').textContent='Validating endpoint and connecting…';
+  try{const r=await api.connectColab(endpoint);$('vision-status-details').textContent=[r.status||'unknown',r.message||''].filter(Boolean).join(' · ');$('vision-status-details').dataset.state=r.connected?'success':r.status==='error'?'error':'';if(r.connected)note('Colab connected.','success')}
+  catch(e){$('vision-status-details').textContent=e.message;$('vision-status-details').dataset.state='error'}
+  finally{b.disabled=false}
+});
+$('vision-setup-check').addEventListener('click',async()=>{
+  const b=$('vision-setup-check');b.disabled=true;$('vision-status-details').textContent='Running setup checks…';
+  try{const r=await api.checkVisionSetup();const checks=r.checks&&typeof r.checks==='object'?Object.entries(r.checks).map(([name,item])=>name+': '+(item.status||'unknown')+(item.message?' — '+item.message:'')).join(' | '):'';$('vision-status-details').textContent=[r.status||'checked',checks,(Array.isArray(r.next_steps)?r.next_steps.join(' '):'')].filter(Boolean).join(' · ');$('vision-status-details').dataset.state=r.status==='passed'?'success':r.status==='failed'?'error':''}
+  catch(e){$('vision-status-details').textContent=e.message;$('vision-status-details').dataset.state='error'}
+  finally{b.disabled=false}
+});
+
 async function changeBrowserMode(){try{const v=await api.setBrowserSettings({keepActive:keep.checked,lowMemory:low.checked});keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode()}catch(e){note(e.message,'error');await refresh()}}
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
-api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';if(v.privateMb>100)memory.title='Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
-window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>ro.disconnect());
-applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();window.setInterval(()=>void refresh(),7000);
+api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);api.onBrowserTabsChanged(syncBrowserTabs);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';if(v.privateMb>100)memory.title='Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
+window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
+applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();
