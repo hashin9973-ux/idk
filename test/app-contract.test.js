@@ -473,6 +473,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
 
 test('Colab connection hands the discovered public endpoint to Windows without clipboard paste', () => {
   const main = read('desktop', 'main.js');
+  const renderer = read('desktop', 'renderer.js');
   const service = read('desktop', 'colab-direct-service.js');
   const notebook = JSON.parse(read('vision', 'vision_worker.ipynb'));
   const python = notebook.cells.filter(cell => cell.cell_type === 'code').map(cell => cell.source.join('\n')).join('\n');
