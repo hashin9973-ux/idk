@@ -197,17 +197,16 @@ function createColabHandoffServer(options = {}) {
       return;
     }
 
-    // Acknowledge quickly before the HTTPS health/registration handshake starts.
-    // Never echo or log the endpoint: it contains the tunnel's high-entropy path token.
+    // The app callback must synchronously confirm that an explicit Connect Colab
+    // action armed this one-shot handoff window. Queueing starts async HTTPS work,
+    // but the callback itself returns immediately. Never echo the secret endpoint.
+    let accepted = false;
+    try { accepted = onEndpoint(endpoint.url) === true; } catch {}
+    if (!accepted) {
+      sendJson(response, 403, { accepted: false, error: 'handoff_not_armed' }, origin);
+      return;
+    }
     sendJson(response, 202, { accepted: true, status: 'verification_pending' }, origin);
-    setImmediate(() => {
-      try {
-        const result = onEndpoint(endpoint.url);
-        if (result && typeof result.then === 'function') result.catch(() => {});
-      } catch {
-        // Main-process connection status reports the failure; keep HTTP output secret-free.
-      }
-    });
   }
 
   function start() {
