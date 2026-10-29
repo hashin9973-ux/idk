@@ -143,7 +143,7 @@ test('agent-to-agent messages and replies use exact session inboxes even when se
   const incoming = await registry.readMessages(recipient.session_id, { unread_only: true });
   assert.equal(incoming.count, 1);
   const original = incoming.messages[0];
-  assert.equal(original.message, 'Please check the API contract and report back.');
+  assert.equal(original.message, '[' + sender.session_id + '][' + sender.agent_id + '] Please check the API contract and report back.');
   assert.equal(original.sender_session_id, sender.session_id);
   assert.ok(original.read_at);
 
@@ -155,8 +155,9 @@ test('agent-to-agent messages and replies use exact session inboxes even when se
   assert.equal(reply.thread_id, sent.thread_id);
   const response = await registry.readMessages(sender.session_id, { unread_only: true });
   assert.equal(response.count, 1);
-  assert.equal(response.messages[0].message, 'Reviewed: the contract is consistent.');
+  assert.equal(response.messages[0].message, '[' + recipient.session_id + '][' + recipient.agent_id + '] Reviewed: the contract is consistent.');
   assert.equal(response.messages[0].in_reply_to, original.message_id);
+  assert.equal(response.messages[0].thread_id, sent.thread_id);
 
   const status = await registry.statuses();
   assert.equal(status.count, 2);
