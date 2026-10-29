@@ -143,7 +143,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
     }
     const base = '/repos/' + owner + '/' + repository;
-    const allowedFolders = new Set(['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
+    const allowedFolders = new Set(['bridge', 'bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
     let relative = '';
     let kind = '';
 
