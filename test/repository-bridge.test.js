@@ -369,7 +369,7 @@ test('agent identity appears in claim/result and status returns to idle after ex
     assert.equal(task.progress, 100);
     assert.ok(task.request_json.includes('"agent_token": "[REDACTED]"'));
     assert.doesNotMatch(task.request_json, /b{64}/);
-    assert.ok(task.claim_json.includes('[REDACTED]'));
+    assert.ok(task.claim_json.includes(request.request_id));
     assert.doesNotMatch(task.claim_json, /b{64}/);
     assert.ok(task.result_json.includes('"status": "completed"'));
     assert.doesNotMatch(task.result_json, /b{64}/);
