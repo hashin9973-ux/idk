@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const {
   app,
   BrowserWindow,
+  WebContentsView,
   screen,
   ipcMain,
   globalShortcut,
@@ -108,7 +109,12 @@ const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
 });
 
 let mainWindow = null;
+let dashboardWindow = null;
 let tray = null;
+const browserTabs = new Map();
+let activeBrowserTabId = null;
+let browserBounds = { x: 0, y: 0, width: 1, height: 1 };
+let nextBrowserTabId = 0;
 let autoConnectTimer = null;
 let autoConnectInFlight = false;
 let autoConnectionStatus = 'connecting';
@@ -430,6 +436,182 @@ function hideToTray() {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
 }
 
+function safeBrowserUrl(raw) {
+  try {
+    const url = new URL(String(raw || ''));
+    if (url.protocol !== 'https:' || url.username || url.password || url.port ||
+        url.hostname === 'localhost' || url.hostname.endsWith('.localhost') ||
+        url.hostname === '127.0.0.1' || url.hostname === '[::1]' ||
+        /^\d+\.\d+\.\d+\.\d+$/.test(url.hostname)) return null;
+    return url;
+  } catch { return null; }
+}
+
+function dashboardSend(channel, value) {
+  if (dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isDestroyed()) {
+    dashboardWindow.webContents.send(channel, value);
+  }
+}
+
+function browserTabSnapshot() {
+  return [...browserTabs.values()].map(tab => ({
+    id: tab.id, url: tab.url, title: tab.title, active: tab.id === activeBrowserTabId,
+    loaded: Boolean(tab.view && !tab.view.webContents.isDestroyed())
+  }));
+}
+function publishBrowserTabs() { dashboardSend('app:browser-tabs-changed', browserTabSnapshot()); }
+
+function applyPageFocusCompatibility(tab) {
+  if (!tab || !tab.view || !settings.browserKeepActive || tab.view.webContents.isDestroyed()) return;
+  tab.view.webContents.setBackgroundThrottling(false);
+  // Opt-in compatibility for the unprivileged remote document only. This does
+  // not focus the native window or generate input events.
+  void tab.view.webContents.executeJavaScript(
+    "(() => { try { Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => 'visible' }); Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => false }); Object.defineProperty(Document.prototype, 'hasFocus', { configurable: true, value: () => true }); } catch {} })();"
+  ).catch(() => {});
+}
+
+function createBrowserView(tab) {
+  const view = new WebContentsView({ webPreferences: {
+    nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true,
+    partition: 'persist:windows-bridge-browser', backgroundThrottling: !settings.browserKeepActive
+  }});
+  tab.view = view;
+  view.webContents.setBackgroundThrottling(!settings.browserKeepActive);
+  view.webContents.setWindowOpenHandler(({ url }) => {
+    const safe = safeBrowserUrl(url);
+    if (safe) void openBrowserTab(safe.href).catch(error => console.warn('Embedded popup failed:', error.message));
+    return { action: 'deny' };
+  });
+  view.webContents.on('will-navigate', (event, url) => { if (!safeBrowserUrl(url)) event.preventDefault(); });
+  view.webContents.on('page-title-updated', (_event, title) => { tab.title = String(title || tab.url).slice(0, 120); publishBrowserTabs(); });
+  view.webContents.on('did-navigate', (_event, url) => {
+    const safe = safeBrowserUrl(url); if (safe) tab.url = safe.href;
+    if (settings.browserKeepActive) applyPageFocusCompatibility(tab);
+    publishBrowserTabs(); measureBrowserMemory(tab);
+  });
+  view.webContents.on('dom-ready', () => { if (settings.browserKeepActive) applyPageFocusCompatibility(tab); measureBrowserMemory(tab); });
+  view.webContents.on('render-process-gone', (_event, details) => appendDiagnosticLog('embedded-browser-renderer-gone', { tabId: tab.id, details }));
+  view.webContents.loadURL(tab.url).catch(error => { tab.error = String(error && error.message || error).slice(0, 400); publishBrowserTabs(); });
+  return view;
+}
+function measureBrowserMemory(tab) {
+  if (!tab || !tab.view || tab.view.webContents.isDestroyed()) return;
+  void tab.view.webContents.getProcessMemoryInfo().then(info => dashboardSend('app:browser-memory', {
+    id: tab.id, privateMb: Math.round((Number(info.private) || 0) / 1024 * 10) / 10
+  })).catch(() => {});
+}
+
+function attachBrowserTab(id) {
+  const tab = browserTabs.get(id);
+  if (!dashboardWindow || dashboardWindow.isDestroyed() || !tab) return false;
+  for (const other of browserTabs.values()) if (other.view) { try { dashboardWindow.contentView.removeChildView(other.view); } catch {} }
+  if (!tab.view || tab.view.webContents.isDestroyed()) createBrowserView(tab);
+  tab.view.setBounds(browserBounds);
+  dashboardWindow.contentView.addChildView(tab.view);
+  activeBrowserTabId = id;
+  if (settings.browserKeepActive) applyPageFocusCompatibility(tab);
+  if (settings.browserLowMemory) for (const other of browserTabs.values()) {
+    if (other.id !== id && other.view) { try { other.view.webContents.close(); } catch {} other.view = null; }
+  }
+  publishBrowserTabs(); measureBrowserMemory(tab); return true;
+}
+function setBrowserTabActive(id) {
+  const idValue = typeof id === 'string' && browserTabs.has(id) ? id : null;
+  if (idValue) return attachBrowserTab(idValue);
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
+    if (tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
+  }
+  activeBrowserTabId = null;
+  if (settings.browserLowMemory) for (const tab of browserTabs.values()) {
+    if (tab.view) { try { tab.view.webContents.close(); } catch {} tab.view = null; }
+  }
+  publishBrowserTabs(); return { active: false };
+}
+async function openBrowserTab(raw) {
+  const parsed = safeBrowserUrl(raw);
+  if (!parsed) throw new Error('The embedded browser only accepts public HTTPS URLs.');
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
+  showDashboardWindow();
+  let tab = [...browserTabs.values()].find(item => item.url === parsed.href);
+  if (tab) { attachBrowserTab(tab.id); return { id: tab.id, url: tab.url, title: tab.title, reused: true }; }
+  tab = { id: 'web-' + (++nextBrowserTabId), url: parsed.href, title: parsed.hostname, view: null, error: '' };
+  browserTabs.set(tab.id, tab); attachBrowserTab(tab.id); publishBrowserTabs();
+  return { id: tab.id, url: tab.url, title: tab.title, reused: false };
+}
+function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
+  const parsed = safeBrowserUrl(raw);
+  if (!parsed || parsed.hostname !== 'colab.research.google.com') throw new Error('The Colab action can only open Google Colab notebook URLs.');
+  return openBrowserTab(parsed.href);
+}
+function closeBrowserTab(id) {
+  const tab = browserTabs.get(String(id || '')); if (!tab) return { closed: false };
+  if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
+  if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+  browserTabs.delete(tab.id); if (activeBrowserTabId === tab.id) activeBrowserTabId = null;
+  publishBrowserTabs(); return { closed: true };
+}
+function showDashboardWindow() {
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
+  if (dashboardWindow.isMinimized()) dashboardWindow.restore();
+  dashboardWindow.show(); dashboardWindow.focus(); publishBrowserTabs(); return { opened: true };
+}
+function createDashboardWindow() {
+  if (dashboardWindow && !dashboardWindow.isDestroyed()) return dashboardWindow;
+  const saved = settings.dashboardBounds && typeof settings.dashboardBounds === 'object' ? settings.dashboardBounds : {};
+  dashboardWindow = new BrowserWindow({
+    x: Number.isFinite(saved.x) ? saved.x : undefined, y: Number.isFinite(saved.y) ? saved.y : undefined,
+    width: Number.isFinite(saved.width) ? Math.max(760, saved.width) : 1060,
+    height: Number.isFinite(saved.height) ? Math.max(540, saved.height) : 760,
+    minWidth: 760, minHeight: 540, show: false, backgroundColor: '#11161d',
+    title: 'Windows Repository Bridge',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
+  });
+  dashboardWindow.setMenuBarVisibility(false);
+  dashboardWindow.on('resize', () => {
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+    settings.dashboardBounds = dashboardWindow.getBounds(); persistSettings();
+    dashboardSend('app:browser-bounds-refresh', {});
+  });
+  dashboardWindow.on('move', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) { settings.dashboardBounds = dashboardWindow.getBounds(); persistSettings(); } });
+  dashboardWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  dashboardWindow.once('ready-to-show', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.show(); });
+  dashboardWindow.on('closed', () => {
+    for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    browserTabs.clear(); activeBrowserTabId = null; dashboardWindow = null;
+  });
+  dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html')).catch(error => appendDiagnosticLog('dashboard-load-failed', error));
+  return dashboardWindow;
+}
+function setBrowserBounds(value) {
+  const size = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow.getContentBounds() : { width: 0, height: 0 };
+  const v = value && typeof value === 'object' ? value : {};
+  const x = Number(v.x), y = Number(v.y), width = Number(v.width), height = Number(v.height);
+  if (![x,y,width,height].every(Number.isFinite) || width < 1 || height < 1) return { applied: false };
+  const left = Math.max(0, Math.min(size.width - 1, x)), top = Math.max(0, Math.min(size.height - 1, y));
+  browserBounds = { x: left, y: top, width: Math.max(1, Math.min(size.width-left,width)), height: Math.max(1, Math.min(size.height-top,height)) };
+  const tab = browserTabs.get(activeBrowserTabId); if (tab && tab.view) tab.view.setBounds(browserBounds);
+  return { applied: true, bounds: browserBounds };
+}
+function getBrowserSettings() {
+  return { keepActive: settings.browserKeepActive === true, lowMemory: settings.browserLowMemory === true, volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100 };
+}
+function setBrowserSettings(value) {
+  const v = value && typeof value === 'object' ? value : {};
+  const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
+  if (keepActive && lowMemory) throw new Error('Choose background focus compatibility or low-memory tab unloading, not both.');
+  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
+  for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
+    tab.view.webContents.setBackgroundThrottling(!keepActive); if (keepActive) applyPageFocusCompatibility(tab);
+  }
+  return getBrowserSettings();
+}
+
+function hideToTray() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+}
+
 function minimizeToTray() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) hideToTray();
@@ -464,6 +646,7 @@ function createTray() {
     tray.setToolTip('Windows Repository Bridge');
     tray.setContextMenu(Menu.buildFromTemplate([
       { label: 'Open status', click: showMainWindow },
+      { label: 'Open dashboard', click: showDashboardWindow },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() }
     ]));
@@ -594,18 +777,17 @@ function enrichedBridgeState(state) {
 }
 
 function broadcastBridgeState(state) {
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send('app:bridge-state', enrichedBridgeState(state));
-  }
+  const payload = enrichedBridgeState(state);
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('app:bridge-state', payload);
+  if (dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isDestroyed()) dashboardWindow.webContents.send('app:bridge-state', payload);
 }
 
 function broadcastGitHubState(state) {
-  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
-    const safe = state && typeof state === 'object' ? { ...state } : { authenticated: false };
-    delete safe.token;
-    delete safe.accessToken;
-    mainWindow.webContents.send('app:github-state', safe);
-  }
+  const safe = state && typeof state === 'object' ? { ...state } : { authenticated: false };
+  delete safe.token;
+  delete safe.accessToken;
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('app:github-state', safe);
+  if (dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isDestroyed()) dashboardWindow.webContents.send('app:github-state', safe);
 }
 
 function parseColabHandoffUri(raw) {
@@ -628,11 +810,13 @@ function publishColabHandoffResult(result) {
   const message = String(result && (result.message || result.error) || '')
     .replace(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\/[A-Za-z0-9_-]{40,100}/gi, '[redacted temporary Colab endpoint]')
     .slice(0, 500);
-  mainWindow.webContents.send('app:colab-handoff-result', {
+  const payload = {
     connected: Boolean(result && result.connected === true),
     status: String(result && result.status || (result && result.connected ? 'connected' : 'error')),
     message
-  });
+  };
+  mainWindow.webContents.send('app:colab-handoff-result', payload);
+  if (dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isDestroyed()) dashboardWindow.webContents.send('app:colab-handoff-result', payload);
 }
 
 function processPendingColabHandoff() {
@@ -808,17 +992,26 @@ function bringMainWindowForward() {
 }
 
 function assertLocalUi(event, filename) {
-  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
-    throw new Error('Only the local desktop UI may invoke this action.');
-  }
+  const trusted = [
+    { window: mainWindow, file: 'index.html' },
+    { window: dashboardWindow, file: 'dashboard.html' }
+  ].find(item => item.window && !item.window.isDestroyed() && item.window.webContents === event.sender);
+  if (!trusted) throw new Error('Only a trusted local desktop window may invoke this action.');
   const url = event.senderFrame && event.senderFrame.url || '';
-  if (!url.startsWith('file://') || !url.endsWith('/desktop/' + filename)) {
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/' + trusted.file) ||
+      (filename !== trusted.file && !(filename === 'index.html' && trusted.file === 'dashboard.html'))) {
     throw new Error('Unexpected IPC sender.');
   }
 }
 
 function getUiState() {
   return {
+    settings: {
+      repositoryBridge: settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE,
+      ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
+      browserKeepActive: settings.browserKeepActive === true,
+      browserLowMemory: settings.browserLowMemory === true
+    },
     bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false }),
     // This state is returned only to the local desktop UI. Absolute local paths
     // are not added to the GitHub mailbox context or shared worker state.
@@ -840,6 +1033,46 @@ function registerIpc() {
   ipcMain.handle('app:get-state', event => {
     assertLocalUi(event, 'index.html');
     return getUiState();
+  });
+  ipcMain.handle('app:open-dashboard', event => { assertLocalUi(event, 'index.html'); return showDashboardWindow(); });
+  ipcMain.handle('app:show-overlay', event => { assertLocalUi(event, 'index.html'); showMainWindow(); return { opened: true }; });
+  ipcMain.handle('app:browser-tabs', event => { assertLocalUi(event, 'index.html'); return browserTabSnapshot(); });
+  ipcMain.handle('app:browser-open-tab', (event, url) => { assertLocalUi(event, 'index.html'); return openBrowserTab(url); });
+  ipcMain.handle('app:colab-open-tab', event => { assertLocalUi(event, 'index.html'); return openColabBrowserTab(); });
+  ipcMain.handle('app:browser-tab-active', (event, id) => { assertLocalUi(event, 'index.html'); return setBrowserTabActive(id); });
+  ipcMain.handle('app:browser-tab-close', (event, id) => { assertLocalUi(event, 'index.html'); return closeBrowserTab(id); });
+  ipcMain.handle('app:browser-bounds', (event, bounds) => { assertLocalUi(event, 'index.html'); return setBrowserBounds(bounds); });
+  ipcMain.handle('app:browser-settings', (event, value) => { assertLocalUi(event, 'index.html'); return value === undefined ? getBrowserSettings() : setBrowserSettings(value); });
+  ipcMain.handle('app:tts-volume', (event, raw) => {
+    assertLocalUi(event, 'index.html'); const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('TTS volume must be between 0 and 100.');
+    settings.ttsVolume = Math.round(value); persistSettings(); return { volume: settings.ttsVolume };
+  });
+  ipcMain.handle('app:repository-bridge-config', async (event, input) => {
+    assertLocalUi(event, 'index.html');
+    if (!input || typeof input !== 'object') throw new Error('Repository settings are required.');
+    const owner=String(input.owner||'').trim(), repo=String(input.repo||'').trim(), branch=String(input.branch||'').trim();
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || owner==='.' || owner==='..' ||
+        !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || repo==='.' || repo==='..' ||
+        !branch || branch.length>120 || branch.startsWith('/') || branch.endsWith('/') ||
+        branch.includes('..') || branch.includes('//') || !/^[A-Za-z0-9_.\/-]+$/.test(branch)) throw new Error('Enter a valid repository owner, name, and branch.');
+    const next={owner,repo,branch,allowPublicMailbox:input.allowPublicMailbox===true,
+      retentionDays:Number.isInteger(input.retentionDays)?input.retentionDays:30};
+    const before={...(settings.repositoryBridge||DEFAULT_REPOSITORY_BRIDGE)};
+    const current=repositoryBridge?repositoryBridge.getState():{};
+    if(Number(current.activeCount)>0 || Number(current.pendingCount)>0) throw new Error('Cannot switch the bridge repository while requests are active or queued.');
+    if(repositoryBridge) await repositoryBridge.stop();
+    try {
+      if(repositoryBridge) repositoryBridge.setConfig(next); else {settings.repositoryBridge=next;persistSettings();}
+      if(repositoryBridge && githubAuth) await repositoryBridge.start();
+    } catch(error) {
+      if(repositoryBridge) {
+        try{repositoryBridge.setConfig(before);}catch{settings.repositoryBridge=before;persistSettings();}
+        try{if(githubAuth)await repositoryBridge.start();}catch{}
+      } else {settings.repositoryBridge=before;persistSettings();}
+      throw new Error('Repository change failed; the previous configuration was restored. '+String(error&&error.message||error));
+    }
+    return { repositoryBridge: settings.repositoryBridge, bridge: repositoryBridge ? repositoryBridge.getState() : null };
   });
   ipcMain.handle('app:select-workspace', async event => {
     assertLocalUi(event, 'index.html');
@@ -1202,6 +1435,9 @@ if (!hasInstanceLock) {
     settings = loadSettings();
     const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
       ? settings.repositoryBridge : {};
+    settings.ttsVolume = Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, Math.round(settings.ttsVolume))) : 100;
+    settings.browserKeepActive = settings.browserKeepActive === true;
+    settings.browserLowMemory = settings.browserLowMemory === true && settings.browserKeepActive !== true;
     settings.repositoryBridge = {
       ...DEFAULT_REPOSITORY_BRIDGE,
       ...savedBridge,
@@ -1261,7 +1497,8 @@ if (!hasInstanceLock) {
           getAccessibleSnapshot: captureWindowsUiAutomationSnapshot,
           getLatestFrame: maxAgeMs => observeService ? observeService.getLatestFrame(maxAgeMs) : null,
           encodeJpeg: encodeVisionJpeg,
-          openColabNotebook: url => openInBrowserAndYield(url),
+          openColabNotebook: url => openColabBrowserTab(url),
+          getTtsVolume: () => Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
           readClipboardText: () => clipboard.readText(),
           publishWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
         });
