@@ -1552,7 +1552,7 @@ function showSpeechCaption(request) {
   return payload.id;
 }
 
-function estimateSpeechDurationMs(text)function estimateSpeechDurationMs(text) {
+function estimateSpeechDurationMs(text) {
   return Math.max(3500, Math.min(90000, Math.ceil(String(text || '').length / 13 * 1000 + 3500)));
 }
 
