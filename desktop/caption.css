@@ -9,10 +9,11 @@ body{padding:8px}
 .caption-label{font-size:9px;font-weight:750;letter-spacing:.14em;color:var(--caption-muted,#a5b3c3)}
 .caption-dismiss{width:25px;height:24px;display:grid;place-items:center;padding:0;border:1px solid var(--caption-outline,rgba(220,235,250,.16));border-radius:6px;background:transparent;color:inherit;font-size:20px;line-height:1;cursor:pointer}
 .caption-text{margin:0;flex:1;overflow:hidden;overflow-wrap:anywhere;white-space:pre-wrap;font-size:16px;line-height:1.38;font-weight:550;text-shadow:0 1px 2px rgba(0,0,0,.28)}
+.caption-card[data-mode="notification"] .caption-text{overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
 .caption-status,.caption-error{margin:0;font-size:11px;line-height:1.3;color:var(--caption-muted,#a5b3c3)}
 .caption-error{color:var(--caption-error,#ff9ca7)}
 .caption-actions{display:flex;justify-content:flex-end;min-height:0}
-.caption-play{padding:7px 15px;border:1px solid var(--caption-accent,#72e0c6);border-radius:7px;background:var(--caption-accent,#72e0c6);color:var(--caption-button-text,#10201e);font:700 12px inherit;cursor:pointer}
+.caption-play{padding:7px 15px;border:1px solid var(--caption-accent,#72e0c6);border-radius:7px;background:var(--caption-accent,#72e0c6);color:var(--caption-button-text,#10201e);font:700 12px "Segoe UI",sans-serif;cursor:pointer}
 .caption-play[hidden],.caption-dismiss[hidden],[hidden]{display:none!important}
 .caption-play:disabled{opacity:.55;cursor:progress}
 .caption-card[data-theme="light"],.caption-card[data-theme="solarized-light"]{--caption-text:#18222f;--caption-muted:#506174;--caption-outline:rgba(30,50,70,.2);--caption-accent:#237e6b;--caption-button-text:#fff;background:rgba(250,252,255,.96);border-color:rgba(30,50,70,.16)}

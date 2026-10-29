@@ -3,13 +3,12 @@
 (() => {
   const $ = id => document.getElementById(id);
   const bridge = window.speechCaption;
-  let currentId = '';
-  let busy = false;
+    let busy = false;
 
   function render(value) {
-    currentId = String(value.id || '');
     const card = $('caption-card');
     card.dataset.theme = String(value.theme || 'midnight');
+    card.dataset.mode = value.mode === 'notification' ? 'notification' : 'autoplay';
     card.classList.toggle('transparent', value.transparent === true);
     $('caption-text').textContent = String(value.text || '');
     $('caption-status').textContent = String(value.status || '');
@@ -39,5 +38,4 @@
   });
   $('caption-dismiss').addEventListener('click', () => void bridge.dismiss().catch(() => {}));
   bridge.onUpdate(render);
-  void currentId;
 })();
