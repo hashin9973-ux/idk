@@ -660,6 +660,23 @@ test('dashboard browser-tab IPC does not feed back into an unbounded renderer ev
   assert.match(activation, /Only broadcast an actual activation\/deactivation change/);
 });
 
+test('dashboard saves do not rebroadcast unchanged browser tabs into a renderer save loop', () => {
+  const main = read('desktop', 'main.js');
+  const syncStart = main.indexOf('function syncBrowserRegistryFromDashboardState(value) {');
+  const syncEnd = main.indexOf('function collectSharedPreferences', syncStart);
+  const sync = main.slice(syncStart, syncEnd);
+  assert.match(sync, /const previousSnapshot = JSON\.stringify\(browserTabSnapshot\(\)\)/);
+  assert.match(sync, /if \(previousSnapshot !== JSON\.stringify\(browserTabSnapshot\(\)\)\) publishBrowserTabs\(\)/);
+  assert.doesNotMatch(sync, /^\s*publishBrowserTabs\(\);\s*$/m);
+
+  const activationStart = main.indexOf('function setBrowserTabActive(id) {');
+  const activationEnd = main.indexOf('async function openBrowserTab', activationStart);
+  const activation = main.slice(activationStart, activationEnd);
+  assert.match(activation, /new Set\([\s\S]*dashboardWindow\.contentView\.children/);
+  assert.match(activation, /const attached = attachedViews\.has\(tab\.view\)/);
+  assert.match(activation, /if \(attached \|\| wasActive\)/);
+});
+
 test('in-app browser defaults off, never leaves an overlay attached when disabled, and is wired to Settings', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'main.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'dashboard.html'), 'utf8');
