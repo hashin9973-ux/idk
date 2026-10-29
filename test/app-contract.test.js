@@ -256,14 +256,23 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(bridge, /publishState/);
   assert.match(bridge, /allowPublicMailbox/);
   assert.match(bridge, /public-mailbox warning checkbox/i);
-  assert.match(bridge, /agent_register/);
+  assert.match(bridge, /session_start/);
   assert.match(bridge, /agent_status/);
+  assert.match(bridge, /send_agent_message/);
+  assert.match(bridge, /read_agent_messages/);
+  assert.match(bridge, /reply_to_agent_message/);
+  assert.match(bridge, /SESSION_ID_REQUIRED/);
   const agentRegistry = read('desktop', 'agent-registry.js');
   assert.match(agentRegistry, /AGENT_RECORD_PROTOCOL/);
-  assert.match(agentRegistry, /AGENT_STALE_AFTER_MS/);
+  assert.match(agentRegistry, /SESSION_INACTIVE_AFTER_MS/);
+  assert.match(agentRegistry, /SESSION_RECORD_PROTOCOL/);
   const toolBridge = read('desktop', 'tool-bridge.js');
-  assert.ok(toolBridge.includes("agent_register: ['agent_id', 'agent_token', 'label']"));
+  assert.ok(toolBridge.includes("session_start: ['label']"));
   assert.ok(toolBridge.includes("agent_status: ['agent_id']"));
+  assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
+  assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));
+  assert.ok(toolBridge.includes("reply_to_agent_message: ['message_id', 'message']"));
+  assert.match(toolBridge, /catalog_version = 3/);
 });
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
