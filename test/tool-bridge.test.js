@@ -430,7 +430,7 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     const search = tools.find(item => item.name === 'search');
     const shell = tools.find(item => item.name === 'shell');
     assert.equal(result.status, 'success');
-    assert.equal(result.result.tool_calling.catalog_version, 2);
+    assert.equal(result.result.tool_calling.catalog_version, 3);
     assert.equal(batch.parameters.properties.steps.type, 'array');
     assert.equal(batch.parameters.properties.steps.maxItems, 100);
     assert.equal(batch.parameters.properties.maxConcurrency.default, 32);
