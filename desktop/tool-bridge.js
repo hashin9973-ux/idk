@@ -42,6 +42,8 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
+  agent_register: ['agent_id', 'agent_token', 'label'],
+  agent_status: ['agent_id'],
   batch: ['steps', 'stopOnError', 'maxConcurrency'],
   github_status: [],
   github_api: ['method', 'path', 'body', 'query']
@@ -188,6 +190,8 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   shell: 'Run PowerShell as the signed-in Windows user from the selected workspace. Waits for the foreground process to exit or the configured timeout, then returns exitCode, timedOut, stdout, stderr, and durationMs. Each output stream has an 8 MiB capture ceiling; the mailbox externalizes complete captured text above its inline threshold, but output beyond this hard ceiling is marked truncated before archiving and must be retried in bounded pages or redirected to a local file. At timeout it attempts to kill the whole process tree and still returns a timeout result. For long-running servers, start them deliberately in the background with logs redirected to files, poll a bounded readiness check, and do not confuse server startup with command completion. Requires local approval unless Auto-accept everything is enabled; PowerShell is not OS-sandboxed.',
   run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. Each output stream has an 8 MiB capture ceiling; externalized text is lossless only when stdout_truncated/stderr_truncated are false. If either flag is true, rerun in bounded pages or redirect full output to a local file. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
+  agent_register: 'Mailbox control tool: automatically allocate the next unused Agent ID, or restore a known Agent ID using its registration token. It is handled by the Windows Repository Bridge, not the workspace tool runner.',
+  agent_status: 'Mailbox control tool: list registered ChatGPT agents, their active/idle/stale status, last activity, and recent request IDs. It is handled by the Windows Repository Bridge, not the workspace tool runner.',
   upload_workspace_file: 'Share an explicitly approved workspace file as a repository artifact. Always requires local approval and is limited to 8 MiB.',
   computer: 'Native local computer tool for the real Windows workspace. This fast interaction mode is an optional path: when the user requests rapid interaction, inspect the latest live state as needed and use one computer(action=sequence, mode=fast, steps=[...]) call for ordered local input without intermediate narration. The fast mode skips automatic post-action Colab inference unless observe=true, avoiding an extra model/tunnel round trip; request a fresh observation when verification or the next action depends on screen changes. This is an optional tool-loop optimization, not a switch that disables ChatGPT internal reasoning. Observe and detailed screenshots use the primary display at full physical pixel dimensions; JPEG compression lowers quality rather than spatially downscaling. The screenshot report includes active app/window, screen regions, readable text, control relationships, OCR and Windows UI Automation bounds when exposed, plus uncertainty. For closer inspection, pass region=[left,top,right,bottom] in the latest screenshot pixel frame; returned boxes are mapped back to the original full-frame coordinates. When using passive Observe coordinates, pass the matching frame_id with the input action; changed or stale frame IDs are rejected. Accessibility-grounded bounds are preferred to visual estimates. All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab. Ordered local mouse/keyboard inputs, up to 50 steps, can be submitted in one sequence; sequence batches up to 50 inputs. start_control enables a control session; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
   tts: 'Synthesize speech with Piper en_US-libritts-high using speaker ID 0. By default, start local playback as soon as the first punctuation-bounded chunk is ready; returns tts_started plus speech_job_id while remaining chunks play, and computer(action=status) reports progress. Set play=false to save without playback. The actual audio bytes stay local and are not published to GitHub.',
@@ -265,6 +269,14 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   steps: { type: 'array', description: 'Ordered local tool calls (up to 100). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 100 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
+  agent_register: {
+    agent_id: { type: 'string', description: 'Existing Agent ID to restore. Supply together with agent_token; omit both to automatically allocate the next unused ID.', pattern: '^agent-[0-9]{3,}$' },
+    agent_token: { type: 'string', description: 'Registration token previously returned for this conversation. Needed to restore an existing Agent ID.', pattern: '^[a-f0-9]{64}$' },
+    label: { type: 'string', description: 'Optional short label for this ChatGPT conversation. Defaults to Agent N.', maxLength: 64 }
+  },
+  agent_status: {
+    agent_id: { type: 'string', description: 'Optional Agent ID to inspect. Omit to list all registered agents and their current status.', pattern: '^agent-[0-9]{3,}$' }
+  },
   tts: {
     text: { type: 'string', description: 'Speech text for Piper en_US-libritts-high, speaker ID 0. Maximum 2,000 characters.', minLength: 1, maxLength: 2000 },
     play: { type: 'boolean', description: 'Play the synthesized WAV locally on Windows. Defaults to true; false saves it without playback.', default: true }
@@ -331,7 +343,7 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Unique step ID used by result references.', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$' },
-          tool: { type: 'string', description: 'Callable local tool for this step.', enum: Object.keys(TOOL_ARGUMENT_KEYS).filter(name => name !== 'batch' && name !== 'refresh_environment_context' && !BLOCKED_TOOLS_FOR_MAILBOX.has(name)) },
+          tool: { type: 'string', description: 'Callable local tool for this step.', enum: Object.keys(TOOL_ARGUMENT_KEYS).filter(name => !['batch', 'refresh_environment_context', 'agent_register', 'agent_status'].includes(name) && !BLOCKED_TOOLS_FOR_MAILBOX.has(name)) },
           args: { type: 'object', description: 'Arguments matching the named tool schema. A value can be {"$ref":"earlierStep.result.someField"} to insert that prior result.', additionalProperties: true }
         },
         required: ['id', 'tool', 'args'],
@@ -341,6 +353,8 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   }
 });
 const TOOL_RESULT_SUMMARIES = Object.freeze({
+  agent_register: 'Returns the allocated or restored Agent ID, its registration token, and registry status. Keep the ID/token in this conversation and reuse them on subsequent mailbox requests.',
+  agent_status: 'Returns registered Agent IDs, status, last activity, and recent request IDs; registration tokens are never included in this listing.',
   get_capabilities: 'Returns catalog_version, tool protocol, callable tools with schemas/permission notes/result summaries, and the batch/reference contract.',
   project_status: 'Returns isGitRepository, detectedTechnologies, topLevelEntries, and Git status when applicable.',
   environment_info: 'Returns platform, architecture, OS/runtime version, CPU and memory metadata. Identity-sensitive fields are redacted before repository publication.',
@@ -510,7 +524,7 @@ function createToolBridge(deps) {
       if (Object.keys(step).some(key => !['id','tool','args'].includes(key))) throw new Error('batch step contains unsupported fields.');
       if (typeof step.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$/.test(step.id)) throw new Error('batch step IDs must be 1–20 simple characters.');
       if (ids.has(step.id)) throw new Error('duplicate batch step ID: ' + step.id);
-      if (typeof step.tool !== 'string' || step.tool === 'batch' || step.tool === 'refresh_environment_context' || BLOCKED_TOOLS_FOR_MAILBOX.has(step.tool)) {
+      if (typeof step.tool !== 'string' || step.tool === 'batch' || step.tool === 'refresh_environment_context' || step.tool === 'agent_register' || step.tool === 'agent_status' || BLOCKED_TOOLS_FOR_MAILBOX.has(step.tool)) {
         throw new Error('batch step ' + step.id + ' uses an unsupported or non-nestable tool.');
       }
       if (!isPlainObject(step.args)) throw new Error('batch step ' + step.id + ' args must be an object.');
@@ -811,7 +825,9 @@ function createToolBridge(deps) {
           { name: 'upload_workspace_file', mode: 'approval-required' },
           { name: 'computer', mode: 'action-dependent-approval' },
           { name: 'tts', mode: 'approval' },
-          { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control' },
+          { name: 'agent_register', mode: 'repository-bridge-control' },
+          { name: 'agent_status', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
           ...item,

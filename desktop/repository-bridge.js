@@ -5,6 +5,7 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS, getExecutionFootprint, executionFootprintsConflict } = require('./tool-bridge');
+const { createAgentRegistry } = require('./agent-registry');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
@@ -88,7 +89,12 @@ function validateRequest(requestId, request) {
   const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
-  return { request_id: requestId, tool: request.tool, args: { ...request.args } };
+  const hasAgentId = request.agent_id !== undefined && request.agent_id !== null && request.agent_id !== '';
+  const hasAgentToken = request.agent_token !== undefined && request.agent_token !== null && request.agent_token !== '';
+  if (hasAgentId !== hasAgentToken) throw new Error('Agent identity requires both agent_id and agent_token.');
+  if (hasAgentId && (typeof request.agent_id !== 'string' || !/^agent-[0-9]{3,}$/.test(request.agent_id))) throw new Error('Agent ID has an invalid format.');
+  if (hasAgentToken && (typeof request.agent_token !== 'string' || !/^[a-f0-9]{64}$/.test(request.agent_token))) throw new Error('Agent registration token has an invalid format.');
+  return { request_id: requestId, tool: request.tool, args: { ...request.args }, ...(hasAgentId ? { agent_id: request.agent_id, agent_token: request.agent_token } : {}) };
 }
 
 function redactText(text, workspaceRoot) {
@@ -177,6 +183,7 @@ function createRepositoryBridge(deps) {
   let pollInFlight = false;
   let pollPromise = null;
   const activeRequestIds = new Set();
+  const requestAgents = new Map();
   const pendingRequestQueue = [];
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
@@ -427,8 +434,10 @@ function createRepositoryBridge(deps) {
     }
   }
 
+  const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict });
+
   async function ensureFolders() {
-    const folders = ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts'];
+    const folders = ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents'];
     // Folder discovery is read-only, so fetch all six independently instead of
     // making app startup pay six sequential GitHub round trips.
     const discovered = await Promise.all(folders.map(async folder => ({
@@ -1276,17 +1285,23 @@ function createRepositoryBridge(deps) {
           protocol: PROTOCOL,
           request_path_template: 'bridge/requests/<request_id>.json',
           result_path_template: 'bridge/results/<same-request-id>.json',
+          agent_registry_path: 'bridge/agents/<agent-id>.json',
+          agent_registration_tool: 'agent_register',
+          agent_status_tool: 'agent_status',
           artifact_path_template: 'bridge/artifacts/<request-id>/<artifact-name>',
           output_limit_fallback: 'If output_truncated is true, a result is partial, a field contains OUTPUT EXTERNALIZED, or the inline result says the repository size limit was exceeded, fetch the listed artifact paths through GitHub MCP before reasoning from the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the full JSON, then follow its artifacts manifest. For tool_output_part, fetch all parts for that field and concatenate in ascending part order. Critical: if nested stdout_truncated or stderr_truncated is true, the local runner discarded bytes before artifact publication; fetching the artifact recovers only the captured portion and is NOT a complete output. Rerun the command in bounded pages or redirect its full output to a workspace file, then read that file with read_file pages until EOF. Never report an output complete until all required parts are read and neither capture-truncation flag remains unexplained.',
           claim_path_template: 'bridge/claims/<same-request-id>.json',
           worker_state_path: 'bridge/state/windows-app.json',
           request_example: {
             protocol: PROTOCOL,
-            request_id: 'req-YYYYMMDD-unique',
+            request_id: '<globally unique ID, preferably prefixed with assigned Agent ID>',
+            agent_id: '<agent-NNN from agent_register>',
+            agent_token: '<64-character token returned by agent_register>',
             created_at: '<current ISO-8601 timestamp>',
             tool: 'get_agent_context',
             args: {}
           },
+          agent_registration_example: { protocol: PROTOCOL, request_id: 'register-YYYYMMDD-unique', created_at: '<current ISO-8601 timestamp>', tool: 'agent_register', args: {} },
           calling_contract: 'Local tools are mailbox-backed, not native GitHub MCP function names. Use GitHub MCP file operations to publish the request JSON on the configured branch, then read the result at the matching request ID. Use bridge/context/capabilities.json for exact tool schemas.'
         },
         tool_failure_contract: {
@@ -1299,6 +1314,10 @@ function createRepositoryBridge(deps) {
         protections: 'Never bypass tool schemas, workspace and symlink boundaries, secret-file protections, privacy rules, or genuine local approval requirements.'
         },
         operating_rules: [
+          'Before the first mailbox-backed operation in each ChatGPT conversation, search this conversation’s own history for a successful agent_register result. Reuse that exact agent_id and agent_token if found; otherwise publish one agent_register request with empty args to automatically allocate the next unused Agent ID. Never choose another agent merely because its status is idle or it was recently active.',
+          'After registering, include agent_id and agent_token as top-level fields in every mailbox request. Use globally unique request IDs, preferably prefixed with the assigned Agent ID (for example agent-001-req-YYYYMMDD-random); the bridge includes agent_id in claims/results and keeps status/recent request IDs in bridge/agents/<agent-id>.json. Keep the token in this conversation and do not put it into tool args unnecessarily.',
+          'If you forget the Agent ID, inspect this conversation’s own prior registration/result history first. Use agent_register with the existing ID and token to restore a known identity. If the exact token cannot be recovered, allocate a new ID; do not guess, reuse, or take another agent’s ID. Old IDs are never automatically recycled and eventually show stale.',
+          'Use agent_status to inspect agent occupancy/status and recent request IDs. Statuses are active while this worker executes the agent’s request, idle when recently checked in with no current execution, or stale after prolonged inactivity/interrupted processing. Agent IDs are routing labels, not access-control isolation within a shared mailbox.',
           'Local tools are not native GitHub MCP function names. For any Windows action, use GitHub MCP file operations to read the published context and publish the mailbox request; do not look only for native local-tool functions.',
           'To invoke a local tool, create a unique immutable JSON file at bridge/requests/<request_id>.json using bridge_invocation.request_example as the envelope, replace both placeholders, then read bridge/results/<same-request-id>.json. The request is not a result.',
           'Immediately request get_agent_context through the mailbox, then act through the exact local tool catalog and schemas it returns. Do not stop because get_agent_context, read_file, or shell is absent from the native GitHub MCP function list.',
@@ -1354,6 +1373,7 @@ function createRepositoryBridge(deps) {
     const claim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
+      ...(requestAgents.get(requestId) ? { agent_id: requestAgents.get(requestId) } : {}),
       worker_id: workerId,
       tool: null,
       status: 'processing',
@@ -1502,9 +1522,11 @@ function createRepositoryBridge(deps) {
 
   async function publishResult(requestId, result) {
     const resultPath = 'bridge/results/' + requestId + '.json';
+    const agentId = result && result.agent_id || requestAgents.get(requestId) || null;
+    const record = agentId && result && !result.agent_id ? { ...result, agent_id: agentId } : result;
     // Result files are immutable. Try create-only directly rather than making a
     // separate GET to check existence first.
-    const written = await writeRemoteJson(resultPath, result, null, true);
+    const written = await writeRemoteJson(resultPath, record, null, true);
     if (written.ok || written.conflict) {
       if (knownResultFiles) knownResultFiles.add(requestId + '.json');
       return { published: true, alreadyExists: written.conflict === true };
@@ -1576,21 +1598,28 @@ function createRepositoryBridge(deps) {
       const raw = JSON.stringify(remote.value);
       if (Buffer.byteLength(raw, 'utf8') > MAX_REQUEST_BYTES) throw new Error('Request exceeds the 1 MiB limit.');
       request = validateRequest(requestId, remote.value);
+      requestAgents.set(requestId, request.agent_id || null);
+      if (request.agent_id) await agentRegistry.authenticate(request);
     } catch (error) {
       await publishResult(requestId, {
         protocol: RESULT_PROTOCOL,
         request_id: requestId,
         status: 'rejected',
         completed_at: new Date().toISOString(),
-        error: cleanError(error.message)
+        error: cleanError(error.message),
+        ...(requestAgents.get(requestId) ? { agent_id: requestAgents.get(requestId) } : {})
       });
+      requestAgents.delete(requestId);
       return;
     }
 
     claimStartedAt = Date.now();
     const claim = await acquireClaim(requestId);
     claimAcquiredAt = Date.now();
-    if (!claim.acquired) return;
+    if (!claim.acquired) {
+      requestAgents.delete(requestId);
+      return;
+    }
     inMemoryClaims.add(requestId);
     activeRequestIds.add(requestId);
     announce();
@@ -1599,11 +1628,17 @@ function createRepositoryBridge(deps) {
     let report;
     let releaseExecutionSlot = null;
     let executionQueueWaitMs = 0;
+    let agentActivityStarted = false;
     try {
+      if (request.agent_id) agentActivityStarted = await agentRegistry.requestStarted(request);
       const waitStartedAt = Date.now();
       releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args);
       executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
-      if (request.tool === CONTEXT_REQUEST_TOOL) {
+      if (request.tool === 'agent_register') {
+        report = { ok: true, result: await agentRegistry.register(request.args) };
+      } else if (request.tool === 'agent_status') {
+        report = { ok: true, result: await agentRegistry.statuses(request.args.agent_id || null) };
+      } else if (request.tool === CONTEXT_REQUEST_TOOL) {
         report = { ok: true, result: await publishEnvironmentContext() };
       } else {
         report = await executeTool(request.tool, request.args, requestId);
@@ -1651,6 +1686,7 @@ function createRepositoryBridge(deps) {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
+      ...(request.agent_id ? { agent_id: request.agent_id } : (safeReport && safeReport.result && safeReport.result.agent_id ? { agent_id: safeReport.result.agent_id } : {})),
       status: safeReport && safeReport.ok ? (artifactErrors.length || /truncatedForMailbox|OUTPUT TRUNCATED before mailbox publication|shortened to fit the two-operation result limit|"(?:stdout_truncated|stderr_truncated|_bridge_truncated)"\s*:\s*true/.test(serializedSafeReport) ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
       output_truncated: outputWasShortened,
       created_at: remote.value.created_at,
@@ -1723,6 +1759,7 @@ function createRepositoryBridge(deps) {
     const completedClaim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
+      ...(request.agent_id ? { agent_id: request.agent_id } : {}),
       worker_id: workerId,
       tool: request.tool,
       status: 'completed',
@@ -1745,8 +1782,13 @@ function createRepositoryBridge(deps) {
         lastError += '; retry failed: ' + cleanError(retryError.message);
       }
     } finally {
+      if (agentActivityStarted) {
+        try { await agentRegistry.requestCompleted(request); }
+        catch (error) { lastError = 'Agent status update failed for ' + request.agent_id + ': ' + cleanError(error.message); }
+      }
       activeRequestIds.delete(requestId);
       inMemoryClaims.delete(requestId);
+      requestAgents.delete(requestId);
       announce();
     }
   }

@@ -18,6 +18,30 @@ For interaction, repeat **read Observe â†’ publish one justified input request â
 
 The updated worker discovers requests by directly scanning the bounded request-directory Git tree every five seconds. It does not wait for the path-filtered commit endpoint before scanning, because that endpoint can be slow and block the poll loop. This scan interval is not a guarantee on end-to-end response time. Check request commit timestamp, claim time and result `timing_ms` separately when diagnosing latency. Local/published `requestPolling` telemetry reports last tree scan time/duration/count and last poll duration. `created_to_worker_start` begins at the envelope's `created_at`, before the request write has necessarily committed.
 
+## Automatic Agent IDs for multiple ChatGPT conversations
+
+Do not ask the user to manually choose an Agent ID. Before the first mailbox operation in each conversation, search that conversation's own history for a successful registration result and reuse its `agent_id` and `agent_token`. If no prior pair can be recovered, create one unique mailbox request with `tool: "agent_register"` and `args: {}`; the worker allocates the next unused `agent-NNN` and records it at `bridge/agents/agent-NNN.json`. Save the returned pair in that conversation's context and attach both fields at the top level of every subsequent request.
+
+If a conversation forgets its ID, search its own history and existing result references before registering again. If the pair genuinely cannot be recovered, allocate a new ID; never choose an existing ID because its status says idle or stale. Agent IDs are never recycled automatically, so abandoned registrations remain visible as `stale` rather than being inherited by another conversation.
+
+Agent-aware requests retain the existing flat request/result/claim paths for compatibility with older app builds. Make request IDs globally unique; prefer an ID prefix such as `agent-001-req-20261029-random`. The app updates each agent's status, last activity, and recent request IDs. The `agent_status` mailbox tool lists agents and their `active`, `idle`, or `stale` status without returning token hashes. The registry stores only a hash of each token, not its clear value. These IDs organize shared work; they do not provide security isolation because conversations with access to the shared mailbox can read its records.
+
+Example agent-aware request (the registration token is the opaque value returned by `agent_register`):
+
+```json
+{
+  "protocol": "chatgpt-local-repo-bridge/v1",
+  "request_id": "agent-001-req-20261029-random",
+  "agent_id": "agent-001",
+  "agent_token": "<64-character token returned by agent_register>",
+  "created_at": "2026-10-29T04:00:00Z",
+  "tool": "project_status",
+  "args": {}
+}
+```
+
+For the first registration, use the standard envelope without `agent_id` and `agent_token`, with `tool: "agent_register"` and `args: {}`. Existing requests that omit both agent fields continue to work unchanged.
+
 ## Request schema
 
 Example for a read-only project status check:
