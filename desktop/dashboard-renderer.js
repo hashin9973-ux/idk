@@ -90,7 +90,7 @@ async function applyInitialSettings(settings){
   const s=settings&&typeof settings==='object'?settings:{};if(themeIds.includes(s.dashboardTheme))applyTheme(s.dashboardTheme);
   if(Number.isFinite(s.ttsVolume)){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}
   if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.observeFps))fps.value=String(s.observeFps);
-  if(typeof s.browserKeepActive==='boolean')keep.checked=s.browserKeepActive;if(typeof s.browserLowMemory==='boolean')low.checked=s.browserLowMemory;updateBrowserMode();
+  if(typeof s.browserEnabled==='boolean')browserEnabled.checked=s.browserEnabled;if(typeof s.browserKeepActive==='boolean')keep.checked=s.browserKeepActive;if(typeof s.browserLowMemory==='boolean')low.checked=s.browserLowMemory;updateBrowserMode();
 }
 const themeIds=['midnight','light','ocean','forest','sunset','rose','high-contrast','aurora','cyberpunk','dracula','nord','solarized-light','terminal','lavender','graphite'];
 function applyTheme(raw){const theme=themeIds.includes(raw)?raw:'midnight';document.documentElement.dataset.theme=theme;themeSelect.value=theme;for(const card of themeGallery.querySelectorAll('[data-theme-id]'))card.setAttribute('aria-pressed',String(card.dataset.themeId===theme));}
@@ -111,7 +111,7 @@ function renderGitHub(v){github=v||{};githubStatus.textContent=github.authentica
 function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root;$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root}
 function renderObserve(){obs.setAttribute('aria-pressed',String(observe.enabled===true));$('observe-status').textContent=(observe.enabled?'ON':'OFF')+' · '+Number(observe.fps||fps.value||2)+' fps';if(observe.fps)fps.value=String(observe.fps)}
 function renderAccept(){acceptBtn.setAttribute('aria-pressed',String(autoAccept));$('auto-accept-status').textContent=autoAccept?'ON':'OFF'}
-function updateBrowserMode(){memory.title=keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
+function updateBrowserMode(){memory.title=!browserEnabled.checked?'In-app browser is disabled.':keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
 async function refresh(){
   try{
     const s=await api.getState();
@@ -140,7 +140,7 @@ async function refresh(){
   }catch(e){note('Could not refresh app status: '+e.message,'error')}
   try{renderGitHub(await api.getGitHubState())}catch{}
   try{observe=await api.getObserveStatus();renderObserve()}catch{}
-  try{const b=await api.getBrowserSettings();keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
+  try{const b=await api.getBrowserSettings();browserEnabled.checked=b.enabled===true;keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
 }
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
@@ -208,7 +208,8 @@ $('vision-setup-check').addEventListener('click',async()=>{
   finally{b.disabled=false}
 });
 
-async function changeBrowserMode(){try{const v=await api.setBrowserSettings({keepActive:keep.checked,lowMemory:low.checked});keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode()}catch(e){note(e.message,'error');await refresh()}}
+async function changeBrowserMode(){try{const v=await api.setBrowserSettings({enabled:browserEnabled.checked,keepActive:keep.checked,lowMemory:low.checked});browserEnabled.checked=v.enabled===true;keep.checked=v.keepActive;low.checked=v.lowMemory;keep.disabled=!v.enabled;low.disabled=!v.enabled;updateBrowserMode()}catch(e){note(e.message,'error');await refresh()}}
+browserEnabled.addEventListener('change',()=>void changeBrowserMode());
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
