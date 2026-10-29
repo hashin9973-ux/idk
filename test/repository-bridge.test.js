@@ -31,11 +31,55 @@ async function waitFor(predicate, timeoutMs = 3000) {
   }
 }
 
-function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null, falseConflictCreatePaths = [], transientCreateConflictPaths = [] } = {}) {
+const DEFAULT_TEST_SESSION_ID = 'session-' + 'c'.repeat(32);
+
+function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null,
+  falseConflictCreatePaths = [], transientCreateConflictPaths = [], unscopedRequestIds = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
-  for (const [path, value] of initial) {
+  const normalizedInitial = initial.map(([path, value]) => {
+    if (!path.startsWith('bridge/requests/') || !value || typeof value !== 'object' ||
+        value.tool === 'session_start' || value.session_id ||
+        unscopedRequestIds.includes(value.request_id)) return [path, value];
+    // Most tests focus on worker behavior, so use a standard test lease for
+    // old fixtures. Explicit identity tests opt out and exercise rejection.
+    return [path, { ...value, session_id: DEFAULT_TEST_SESSION_ID }];
+  });
+  for (const [path, value] of normalizedInitial) {
     files.set(path, { name: path.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++ });
+  }
+  const queuedSessions = new Set();
+  for (const [path, stored] of files) {
+    if (!path.startsWith('bridge/requests/') || !path.endsWith('.json')) continue;
+    let request;
+    try { request = decode(stored); } catch { continue; }
+    if (request.tool !== 'session_start' && typeof request.session_id === 'string' &&
+        /^session-[a-f0-9]{32}$/.test(request.session_id)) queuedSessions.add(request.session_id);
+  }
+  for (const sessionId of queuedSessions) {
+    const sessionPath = 'bridge/sessions/' + sessionId + '.json';
+    if (files.has(sessionPath)) continue;
+    let nextAgentNumber = 1;
+    let agentId;
+    do { agentId = 'agent-' + String(nextAgentNumber++).padStart(3, '0'); }
+    while (files.has('bridge/agents/' + agentId + '.json'));
+    const now = new Date().toISOString();
+    const seat = {
+      protocol: 'chatgpt-local-agent-seat/v2', agent_id: agentId, current_session_id: sessionId,
+      label: 'Test agent', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+      last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+    };
+    const session = {
+      protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: agentId,
+      label: 'Test agent', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+      last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+    };
+    for (const [recordPath, value] of [
+      ['bridge/agents/' + agentId + '.json', seat],
+      [sessionPath, session]
+    ]) files.set(recordPath, {
+      name: recordPath.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++
+    });
   }
   const calls = [];
   let requestTreeFailuresRemaining = 0;
@@ -932,7 +976,7 @@ test('invalid request JSON is reported and does not block later work', async () 
   const fake = fakeGitHub({ initial: [
     ['bridge/requests/req-a-bad.json', first],
     ['bridge/requests/req-z-good.json', second]
-  ] });
+  ], unscopedRequestIds: [first.request_id] });
   fake.files.set('bridge/requests/req-a-bad.json', {
     name: 'req-a-bad.json', type: 'file', encoding: 'base64',
     content: Buffer.from('not-json', 'utf8').toString('base64'), sha: 'sha-corrupt'
