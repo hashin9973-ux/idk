@@ -86,8 +86,8 @@ function validateRequest(requestId, request) {
   const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
-  if (request.agent_id !== undefined || request.agent_token !== undefined) {
-    throw new Error('Legacy agent_id/agent_token request identity is no longer supported. Call session_start and include session_id.');
+  if (request.agent_id !== undefined || request.session_id !== undefined) {
+    throw new Error('Legacy agent_id/session_id request identity is no longer supported. Call session_start and include session_id.');
   }
   const hasSessionId = request.session_id !== undefined && request.session_id !== null && request.session_id !== '';
   if (isSessionBootstrap && hasSessionId) throw new Error('session_start is the bootstrap request and must omit session_id.');
@@ -433,7 +433,7 @@ function createRepositoryBridge(deps) {
         const request = remote.value;
         const existing = mailboxUiRecords.get(requestId) || {};
         const agentId = typeof request.agent_id === 'string' ? request.agent_id : existing.agentId || null;
-        const label = request.tool === 'agent_register' && request.args && request.args.label
+        const label = request.tool === 'session_start' && request.args && request.args.label
           ? String(request.args.label).slice(0, 80) : existing.agentLabel;
         updateMailboxUiRecord(requestId, {
           tool: typeof request.tool === 'string' ? request.tool : 'invalid request',
@@ -1471,7 +1471,7 @@ function createRepositoryBridge(deps) {
           request_path_template: 'bridge/requests/<request_id>.json',
           result_path_template: 'bridge/results/<same-request-id>.json',
           agent_registry_path: 'bridge/agents/<agent-id>.json',
-          agent_registration_tool: 'agent_register',
+          agent_registration_tool: 'session_start',
           agent_status_tool: 'agent_status',
           artifact_path_template: 'bridge/artifacts/<request-id>/<artifact-name>',
           output_limit_fallback: 'If output_truncated is true, a result is partial, a field contains OUTPUT EXTERNALIZED, or the inline result says the repository size limit was exceeded, fetch the listed artifact paths through GitHub MCP before reasoning from the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the full JSON, then follow its artifacts manifest. For tool_output_part, fetch all parts for that field and concatenate in ascending part order. Critical: if nested stdout_truncated or stderr_truncated is true, the local runner discarded bytes before artifact publication; fetching the artifact recovers only the captured portion and is NOT a complete output. Rerun the command in bounded pages or redirect its full output to a workspace file, then read that file with read_file pages until EOF. Never report an output complete until all required parts are read and neither capture-truncation flag remains unexplained.',
@@ -1480,13 +1480,13 @@ function createRepositoryBridge(deps) {
           request_example: {
             protocol: PROTOCOL,
             request_id: '<globally unique ID, preferably prefixed with assigned Agent ID>',
-            agent_id: '<agent-NNN from agent_register>',
-            agent_token: '<64-character token returned by agent_register>',
+            agent_id: '<agent-NNN from session_start>',
+            session_id: '<64-character token returned by session_start>',
             created_at: '<current ISO-8601 timestamp>',
             tool: 'get_agent_context',
             args: {}
           },
-          agent_registration_example: { protocol: PROTOCOL, request_id: 'register-YYYYMMDD-unique', created_at: '<current ISO-8601 timestamp>', tool: 'agent_register', args: {} },
+          agent_registration_example: { protocol: PROTOCOL, request_id: 'register-YYYYMMDD-unique', created_at: '<current ISO-8601 timestamp>', tool: 'session_start', args: {} },
           calling_contract: 'Local tools are mailbox-backed, not native GitHub MCP function names. Use GitHub MCP file operations to publish the request JSON on the configured branch, then read the result at the matching request ID. Use bridge/context/capabilities.json for exact tool schemas.'
         },
         tool_failure_contract: {
@@ -1499,9 +1499,9 @@ function createRepositoryBridge(deps) {
         protections: 'Never bypass tool schemas, workspace and symlink boundaries, secret-file protections, privacy rules, or genuine local approval requirements.'
         },
         operating_rules: [
-          'Before the first mailbox-backed operation in each ChatGPT conversation, search this conversation’s own history for a successful agent_register result. Reuse that exact agent_id and agent_token if found; otherwise publish one agent_register request with empty args to automatically allocate the next unused Agent ID. Never choose another agent merely because its status is idle or it was recently active.',
-          'After registering, include agent_id and agent_token as top-level fields in every mailbox request. Use globally unique request IDs, preferably prefixed with the assigned Agent ID (for example agent-001-req-YYYYMMDD-random); the bridge includes agent_id in claims/results and keeps status/recent request IDs in bridge/agents/<agent-id>.json. Keep the token in this conversation and do not put it into tool args unnecessarily.',
-          'If you forget the Agent ID, inspect this conversation’s own prior registration/result history first. Use agent_register with the existing ID and token to restore a known identity. If the exact token cannot be recovered, allocate a new ID; do not guess, reuse, or take another agent’s ID. Old IDs are never automatically recycled and eventually show stale.',
+          'Before the first mailbox-backed operation in each ChatGPT conversation, search this conversation’s own history for a successful session_start result. Reuse that exact agent_id and session_id if found; otherwise publish one session_start request with empty args to automatically allocate the next unused Agent ID. Never choose another agent merely because its status is idle or it was recently active.',
+          'After registering, include agent_id and session_id as top-level fields in every mailbox request. Use globally unique request IDs, preferably prefixed with the assigned Agent ID (for example agent-001-req-YYYYMMDD-random); the bridge includes agent_id in claims/results and keeps status/recent request IDs in bridge/agents/<agent-id>.json. Keep the token in this conversation and do not put it into tool args unnecessarily.',
+          'If you forget the Agent ID, inspect this conversation’s own prior registration/result history first. Use session_start with the existing ID and token to restore a known identity. If the exact token cannot be recovered, allocate a new ID; do not guess, reuse, or take another agent’s ID. Old IDs are never automatically recycled and eventually show stale.',
           'Use agent_status to inspect agent occupancy/status and recent request IDs. Statuses are active while this worker executes the agent’s request, idle when recently checked in with no current execution, or stale after prolonged inactivity/interrupted processing. Agent IDs are routing labels, not access-control isolation within a shared mailbox.',
           'Local tools are not native GitHub MCP function names. For any Windows action, use GitHub MCP file operations to read the published context and publish the mailbox request; do not look only for native local-tool functions.',
           'To invoke a local tool, create a unique immutable JSON file at bridge/requests/<request_id>.json using bridge_invocation.request_example as the envelope, replace both placeholders, then read bridge/results/<same-request-id>.json. The request is not a result.',
@@ -1844,14 +1844,27 @@ function createRepositoryBridge(deps) {
       executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
       updateMailboxUiRecord(requestId, { status: 'executing', progress: 50 });
       announce();
-      if (request.tool === 'agent_register') {
-        report = { ok: true, result: await agentRegistry.register(request.args) };
+      if (request.tool === 'session_start') {
+        report = { ok: true, result: await agentRegistry.startSession(request.args) };
       } else if (request.tool === 'agent_status') {
         report = { ok: true, result: await agentRegistry.statuses(request.args.agent_id || null) };
+      } else if (request.tool === 'send_agent_message') {
+        report = { ok: true, result: await agentRegistry.sendMessage(request.session_id, request.args) };
+      } else if (request.tool === 'read_agent_messages') {
+        report = { ok: true, result: await agentRegistry.readMessages(request.session_id, request.args) };
+      } else if (request.tool === 'reply_to_agent_message') {
+        report = { ok: true, result: await agentRegistry.replyToMessage(request.session_id, request.args) };
       } else if (request.tool === CONTEXT_REQUEST_TOOL) {
         report = { ok: true, result: await publishEnvironmentContext() };
       } else {
         report = await executeTool(request.tool, request.args, requestId);
+        if (request.tool === 'get_agent_context' && report && report.ok && report.result && typeof report.result === 'object') {
+          report.result.agent_status = await agentRegistry.statuses();
+          report.result.current_session = {
+            session_id: request.session_id, agent_id: request.agent_id,
+            label: request.agent_label || request.agent_id
+          };
+        }
       }
     } catch (error) {
       report = { ok: false, error: cleanError(error.message), tool: request.tool, call_id: requestId };
@@ -1861,18 +1874,17 @@ function createRepositoryBridge(deps) {
 
     toolFinishedAt = Date.now();
     const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
-    if (report && report.ok && request.tool === 'agent_register' && report.result && report.result.agent_id) {
+    if (report && report.ok && request.tool === 'session_start' && report.result && report.result.agent_id) {
       setAgentDirectoryEntry(report.result.agent_id, {
-        label: report.result.label || report.result.agent_id,
-        status: report.result.status || 'idle',
-        last_seen_at: report.result.last_seen_at || null
+        label: report.result.label || report.result.agent_id, status: 'active', busy: false,
+        session_id: report.result.session_id, last_activity_at: report.result.last_activity_at,
+        last_seen_at: report.result.last_activity_at, active_request_ids: [], recent_request_ids: []
       });
     } else if (report && report.ok && request.tool === 'agent_status' && report.result && Array.isArray(report.result.agents)) {
       for (const agent of report.result.agents) {
         if (agent && agent.agent_id) setAgentDirectoryEntry(agent.agent_id, {
-          label: agent.label || agent.agent_id, status: agent.status || 'unknown',
-          last_seen_at: agent.last_seen_at || null, last_request_id: agent.last_request_id || null,
-          active_request_ids: Array.isArray(agent.active_request_ids) ? agent.active_request_ids.slice(0, 32) : []
+          ...agent, label: agent.label || agent.agent_id, last_seen_at: agent.last_activity_at || null,
+          session_id: agent.session_id || null
         });
       }
     }
@@ -1913,6 +1925,7 @@ function createRepositoryBridge(deps) {
       protocol: RESULT_PROTOCOL,
       request_id: requestId,
       tool: request.tool,
+      ...(request.session_id ? { session_id: request.session_id } : (safeReport && safeReport.result && safeReport.result.session_id ? { session_id: safeReport.result.session_id } : {})),
       ...(request.agent_id ? { agent_id: request.agent_id } : (safeReport && safeReport.result && safeReport.result.agent_id ? { agent_id: safeReport.result.agent_id } : {})),
       status: safeReport && safeReport.ok ? (artifactErrors.length || /truncatedForMailbox|OUTPUT TRUNCATED before mailbox publication|shortened to fit the two-operation result limit|"(?:stdout_truncated|stderr_truncated|_bridge_truncated)"\s*:\s*true/.test(serializedSafeReport) ? 'partial' : 'completed') : safeReport && safeReport.cancelled ? 'cancelled' : 'failed',
       output_truncated: outputWasShortened,
@@ -1983,7 +1996,7 @@ function createRepositoryBridge(deps) {
     // Store the completed result in the claim journal before publishing the
     // result file. This preserves crash recovery while eliminating the old
     // result-pending PUT + claim reread + final claim PUT sequence.
-    const claimAgentId = request.agent_id || (request.tool === 'agent_register' ? resultRecord.agent_id : null);
+    const claimAgentId = request.agent_id || (request.tool === 'session_start' ? resultRecord.agent_id : null);
     const completedClaim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
@@ -2001,7 +2014,7 @@ function createRepositoryBridge(deps) {
       (mailboxUiRecords.get(requestId) || {}).agentLabel || resultAgentId || '';
     if (resultAgentId) setAgentDirectoryEntry(resultAgentId, {
       ...(resultAgentLabel ? { label: resultAgentLabel } : {}),
-      status: request.tool === 'agent_register' ? 'idle' : (agentDirectory.get(resultAgentId) || {}).status || 'unknown'
+      status: request.tool === 'session_start' ? 'idle' : (agentDirectory.get(resultAgentId) || {}).status || 'unknown'
     });
     updateMailboxUiRecord(requestId, {
       agentId: resultAgentId,
@@ -2031,11 +2044,12 @@ function createRepositoryBridge(deps) {
         try {
           const updatedAgent = await agentRegistry.requestCompleted(request);
           setAgentDirectoryEntry(request.agent_id, {
-            label: updatedAgent.label || request.agent_id,
-            status: updatedAgent.status || 'idle',
-            last_seen_at: updatedAgent.last_seen_at || null,
-            last_request_id: updatedAgent.last_request_id || null,
-            active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(0, 32) : []
+            label: updatedAgent.label || request.agent_label || request.agent_id,
+            status: 'active', busy: Array.isArray(updatedAgent.active_request_ids) && updatedAgent.active_request_ids.length > 0,
+            session_id: request.session_id, last_activity_at: updatedAgent.last_activity_at || null,
+            last_seen_at: updatedAgent.last_activity_at || null,
+            last_request_id: updatedAgent.last_request_id || request.request_id,
+            active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(-50) : []
           });
         } catch (error) { lastError = 'Agent status update failed for ' + request.agent_id + ': ' + cleanError(error.message); }
       }
@@ -2049,6 +2063,7 @@ function createRepositoryBridge(deps) {
       activeRequestIds.delete(requestId);
       inMemoryClaims.delete(requestId);
       requestAgents.delete(requestId);
+      requestSessions.delete(requestId);
       mailboxRequestCache.delete(requestId);
       announce();
     }
