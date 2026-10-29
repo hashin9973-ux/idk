@@ -221,32 +221,35 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
         }
 
         try {
-          const current = await readSeat(agentId);
-          const seat = current && current.value;
-          const currentSession = seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id
-            ? (await readSession(seat.current_session_id))?.value || null : null;
-          if (seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id &&
-              !isInactive(seat, currentSession)) {
+          const allocated = await withLock('seat:' + agentId, async () => {
+            const current = await readSeat(agentId);
+            const seat = current && current.value;
+            const currentSession = seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id
+              ? (await readSession(seat.current_session_id))?.value || null : null;
+            if (seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id &&
+                !isInactive(seat, currentSession)) {
+              return null;
+            }
+            const nextSeat = {
+              protocol: AGENT_RECORD_PROTOCOL, agent_id: agentId, current_session_id: sessionId,
+              label, status: 'active', created_at: seat && seat.created_at || now,
+              updated_at: now, last_activity_at: now, last_request_id: null, last_completed_at: null,
+              recent_request_ids: [], active_request_ids: []
+            };
+            const saved = await writeRemoteJson(seatPath(agentId), nextSeat, current ? current.sha : null, !current);
+            if (!saved || !saved.ok) return null;
+            if (priorSessionId && priorSessionId !== sessionId) await expireSession(priorSessionId, sessionId);
+            return {
+              session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
+              last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
+              note: 'Session created. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
+            };
+          });
+          if (!allocated) {
             await expireSession(sessionId);
             continue;
           }
-          const nextSeat = {
-            protocol: AGENT_RECORD_PROTOCOL, agent_id: agentId, current_session_id: sessionId,
-            label, status: 'active', created_at: seat && seat.created_at || now,
-            updated_at: now, last_activity_at: now, last_request_id: null, last_completed_at: null,
-            recent_request_ids: [], active_request_ids: []
-          };
-          const saved = await writeRemoteJson(seatPath(agentId), nextSeat, current ? current.sha : null, !current);
-          if (!saved || !saved.ok) {
-            await expireSession(sessionId);
-            continue;
-          }
-          if (priorSessionId && priorSessionId !== sessionId) await expireSession(priorSessionId, sessionId);
-          return {
-            session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
-            last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
-            note: 'Session created. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
-          };
+          return allocated;
         } catch (error) {
           await expireSession(sessionId);
           if (isConflictError(error)) continue;
