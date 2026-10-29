@@ -1,5 +1,6 @@
 'use strict';
 
+const http = require('node:http');
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -156,11 +157,25 @@ test('non-POST methods and unexpected Host headers are rejected', async t => {
   const get = await fetch(url, { headers: { Origin: COLAB_PAGE_ORIGIN } });
   assert.equal(get.status, 405);
 
-  const badHost = await fetch(url, {
-    method: 'POST',
-    headers: { Origin: COLAB_PAGE_ORIGIN, Host: 'attacker.test', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ endpoint: ENDPOINT })
+  const address = new URL(url);
+  const badHost = await new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: Number(address.port),
+      path: HANDOFF_PATH,
+      method: 'POST',
+      headers: {
+        Host: 'attacker.test',
+        Origin: COLAB_PAGE_ORIGIN,
+        'Content-Type': 'application/json'
+      }
+    }, response => {
+      response.resume();
+      response.on('end', () => resolve(response.statusCode));
+    });
+    request.once('error', reject);
+    request.end(JSON.stringify({ endpoint: ENDPOINT }));
   });
-  assert.equal(badHost.status, 421);
+  assert.equal(badHost, 421);
   assert.deepEqual(f.deliveries, []);
 });
