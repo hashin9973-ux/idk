@@ -224,6 +224,7 @@ function createRepositoryBridge(deps) {
   let mailboxCleanupInFlight = false;
   let lastMailboxCleanupAt = 0;
   let mailboxCleanupCursor = null;
+  let mailboxMessageRetentionCursor = null;
   let mailboxCleanupLastRunAt = null;
   let mailboxCleanupLastDeletedRecords = 0;
   let mailboxCleanupLastDeletedFiles = 0;
@@ -1122,7 +1123,7 @@ function createRepositoryBridge(deps) {
     const parts = value.split('/');
     if (parts.length < 3 || parts[0] !== 'bridge' ||
         parts.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) return false;
-    return ['requests', 'results', 'claims', 'artifacts'].includes(parts[1]) &&
+    return ['requests', 'results', 'claims', 'artifacts', 'agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
       !parts.some(segment => segment === '.gitkeep');
   }
 
@@ -1191,6 +1192,88 @@ function createRepositoryBridge(deps) {
     }
     await api('PATCH', refUpdatePath, { sha: commitSha, force: false });
     return { deleted: unique.size, commitSha };
+  }
+
+  async function cleanupAgentMessageRecords() {
+    const cutoff = Date.now() - currentConfig().retentionDays * 24 * 60 * 60 * 1000;
+    const sessionEntries = await listFolder('bridge/sessions');
+    const sessions = [...new Set(sessionEntries
+      .map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name))
+      .map(name => name.slice(0, -5)))].sort();
+    if (!sessions.length) {
+      mailboxMessageRetentionCursor = null;
+      return { deletedRecords: 0, deletedFiles: 0 };
+    }
+
+    let start = mailboxMessageRetentionCursor
+      ? sessions.findIndex(sessionId => sessionId > mailboxMessageRetentionCursor)
+      : 0;
+    if (start < 0) start = 0;
+    const selectedSessions = sessions.slice(start, start + 10);
+    mailboxMessageRetentionCursor = start + selectedSessions.length < sessions.length
+      ? selectedSessions[selectedSessions.length - 1] : null;
+
+    const deletions = [];
+    let deletedRecords = 0;
+    const perPassLimit = 20;
+    for (const sessionId of selectedSessions) {
+      if (deletedRecords >= perPassLimit) break;
+      const inboxPath = 'bridge/agent-messages/' + sessionId;
+      const receiptFolder = 'bridge/agent-message-receipts/' + sessionId;
+      let entries;
+      try { entries = await listFolder(inboxPath); }
+      catch (error) {
+        if (/not found|404/i.test(String(error && error.message || error))) continue;
+        throw error;
+      }
+      const candidates = entries.map(item => ({
+        name: String(item && (item.name || item.path) || '').split('/').pop(),
+        sha: item && item.sha
+      })).filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(item.name))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .slice(-200);
+      if (!candidates.length) continue;
+
+      let receipts;
+      try { receipts = await listFolder(receiptFolder); }
+      catch (error) {
+        if (/not found|404/i.test(String(error && error.message || error))) receipts = [];
+        else throw error;
+      }
+      const receiptNames = new Set(receipts.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(name)));
+
+      // Never prune unread/pending messages. A valid receipt proves the recipient read it.
+      for (const item of candidates) {
+        if (deletedRecords >= perPassLimit) break;
+        if (!receiptNames.has(item.name)) continue;
+        const messageId = item.name.slice(0, -5);
+        const messagePath = inboxPath + '/' + item.name;
+        const remote = await readRemoteFile(messagePath);
+        if (!remote || (item.sha && remote.sha !== item.sha)) continue;
+        const record = remote.value;
+        const createdAt = Date.parse(String(record && record.created_at || ''));
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId ||
+            !Number.isFinite(createdAt) || createdAt >= cutoff) continue;
+
+        const receiptPath = receiptFolder + '/' + item.name;
+        const receipt = await readRemoteFile(receiptPath);
+        if (!receipt || !receipt.value ||
+            receipt.value.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
+            receipt.value.message_id !== messageId ||
+            receipt.value.recipient_session_id !== sessionId ||
+            typeof receipt.value.read_at !== 'string') continue;
+
+        deletions.push({ path: messagePath, sha: remote.sha }, { path: receiptPath, sha: receipt.sha });
+        deletedRecords++;
+      }
+    }
+
+    if (!deletions.length) return { deletedRecords: 0, deletedFiles: 0 };
+    const outcome = await commitMailboxDeletions(deletions);
+    return { deletedRecords, deletedFiles: outcome.deleted, commitSha: outcome.commitSha || null };
   }
 
   async function cleanupMailboxRecords() {
@@ -1294,11 +1377,14 @@ function createRepositoryBridge(deps) {
     try {
       const outcome = await cleanupMailboxRecords();
       if (outcome.skipped) return;
+      let messageOutcome = { deletedRecords: 0, deletedFiles: 0 };
+      try { messageOutcome = await cleanupAgentMessageRecords(); }
+      catch (error) { messageOutcome.error = cleanError(error.message); }
       lastMailboxCleanupAt = Date.now();
       mailboxCleanupLastRunAt = new Date(lastMailboxCleanupAt).toISOString();
-      mailboxCleanupLastDeletedRecords = outcome.deletedRecords || 0;
-      mailboxCleanupLastDeletedFiles = outcome.deletedFiles || 0;
-      mailboxCleanupLastError = null;
+      mailboxCleanupLastDeletedRecords = (outcome.deletedRecords || 0) + (messageOutcome.deletedRecords || 0);
+      mailboxCleanupLastDeletedFiles = (outcome.deletedFiles || 0) + (messageOutcome.deletedFiles || 0);
+      mailboxCleanupLastError = messageOutcome.error || null;
     } catch (error) {
       lastMailboxCleanupAt = Date.now();
       mailboxCleanupLastRunAt = new Date(lastMailboxCleanupAt).toISOString();
@@ -1531,7 +1617,7 @@ function createRepositoryBridge(deps) {
           'Protected operations may prompt for native Windows approval unless Auto-accept everything is enabled; tool registration, argument, and workspace-path validation still apply.',
           'PowerShell is not sandboxed and runs as the signed-in Windows user.',
           'Whenever output_truncated is true, the status is partial, or any field contains OUTPUT EXTERNALIZED / OUTPUT ARTIFACT ERROR, inspect result.artifacts and result.artifact_errors immediately. Read every required artifact file with GitHub MCP before interpreting the output. For complete_result_part, fetch all parts, concatenate UTF-8 text in ascending part order, parse the reconstructed JSON, and then follow its artifact manifest. For tool_output_part, fetch all parts for the field and concatenate them in ascending part order. If an artifact is unavailable, a part is missing, or artifact_errors is non-empty, do not claim that output is complete; retry in bounded pages or narrower ranges.',
-          'The mailbox retention cleaner runs only while the worker and shared state are fresh and idle. It retains completed records for the configured repositoryBridge.retentionDays (default 30, valid 1–365), and never removes active/pending work, non-terminal claims, state, context, or folder markers.',
+          'The mailbox retention cleaner runs only while the worker and shared state are fresh and idle. It retains completed request records for the configured repositoryBridge.retentionDays (default 30, valid 1–365), and removes old agent messages only when a matching immutable read receipt exists; unread/pending messages are retained. It never removes non-terminal claims, state, context, or folder markers.',
           'After creating a request, wait for bridge/results/<same-request-id>.json before treating it as finished or starting dependent work. A request or processing claim is not a result; if the result is missing, inspect windows-app state and the matching claim, then poll again rather than creating duplicates.',
           'shell and run_tests wait for the foreground process to exit or for the timeout watchdog to return partial output. Inspect exitCode, timedOut, stdout, and stderr. A timeout or non-zero exit is not success. For background servers, redirect logs, poll readiness with a bounded deadline, and separate server lifetime from the smoke-test process.'
         ]
