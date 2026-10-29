@@ -494,7 +494,9 @@ test('create-only HTTP 422 without an existing result is verified and retried', 
 });
 
 test('mailbox transport health is tracked separately from ordinary tool errors', async () => {
-  const fake = fakeGitHub();
+  // Match the real mailbox layout: request polling happens within an existing
+  // requests directory instead of relying on startup to create a placeholder.
+  const fake = fakeGitHub({ initial: [['bridge/requests/.gitkeep', { purpose: 'test mailbox directory' }]] });
   const fixture = settingsFixture();
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture,
