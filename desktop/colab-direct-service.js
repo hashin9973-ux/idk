@@ -509,11 +509,11 @@ function createVisionService(deps) {
         endpoint_watch_active: Boolean(opened.watching),
         vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
         message: opened.watching
-          ? 'The app is watching the Windows clipboard for the random public HTTPS endpoint from Colab. Run the server cell; if automatic detection keeps waiting, click Paste URL in this app and paste the complete PUBLIC_VISION_ENDPOINT line from the notebook output. The app verifies the endpoint over authenticated HTTPS. Vision remains off.'
+          ? 'Waiting for Colab to hand its temporary HTTPS endpoint directly to Windows Repository Bridge. The app verifies it over authenticated HTTPS and keeps vision off until you enable it. No copy/paste should be needed; if the browser blocks automatic launch, click Connect to Windows Bridge once.'
           : opened.throttled
-            ? 'The app is already watching for a public endpoint or recently opened the notebook. Run the server cell in Colab; click Paste URL here if automatic detection does not work.'
-            : 'The app could not start watching for the notebook endpoint.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'If clipboard auto-detection fails, copy the full PUBLIC_VISION_ENDPOINT line and paste it using Paste URL in this app. The endpoint is a temporary secret; keep it private. Vision remains off until explicitly enabled.']
+            ? 'The app is already watching for a Colab endpoint or recently opened the notebook. Run the server cell; the endpoint will be handed to the app automatically when browser policy permits. If blocked, click Connect to Windows Bridge once.'
+            : 'The app could not start waiting for the notebook endpoint.',
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'The notebook attempts a direct Windows app handoff automatically. If the browser blocks it, click Connect to Windows Bridge once; manual copy/paste is a last-resort fallback. The endpoint is a temporary secret; keep it private. Vision remains off until explicitly enabled.']
       };
     } catch (error) {
       return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };
