@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Windows Repository Bridge</title><link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<header class="app-header">
+<div class="brand-mark" aria-hidden="true">WB</div><div class="brand-copy"><h1>Windows Bridge</h1><p>Desktop workspace</p></div>
+<div class="header-status"><span id="worker-dot" class="status-dot waiting"></span><span id="worker-status">Worker connecting…</span><span class="status-separator">·</span><span id="github-status">GitHub checking…</span></div>
+<button id="open-overlay" class="quiet-button" type="button">Overlay</button>
+</header>
+<main id="page-stage">
+<section id="main-page" class="page" aria-label="Main widgets">
+<section id="queues-widget" class="widget queue-widget" data-widget="queues" aria-label="Current Queues"><h2>Current Queues</h2><div id="queue-list" class="queue-list"></div></section>
+<section id="controls-widget" class="widget controls-widget" data-widget="controls" aria-label="Bridge controls">
+<h2>Controls</h2><div class="control-grid">
+<button id="observe-toggle" class="setting-toggle" type="button" aria-pressed="false"><span class="toggle-glyph"></span><span class="toggle-copy"><strong>Observe</strong><small id="observe-status">OFF · 2 fps</small></span></button>
+<button id="auto-accept-toggle" class="setting-toggle" type="button" aria-pressed="false"><span class="toggle-glyph"></span><span class="toggle-copy"><strong>Auto accept</strong><small id="auto-accept-status">OFF</small></span></button>
+<button id="quick-colab-connect" class="action-button" type="button"><span class="action-symbol">↗</span><span><strong>Quick Colab connect</strong><small id="colab-status">Open notebook and watch for its endpoint</small></span></button>
+<button id="workspace-button" class="action-button" type="button"><span class="action-symbol">⌂</span><span><strong>Workspace</strong><small id="workspace-status">Choose a folder or drive</small></span></button>
+</div><p id="dashboard-message" class="inline-message" role="status" aria-live="polite"></p></section>
+</section>
+<section id="settings-page" class="page settings-page" aria-label="Settings" hidden><div class="settings-scroll">
+<section class="settings-panel"><div class="section-heading"><h2>GitHub access</h2><p>Authenticate this Windows app.</p></div><div class="setting-row"><div><strong id="github-detail">GitHub not connected</strong><small>Uses existing encrypted app-side sign-in.</small></div><button id="github-connect" class="action-button compact" type="button">Sign in</button></div></section>
+<section class="settings-panel"><div class="section-heading"><h2>Bridge environment repository</h2><p>Existing repository and branch used for bridge requests and results.</p></div>
+<form id="repo-form" class="repo-form"><label>Owner<input id="repo-owner" name="owner" maxlength="100" required autocomplete="off"></label><label>Repository<input id="repo-name" name="repo" maxlength="100" required autocomplete="off"></label><label>Branch<input id="repo-branch" name="branch" maxlength="120" required autocomplete="off"></label>
+<label class="checkbox-row"><input id="allow-public-mailbox" type="checkbox"> Allow a public repository (contents may be visible to others)</label><div class="form-foot"><span id="repo-message" class="inline-message" role="status"></span><button class="action-button compact" type="submit">Save repository</button></div></form></section>
+<section class="settings-panel"><div class="section-heading"><h2>Speech</h2><p>Adjust local TTS playback volume.</p></div><div class="setting-row"><label for="tts-volume">TTS volume</label><output id="tts-volume-value" for="tts-volume">100%</output></div><input id="tts-volume" class="range-input" type="range" min="0" max="100" step="1" value="100"></section>
+<section class="settings-panel"><div class="section-heading"><h2>Observe mode</h2><p>Sampling rate for passive desktop context.</p></div><div class="setting-row"><label for="observe-fps">Observe FPS</label><select id="observe-fps"><option value="0.5">0.5 fps</option><option value="1">1 fps</option><option value="2">2 fps</option><option value="4">4 fps</option><option value="8">8 fps</option></select></div></section>
+<section class="settings-panel"><div class="section-heading"><h2>Workspace</h2><p>The selected folder or explicitly confirmed drive is the local environment.</p></div><div class="setting-row"><div><strong id="workspace-detail">No workspace selected</strong><small id="workspace-description">Workspace paths remain local to this app.</small></div><button id="settings-workspace-button" class="action-button compact" type="button">Choose workspace</button></div></section>
+<section class="settings-panel"><div class="section-heading"><h2>Embedded browser</h2><p>Page focus compatibility and memory trade-offs.</p></div>
+<label class="checkbox-row"><input id="browser-keep-active" type="checkbox"> Keep page active in the background</label><p class="help-copy">Opt-in mode disables Chromium background throttling and reports document visibility/focus as active. It does not focus the native app window or synthesize user input; some sites may use other focus signals.</p>
+<label class="checkbox-row"><input id="browser-low-memory" type="checkbox"> Low-memory mode — release inactive web tabs</label><p class="help-copy">These modes are mutually exclusive: releasing a tab unloads its page, so it cannot keep running. 100 MB is a best-effort target, not a guaranteed cap; Colab and Chromium can exceed it.</p>
+<div class="memory-row"><span>Embedded renderer private memory</span><strong id="browser-memory">Not measured</strong></div></section>
+</div></section>
+<section id="browser-page" class="page browser-page" hidden aria-label="Embedded web page"><div id="browser-host"></div></section>
+</main>
+<footer id="tabbar" class="tabbar"><div id="tab-track" class="tab-track"><div id="tab-list" class="tab-list" role="tablist" aria-label="Window tabs"></div><button id="add-tab" class="tab-add" type="button" title="Add Settings tab" aria-label="Add tab">+</button></div></footer>
+<script src="dashboard-renderer.js"></script>
+</body></html>
