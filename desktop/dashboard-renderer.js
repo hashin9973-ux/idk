@@ -5,6 +5,93 @@ const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
 let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const grid=12,minW=44,minH=36;
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
+
+let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
+function dashboardSnapshot(){
+  const records=new Map(browserTabData.map(item=>[item.id,item]));
+  const dim=(el,property,fallback,min,max)=>{
+    const raw=parseFloat(el.style[property]);const n=Number.isFinite(raw)?raw:fallback;
+    return Math.round(Math.max(min,Math.min(max,n)));
+  };
+  return {
+    tabs:tabs.map((tab,order)=>{
+      const saved=tab.kind==='browser'?records.get(tab.browserId):null;
+      return {id:tab.id,kind:tab.kind,label:tab.label,closable:tab.closable!==false,order,
+        ...(tab.kind==='browser'?{browserId:tab.browserId,url:saved&&saved.url||tab.url,title:saved&&saved.title||tab.title||tab.label}: {})};
+    }),
+    activeTabId:active,
+    widgets:{
+      queues:{x:dim(queue,'left',24,0,10000),y:dim(queue,'top',28,0,10000),width:dim(queue,'width',Math.max(180,mainPage.clientWidth-48),180,4000),height:dim(queue,'height',queue.scrollHeight||120,80,3000)},
+      controls:{x:dim(controls,'left',24,0,10000),y:dim(controls,'top',180,0,10000),width:dim(controls,'width',420,180,4000),height:dim(controls,'height',controls.scrollHeight||180,80,3000)}
+    }
+  };
+}
+function scheduleSaveDashboardState(){
+  if(!dashboardStateLoaded||suppressDashboardSave)return;
+  if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);
+  dashboardSaveTimer=setTimeout(async()=>{
+    dashboardSaveTimer=null;
+    try{await api.saveDashboardState(dashboardSnapshot())}catch(e){note('Could not save tabs and widgets: '+e.message,'error')}
+  },300);
+}
+function applyDashboardState(value){
+  const source=value&&typeof value==='object'?value:{};
+  suppressDashboardSave=true;
+  try{
+    if(Array.isArray(source.tabs)){
+      const incoming=[];
+      for(const raw of source.tabs.slice(0,100)){
+        if(!raw||!['main','settings','browser'].includes(raw.kind)||typeof raw.id!=='string')continue;
+        if(raw.kind==='browser'&&(!raw.browserId||!raw.url))continue;
+        incoming.push({id:raw.id,kind:raw.kind,label:String(raw.label||'Web').slice(0,80),closable:raw.kind!=='main',
+          ...(raw.kind==='browser'?{browserId:raw.browserId,url:raw.url,title:raw.title||raw.label}: {})});
+      }
+      if(!incoming.some(t=>t.id==='main'&&t.kind==='main'))incoming.unshift({id:'main',kind:'main',label:'Main',closable:false});
+      const unique=new Set();tabs=incoming.filter(t=>!unique.has(t.id)&&unique.add(t.id));
+      if(!tabs.some(t=>t.id==='settings'))tabs.splice(Math.min(1,tabs.length),0,{id:'settings',kind:'settings',label:'Settings',closable:true});
+    }
+    const widgets=source.widgets&&typeof source.widgets==='object'?source.widgets:{};
+    for(const [id,el] of [['queues',queue],['controls',controls]]){
+      const w=widgets[id];if(!w||typeof w!=='object')continue;
+      const num=(key,def,min,max)=>Number.isFinite(w[key])?Math.max(min,Math.min(max,Math.round(w[key]))):def;
+      Object.assign(el.style,{left:num('x',24,0,10000)+'px',top:num('y',id==='queues'?28:180,0,10000)+'px',
+        width:num('width',id==='queues'?Math.max(180,mainPage.clientWidth-48):420,180,4000)+'px',
+        height:num('height',el.scrollHeight||150,80,3000)+'px'});
+      widgetMoved[id]=true;
+    }
+    active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
+  }finally{suppressDashboardSave=false}
+}
+function applyTtsSettings(value){
+  const s=value&&typeof value==='object'?value:{};
+  $('tts-mode').value=s.mode==='notification'?'notification':'autoplay';
+  $('tts-captions-autoplay').checked=s.captionsOnAutoplay!==false;
+  $('tts-transparent-bg').checked=s.captionTransparent===true;
+  $('tts-caption-position').value=['top','center','bottom','custom'].includes(s.captionPosition)?s.captionPosition:'bottom';
+  $('tts-caption-x').value=String(Number.isFinite(s.captionX)?s.captionX:50);
+  $('tts-caption-y').value=String(Number.isFinite(s.captionY)?s.captionY:85);
+  $('tts-caption-x-value').textContent=$('tts-caption-x').value+'%';$('tts-caption-y-value').textContent=$('tts-caption-y').value+'%';
+  $('tts-caption-theme').value=['app','system','light','dark'].includes(s.captionTheme)?s.captionTheme:'app';
+  $('tts-custom-position').hidden=$('tts-caption-position').value!=='custom';
+}
+function readTtsSettings(){return {mode:$('tts-mode').value,captionsOnAutoplay:$('tts-captions-autoplay').checked,
+  captionTransparent:$('tts-transparent-bg').checked,captionPosition:$('tts-caption-position').value,
+  captionX:Number($('tts-caption-x').value),captionY:Number($('tts-caption-y').value),captionTheme:$('tts-caption-theme').value};}
+async function saveTtsSettings(){try{applyTtsSettings(await api.setTtsSettings(readTtsSettings()));note('Speech and caption settings saved.','success')}
+  catch(e){note('Could not save speech settings: '+e.message,'error');await refresh()}}
+function renderCloudStatus(value){
+  const s=value&&typeof value==='object'?value:{};const folder=String(s.folder||'');
+  $('cloud-folder-path').textContent=folder||'Not configured. Choose a synchronized local cloud folder.';
+  $('cloud-sync-enabled').checked=s.enabled===true;$('cloud-sync-now').disabled=s.enabled!==true||s.configured!==true;
+  let detail=s.state||(s.enabled?'connecting':'disabled');if(s.lastSyncedAt)detail+=' · last sync '+new Date(s.lastSyncedAt).toLocaleString();if(s.error)detail+=' · '+s.error;
+  $('cloud-sync-status').textContent=detail;$('cloud-sync-status').dataset.state=s.error?'error':s.enabled&&s.state==='ready'?'success':'';
+}
+async function applyInitialSettings(settings){
+  const s=settings&&typeof settings==='object'?settings:{};if(themeIds.includes(s.dashboardTheme))applyTheme(s.dashboardTheme);
+  if(Number.isFinite(s.ttsVolume)){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}
+  if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.observeFps))fps.value=String(s.observeFps);
+  if(typeof s.browserKeepActive==='boolean')keep.checked=s.browserKeepActive;if(typeof s.browserLowMemory==='boolean')low.checked=s.browserLowMemory;updateBrowserMode();
+}
 const themeIds=['midnight','light','ocean','forest','sunset','rose','high-contrast','aurora','cyberpunk','dracula','nord','solarized-light','terminal','lavender','graphite'];
 function applyTheme(raw){const theme=themeIds.includes(raw)?raw:'midnight';document.documentElement.dataset.theme=theme;themeSelect.value=theme;for(const card of themeGallery.querySelectorAll('[data-theme-id]'))card.setAttribute('aria-pressed',String(card.dataset.themeId===theme));}
 async function chooseTheme(requested){const previous=document.documentElement.dataset.theme||'midnight';applyTheme(requested);try{const saved=await api.setTheme(requested);applyTheme(saved.theme);note('Theme saved.','success')}catch(e){applyTheme(previous);note(e.message,'error')}}
@@ -94,7 +181,14 @@ $('vision-setup-check').addEventListener('click',async()=>{
 
 async function changeBrowserMode(){try{const v=await api.setBrowserSettings({keepActive:keep.checked,lowMemory:low.checked});keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode()}catch(e){note(e.message,'error');await refresh()}}
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
-api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);api.onBrowserTabsChanged(syncBrowserTabs);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';if(v.privateMb>100)memory.title='Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
+api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
+api.onPrepareForTray(async payload=>{
+  if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
+  const state=dashboardSnapshot();let saved=state;
+  try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
+  try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
+});
+api.onBrowserTabsChanged(syncBrowserTabs);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';if(v.privateMb>100)memory.title='Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
 window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
 applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();

@@ -16,6 +16,13 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   setTtsVolume: value => ipcRenderer.invoke('app:tts-volume', value),
   setTheme: theme => ipcRenderer.invoke('app:set-theme', theme),
   saveDashboardState: state => ipcRenderer.invoke('app:save-dashboard-state', state),
+  acknowledgeTrayState: (requestId, state) => ipcRenderer.invoke('app:tray-state-saved', { requestId, state }),
+  onPrepareForTray(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => callback(value && typeof value === 'object' ? value : {});
+    ipcRenderer.on('app:prepare-for-tray', listener);
+    return () => ipcRenderer.removeListener('app:prepare-for-tray', listener);
+  },
   saveNow: () => ipcRenderer.invoke('app:save-now'),
   getTtsSettings: () => ipcRenderer.invoke('app:tts-settings'),
   setTtsSettings: settings => ipcRenderer.invoke('app:tts-settings', settings),

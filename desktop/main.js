@@ -36,7 +36,7 @@ const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
-const { createCloudSync } = require('./cloud-sync');
+const { createCloudSync, safeShareUrl } = require('./cloud-sync');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -126,6 +126,7 @@ let captionCloseTimer = null;
 let captionProgressTimer = null;
 let captionPlaybackInFlight = false;
 let trayUnloadPromise = null;
+const trayStateResolvers = new Map();
 const browserTabs = new Map();
 let activeBrowserTabId = null;
 let browserBounds = { x: 0, y: 0, width: 1, height: 1 };
@@ -644,20 +645,8 @@ function destroyDashboardWindowToTray() {
     if (dashboardWindow === win && !win.webContents.isDestroyed()) {
       const requestId = crypto.randomUUID();
       savedState = await new Promise(resolve => {
-        let settled = false;
-        const finish = value => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          ipcMain.removeListener('app:tray-state-saved', onSaved);
-          resolve(value && typeof value === 'object' ? value : null);
-        };
-        const onSaved = (event, value) => {
-          if (event.sender !== win.webContents || !value || value.requestId !== requestId) return;
-          finish(value.state);
-        };
-        const timer = setTimeout(() => finish(null), 650);
-        ipcMain.on('app:tray-state-saved', onSaved);
+        const timer = setTimeout(() => { trayStateResolvers.delete(requestId); resolve(null); }, 750);
+        trayStateResolvers.set(requestId, { win, resolve, timer });
         dashboardSend('app:prepare-for-tray', { requestId });
       });
     }
@@ -1322,6 +1311,7 @@ function syncBrowserRegistryFromDashboardState(value) {
   }
   settings.dashboardState = normalized;
   saveBrowserTabMetadata();
+  publishBrowserTabs();
 }
 
 function collectSharedPreferences() {
@@ -1374,8 +1364,12 @@ function applyCloudRemoteState(shared) {
     ...(Number.isFinite(preferences.captionY) ? { captionY: preferences.captionY } : {}),
     ...(typeof preferences.captionTheme === 'string' ? { captionTheme: preferences.captionTheme } : {})
   });
+  const remoteTabs = Array.isArray(source.tabs) ? source.tabs : [];
+  const remoteIds = new Set(remoteTabs.map(tab => tab && tab.id).filter(Boolean));
+  const localPrivateTabs = normalizeDashboardState(settings.dashboardState || defaultDashboardState()).tabs.filter(tab =>
+    tab.kind === 'browser' && !safeShareUrl(tab.url) && !remoteIds.has(tab.id));
   settings.dashboardState = normalizeDashboardState({
-    tabs: source.tabs,
+    tabs: [...remoteTabs, ...localPrivateTabs],
     activeTabId: source.activeTabId,
     widgets: Object.fromEntries((Array.isArray(source.widgets) ? source.widgets : []).map(widget => [widget.id, widget]))
   });
@@ -1732,6 +1726,14 @@ function registerIpc() {
     return getUiState();
   });
   ipcMain.handle('app:open-dashboard', event => { assertLocalUi(event, 'index.html'); return showDashboardWindow(); });
+  ipcMain.handle('app:tray-state-saved', (event, value) => {
+    const requestId = value && typeof value.requestId === 'string' ? value.requestId : '';
+    const pending = trayStateResolvers.get(requestId);
+    if (!pending || pending.win.isDestroyed() || pending.win.webContents !== event.sender) throw new Error('No matching trusted tray-save request exists.');
+    trayStateResolvers.delete(requestId); clearTimeout(pending.timer);
+    pending.resolve(value && value.state && typeof value.state === 'object' ? value.state : null);
+    return { acknowledged: true };
+  });
   ipcMain.handle('app:save-dashboard-state', (event, value) => { assertLocalUi(event, 'index.html'); return saveDashboardState(value); });
   ipcMain.handle('app:save-now', event => { assertLocalUi(event, 'index.html'); persistSettings(); return { saved: true, savedAt: new Date().toISOString() }; });
   ipcMain.handle('app:cloud-sync-status', event => { assertLocalUi(event, 'index.html'); return getUiState().cloudSync; });
@@ -2145,6 +2147,7 @@ if (!hasInstanceLock) {
     createTray();
     createMainWindow();
     initializeCloudSync();
+    nativeTheme.on('updated', () => { if (activeCaptionPayload) updateCaptionWindowPayload(); });
     registerHotkey();
     app.on('activate', showMainWindow);
 
