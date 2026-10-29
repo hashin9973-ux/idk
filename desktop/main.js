@@ -29,7 +29,8 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint } = require('./colab-direct-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
+const { MAX_SPEECH_CHUNKS } = require('./speech-text');
 const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
@@ -122,6 +123,7 @@ let captionWindow = null;
 let captionWindowLoaded = false;
 let activeCaptionPayload = null;
 let captionCloseTimer = null;
+let captionProgressTimer = null;
 let captionPlaybackInFlight = false;
 const browserTabs = new Map();
 let activeBrowserTabId = null;
@@ -598,7 +600,7 @@ async function openBrowserTab(raw) {
   showDashboardWindow();
   let tab = [...browserTabs.values()].find(item => item.url === parsed.href);
   if (tab) { attachBrowserTab(tab.id); return { id: tab.id, url: tab.url, title: tab.title, reused: true }; }
-  tab = { id: 'web-' + (++nextBrowserTabId), url: parsed.href, title: parsed.hostname, view: null, error: '' };
+  tab = { id: 'web-' + (++nextBrowserTabId) + '-' + crypto.randomUUID(), url: parsed.href, title: parsed.hostname, view: null, error: '' };
   browserTabs.set(tab.id, tab); attachBrowserTab(tab.id); publishBrowserTabs();
   return { id: tab.id, url: tab.url, title: tab.title, reused: false };
 }
@@ -1194,7 +1196,7 @@ function normalizeDashboardState(input) {
     if (kind === 'browser') {
       const url = safeBrowserUrl(raw.url);
       const browserId = String(raw.browserId || '').slice(0, 80);
-      if (!url || !/^web-\d{1,12}$/.test(browserId)) continue;
+      if (!url || !/^web-\d{1,12}(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(browserId)) continue;
       tab.browserId = browserId;
       tab.url = url.href;
       tab.title = String(raw.title || tab.label).slice(0, 120);
@@ -1249,9 +1251,9 @@ function restoreBrowserTabsFromSettings() {
   for (const item of saved.slice(0, 100)) {
     const id = String(item && item.id || '');
     const url = safeBrowserUrl(item && item.url);
-    if (!/^web-\d{1,12}$/.test(id) || !url || browserTabs.has(id)) continue;
+    if (!/^web-\d{1,12}(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(id) || !url || browserTabs.has(id)) continue;
     browserTabs.set(id, { id, url: url.href, title: String(item.title || url.href).slice(0, 120), view: null, error: '' });
-    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4)) || 0);
+    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4).split('-')[0]) || 0);
   }
   activeBrowserTabId = browserTabs.has(settings.activeBrowserTabId) ? settings.activeBrowserTabId : null;
 }
@@ -1284,7 +1286,7 @@ function syncBrowserRegistryFromDashboardState(value) {
       view: previous && previous.url === item.url ? previous.view : null,
       error: previous && previous.error || ''
     });
-    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4)) || 0);
+    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4).split('-')[0]) || 0);
   }
   settings.dashboardState = normalized;
   saveBrowserTabMetadata();
@@ -1376,7 +1378,7 @@ function captionThemeId() {
   const tts = getTtsSettings();
   if (tts.captionTheme === 'light') return 'light';
   if (tts.captionTheme === 'dark') return 'midnight';
-  if (tts.captionTheme === 'system') return nativeTheme.shouldUseDarkColors ? 'light' : 'midnight';
+  if (tts.captionTheme === 'system') return nativeTheme.shouldUseDarkColors ? 'midnight' : 'light';
   return DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
 }
 
@@ -1398,7 +1400,22 @@ function captionBounds() {
 
 function currentCaptionPayload() {
   if (!activeCaptionPayload) return null;
-  return { ...activeCaptionPayload, theme: captionThemeId(), transparent: getTtsSettings().captionTransparent };
+  const payload = activeCaptionPayload;
+  const idleNotification = payload.mode === 'notification' && !payload.speechJobId;
+  const chunks = Array.isArray(payload.chunks) && payload.chunks.length ? payload.chunks : [payload.fullText || ''];
+  const index = Math.max(0, Math.min(chunks.length - 1, Number(payload.chunkIndex) || 0));
+  return {
+    id: payload.id,
+    text: idleNotification ? payload.fullText : String(chunks[index] || payload.fullText || ''),
+    mode: payload.mode,
+    showPlayButton: payload.showPlayButton === true,
+    status: payload.status || '',
+    error: payload.error || '',
+    chunkIndex: index,
+    chunkCount: chunks.length,
+    theme: captionThemeId(),
+    transparent: getTtsSettings().captionTransparent
+  };
 }
 
 function updateCaptionWindowPayload() {
@@ -1434,13 +1451,14 @@ function createCaptionWindow() {
     else current.showInactive();
   });
   current.on('closed', () => {
-    if (captionWindow === current) {
-      captionWindow = null;
-      captionWindowLoaded = false;
-      activeCaptionPayload = null;
-    }
+    if (captionWindow !== current) return;
+    captionWindow = null;
+    captionWindowLoaded = false;
+    activeCaptionPayload = null;
     if (captionCloseTimer) clearTimeout(captionCloseTimer);
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
     captionCloseTimer = null;
+    captionProgressTimer = null;
   });
   current.loadFile(path.join(__dirname, 'caption.html')).catch(error => appendDiagnosticLog('caption-window-load-failed', error));
   return current;
@@ -1448,22 +1466,36 @@ function createCaptionWindow() {
 
 function showSpeechCaption(request) {
   if (!request || typeof request.text !== 'string') return null;
-  const text = request.text.trim().slice(0, 240);
+  const text = request.text.trim().slice(0, 12000);
   if (!text) return null;
   const mode = request.mode === 'notification' ? 'notification' : 'autoplay';
   if (mode === 'autoplay' && !getTtsSettings().captionsOnAutoplay) return null;
   if (captionCloseTimer) clearTimeout(captionCloseTimer);
+  if (captionProgressTimer) clearInterval(captionProgressTimer);
   captionCloseTimer = null;
+  captionProgressTimer = null;
+  let chunks;
+  try {
+    const normalized = normalizeSpeechText(text);
+    const target = Math.min(240, Math.max(40, Math.ceil(normalized.length / MAX_SPEECH_CHUNKS) + 4));
+    chunks = splitSpeechIntoChunks(normalized, target);
+  } catch { chunks = [text]; }
+  if (!Array.isArray(chunks) || !chunks.length) chunks = [text];
   const payload = {
-    id: String(request.id || crypto.randomUUID()), text, mode,
-    showPlayButton: mode === 'notification', status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…', error: ''
+    id: String(request.id || crypto.randomUUID()), fullText: text, chunks,
+    chunkIndex: 0, speechJobId: '', mode,
+    showPlayButton: mode === 'notification',
+    status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…',
+    error: ''
   };
   const previousMode = activeCaptionPayload && activeCaptionPayload.mode;
   activeCaptionPayload = payload;
   if (captionWindow && !captionWindow.isDestroyed() && previousMode !== mode) {
     const old = captionWindow;
+    captionWindow = null;
+    captionWindowLoaded = false;
     old.close();
-    if (!captionWindow || captionWindow.isDestroyed()) createCaptionWindow();
+    createCaptionWindow();
   } else if (!captionWindow || captionWindow.isDestroyed()) {
     createCaptionWindow();
   } else {
@@ -1474,7 +1506,7 @@ function showSpeechCaption(request) {
   return payload.id;
 }
 
-function estimateSpeechDurationMs(text) {
+function estimateSpeechDurationMs(text)function estimateSpeechDurationMs(text) {
   return Math.max(3500, Math.min(90000, Math.ceil(String(text || '').length / 13 * 1000 + 3500)));
 }
 
@@ -1487,19 +1519,81 @@ function scheduleCaptionClose(milliseconds) {
   if (typeof captionCloseTimer.unref === 'function') captionCloseTimer.unref();
 }
 
+function updateCaptionPlaybackProgress(requestId, speechJobId) {
+  if (!activeCaptionPayload || activeCaptionPayload.id !== requestId || activeCaptionPayload.speechJobId !== speechJobId) {
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionProgressTimer = null;
+    return;
+  }
+  let playback;
+  try { playback = visionService && typeof visionService.speechPlaybackStatus === 'function' ? visionService.speechPlaybackStatus() : null; } catch {}
+  const job = playback && Array.isArray(playback.jobs) ? playback.jobs.find(item => item.job_id === speechJobId) : null;
+  if (!job) return;
+  const chunks = activeCaptionPayload.chunks;
+  const nextIndex = Math.max(0, Math.min(chunks.length - 1, Number(job.chunks_completed) || 0));
+  let changed = activeCaptionPayload.chunkIndex !== nextIndex;
+  activeCaptionPayload.chunkIndex = nextIndex;
+  if (job.status === 'completed') {
+    activeCaptionPayload.chunkIndex = Math.max(0, chunks.length - 1);
+    activeCaptionPayload.status = 'Finished';
+    activeCaptionPayload.error = '';
+    changed = true;
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionProgressTimer = null;
+    if (changed) updateCaptionWindowPayload();
+    scheduleCaptionClose(2200);
+    return;
+  }
+  if (job.status === 'failed' || job.status === 'cancelled') {
+    activeCaptionPayload.status = 'Speech playback failed';
+    activeCaptionPayload.error = String(job.error || 'The audio stream ended unexpectedly.').slice(0, 220);
+    changed = true;
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionProgressTimer = null;
+    if (changed) updateCaptionWindowPayload();
+    scheduleCaptionClose(6500);
+    return;
+  }
+  const status = 'Speaking · ' + Math.min(nextIndex + 1, chunks.length) + ' of ' + chunks.length;
+  if (activeCaptionPayload.status !== status) { activeCaptionPayload.status = status; changed = true; }
+  if (changed) updateCaptionWindowPayload();
+}
+
+function startCaptionProgress(requestId, speechJobId) {
+  if (captionProgressTimer) clearInterval(captionProgressTimer);
+  captionProgressTimer = null;
+  if (!speechJobId || !visionService || typeof visionService.speechPlaybackStatus !== 'function') {
+    scheduleCaptionClose(estimateSpeechDurationMs(activeCaptionPayload && activeCaptionPayload.fullText || ''));
+    return;
+  }
+  if (activeCaptionPayload && activeCaptionPayload.id === requestId) {
+    activeCaptionPayload.speechJobId = speechJobId;
+    activeCaptionPayload.chunkIndex = 0;
+    activeCaptionPayload.status = 'Speaking · 1 of ' + Math.max(1, activeCaptionPayload.chunks.length);
+    updateCaptionWindowPayload();
+  }
+  captionProgressTimer = setInterval(() => updateCaptionPlaybackProgress(requestId, speechJobId), 180);
+  if (typeof captionProgressTimer.unref === 'function') captionProgressTimer.unref();
+}
+
 function finishSpeechCaption(request, output) {
   if (!request || !activeCaptionPayload || request.id !== activeCaptionPayload.id) return;
   if (request.mode === 'notification') {
-    activeCaptionPayload.status = output && output.status === 'tts_completed' ? 'Speech ready · press Play' : 'Speech prepared';
-    activeCaptionPayload.error = output && output.status === 'tts_failed' ? String(output.error || 'Speech preparation failed.') : '';
+    if (output && output.status === 'tts_completed') {
+      activeCaptionPayload.status = 'Speech ready · press Play';
+      activeCaptionPayload.error = '';
+    } else {
+      activeCaptionPayload.status = 'Speech preparation failed';
+      activeCaptionPayload.error = String(output && (output.error || output.message) || 'Speech could not be prepared.').slice(0, 220);
+      activeCaptionPayload.showPlayButton = false;
+    }
     updateCaptionWindowPayload();
     return;
   }
   if (output && output.status === 'tts_started') {
     activeCaptionPayload.status = 'Speaking…';
     activeCaptionPayload.error = '';
-    updateCaptionWindowPayload();
-    scheduleCaptionClose(estimateSpeechDurationMs(request.text));
+    startCaptionProgress(request.id, output.speech_job_id);
   } else {
     activeCaptionPayload.status = 'Speech could not start';
     activeCaptionPayload.error = String(output && (output.error || output.message) || 'TTS did not start.').slice(0, 220);
@@ -1513,23 +1607,26 @@ async function playActiveCaption() {
   if (captionPlaybackInFlight) return { started: false, busy: true };
   if (!visionService || typeof visionService.synthesizeSpeech !== 'function') throw new Error('The Colab TTS service is unavailable.');
   captionPlaybackInFlight = true;
-  const request = { ...activeCaptionPayload };
+  const request = { ...activeCaptionPayload, fullText: activeCaptionPayload.fullText || activeCaptionPayload.text };
+  activeCaptionPayload.mode = 'autoplay';
+  activeCaptionPayload.showPlayButton = false;
+  activeCaptionPayload.speechJobId = '';
+  activeCaptionPayload.chunkIndex = 0;
   activeCaptionPayload.status = 'Preparing speech…';
   activeCaptionPayload.error = '';
   updateCaptionWindowPayload();
   try {
-    const output = await visionService.synthesizeSpeech({ text: request.text, play: true }, crypto.randomUUID());
+    const output = await visionService.synthesizeSpeech({ text: request.fullText, play: true }, crypto.randomUUID());
     if (activeCaptionPayload && activeCaptionPayload.id === request.id && output && output.status === 'tts_started') {
-      activeCaptionPayload.status = 'Speaking…';
-      activeCaptionPayload.showPlayButton = false;
-      updateCaptionWindowPayload();
-      scheduleCaptionClose(estimateSpeechDurationMs(request.text));
+      startCaptionProgress(request.id, output.speech_job_id);
       return { started: true, speech_job_id: output.speech_job_id };
     }
     if (activeCaptionPayload && activeCaptionPayload.id === request.id) {
+      activeCaptionPayload.mode = 'notification';
       activeCaptionPayload.status = 'Playback failed';
       activeCaptionPayload.error = String(output && (output.error || output.message) || 'TTS playback failed.').slice(0, 220);
       activeCaptionPayload.showPlayButton = true;
+      activeCaptionPayload.speechJobId = '';
       updateCaptionWindowPayload();
     }
     throw new Error(String(output && (output.error || output.message) || 'TTS playback failed.'));

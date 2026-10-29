@@ -92,7 +92,7 @@ function sanitizeTab(value, allowTombstone = false) {
   } else {
     const browserId = boundedText(value.browserId, 80);
     const url = safeShareUrl(value.url);
-    if (!/^web-\d{1,12}$/.test(browserId) || !url) return null;
+    if (!/^web-\d{1,12}(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(browserId) || !url) return null;
     result.browserId = browserId;
     result.url = url;
     result.title = boundedText(value.title || result.label, 120);
