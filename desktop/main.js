@@ -502,10 +502,30 @@ function createBrowserView(tab) {
   return view;
 }
 function measureBrowserMemory(tab) {
-  if (!tab || !tab.view || tab.view.webContents.isDestroyed()) return;
-  void tab.view.webContents.getProcessMemoryInfo().then(info => dashboardSend('app:browser-memory', {
-    id: tab.id, privateMb: Math.round((Number(info.private) || 0) / 1024 * 10) / 10
-  })).catch(() => {});
+  if (!tab || tab.id !== activeBrowserTabId || !tab.view || tab.view.webContents.isDestroyed()) return;
+  try {
+    const contents = tab.view.webContents;
+    if (typeof contents.getOSProcessId !== 'function' || typeof app.getAppMetrics !== 'function') {
+      dashboardSend('app:browser-memory', { id: tab.id, privateMb: null, available: false });
+      return;
+    }
+    const processId = contents.getOSProcessId();
+    const metric = app.getAppMetrics().find(item => item.pid === processId && item.memory);
+    const memory = metric && metric.memory;
+    const privateKb = memory ? Number(memory.privateBytes ?? memory.workingSetSize) : NaN;
+    if (!Number.isFinite(privateKb) || privateKb < 0) {
+      dashboardSend('app:browser-memory', { id: tab.id, privateMb: null, available: false });
+      return;
+    }
+    dashboardSend('app:browser-memory', {
+      id: tab.id, privateMb: Math.round(privateKb / 1024 * 10) / 10, available: true
+    });
+  } catch (error) {
+    appendDiagnosticLog('embedded-browser-memory-measure-failed', {
+      tabId: tab.id, message: String(error && error.message || error).slice(0, 400)
+    });
+    dashboardSend('app:browser-memory', { id: tab.id, privateMb: null, available: false });
+  }
 }
 
 function attachBrowserTab(id) {
