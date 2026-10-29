@@ -617,7 +617,6 @@ function getBrowserSettings() {
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
   const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
-  if (keepActive && lowMemory) throw new Error('Choose background focus compatibility or low-memory tab unloading, not both.');
   settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
     tab.view.webContents.setBackgroundThrottling(!keepActive);
