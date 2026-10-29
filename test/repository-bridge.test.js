@@ -722,11 +722,13 @@ test('request-tree reconciliation remains authoritative when the fast commit end
     const request = {
       protocol: PROTOCOL,
       request_id: 'req-cursor-stale-reconcile',
+      session_id: DEFAULT_TEST_SESSION_ID,
       created_at: new Date().toISOString(),
       tool: 'project_status',
       args: {}
     };
     const requestPath = 'bridge/requests/' + request.request_id + '.json';
+    fake.seedSession(request.session_id);
     fake.files.set(requestPath, {
       name: request.request_id + '.json',
       path: requestPath,
@@ -765,6 +767,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
   const initial = {
     protocol: PROTOCOL,
     request_id: 'req-fast-probe-initial',
+    session_id: DEFAULT_TEST_SESSION_ID,
     created_at: new Date().toISOString(),
     tool: 'project_status',
     args: {}
@@ -785,6 +788,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
     await bridge.start();
     const initialTreeScanCount = bridge.getState().requestPolling.requestTreeScanCount;
     const requestPath = 'bridge/requests/' + initial.request_id + '.json';
+    fake.seedSession(initial.session_id);
     fake.files.set(requestPath, {
       name: initial.request_id + '.json',
       path: requestPath,
@@ -1458,11 +1462,13 @@ test('mailbox polling dispatches new requests while a background context refresh
     const request = {
       protocol: PROTOCOL,
       request_id: requestId,
+      session_id: DEFAULT_TEST_SESSION_ID,
       created_at: new Date().toISOString(),
       tool: 'project_status',
       args: {}
     };
     const requestPath = 'bridge/requests/' + requestId + '.json';
+    fake.seedSession(request.session_id);
     fake.files.set(requestPath, {
       name: requestId + '.json',
       path: requestPath,
