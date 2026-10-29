@@ -23,6 +23,12 @@ function cleanMessage(value, maxLength, field) {
   return result;
 }
 
+function formatAgentMessage(session, value) {
+  const body = cleanMessage(value, 20000, 'message');
+  const prefix = '[' + session.session_id + '][' + session.agent_id + ']';
+  return body.startsWith(prefix) ? body : prefix + ' ' + body;
+}
+
 function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict, clock = () => Date.now() }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
@@ -442,7 +448,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
       recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
       sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
-      subject, message: cleanMessage(args.message, 20000, 'message'),
+      subject, message: formatAgentMessage(sender.session, args.message),
       created_at: timestamp(), read_at: null, in_reply_to: null
     };
     await writeMessage(recipientSessionId, record);
@@ -533,7 +539,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       recipient_session_id: recipientSessionId, recipient_agent_id: recipient.session.agent_id,
       sender_label: sender.session.label || sender.session.agent_id,
       recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
-      subject: original.subject || '', message: cleanMessage(args.message, 20000, 'message'),
+      subject: original.subject || '', message: formatAgentMessage(sender.session, args.message),
       created_at: timestamp(), read_at: null, in_reply_to: original.message_id
     };
     await writeMessage(recipientSessionId, record);
