@@ -387,7 +387,7 @@ function createRepositoryBridge(deps) {
     lastAgentDirectoryRefreshAt = Date.now();
     try {
       const entries = (await listFolder('bridge/agents'))
-        .filter(item => item && typeof item.name === 'string' && /^agent-[0-9]{3,}\\.json$/.test(item.name))
+        .filter(item => item && typeof item.name === 'string' && /^agent-[0-9]{3,}\.json$/.test(item.name))
         .sort((a, b) => Number(a.name.slice(6, -5)) - Number(b.name.slice(6, -5)));
       // Seed every registered ID immediately; labels and detailed status are enriched
       // in bounded parallel reads so a large registry cannot starve request polling.
