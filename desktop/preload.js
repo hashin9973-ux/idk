@@ -56,6 +56,12 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
     ipcRenderer.on('app:browser-tabs-changed', listener);
     return () => ipcRenderer.removeListener('app:browser-tabs-changed', listener);
   },
+  onBrowserTabOpened(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => callback(value && typeof value === 'object' ? value : {});
+    ipcRenderer.on('app:browser-tab-opened', listener);
+    return () => ipcRenderer.removeListener('app:browser-tab-opened', listener);
+  },
   onBrowserMemory(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, value) => callback(value && typeof value === 'object' ? value : {});

@@ -529,8 +529,11 @@ function measureBrowserMemory(tab) {
 }
 
 function attachBrowserTab(id) {
+  if (settings.browserEnabled !== true) return false;
   const tab = browserTabs.get(id);
   if (!dashboardWindow || dashboardWindow.isDestroyed() || !tab) return false;
+  // Re-clamp on every attach; the window may have changed size since the last renderer measurement.
+  browserBounds = clampBrowserBounds(browserBounds, dashboardWindow.getContentBounds());
   for (const other of browserTabs.values()) if (other.view) {
     try { dashboardWindow.contentView.removeChildView(other.view); } catch {}
     if (other.id !== id) {
@@ -555,6 +558,12 @@ function attachBrowserTab(id) {
   publishBrowserTabs(); measureBrowserMemory(tab); return true;
 }
 function setBrowserTabActive(id) {
+  if (settings.browserEnabled !== true) {
+    destroyEmbeddedBrowserViews();
+    activeBrowserTabId = null;
+    publishBrowserTabs();
+    return { active: false, disabled: true };
+  }
   const idValue = typeof id === 'string' && browserTabs.has(id) ? id : null;
   if (idValue) return attachBrowserTab(idValue);
   if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
@@ -578,12 +587,24 @@ function setBrowserTabActive(id) {
 async function openBrowserTab(raw) {
   const parsed = safeBrowserUrl(raw);
   if (!parsed) throw new Error('The embedded browser only accepts public HTTPS URLs.');
+  if (settings.browserEnabled !== true) {
+    await shell.openExternal(parsed.href);
+    return { id: null, url: parsed.href, title: parsed.hostname, external: true, reused: false };
+  }
   if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
   showDashboardWindow();
   let tab = [...browserTabs.values()].find(item => item.url === parsed.href);
-  if (tab) { attachBrowserTab(tab.id); return { id: tab.id, url: tab.url, title: tab.title, reused: true }; }
+  if (tab) {
+    attachBrowserTab(tab.id);
+    dashboardSend('app:browser-tab-opened', { id: tab.id });
+    return { id: tab.id, url: tab.url, title: tab.title, reused: true };
+  }
   tab = { id: 'web-' + (++nextBrowserTabId) + '-' + crypto.randomUUID(), url: parsed.href, title: parsed.hostname, view: null, error: '' };
-  browserTabs.set(tab.id, tab); attachBrowserTab(tab.id); publishBrowserTabs();
+  browserTabs.set(tab.id, tab);
+  attachBrowserTab(tab.id);
+  // Keep renderer tab selection synchronized with the native WebContentsView before
+  // that view can sit over the page underneath it.
+  dashboardSend('app:browser-tab-opened', { id: tab.id });
   return { id: tab.id, url: tab.url, title: tab.title, reused: false };
 }
 function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
@@ -720,23 +741,65 @@ function createDashboardWindow() {
   return win;
 }
 
+function clampBrowserBounds(value, size) {
+  const contentWidth = Math.max(1, Number(size && size.width) || 1);
+  const contentHeight = Math.max(1, Number(size && size.height) || 1);
+  const v = value && typeof value === 'object' ? value : {};
+  const rawX = Number(v.x), rawY = Number(v.y), rawWidth = Number(v.width), rawHeight = Number(v.height);
+  const minY = Math.min(68, contentHeight - 1);
+  const maxBottom = Math.max(minY + 1, contentHeight - 42);
+  const x = Math.max(0, Math.min(contentWidth - 1, Number.isFinite(rawX) ? rawX : 0));
+  const y = Math.max(minY, Math.min(maxBottom - 1, Number.isFinite(rawY) ? rawY : minY));
+  const width = Math.max(1, Math.min(contentWidth - x, Number.isFinite(rawWidth) ? rawWidth : contentWidth - x));
+  const height = Math.max(1, Math.min(maxBottom - y, Number.isFinite(rawHeight) ? rawHeight : maxBottom - y));
+  return { x, y, width, height };
+}
+
 function setBrowserBounds(value) {
+  if (settings.browserEnabled !== true) return { applied: false, disabled: true };
   const size = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow.getContentBounds() : { width: 0, height: 0 };
   const v = value && typeof value === 'object' ? value : {};
   const x = Number(v.x), y = Number(v.y), width = Number(v.width), height = Number(v.height);
-  if (![x,y,width,height].every(Number.isFinite) || width < 1 || height < 1) return { applied: false };
-  const left = Math.max(0, Math.min(size.width - 1, x)), top = Math.max(0, Math.min(size.height - 1, y));
-  browserBounds = { x: left, y: top, width: Math.max(1, Math.min(size.width-left,width)), height: Math.max(1, Math.min(size.height-top,height)) };
-  const tab = browserTabs.get(activeBrowserTabId); if (tab && tab.view) tab.view.setBounds(browserBounds);
+  if (![x,y,width,height].every(Number.isFinite) || width < 1 || height < 1 ||
+      !Number.isFinite(Number(size.width)) || !Number.isFinite(Number(size.height)) ||
+      size.width < 1 || size.height < 1) return { applied: false };
+  browserBounds = clampBrowserBounds({ x, y, width, height }, size);
+  const tab = browserTabs.get(activeBrowserTabId);
+  if (tab && tab.view) tab.view.setBounds(browserBounds);
   return { applied: true, bounds: browserBounds };
 }
 function getBrowserSettings() {
-  return { keepActive: settings.browserKeepActive === true, lowMemory: settings.browserLowMemory === true, volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100 };
+  const enabled = settings.browserEnabled === true;
+  return {
+    enabled,
+    keepActive: enabled && settings.browserKeepActive === true,
+    lowMemory: enabled && settings.browserLowMemory === true,
+    volume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100
+  };
 }
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
-  const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
-  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings(); publishSharedState();
+  const enabled = v.enabled === true;
+  settings.browserEnabled = enabled;
+  settings.browserKeepActive = enabled && v.keepActive === true;
+  settings.browserLowMemory = enabled && v.lowMemory === true;
+
+  if (!enabled) {
+    // Never leave a native WebContentsView attached above the dashboard DOM.
+    // Remove browser tabs from persisted state so they cannot overlay controls or reopen automatically.
+    const current = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
+    const browserWasActive = current.tabs.some(tab => tab.id === current.activeTabId && tab.kind === 'browser');
+    settings.dashboardState = normalizeDashboardState({
+      ...current,
+      tabs: current.tabs.filter(tab => tab.kind !== 'browser'),
+      activeTabId: browserWasActive ? 'main' : current.activeTabId
+    });
+    syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    dashboardSend('app:dashboard-state', settings.dashboardState);
+    activeBrowserTabId = null;
+  }
+
+  persistSettings(); publishSharedState();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
     const enabled = keepActive && tab.id === activeBrowserTabId;
     tab.view.webContents.setBackgroundThrottling(!enabled);
@@ -749,6 +812,7 @@ function setBrowserSettings(value) {
     try { tab.view.webContents.close(); } catch {}
     tab.view = null;
   }
+  dashboardSend('app:preferences', getUiState().settings);
   return getBrowserSettings();
 }
 
@@ -1320,8 +1384,8 @@ function collectSharedPreferences() {
   return {
     dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
     ttsVolume: Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, settings.ttsVolume)) : 100,
-    browserKeepActive: settings.browserKeepActive === true,
-    browserLowMemory: settings.browserLowMemory === true,
+    browserKeepActive: settings.browserEnabled === true && settings.browserKeepActive === true,
+    browserLowMemory: settings.browserEnabled === true && settings.browserLowMemory === true,
     observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS,
     ttsMode: tts.mode, captionsOnAutoplay: tts.captionsOnAutoplay,
     captionTransparent: tts.captionTransparent, captionPosition: tts.captionPosition,
@@ -1352,8 +1416,13 @@ function applyCloudRemoteState(shared) {
   const preferences = source.preferences && typeof source.preferences === 'object' ? source.preferences : {};
   if (DASHBOARD_THEME_IDS.includes(preferences.dashboardTheme)) settings.dashboardTheme = preferences.dashboardTheme;
   if (Number.isFinite(preferences.ttsVolume)) settings.ttsVolume = Math.round(Math.max(0, Math.min(100, preferences.ttsVolume)));
-  if (typeof preferences.browserKeepActive === 'boolean') settings.browserKeepActive = preferences.browserKeepActive;
-  if (typeof preferences.browserLowMemory === 'boolean') settings.browserLowMemory = preferences.browserLowMemory;
+  if (settings.browserEnabled === true) {
+    if (typeof preferences.browserKeepActive === 'boolean') settings.browserKeepActive = preferences.browserKeepActive;
+    if (typeof preferences.browserLowMemory === 'boolean') settings.browserLowMemory = preferences.browserLowMemory;
+  } else {
+    settings.browserKeepActive = false;
+    settings.browserLowMemory = false;
+  }
   if ([0.5, 1, 2, 4, 8].includes(preferences.observeFps)) settings.observeFps = preferences.observeFps;
   settings.ttsSettings = normalizeTtsSettings({
     ...getTtsSettings(),
@@ -1365,10 +1434,13 @@ function applyCloudRemoteState(shared) {
     ...(Number.isFinite(preferences.captionY) ? { captionY: preferences.captionY } : {}),
     ...(typeof preferences.captionTheme === 'string' ? { captionTheme: preferences.captionTheme } : {})
   });
-  const remoteTabs = Array.isArray(source.tabs) ? source.tabs : [];
+  const remoteTabs = (Array.isArray(source.tabs) ? source.tabs : []).filter(tab =>
+    settings.browserEnabled === true || !tab || tab.kind !== 'browser');
   const remoteIds = new Set(remoteTabs.map(tab => tab && tab.id).filter(Boolean));
-  const localPrivateTabs = normalizeDashboardState(settings.dashboardState || defaultDashboardState()).tabs.filter(tab =>
-    tab.kind === 'browser' && !safeShareUrl(tab.url) && !remoteIds.has(tab.id));
+  const localPrivateTabs = settings.browserEnabled === true
+    ? normalizeDashboardState(settings.dashboardState || defaultDashboardState()).tabs.filter(tab =>
+      tab.kind === 'browser' && !safeShareUrl(tab.url) && !remoteIds.has(tab.id))
+    : [];
   settings.dashboardState = normalizeDashboardState({
     tabs: [...remoteTabs, ...localPrivateTabs],
     activeTabId: source.activeTabId,
@@ -1675,6 +1747,7 @@ function getUiState() {
       dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
       ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
       ttsSettings: getTtsSettings(),
+      browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
       observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
@@ -1697,7 +1770,13 @@ function getUiState() {
 }
 
 function saveDashboardState(value) {
-  const normalized = normalizeDashboardState(value);
+  const incoming = normalizeDashboardState(value);
+  const browserWasActive = incoming.tabs.some(tab => tab.id === incoming.activeTabId && tab.kind === 'browser');
+  const normalized = settings.browserEnabled === true ? incoming : normalizeDashboardState({
+    ...incoming,
+    tabs: incoming.tabs.filter(tab => tab.kind !== 'browser'),
+    activeTabId: browserWasActive ? 'main' : incoming.activeTabId
+  });
   settings.dashboardState = normalized;
   syncBrowserRegistryFromDashboardState(normalized);
   saveBrowserTabMetadata();
@@ -2129,8 +2208,19 @@ if (!hasInstanceLock) {
     restoreBrowserTabsFromSettings();
     settings.dashboardState = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
     syncBrowserRegistryFromDashboardState(settings.dashboardState);
-    settings.browserKeepActive = settings.browserKeepActive === true;
-    settings.browserLowMemory = settings.browserLowMemory === true;
+    settings.browserEnabled = settings.browserEnabled === true;
+    settings.browserKeepActive = settings.browserEnabled && settings.browserKeepActive === true;
+    settings.browserLowMemory = settings.browserEnabled && settings.browserLowMemory === true;
+    if (!settings.browserEnabled) {
+      const savedState = normalizeDashboardState(settings.dashboardState);
+      const browserWasActive = savedState.tabs.some(tab => tab.id === savedState.activeTabId && tab.kind === 'browser');
+      settings.dashboardState = normalizeDashboardState({
+        ...savedState,
+        tabs: savedState.tabs.filter(tab => tab.kind !== 'browser'),
+        activeTabId: browserWasActive ? 'main' : savedState.activeTabId
+      });
+      syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    }
     settings.repositoryBridge = {
       ...DEFAULT_REPOSITORY_BRIDGE,
       ...savedBridge,

@@ -1,7 +1,7 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),api=window.windowsBridge;
 const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list');
-const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
+const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),browserEnabled=$('browser-enabled'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
 let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const grid=12,minW=44,minH=36;
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
@@ -90,7 +90,10 @@ async function applyInitialSettings(settings){
   const s=settings&&typeof settings==='object'?settings:{};if(themeIds.includes(s.dashboardTheme))applyTheme(s.dashboardTheme);
   if(Number.isFinite(s.ttsVolume)){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}
   if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.observeFps))fps.value=String(s.observeFps);
-  if(typeof s.browserKeepActive==='boolean')keep.checked=s.browserKeepActive;if(typeof s.browserLowMemory==='boolean')low.checked=s.browserLowMemory;updateBrowserMode();
+  browserEnabled.checked=s.browserEnabled===true;
+  keep.checked=browserEnabled.checked&&s.browserKeepActive===true;
+  low.checked=browserEnabled.checked&&s.browserLowMemory===true;
+  updateBrowserMode();
 }
 const themeIds=['midnight','light','ocean','forest','sunset','rose','high-contrast','aurora','cyberpunk','dracula','nord','solarized-light','terminal','lavender','graphite'];
 function applyTheme(raw){const theme=themeIds.includes(raw)?raw:'midnight';document.documentElement.dataset.theme=theme;themeSelect.value=theme;for(const card of themeGallery.querySelectorAll('[data-theme-id]'))card.setAttribute('aria-pressed',String(card.dataset.themeId===theme));}
@@ -102,7 +105,8 @@ function ensureSettingsTab(){if(!tabs.some(t=>t.id==='settings'))tabs.splice(Mat
 $('add-tab').addEventListener('click',()=>{ensureSettingsTab();active='settings';setPage()});
 async function closeTab(id){const t=tabs.find(v=>v.id===id);if(!t||!t.closable||t.id==='main')return;if(t.kind==='browser')await api.closeBrowserTab(t.browserId).catch(()=>{});tabs=tabs.filter(v=>v.id!==id);if(active===id)active='main';setPage()}
 function setPage(){const t=tabs.find(v=>v.id===active)||tabs[0],m=t.kind==='main',s=t.kind==='settings',b=t.kind==='browser';mainPage.hidden=!m;settingsPage.hidden=!s;browserPage.hidden=!b;if(b)void api.setBrowserTabActive(t.browserId).catch(e=>note(e.message,'error'));else void api.setBrowserTabActive(null).catch(()=>{});renderTabs();updateBrowserBounds();scheduleSaveDashboardState()}
-function syncBrowserTabs(list){browserTabData=Array.isArray(list)?list:[];const ids=new Set(browserTabData.map(t=>t.id));tabs=tabs.filter(t=>t.kind!=='browser'||ids.has(t.browserId));for(const r of browserTabData){let t=tabs.find(x=>x.kind==='browser'&&x.browserId===r.id);if(!t){t={id:'tab-'+r.id,kind:'browser',browserId:r.id,label:r.title||'Web',url:r.url,title:r.title,closable:true};tabs.push(t)}else{t.label=r.title||t.label;t.url=r.url||t.url;t.title=r.title||t.title}}if(!tabs.some(t=>t.id===active))active='main';renderTabs();if(tabs.some(t=>t.id===active&&t.kind==='browser'))setPage();scheduleSaveDashboardState()}
+function syncBrowserTabs(list){browserTabData=Array.isArray(list)?list:[];const ids=new Set(browserTabData.map(t=>t.id));tabs=tabs.filter(t=>t.kind!=='browser'||ids.has(t.browserId));for(const r of browserTabData){let t=tabs.find(x=>x.kind==='browser'&&x.browserId===r.id);if(!t){t={id:'tab-'+r.id,kind:'browser',browserId:r.id,label:r.title||'Web',url:r.url,title:r.title,closable:true};tabs.push(t)}else{t.label=r.title||t.label;t.url=r.url||t.url;t.title=r.title||t.title}}if(!tabs.some(t=>t.id===active))active='main';renderTabs();setPage();scheduleSaveDashboardState()}
+function activateOpenedBrowserTab(value){const id=value&&typeof value.id==='string'?value.id:'';const tab=tabs.find(t=>t.kind==='browser'&&t.browserId===id);if(!tab)return;active=tab.id;setPage()}
 function snap(v){return Math.round(v/grid)*grid}
 function renderQueues(a,p){const total=a+p,ap=total?Math.round(a/total*100):0,pp=total-ap;const rows=[{label:'Active requests',n:a,p:ap,c:'active'},{label:'Queued requests',n:p,p:pp,c:'queued'}];$('queue-list').replaceChildren();for(const r of rows){const row=document.createElement('div');row.className='queue-row';const label=document.createElement('div');label.className='queue-label';label.textContent=r.label+' ('+r.n+')';const track=document.createElement('div');track.className='queue-track';const fill=document.createElement('div');fill.className='queue-fill '+r.c;fill.style.width=r.p+'%';track.append(fill);const pct=document.createElement('div');pct.className='queue-percent';pct.textContent=r.p+'%';pct.title='Share of current active plus queued requests';row.append(label,track,pct);$('queue-list').append(row)}if(!widgetMoved.queues){queue.style.left='24px';queue.style.top='28px';queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';queue.style.height=(queue.scrollHeight+4)+'px'}positionControls()}
 function positionControls(){if(widgetMoved.controls)return;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||120)+18)+'px';controls.style.width=Math.min(590,Math.max(330,mainPage.clientWidth-48))+'px'}
@@ -111,7 +115,7 @@ function renderGitHub(v){github=v||{};githubStatus.textContent=github.authentica
 function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root;$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root}
 function renderObserve(){obs.setAttribute('aria-pressed',String(observe.enabled===true));$('observe-status').textContent=(observe.enabled?'ON':'OFF')+' · '+Number(observe.fps||fps.value||2)+' fps';if(observe.fps)fps.value=String(observe.fps)}
 function renderAccept(){acceptBtn.setAttribute('aria-pressed',String(autoAccept));$('auto-accept-status').textContent=autoAccept?'ON':'OFF'}
-function updateBrowserMode(){memory.title=keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
+function updateBrowserMode(){keep.disabled=!browserEnabled.checked;low.disabled=!browserEnabled.checked;memory.title=!browserEnabled.checked?'In-app browser is disabled.':keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
 async function refresh(){
   try{
     const s=await api.getState();
@@ -140,7 +144,7 @@ async function refresh(){
   }catch(e){note('Could not refresh app status: '+e.message,'error')}
   try{renderGitHub(await api.getGitHubState())}catch{}
   try{observe=await api.getObserveStatus();renderObserve()}catch{}
-  try{const b=await api.getBrowserSettings();keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
+  try{const b=await api.getBrowserSettings();browserEnabled.checked=b.enabled===true;keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
 }
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
@@ -208,7 +212,8 @@ $('vision-setup-check').addEventListener('click',async()=>{
   finally{b.disabled=false}
 });
 
-async function changeBrowserMode(){try{const v=await api.setBrowserSettings({keepActive:keep.checked,lowMemory:low.checked});keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode()}catch(e){note(e.message,'error');await refresh()}}
+async function changeBrowserMode(){browserEnabled.disabled=true;try{const v=await api.setBrowserSettings({enabled:browserEnabled.checked,keepActive:keep.checked,lowMemory:low.checked});browserEnabled.checked=v.enabled===true;keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode();note(v.enabled?'In-app browser enabled.':'In-app browser disabled; web links will open in your normal browser.','success')}catch(e){note(e.message,'error');await refresh()}finally{browserEnabled.disabled=false;updateBrowserMode()}}
+browserEnabled.addEventListener('change',()=>void changeBrowserMode());
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
@@ -217,7 +222,7 @@ api.onPrepareForTray(async payload=>{
   try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
-api.onBrowserTabsChanged(syncBrowserTabs);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
+api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
 window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
 applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();
