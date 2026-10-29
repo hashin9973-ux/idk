@@ -18,7 +18,8 @@ const {
   validateVisionContext,
   safeTunnelUrl,
   safeApiKey,
-  parseTunnelEndpoint
+  parseTunnelEndpoint,
+  scaleWavVolume
 } = require('../desktop/colab-direct-service');
 
 const API_KEY = 'a'.repeat(43);
@@ -1248,4 +1249,21 @@ test('vision protocol requirements include v4 multimodal capability validation a
   assert.equal(TTS_PROTOCOL, 'piper-libritts-tts/v1');
   assert.equal(TTS_VOICE, 'en_US-libritts-high');
   assert.equal(TTS_SPEAKER_ID, 0);
+});
+
+test('TTS WAV volume scales 16-bit PCM samples and preserves full-volume buffers', () => {
+  const wav = Buffer.alloc(48);
+  wav.write('RIFF', 0, 'ascii'); wav.writeUInt32LE(40, 4); wav.write('WAVE', 8, 'ascii');
+  wav.write('fmt ', 12, 'ascii'); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22); wav.writeUInt32LE(22050, 24); wav.writeUInt32LE(44100, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36, 'ascii'); wav.writeUInt32LE(4, 40);
+  wav.writeInt16LE(10000, 44); wav.writeInt16LE(-10000, 46);
+  assert.equal(scaleWavVolume(wav, 100), wav);
+  const half = scaleWavVolume(wav, 50);
+  assert.equal(half.readInt16LE(44), 5000);
+  assert.equal(half.readInt16LE(46), -5000);
+  const muted = scaleWavVolume(wav, 0);
+  assert.equal(muted.readInt16LE(44), 0);
+  assert.equal(muted.readInt16LE(46), 0);
 });
