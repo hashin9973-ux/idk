@@ -285,98 +285,130 @@ test('repository sanitization strips local identity fields and redacts credentia
   assert.match(json, /REDACTED_GITHUB_TOKEN/);
 });
 
-test('concurrent agent registration allocates unique IDs and stores only token hashes in registry records', async () => {
-  const makeRegistration = requestId => ({ protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(), tool: 'agent_register', args: {} });
-  const first = makeRegistration('register-agent-first');
-  const second = makeRegistration('register-agent-second');
+test('concurrent session bootstrap allocates distinct conversation IDs and reusable seats', async () => {
+  const makeBootstrap = requestId => ({
+    protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(),
+    tool: 'session_start', args: {}
+  });
+  const first = makeBootstrap('session-start-first');
+  const second = makeBootstrap('session-start-second');
   const fake = fakeGitHub({ initial: [
     ['bridge/requests/' + first.request_id + '.json', first],
     ['bridge/requests/' + second.request_id + '.json', second]
   ] });
   const fixture = settingsFixture();
   let localExecutions = 0;
-  const bridge = createRepositoryBridge({ githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; }, intervalMs: 5000 });
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
+    intervalMs: 5000
+  });
   try {
     await bridge.start();
-    await waitFor(() => fake.files.has('bridge/results/' + first.request_id + '.json') && fake.files.has('bridge/results/' + second.request_id + '.json'));
+    await waitFor(() => fake.files.has('bridge/results/' + first.request_id + '.json') &&
+      fake.files.has('bridge/results/' + second.request_id + '.json'));
     const resultA = decode(fake.files.get('bridge/results/' + first.request_id + '.json'));
     const resultB = decode(fake.files.get('bridge/results/' + second.request_id + '.json'));
-    const agentA = resultA.result.result;
-    const agentB = resultB.result.result;
-    assert.notEqual(agentA.agent_id, agentB.agent_id);
-    assert.deepEqual([agentA.agent_id, agentB.agent_id].sort(), ['agent-001', 'agent-002']);
-    assert.notEqual(agentA.agent_token, agentB.agent_token);
-    assert.equal(resultA.agent_id, agentA.agent_id);
-    assert.equal(resultB.agent_id, agentB.agent_id);
+    const sessionA = resultA.result.result;
+    const sessionB = resultB.result.result;
+    assert.notEqual(sessionA.session_id, sessionB.session_id);
+    assert.match(sessionA.session_id, /^session-[a-f0-9]{32}$/);
+    assert.match(sessionB.session_id, /^session-[a-f0-9]{32}$/);
+    assert.deepEqual([sessionA.agent_id, sessionB.agent_id].sort(), ['agent-001', 'agent-002']);
+    assert.equal(resultA.session_id, sessionA.session_id);
+    assert.equal(resultB.session_id, sessionB.session_id);
+    assert.equal(resultA.agent_id, sessionA.agent_id);
+    assert.equal(resultB.agent_id, sessionB.agent_id);
+    for (const session of [sessionA, sessionB]) {
+      const seat = decode(fake.files.get('bridge/agents/' + session.agent_id + '.json'));
+      const sessionRecord = decode(fake.files.get('bridge/sessions/' + session.session_id + '.json'));
+      assert.equal(seat.protocol, 'chatgpt-local-agent-seat/v2');
+      assert.equal(seat.current_session_id, session.session_id);
+      assert.equal(seat.status, 'active');
+      assert.equal(sessionRecord.protocol, 'chatgpt-local-agent-session/v1');
+      assert.equal(sessionRecord.session_id, session.session_id);
+      assert.equal('token_hash' in seat, false);
+    }
     const claimA = decode(fake.files.get('bridge/claims/' + first.request_id + '.json'));
     const claimB = decode(fake.files.get('bridge/claims/' + second.request_id + '.json'));
-    assert.equal(claimA.agent_id, agentA.agent_id, 'registration claim must expose the newly allocated Agent ID');
-    assert.equal(claimB.agent_id, agentB.agent_id, 'registration claim must expose the newly allocated Agent ID');
-    assert.equal(claimA.result.agent_id, agentA.agent_id);
-    assert.equal(claimB.result.agent_id, agentB.agent_id);
-    for (const agent of [agentA, agentB]) {
-      const record = decode(fake.files.get('bridge/agents/' + agent.agent_id + '.json'));
-      assert.equal(record.status, 'idle');
-      assert.equal(JSON.stringify(record).includes(agent.agent_token), false);
-      assert.match(record.token_hash, /^[a-f0-9]{64}$/);
-    }
-    assert.equal(localExecutions, 0, 'mailbox agent management never enters the workspace tool runner');
+    assert.equal(claimA.agent_id, sessionA.agent_id);
+    assert.equal(claimB.agent_id, sessionB.agent_id);
+    assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
   } finally { await bridge.stop(); }
 });
 
-test('agent identity appears in claim/result and status returns to idle after execution', async () => {
-  const { createHash } = require('node:crypto');
+test('session identity appears in claim/result and recent activity stays separate from busy state', async () => {
   const agentId = 'agent-001';
-  const agentToken = 'b'.repeat(64);
+  const sessionId = 'session-' + 'b'.repeat(32);
   const now = new Date().toISOString();
-  const record = { protocol: 'chatgpt-local-agent-record/v1', agent_id: agentId,
-    token_hash: createHash('sha256').update(agentToken).digest('hex'), label: 'Agent 1', status: 'idle',
-    created_at: now, updated_at: now, last_seen_at: now, last_completed_at: null, last_request_id: null,
-    recent_request_ids: [], active_request_ids: [] };
-  const request = { protocol: PROTOCOL, request_id: 'agent-001-project-status-test', agent_id: agentId, agent_token: agentToken,
-    created_at: new Date().toISOString(), tool: 'project_status', args: {} };
+  const seat = {
+    protocol: 'chatgpt-local-agent-seat/v2', agent_id: agentId, current_session_id: sessionId,
+    label: 'Agent 1', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+    last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+  };
+  const session = {
+    protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: agentId,
+    label: 'Agent 1', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+    last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+  };
+  const request = {
+    protocol: PROTOCOL, request_id: 'session-agent001-project-status-test', session_id: sessionId,
+    created_at: now, tool: 'project_status', args: {}
+  };
   const fake = fakeGitHub({ initial: [
-    ['bridge/agents/' + agentId + '.json', record],
+    ['bridge/agents/' + agentId + '.json', seat],
+    ['bridge/sessions/' + sessionId + '.json', session],
     ['bridge/requests/' + request.request_id + '.json', request]
   ] });
   const fixture = settingsFixture();
   let executions = 0;
-  const bridge = createRepositoryBridge({ githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    executeTool: async (tool, args, id) => { executions++; return { ok: true, tool, call_id: id, result: { ready: true } }; }, intervalMs: 5000 });
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => { executions++; return { ok: true, tool, call_id: id, result: { ready: true } }; },
+    intervalMs: 5000
+  });
   try {
     await bridge.start();
     await waitFor(() => {
       if (!fake.files.has('bridge/results/' + request.request_id + '.json')) return false;
-      const agentEntry = fake.files.get('bridge/agents/' + agentId + '.json');
-      if (!agentEntry) return false;
-      const currentAgent = decode(agentEntry);
-      return currentAgent.status === 'idle' && currentAgent.active_request_ids.length === 0;
+      const updated = fake.files.get('bridge/agents/' + agentId + '.json');
+      const current = updated && decode(updated);
+      return current && current.status === 'active' && current.active_request_ids.length === 0 &&
+        current.recent_request_ids.includes(request.request_id);
     });
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
-    const updatedAgent = decode(fake.files.get('bridge/agents/' + agentId + '.json'));
+    const updatedSeat = decode(fake.files.get('bridge/agents/' + agentId + '.json'));
+    const updatedSession = decode(fake.files.get('bridge/sessions/' + sessionId + '.json'));
     assert.equal(executions, 1);
     assert.equal(result.agent_id, agentId);
+    assert.equal(result.session_id, sessionId);
     assert.equal(claim.agent_id, agentId);
-    assert.equal(updatedAgent.status, 'idle');
-    assert.equal(updatedAgent.last_request_id, request.request_id);
-    assert.ok(updatedAgent.recent_request_ids.includes(request.request_id));
-    assert.deepEqual(updatedAgent.active_request_ids, []);
-    const agentMailbox = bridge.getState().agentMailboxes.find(item => item.agent_id === agentId);
-    assert.ok(agentMailbox, 'agent appears in the mailbox monitor');
-    const task = agentMailbox.requests.find(item => item.request_id === request.request_id);
-    assert.ok(task, 'executed request appears in its agent mailbox');
-    assert.equal(task.tool, 'project_status', 'the monitor uses the registered local tool name');
+    assert.equal(claim.session_id, sessionId);
+    assert.equal(updatedSeat.current_session_id, sessionId);
+    assert.equal(updatedSeat.last_request_id, request.request_id);
+    assert.deepEqual(updatedSeat.active_request_ids, []);
+    assert.ok(updatedSeat.recent_request_ids.includes(request.request_id));
+    assert.equal(updatedSession.last_request_id, request.request_id);
+    assert.deepEqual(updatedSession.active_request_ids, []);
+    const state = bridge.getState();
+    const status = state.agentStatus.find(item => item.agent_id === agentId);
+    assert.equal(status.status, 'active');
+    assert.equal(status.busy, false);
+    const mailbox = state.agentMailboxes.find(item => item.agent_id === agentId);
+    assert.ok(mailbox, 'agent seat appears in the mailbox monitor');
+    const task = mailbox.requests.find(item => item.request_id === request.request_id);
+    assert.ok(task, 'executed request appears in its agent console');
+    assert.equal(task.tool, 'project_status');
     assert.equal(task.status, 'completed');
     assert.equal(task.progress, 100);
-    assert.ok(task.request_json.includes('"agent_token": "[REDACTED]"'));
-    assert.doesNotMatch(task.request_json, /b{64}/);
+    assert.ok(task.request_json.includes('"session_id": "' + sessionId + '"'));
+    assert.doesNotMatch(task.request_json, /agent_token|token_hash/);
     assert.ok(task.claim_json.includes(request.request_id));
-    assert.doesNotMatch(task.claim_json, /b{64}/);
+    assert.ok(task.claim_json.includes(sessionId));
     assert.ok(task.result_json.includes('"status": "completed"'));
-    assert.doesNotMatch(task.result_json, /b{64}/);
-    assert.doesNotMatch(bridge.getState().lastError, /Agent status update failed/i);
+    assert.ok(task.result_json.includes(sessionId));
+    assert.doesNotMatch(state.lastError, /Agent status update failed/i);
   } finally { await bridge.stop(); }
 });
 
