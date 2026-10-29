@@ -2133,6 +2133,9 @@ if (!hasInstanceLock) {
           githubAuth,
           uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
           getAutoAcceptAll: () => settings.autoAcceptAll === true,
+          getTtsSettings,
+          onTtsRequest: showSpeechCaption,
+          onTtsResult: finishSpeechCaption,
           visionService
         });
 
