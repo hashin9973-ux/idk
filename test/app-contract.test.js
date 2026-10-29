@@ -206,15 +206,15 @@ test('embedded browser memory telemetry uses supported Electron APIs and cannot 
   const end = main.indexOf('\nfunction attachBrowserTab(id)', start);
   assert.ok(start >= 0 && end > start, 'embedded browser memory measurement function exists');
   const measure = main.slice(start, end);
-  assert.match(measure, /app\\.getAppMetrics\\(\\)/);
-  assert.match(measure, /getOSProcessId\\(\\)/);
-  assert.match(measure, /memory\\.privateBytes/);
+  assert.match(measure, /app\.getAppMetrics\(\)/);
+  assert.match(measure, /getOSProcessId\(\)/);
+  assert.match(measure, /memory\.privateBytes/);
   assert.doesNotMatch(measure, /getProcessMemoryInfo/);
-  assert.match(measure, /try\\s*\\{/);
-  assert.match(measure, /catch \\(error\\)/);
-  assert.match(measure, /tab\\.id !== activeBrowserTabId/);
-  assert.match(renderer, /onBrowserMemory\\(v=>/);
-  assert.match(renderer, /memory\\.textContent='Unavailable'/);
+  assert.match(measure, /try\s*\{/);
+  assert.match(measure, /catch \(error\)/);
+  assert.match(measure, /tab\.id !== activeBrowserTabId/);
+  assert.match(renderer, /onBrowserMemory\(v=>/);
+  assert.match(renderer, /memory\.textContent='Unavailable'/);
 });
 
 test('preload exposes the single-dashboard, caption, persistence, sync and bridge APIs', () => {
