@@ -582,10 +582,22 @@ function setBrowserTabActive(id) {
     return attachBrowserTab(idValue);
   }
   let changed = activeBrowserTabId !== null;
+  const attachedViews = new Set(
+    dashboardWindow && !dashboardWindow.isDestroyed()
+      ? dashboardWindow.contentView.children
+      : []
+  );
   if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
-    if (tab.view) {
+    if (!tab.view) continue;
+    const attached = attachedViews.has(tab.view);
+    const wasActive = activeBrowserTabId === tab.id;
+    if (attached) {
       changed = true;
       try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
+    }
+    // Detached browser tabs need no repeated JS injection on every Main/Settings
+    // render. Only reset throttling/focus when detaching an attached or active view.
+    if (attached || wasActive) {
       tab.view.webContents.setBackgroundThrottling(true);
       applyPageFocusCompatibility(tab, false);
     }
@@ -1367,6 +1379,10 @@ function restoreBrowserTabsFromSettings() {
 
 function syncBrowserRegistryFromDashboardState(value) {
   const normalized = normalizeDashboardState(value);
+  // The renderer's browser-tabs-changed handler calls setPage(), which schedules
+  // saveDashboardState(). Publishing an unchanged registry here creates a
+  // save -> broadcast -> render -> save feedback loop.
+  const previousSnapshot = JSON.stringify(browserTabSnapshot());
   const wanted = new Map(normalized.tabs.filter(tab => tab.kind === 'browser').map(tab => [tab.browserId, tab]));
   for (const [id, tab] of browserTabs) {
     if (wanted.has(id)) continue;
@@ -1397,7 +1413,7 @@ function syncBrowserRegistryFromDashboardState(value) {
   }
   settings.dashboardState = normalized;
   saveBrowserTabMetadata();
-  publishBrowserTabs();
+  if (previousSnapshot !== JSON.stringify(browserTabSnapshot())) publishBrowserTabs();
 }
 
 function collectSharedPreferences() {
