@@ -1759,6 +1759,7 @@ function createRepositoryBridge(deps) {
     const completedClaim = {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
+      ...(request.agent_id ? { agent_id: request.agent_id } : {}),
       worker_id: workerId,
       tool: request.tool,
       status: 'completed',

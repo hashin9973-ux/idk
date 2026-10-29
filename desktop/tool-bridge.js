@@ -818,7 +818,9 @@ function createToolBridge(deps) {
           { name: 'upload_workspace_file', mode: 'approval-required' },
           { name: 'computer', mode: 'action-dependent-approval' },
           { name: 'tts', mode: 'approval' },
-          { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control' },
+          { name: 'agent_register', mode: 'repository-bridge-control' },
+          { name: 'agent_status', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
           ...item,
@@ -1754,7 +1756,9 @@ function createToolBridge(deps) {
           { name: 'upload_workspace_file', mode: 'approval-required' },
           { name: 'computer', mode: 'action-dependent-approval' },
           { name: 'tts', mode: 'approval' },
-          { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control' },
+          { name: 'agent_register', mode: 'repository-bridge-control' },
+          { name: 'agent_status', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
           ...item,
@@ -2693,7 +2697,9 @@ function createToolBridge(deps) {
           { name: 'upload_workspace_file', mode: 'approval-required' },
           { name: 'computer', mode: 'action-dependent-approval' },
           { name: 'tts', mode: 'approval' },
-          { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control' },
+          { name: 'agent_register', mode: 'repository-bridge-control' },
+          { name: 'agent_status', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
           ...item,
@@ -3630,7 +3636,9 @@ function createToolBridge(deps) {
           { name: 'upload_workspace_file', mode: 'approval-required' },
           { name: 'computer', mode: 'action-dependent-approval' },
           { name: 'tts', mode: 'approval' },
-          { name: 'refresh_environment_context', mode: 'repository-bridge-control' }
+          { name: 'refresh_environment_context', mode: 'repository-bridge-control' },
+          { name: 'agent_register', mode: 'repository-bridge-control' },
+          { name: 'agent_status', mode: 'repository-bridge-control' }
         );
         output.tools = output.tools.filter(item => !BLOCKED_TOOLS_FOR_MAILBOX.has(item.name)).map(item => ({
           ...item,
