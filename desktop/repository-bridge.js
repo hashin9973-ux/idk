@@ -188,6 +188,12 @@ function createRepositoryBridge(deps) {
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
+  const mailboxUiRecords = new Map();
+  const mailboxRequestCache = new Map();
+  const mailboxRequestReadPromises = new Map();
+  const agentDirectory = new Map();
+  let agentDirectoryRefreshInFlight = false;
+  let lastAgentDirectoryRefreshAt = 0;
   let requestCommitProbeTimer = null;
   let requestCommitProbeInFlight = false;
   let requestCommitProbePromise = null;
@@ -247,6 +253,204 @@ function createRepositoryBridge(deps) {
     return '/repos/' + config.owner + '/' + config.repo + '/git/trees/' + value;
   }
 
+  function sanitizeConsoleValue(value, key = '', depth = 0) {
+    if (/(?:token|secret|password|authorization|api[-_]?key|client_secret)/i.test(key)) return '[REDACTED]';
+    if (depth > 8) return '[MAX DEPTH]';
+    if (typeof value === 'string') return redactText(value, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    if (Array.isArray(value)) return value.slice(0, 60).map(item => sanitizeConsoleValue(item, '', depth + 1));
+    if (value && typeof value === 'object') {
+      const output = {};
+      for (const [name, item] of Object.entries(value).slice(0, 80)) {
+        output[name] = sanitizeConsoleValue(item, name, depth + 1);
+      }
+      if (Object.keys(value).length > 80) output._preview_truncated_fields = Object.keys(value).length - 80;
+      return output;
+    }
+    return value;
+  }
+
+  function consoleJson(value, limit = 4200) {
+    try {
+      const json = JSON.stringify(sanitizeConsoleValue(value), null, 2);
+      if (json.length <= limit) return json;
+      return JSON.stringify({
+        preview_truncated: true,
+        original_json_characters: json.length,
+        preview: json.slice(0, Math.max(0, limit - 240))
+      }, null, 2);
+    } catch {
+      return '{"preview_error":"JSON could not be represented safely"}';
+    }
+  }
+
+  function setAgentDirectoryEntry(agentId, patch = {}) {
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) return;
+    const previous = agentDirectory.get(agentId) || { agent_id: agentId, label: agentId, status: 'unknown' };
+    agentDirectory.set(agentId, {
+      ...previous,
+      ...patch,
+      agent_id: agentId,
+      label: String(patch.label || previous.label || agentId).slice(0, 80),
+      updated_at: new Date().toISOString()
+    });
+  }
+
+  function updateMailboxUiRecord(requestId, patch = {}) {
+    if (typeof requestId !== 'string' || !SAFE_ID.test(requestId)) return;
+    const previous = mailboxUiRecords.get(requestId) || {
+      request_id: requestId,
+      tool: 'loading request',
+      status: 'queued',
+      progress: 5,
+      created_at: new Date().toISOString()
+    };
+    const next = {
+      ...previous,
+      ...patch,
+      request_id: requestId,
+      progress: Math.max(0, Math.min(100, Number.isFinite(Number(patch.progress)) ? Number(patch.progress) : Number(previous.progress) || 0)),
+      updated_at: new Date().toISOString()
+    };
+    if (next.agentId && typeof next.agentId === 'string') {
+      setAgentDirectoryEntry(next.agentId, {
+        ...(next.agentLabel ? { label: next.agentLabel } : {}),
+        ...(next.status === 'completed' || next.status === 'failed' || next.status === 'rejected' || next.status === 'cancelled' || next.status === 'partial'
+          ? { status: 'idle' } : ['queued', 'loading', 'validating', 'claiming', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(next.status)
+            ? { status: 'active' } : {})
+      });
+    }
+    mailboxUiRecords.set(requestId, next);
+    if (mailboxUiRecords.size > 500) {
+      const removable = [...mailboxUiRecords.values()]
+        .filter(item => ['completed', 'failed', 'rejected', 'cancelled', 'partial'].includes(item.status))
+        .sort((a, b) => Date.parse(a.updated_at || '') - Date.parse(b.updated_at || ''));
+      while (mailboxUiRecords.size > 500 && removable.length) mailboxUiRecords.delete(removable.shift().request_id);
+    }
+  }
+
+  function mailboxConsoleSnapshot() {
+    const groups = new Map();
+    for (const agent of agentDirectory.values()) {
+      groups.set(agent.agent_id, { ...agent, requests: [] });
+    }
+    for (const item of mailboxUiRecords.values()) {
+      const id = item.agentId || 'unassigned';
+      if (!groups.has(id)) groups.set(id, {
+        agent_id: id === 'unassigned' ? null : id,
+        label: id === 'unassigned' ? 'Legacy / unassigned' : (item.agentLabel || id),
+        status: 'unknown',
+        requests: []
+      });
+      groups.get(id).requests.push(item);
+    }
+    const rank = { queued: 0, loading: 0, validating: 1, claiming: 2, claimed: 3, executing: 4, publishing: 5, 'waiting-result': 6 };
+    return [...groups.values()].map(group => {
+      const rows = group.requests || [];
+      const isLive = item => !['completed', 'failed', 'rejected', 'cancelled', 'partial'].includes(item.status);
+      const live = rows.filter(isLive).sort((a, b) =>
+        (rank[a.status] ?? 6) - (rank[b.status] ?? 6) || Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''));
+      const completed = rows.filter(item => !isLive(item))
+        .sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
+        .slice(0, 5);
+      const visible = [...live, ...completed];
+      return {
+        agent_id: group.agent_id,
+        label: group.label || group.agent_id || 'Legacy / unassigned',
+        status: live.length ? 'active' : (group.status || 'idle'),
+        active_count: rows.filter(item => ['validating', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(item.status)).length,
+        queued_count: rows.filter(item => ['queued', 'loading', 'claiming'].includes(item.status)).length,
+        request_count: rows.length,
+        requests: visible.map(item => ({
+          request_id: item.request_id,
+          tool: item.tool || 'unknown tool',
+          status: item.status || 'queued',
+          progress: item.progress,
+          created_at: item.created_at || null,
+          updated_at: item.updated_at || null,
+          error: item.error || '',
+          request_json: item.requestJson || '',
+          claim_json: item.claimJson || '',
+          result_json: item.resultJson || ''
+        }))
+      };
+    }).sort((a, b) => {
+      if (a.agent_id === null) return 1;
+      if (b.agent_id === null) return -1;
+      return Number(String(a.agent_id).slice(6)) - Number(String(b.agent_id).slice(6));
+    });
+  }
+
+  async function refreshAgentDirectory(force = false) {
+    if (!running || agentDirectoryRefreshInFlight ||
+        (!force && Date.now() - lastAgentDirectoryRefreshAt < 60_000)) return;
+    agentDirectoryRefreshInFlight = true;
+    lastAgentDirectoryRefreshAt = Date.now();
+    try {
+      const entries = (await listFolder('bridge/agents'))
+        .filter(item => item && typeof item.name === 'string' && /^agent-[0-9]{3,}\.json$/.test(item.name))
+        .sort((a, b) => Number(a.name.slice(6, -5)) - Number(b.name.slice(6, -5)));
+      // Seed every registered ID immediately; labels and detailed status are enriched
+      // in bounded parallel reads so a large registry cannot starve request polling.
+      for (const entry of entries) {
+        const agentId = entry.name.slice(0, -5);
+        if (!agentDirectory.has(agentId)) setAgentDirectoryEntry(agentId, { label: agentId, status: 'unknown' });
+      }
+      const latest = entries.slice(-32);
+      for (let start = 0; start < latest.length; start += 8) {
+        const batch = latest.slice(start, start + 8);
+        await Promise.all(batch.map(async entry => {
+          try {
+            const remote = await readRemoteFile('bridge/agents/' + entry.name);
+            const value = remote && remote.value;
+            if (!value || value.protocol !== 'chatgpt-local-agent-record/v1') return;
+            setAgentDirectoryEntry(value.agent_id, {
+              label: value.label || value.agent_id,
+              status: value.status || 'unknown',
+              last_seen_at: value.last_seen_at || null,
+              last_request_id: value.last_request_id || null,
+              active_request_ids: Array.isArray(value.active_request_ids) ? value.active_request_ids.slice(0, 32) : []
+            });
+          } catch { /* Preserve the last good registry snapshot during network blips. */ }
+        }));
+      }
+      announce();
+    } catch {
+      // Agent inventory is diagnostic UI. An unavailable inventory must never
+      // prevent mailbox polling or mark the worker disconnected.
+    } finally {
+      agentDirectoryRefreshInFlight = false;
+    }
+  }
+
+  async function loadMailboxRequest(requestId) {
+    if (mailboxRequestCache.has(requestId)) return mailboxRequestCache.get(requestId);
+    if (mailboxRequestReadPromises.has(requestId)) return mailboxRequestReadPromises.get(requestId);
+    const promise = readRemoteFile('bridge/requests/' + requestId + '.json')
+      .then(remote => {
+        if (!remote || !remote.value) return null;
+        mailboxRequestCache.set(requestId, remote);
+        const request = remote.value;
+        const existing = mailboxUiRecords.get(requestId) || {};
+        const agentId = typeof request.agent_id === 'string' ? request.agent_id : existing.agentId || null;
+        const label = request.tool === 'agent_register' && request.args && request.args.label
+          ? String(request.args.label).slice(0, 80) : existing.agentLabel;
+        updateMailboxUiRecord(requestId, {
+          tool: typeof request.tool === 'string' ? request.tool : 'invalid request',
+          agentId,
+          agentLabel: label,
+          status: existing.status || 'queued',
+          progress: Number.isFinite(existing.progress) ? existing.progress : 5,
+          created_at: typeof request.created_at === 'string' ? request.created_at : existing.created_at,
+          requestJson: consoleJson(request)
+        });
+        announce();
+        return remote;
+      })
+      .finally(() => mailboxRequestReadPromises.delete(requestId));
+    mailboxRequestReadPromises.set(requestId, promise);
+    return promise;
+  }
+
   function stateSnapshot() {
     const config = (() => {
       try { return currentConfig(); } catch { return { owner: '', repo: '', branch: DEFAULT_BRANCH, allowPublicMailbox: false }; }
@@ -259,6 +463,7 @@ function createRepositoryBridge(deps) {
       branch: config.branch,
       allowPublicMailbox: config.allowPublicMailbox,
       mailboxRetentionDays: config.retentionDays,
+      agentMailboxes: mailboxConsoleSnapshot(),
       mailboxCleanup: {
         lastRunAt: mailboxCleanupLastRunAt,
         lastDeletedRecords: mailboxCleanupLastDeletedRecords,
@@ -1579,7 +1784,7 @@ function createRepositoryBridge(deps) {
     const requestPath = 'bridge/requests/' + filename;
     let remote;
     try {
-      remote = await readRemoteFile(requestPath);
+      remote = await loadMailboxRequest(requestId);
       requestLoadedAt = Date.now();
     } catch (error) {
       if (!isCorruptMailboxFile(error)) throw error;
@@ -1599,29 +1804,43 @@ function createRepositoryBridge(deps) {
       if (Buffer.byteLength(raw, 'utf8') > MAX_REQUEST_BYTES) throw new Error('Request exceeds the 1 MiB limit.');
       request = validateRequest(requestId, remote.value);
       requestAgents.set(requestId, request.agent_id || null);
+      updateMailboxUiRecord(requestId, {
+        tool: request.tool,
+        agentId: request.agent_id || (mailboxUiRecords.get(requestId) || {}).agentId || null,
+        status: 'validating', progress: 14, requestJson: consoleJson(remote.value), created_at: remote.value.created_at
+      });
       if (request.agent_id) await agentRegistry.authenticate(request);
     } catch (error) {
-      await publishResult(requestId, {
+      const rejected = {
         protocol: RESULT_PROTOCOL,
         request_id: requestId,
         status: 'rejected',
         completed_at: new Date().toISOString(),
         error: cleanError(error.message),
         ...(requestAgents.get(requestId) ? { agent_id: requestAgents.get(requestId) } : {})
-      });
+      };
+      await publishResult(requestId, rejected);
+      updateMailboxUiRecord(requestId, { status: 'rejected', progress: 100, error: rejected.error, resultJson: consoleJson(rejected) });
+      mailboxRequestCache.delete(requestId);
       requestAgents.delete(requestId);
+      announce();
       return;
     }
 
+    updateMailboxUiRecord(requestId, { status: 'claiming', progress: 20 });
     claimStartedAt = Date.now();
     const claim = await acquireClaim(requestId);
     claimAcquiredAt = Date.now();
     if (!claim.acquired) {
+      updateMailboxUiRecord(requestId, { status: 'waiting-result', progress: 25, claimJson: claim.value ? consoleJson(claim.value) : '' });
+      mailboxRequestCache.delete(requestId);
       requestAgents.delete(requestId);
+      announce();
       return;
     }
     inMemoryClaims.add(requestId);
     activeRequestIds.add(requestId);
+    updateMailboxUiRecord(requestId, { status: 'claimed', progress: 28, claimJson: consoleJson(claim.value) });
     announce();
     toolStartedAt = Date.now();
 
@@ -1634,6 +1853,8 @@ function createRepositoryBridge(deps) {
       const waitStartedAt = Date.now();
       releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args);
       executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
+      updateMailboxUiRecord(requestId, { status: 'executing', progress: 50 });
+      announce();
       if (request.tool === 'agent_register') {
         report = { ok: true, result: await agentRegistry.register(request.args) };
       } else if (request.tool === 'agent_status') {
@@ -1651,6 +1872,23 @@ function createRepositoryBridge(deps) {
 
     toolFinishedAt = Date.now();
     const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    if (report && report.ok && request.tool === 'agent_register' && report.result && report.result.agent_id) {
+      setAgentDirectoryEntry(report.result.agent_id, {
+        label: report.result.label || report.result.agent_id,
+        status: report.result.status || 'idle',
+        last_seen_at: report.result.last_seen_at || null
+      });
+    } else if (report && report.ok && request.tool === 'agent_status' && report.result && Array.isArray(report.result.agents)) {
+      for (const agent of report.result.agents) {
+        if (agent && agent.agent_id) setAgentDirectoryEntry(agent.agent_id, {
+          label: agent.label || agent.agent_id, status: agent.status || 'unknown',
+          last_seen_at: agent.last_seen_at || null, last_request_id: agent.last_request_id || null,
+          active_request_ids: Array.isArray(agent.active_request_ids) ? agent.active_request_ids.slice(0, 32) : []
+        });
+      }
+    }
+    updateMailboxUiRecord(requestId, { status: 'publishing', progress: 76 });
+    announce();
     const artifactManifest = [];
     const artifactErrors = [];
     let reportForInline = sanitizedReport;
@@ -1768,9 +2006,25 @@ function createRepositoryBridge(deps) {
       completed_at: new Date().toISOString(),
       result: resultRecord
     };
+    const registrationResult = resultRecord.result && resultRecord.result.result;
+    const resultAgentId = claimAgentId || (registrationResult && registrationResult.agent_id) || null;
+    const resultAgentLabel = registrationResult && registrationResult.label ||
+      (mailboxUiRecords.get(requestId) || {}).agentLabel || resultAgentId || '';
+    if (resultAgentId) setAgentDirectoryEntry(resultAgentId, {
+      ...(resultAgentLabel ? { label: resultAgentLabel } : {}),
+      status: request.tool === 'agent_register' ? 'idle' : (agentDirectory.get(resultAgentId) || {}).status || 'unknown'
+    });
+    updateMailboxUiRecord(requestId, {
+      agentId: resultAgentId,
+      agentLabel: resultAgentLabel,
+      status: 'publishing', progress: 88,
+      claimJson: consoleJson(completedClaim), resultJson: consoleJson(resultRecord)
+    });
+    let resultPublished = false;
     try {
       await writeRemoteJson('bridge/claims/' + requestId + '.json', completedClaim, claim.sha, false);
       const published = await publishResult(requestId, resultRecord);
+      resultPublished = published.published === true;
       if (!published.published) {
         lastError = 'Result for ' + requestId + ' is waiting to be published; the claim preserves it for retry.';
       }
@@ -1778,18 +2032,35 @@ function createRepositoryBridge(deps) {
       lastError = 'Tool ran; result publication failed: ' + cleanError(error.message);
       try {
         const published = await publishResult(requestId, resultRecord);
+        resultPublished = published.published === true;
         if (published.published) lastError = '';
       } catch (retryError) {
         lastError += '; retry failed: ' + cleanError(retryError.message);
       }
     } finally {
       if (agentActivityStarted) {
-        try { await agentRegistry.requestCompleted(request); }
-        catch (error) { lastError = 'Agent status update failed for ' + request.agent_id + ': ' + cleanError(error.message); }
+        try {
+          const updatedAgent = await agentRegistry.requestCompleted(request);
+          setAgentDirectoryEntry(request.agent_id, {
+            label: updatedAgent.label || request.agent_id,
+            status: updatedAgent.status || 'idle',
+            last_seen_at: updatedAgent.last_seen_at || null,
+            last_request_id: updatedAgent.last_request_id || null,
+            active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(0, 32) : []
+          });
+        } catch (error) { lastError = 'Agent status update failed for ' + request.agent_id + ': ' + cleanError(error.message); }
       }
+      updateMailboxUiRecord(requestId, {
+        agentId: resultAgentId,
+        agentLabel: resultAgentLabel,
+        status: resultPublished ? resultRecord.status : 'publishing',
+        progress: resultPublished ? 100 : 92,
+        claimJson: consoleJson(completedClaim), resultJson: consoleJson(resultRecord)
+      });
       activeRequestIds.delete(requestId);
       inMemoryClaims.delete(requestId);
       requestAgents.delete(requestId);
+      mailboxRequestCache.delete(requestId);
       announce();
     }
   }
@@ -1803,6 +2074,11 @@ function createRepositoryBridge(deps) {
       if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(filename)) continue;
       pendingRequestQueue.push(filename);
       pendingRequestQueueSet.add(filename);
+      updateMailboxUiRecord(requestId, { status: 'queued', progress: 5, tool: 'loading request' });
+      void loadMailboxRequest(requestId).catch(error => {
+        updateMailboxUiRecord(requestId, { status: 'queued', error: cleanError(error.message), progress: 6 });
+        announce();
+      });
     }
   }
 
@@ -1821,6 +2097,7 @@ function createRepositoryBridge(deps) {
       const task = processRequest(filename)
         .catch(error => {
           lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
+          updateMailboxUiRecord(requestId, { status: 'failed', progress: 100, error: cleanError(error.message) });
           announce();
         })
         .finally(() => {
@@ -1993,6 +2270,7 @@ function createRepositoryBridge(deps) {
         if (requestScanSucceeded) {
           lastPollAt = new Date().toISOString();
           lastPollError = '';
+          if (Date.now() - lastAgentDirectoryRefreshAt >= 60_000) void refreshAgentDirectory();
         }
         lastError = '';
         announce();
@@ -2053,6 +2331,7 @@ function createRepositoryBridge(deps) {
     announce();
     // The first poll publishes the initial heartbeat; avoid a duplicate GET+PUT.
     await pollOnce();
+    void refreshAgentDirectory(true);
     startRequestCommitProbe();
     scheduleNextPoll();
     return stateSnapshot();

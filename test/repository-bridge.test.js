@@ -360,6 +360,19 @@ test('agent identity appears in claim/result and status returns to idle after ex
     assert.equal(updatedAgent.last_request_id, request.request_id);
     assert.ok(updatedAgent.recent_request_ids.includes(request.request_id));
     assert.deepEqual(updatedAgent.active_request_ids, []);
+    const agentMailbox = bridge.getState().agentMailboxes.find(item => item.agent_id === agentId);
+    assert.ok(agentMailbox, 'agent appears in the mailbox monitor');
+    const task = agentMailbox.requests.find(item => item.request_id === request.request_id);
+    assert.ok(task, 'executed request appears in its agent mailbox');
+    assert.equal(task.tool, 'project_status', 'the monitor uses the registered local tool name');
+    assert.equal(task.status, 'completed');
+    assert.equal(task.progress, 100);
+    assert.ok(task.request_json.includes('"agent_token": "[REDACTED]"'));
+    assert.doesNotMatch(task.request_json, /b{64}/);
+    assert.ok(task.claim_json.includes(request.request_id));
+    assert.doesNotMatch(task.claim_json, /b{64}/);
+    assert.ok(task.result_json.includes('"status": "completed"'));
+    assert.doesNotMatch(task.result_json, /b{64}/);
   } finally { await bridge.stop(); }
 });
 

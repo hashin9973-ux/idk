@@ -1025,9 +1025,9 @@ function resolveWorkerStatus(state) {
   if (!current.configured) return 'setup';
   if (!current.running) return autoConnectionStatus;
 
-  // Only the mailbox request-tree poll proves the worker can currently reach
-  // its configured transport. A generic lastError can be an ordinary tool or
-  // result-publication error and must not mark a healthy worker as offline.
+  // A missed poll is transport health, not a reason to stop an active worker.
+  // Keep the worker alive and label transient transport failure as reconnecting;
+  // actual repository requests remain the source of truth, not Windows NCSI.
   const lastPollAt = Date.parse(String(current.lastPollAt || ''));
   const scanInterval = Math.max(1000, Number(current.requestPolling && current.requestPolling.requestTreeScanIntervalMs) || 5000);
   const freshnessWindowMs = Math.max(15000, scanInterval * 3);
@@ -1035,18 +1035,18 @@ function resolveWorkerStatus(state) {
   if (pollFresh) return 'online';
 
   const connectionError = String(current.lastPollError || current.lastError || '');
-  if (connectionError) return isNetworkError(connectionError) ? 'offline' : 'attention';
-  return 'connecting';
+  if (connectionError && isNetworkError(connectionError)) return 'reconnecting';
+  if (connectionError) return 'attention';
+  return 'reconnecting';
 }
 
 function enrichedBridgeState(state) {
   const workerStatus = resolveWorkerStatus(state);
   const current = state || {};
-  // Once the last successful mailbox scan is fresh, ignore any stale connection error
-  // from an earlier failed startup/poll. Task errors remain separately visible in the tooltip.
+  // Keep transient mailbox transport failures visible while continuing retries.
   const connectionError = workerStatus === 'online' ? '' : (
     autoConnectionError ||
-    (workerStatus === 'offline' || workerStatus === 'attention'
+    (workerStatus === 'offline' || workerStatus === 'reconnecting' || workerStatus === 'attention'
       ? (current.lastPollError || current.lastError || '')
       : '')
   );
@@ -1189,15 +1189,15 @@ async function attemptAutoConnect() {
   const initial = repositoryBridge.getState();
   if (initial.running) {
     const status = resolveWorkerStatus(initial);
-    const connectionError = status === 'offline' || status === 'attention'
+    const connectionError = ['offline', 'reconnecting', 'attention'].includes(status)
       ? String(initial.lastPollError || initial.lastError || '')
       : '';
     setAutoConnectionStatus(status, connectionError);
-    // Force a poll after startup/reconnect. A task-level lastError does not make
-    // the worker offline; resolveWorkerStatus uses the last successful mailbox scan.
+    // Poll the mailbox even when Windows reports "No internet". Only the actual
+    // GitHub mailbox request determines whether the transport is reachable.
     void repositoryBridge.pollOnce().catch(error => {
       const message = String(error && error.message || error);
-      setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+      setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
     });
     return;
   }
@@ -1210,13 +1210,17 @@ async function attemptAutoConnect() {
   try {
     const auth = await githubAuth.getState();
     broadcastGitHubState(auth);
-    if (!auth.authenticated || auth.verificationPending === true) {
-      const waiting = auth.verificationPending === true;
-      setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
-        auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
+    // Treat a transient /user verification failure as non-authoritative for the
+    // mailbox. A retained authenticated credential is allowed to try the repo API.
+    if (!auth.authenticated) {
+      setAutoConnectionStatus(auth.error ? 'offline' : 'github',
+        auth.verificationError || auth.error || 'Sign in to GitHub to connect the mailbox.');
       return;
     }
-    setAutoConnectionStatus('connecting');
+
+    setAutoConnectionStatus('connecting', auth.verificationPending
+      ? 'GitHub profile verification is temporarily unavailable; testing mailbox access directly.'
+      : '');
     const started = await repositoryBridge.start();
     setAutoConnectionStatus(resolveWorkerStatus(started), started.lastPollError || started.lastError || '');
     if (started.running && latestFilesystemIndexSnapshot) {
@@ -1231,7 +1235,8 @@ async function attemptAutoConnect() {
     }
   } catch (error) {
     const message = String(error && error.message || error);
-    setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+    const stillRunning = Boolean(repositoryBridge && repositoryBridge.getState().running);
+    setAutoConnectionStatus(isNetworkError(message) ? (stillRunning ? 'reconnecting' : 'offline') : 'attention', message);
   } finally {
     autoConnectInFlight = false;
   }
@@ -1241,27 +1246,26 @@ function retryConnectionNow() {
   if (!repositoryBridge || !githubAuth) return { scheduled: false };
   const state = repositoryBridge.getState();
 
-  // A user-requested retry must bypass the short pending-auth cache so the app
-  // does a fresh GitHub /user probe. This runs alongside the mailbox poll when
-  // the worker is already up, and restarts the worker immediately on recovery.
+  // Force a fresh auth check, but do not let a transient profile endpoint failure
+  // prevent the independently verified mailbox connection attempt.
   void githubAuth.getState({ force: true }).then(auth => {
     broadcastGitHubState(auth);
-    if (!auth.authenticated || auth.verificationPending === true) {
-      const waiting = auth.verificationPending === true;
-      setAutoConnectionStatus(waiting ? 'connecting' : (auth.error ? 'offline' : 'github'),
-        auth.verificationError || auth.error || (waiting ? 'GitHub authorization was saved; checking API access.' : 'Sign in to GitHub to connect the mailbox.'));
+    if (!auth.authenticated) {
+      setAutoConnectionStatus(auth.error ? 'offline' : 'github',
+        auth.verificationError || auth.error || 'Sign in to GitHub to connect the mailbox.');
       return;
     }
     if (!state.running) void attemptAutoConnect();
   }).catch(error => {
     const message = String(error && error.message || error);
-    setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+    const stillRunning = Boolean(repositoryBridge && repositoryBridge.getState().running);
+    setAutoConnectionStatus(isNetworkError(message) ? (stillRunning ? 'reconnecting' : 'offline') : 'attention', message);
   });
 
   if (state.running) {
     void repositoryBridge.pollOnce().catch(error => {
       const message = String(error && error.message || error);
-      setAutoConnectionStatus(isNetworkError(message) ? 'offline' : 'attention', message);
+      setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
     });
   }
   return { scheduled: true };

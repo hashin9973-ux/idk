@@ -1,6 +1,6 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),api=window.windowsBridge;
-const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list');
+const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list'),agentMailboxList=$('agent-mailbox-list');
 const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),browserEnabled=$('browser-enabled'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
 let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const grid=12,minW=44,minH=36;
@@ -122,9 +122,97 @@ function setPage(){
 function syncBrowserTabs(list){browserTabData=Array.isArray(list)?list:[];const ids=new Set(browserTabData.map(t=>t.id));tabs=tabs.filter(t=>t.kind!=='browser'||ids.has(t.browserId));for(const r of browserTabData){let t=tabs.find(x=>x.kind==='browser'&&x.browserId===r.id);if(!t){t={id:'tab-'+r.id,kind:'browser',browserId:r.id,label:r.title||'Web',url:r.url,title:r.title,closable:true};tabs.push(t)}else{t.label=r.title||t.label;t.url=r.url||t.url;t.title=r.title||t.title}}if(!tabs.some(t=>t.id===active))active='main';renderTabs();setPage();scheduleSaveDashboardState()}
 function activateOpenedBrowserTab(value){const id=value&&typeof value.id==='string'?value.id:'';const tab=tabs.find(t=>t.kind==='browser'&&t.browserId===id);if(!tab)return;active=tab.id;setPage()}
 function snap(v){return Math.round(v/grid)*grid}
-function renderQueues(a,p){const total=a+p,ap=total?Math.round(a/total*100):0,pp=total-ap;const rows=[{label:'Active requests',n:a,p:ap,c:'active'},{label:'Queued requests',n:p,p:pp,c:'queued'}];$('queue-list').replaceChildren();for(const r of rows){const row=document.createElement('div');row.className='queue-row';const label=document.createElement('div');label.className='queue-label';label.textContent=r.label+' ('+r.n+')';const track=document.createElement('div');track.className='queue-track';const fill=document.createElement('div');fill.className='queue-fill '+r.c;fill.style.width=r.p+'%';track.append(fill);const pct=document.createElement('div');pct.className='queue-percent';pct.textContent=r.p+'%';pct.title='Share of current active plus queued requests';row.append(label,track,pct);$('queue-list').append(row)}if(!widgetMoved.queues){queue.style.left='24px';queue.style.top='28px';queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';queue.style.height=(queue.scrollHeight+4)+'px'}positionControls()}
+function renderQueues(a,p){
+  const total=a+p,ap=total?Math.round(a/total*100):0,pp=total-ap;
+  const rows=[{label:'Active requests',n:a,p:ap,c:'active'},{label:'Queued requests',n:p,p:pp,c:'queued'}];
+  $('queue-list').replaceChildren();
+  for(const r of rows){
+    const row=document.createElement('div');row.className='queue-row';
+    const label=document.createElement('div');label.className='queue-label';label.textContent=r.label+' ('+r.n+')';
+    const track=document.createElement('div');track.className='queue-track';
+    const fill=document.createElement('div');fill.className='queue-fill '+r.c;fill.style.width=r.p+'%';track.append(fill);
+    const pct=document.createElement('div');pct.className='queue-percent';pct.textContent=r.p+'%';pct.title='Share of current active plus queued requests';
+    row.append(label,track,pct);$('queue-list').append(row);
+  }
+  if(!widgetMoved.queues){
+    queue.style.left='24px';queue.style.top='28px';queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';
+    // Keep the controls widget visible; long console histories scroll inside this widget.
+    const controlsHeight=controls.offsetHeight||207;
+    const maxHeight=Math.max(180,mainPage.clientHeight-28-controlsHeight-26);
+    queue.style.height=Math.min(Math.max(180,queue.scrollHeight+4),maxHeight)+'px';
+  }
+  positionControls();
+}
+function appendConsoleJsonDetails(parent,label,value){
+  const details=document.createElement('details');details.className='agent-json-details';
+  const summary=document.createElement('summary');summary.textContent=label;
+  const pre=document.createElement('pre');pre.className='agent-json';
+  pre.textContent=typeof value==='string'&&value.length?value:'Not available yet.';
+  details.append(summary,pre);parent.append(details);
+}
+function renderAgentMailboxes(rawAgents){
+  if(!agentMailboxList)return;
+  const agents=Array.isArray(rawAgents)?rawAgents:[];
+  const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' agent'+(agents.length===1?'':'s');
+  agentMailboxList.replaceChildren();
+  if(!agents.length){
+    const empty=document.createElement('div');empty.className='agent-console-empty';
+    empty.textContent='No mailbox activity published yet. Agents appear after their first registration or request.';
+    agentMailboxList.append(empty);return;
+  }
+  for(const agent of agents){
+    const card=document.createElement('section');card.className='agent-console';
+    const header=document.createElement('div');header.className='agent-console-header';
+    const identity=document.createElement('div');identity.className='agent-console-identity';
+    const name=document.createElement('strong');name.className='agent-console-name';name.textContent=String(agent.label||agent.agent_id||'Legacy / unassigned');
+    const identityLine=document.createElement('div');identityLine.className='agent-console-id';
+    identityLine.textContent=agent.agent_id?'ID '+agent.agent_id:'NO AGENT ID';
+    identity.append(name,identityLine);
+    const status=document.createElement('span');status.className='agent-console-status '+(agent.status==='active'?'is-active':agent.status==='idle'?'is-idle':'is-unknown');
+    status.textContent=String(agent.status||'unknown').toUpperCase();
+    const counts=document.createElement('span');counts.className='agent-console-counts';
+    counts.textContent=(Number(agent.active_count||0)+' active · '+Number(agent.queued_count||0)+' queued');
+    header.append(identity,status,counts);card.append(header);
+    const requests=Array.isArray(agent.requests)?agent.requests:[];
+    if(!requests.length){
+      const idle=document.createElement('div');idle.className='agent-console-empty';
+      const last=agent.last_seen_at?'Last check-in '+String(agent.last_seen_at):'No request history cached yet';
+      idle.textContent=last;card.append(idle);
+    } else {
+      for(const request of requests){
+        const row=document.createElement('article');row.className='agent-request';
+        const titleLine=document.createElement('div');titleLine.className='agent-request-title';
+        const tool=document.createElement('strong');tool.className='agent-tool-name';
+        // This is the exact tool string stored in the mailbox request, not a friendly alias.
+        tool.textContent=String(request.tool||'unknown tool');
+        tool.title='Registered local tool name';
+        const reqStatus=String(request.status||'queued');
+        const stage=document.createElement('span');
+        stage.className='agent-request-stage '+(['completed','partial','failed','rejected','cancelled'].includes(reqStatus)?'is-terminal':['queued','loading','claiming'].includes(reqStatus)?'is-queued':'is-running');
+        stage.textContent=reqStatus;
+        titleLine.append(tool,stage);
+        const id=document.createElement('div');id.className='agent-request-id';id.textContent=String(request.request_id||'');id.title=String(request.request_id||'');
+        row.append(titleLine,id);
+        if(request.error){
+          const error=document.createElement('div');error.className='agent-request-error';error.textContent=String(request.error);row.append(error);
+        }
+        const progressLine=document.createElement('div');progressLine.className='agent-progress-line';
+        const progress=document.createElement('progress');progress.className='agent-progress';progress.max=100;
+        progress.value=Math.max(0,Math.min(100,Number(request.progress)||0));progress.setAttribute('aria-label',String(request.tool||'request')+' stage progress');
+        const percent=document.createElement('span');percent.className='agent-progress-value';percent.textContent=Math.round(progress.value)+'%';
+        progressLine.append(progress,percent);row.append(progressLine);
+        const json=document.createElement('div');json.className='agent-json-group';
+        appendConsoleJsonDetails(json,'Request JSON',request.request_json);
+        appendConsoleJsonDetails(json,'Claim JSON',request.claim_json);
+        appendConsoleJsonDetails(json,'Result JSON',request.result_json);
+        row.append(json);card.append(row);
+      }
+    }
+    agentMailboxList.append(card);
+  }
+}
 function positionControls(){if(widgetMoved.controls)return;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||120)+18)+'px';controls.style.width=Math.min(590,Math.max(330,mainPage.clientWidth-48))+'px'}
-function renderWorker(v){bridge=v||{};const s=String(bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
+function renderWorker(v){bridge=v||{};const s=String(bridge.workerStatus||bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='reconnecting'?'Worker reconnecting · retrying mailbox':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderAgentMailboxes(bridge.agentMailboxes);renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
 function renderGitHub(v){github=v||{};githubStatus.textContent=github.authenticated?'GitHub connected':github.verificationPending?'GitHub verifying…':'GitHub not connected';$('github-detail').textContent=github.authenticated?'Signed in as '+(github.login||'GitHub user'):'GitHub not connected';$('github-connect').textContent=github.authenticated?'Reconnect':'Sign in'}
 function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root;$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root}
 function renderObserve(){obs.setAttribute('aria-pressed',String(observe.enabled===true));$('observe-status').textContent=(observe.enabled?'ON':'OFF')+' · '+Number(observe.fps||fps.value||2)+' fps';if(observe.fps)fps.value=String(observe.fps)}
@@ -170,7 +258,7 @@ async function refresh(){
 }
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
-function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label'))return;const r=el.getBoundingClientRect(),edge=9,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;gesture={el,mode:L||R||T||B?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
+function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label,details,summary,pre,[data-no-widget-drag]'))return;const r=el.getBoundingClientRect(),edge=9,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;gesture={el,mode:L||R||T||B?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
 function moveGesture(e){if(!gesture)return;const g=gesture,dx=e.clientX-g.sx,dy=e.clientY-g.sy;let x=g.x,y=g.y,w=g.w,h=g.h;if(g.mode==='drag'){x+=dx;y+=dy}else{if(g.R)w+=dx;if(g.B)h+=dy;if(g.L){x+=dx;w-=dx}if(g.T){y+=dy;h-=dy}if(w<minW){if(g.L)x-=minW-w;w=minW}if(h<minH){if(g.T)y-=minH-h;h=minH}}g.el.style.left=x+'px';g.el.style.top=y+'px';if(g.mode==='resize'){g.el.style.width=w+'px';g.el.style.height=h+'px'}}
 function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,Math.min(Math.max(0,r.height-h),y));Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls();scheduleSaveDashboardState()}
 for(const el of [queue,controls]){el.addEventListener('pointerdown',e=>beginGesture(e,el));el.addEventListener('pointermove',moveGesture);el.addEventListener('pointerup',endGesture);el.addEventListener('pointercancel',endGesture)}
