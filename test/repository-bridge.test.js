@@ -243,6 +243,13 @@ test('request validation requires matching protocol/ID and rejects extra argumen
   assert.throws(() => validateRequest(base.request_id, { ...base, args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
   assert.throws(() => validateRequest(base.request_id, { ...base, tool: 'github_api', args: { method: 'PUT' } }), /unsupported local tool/i);
   assert.throws(() => validateRequest('../bad-id', { ...base, request_id: '../bad-id' }), /invalid ID/i);
+  const identified = { ...base, agent_id: 'agent-001', agent_token: 'a'.repeat(64) };
+  assert.equal(validateRequest(base.request_id, identified).agent_id, 'agent-001');
+  assert.equal(validateRequest(base.request_id, identified).agent_token, 'a'.repeat(64));
+  assert.throws(() => validateRequest(base.request_id, { ...base, agent_id: 'agent-001' }), /requires both/i);
+  assert.throws(() => validateRequest(base.request_id, { ...base, agent_token: 'a'.repeat(64) }), /requires both/i);
+  assert.throws(() => validateRequest(base.request_id, { ...base, agent_id: '../agent', agent_token: 'a'.repeat(64) }), /invalid format/i);
+  assert.throws(() => validateRequest(base.request_id, { ...base, tool: 'agent_register', args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
 });
 
 test('repository sanitization strips local identity fields and redacts credentials and local paths', () => {
@@ -273,6 +280,75 @@ test('repository sanitization strips local identity fields and redacts credentia
   assert.equal(json.includes('sk-abcdefghijklmnopqrstuvwxyz0123456789'), false);
   assert.equal(json.includes('Bearer abcdefghijklmnopqrstuvwxyz123456'), false);
   assert.match(json, /REDACTED_GITHUB_TOKEN/);
+});
+
+test('concurrent agent registration allocates unique IDs and stores only token hashes in registry records', async () => {
+  const makeRegistration = requestId => ({ protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(), tool: 'agent_register', args: {} });
+  const first = makeRegistration('register-agent-first');
+  const second = makeRegistration('register-agent-second');
+  const fake = fakeGitHub({ initial: [
+    ['bridge/requests/' + first.request_id + '.json', first],
+    ['bridge/requests/' + second.request_id + '.json', second]
+  ] });
+  const fixture = settingsFixture();
+  let localExecutions = 0;
+  const bridge = createRepositoryBridge({ githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; }, intervalMs: 5000 });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + first.request_id + '.json') && fake.files.has('bridge/results/' + second.request_id + '.json'));
+    const resultA = decode(fake.files.get('bridge/results/' + first.request_id + '.json'));
+    const resultB = decode(fake.files.get('bridge/results/' + second.request_id + '.json'));
+    const agentA = resultA.result.result;
+    const agentB = resultB.result.result;
+    assert.notEqual(agentA.agent_id, agentB.agent_id);
+    assert.deepEqual([agentA.agent_id, agentB.agent_id].sort(), ['agent-001', 'agent-002']);
+    assert.notEqual(agentA.agent_token, agentB.agent_token);
+    assert.equal(resultA.agent_id, agentA.agent_id);
+    assert.equal(resultB.agent_id, agentB.agent_id);
+    for (const agent of [agentA, agentB]) {
+      const record = decode(fake.files.get('bridge/agents/' + agent.agent_id + '.json'));
+      assert.equal(record.status, 'idle');
+      assert.equal(JSON.stringify(record).includes(agent.agent_token), false);
+      assert.match(record.token_hash, /^[a-f0-9]{64}$/);
+    }
+    assert.equal(localExecutions, 0, 'mailbox agent management never enters the workspace tool runner');
+  } finally { await bridge.stop(); }
+});
+
+test('agent identity appears in claim/result and status returns to idle after execution', async () => {
+  const { createHash } = require('node:crypto');
+  const agentId = 'agent-001';
+  const agentToken = 'b'.repeat(64);
+  const now = new Date().toISOString();
+  const record = { protocol: 'chatgpt-local-agent-record/v1', agent_id: agentId,
+    token_hash: createHash('sha256').update(agentToken).digest('hex'), label: 'Agent 1', status: 'idle',
+    created_at: now, updated_at: now, last_seen_at: now, last_completed_at: null, last_request_id: null,
+    recent_request_ids: [], active_request_ids: [] };
+  const request = { protocol: PROTOCOL, request_id: 'agent-001-project-status-test', agent_id: agentId, agent_token: agentToken,
+    created_at: new Date().toISOString(), tool: 'project_status', args: {} };
+  const fake = fakeGitHub({ initial: [
+    ['bridge/agents/' + agentId + '.json', record],
+    ['bridge/requests/' + request.request_id + '.json', request]
+  ] });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({ githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => { executions++; return { ok: true, tool, call_id: id, result: { ready: true } }; }, intervalMs: 5000 });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
+    const updatedAgent = decode(fake.files.get('bridge/agents/' + agentId + '.json'));
+    assert.equal(executions, 1);
+    assert.equal(result.agent_id, agentId);
+    assert.equal(claim.agent_id, agentId);
+    assert.equal(updatedAgent.status, 'idle');
+    assert.equal(updatedAgent.last_request_id, request.request_id);
+    assert.ok(updatedAgent.recent_request_ids.includes(request.request_id));
+    assert.deepEqual(updatedAgent.active_request_ids, []);
+  } finally { await bridge.stop(); }
 });
 
 test('worker executes a request once, writes the actual result, claim and heartbeat via the repository', async () => {
