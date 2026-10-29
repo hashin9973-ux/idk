@@ -1118,8 +1118,9 @@ function registerIpc() {
         !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || repo==='.' || repo==='..' ||
         !branch || branch.length>120 || branch.startsWith('/') || branch.endsWith('/') ||
         branch.includes('..') || branch.includes('//') || !/^[A-Za-z0-9_.\/-]+$/.test(branch)) throw new Error('Enter a valid repository owner, name, and branch.');
+    const existingRetention=settings.repositoryBridge&&settings.repositoryBridge.retentionDays;
     const next={owner,repo,branch,allowPublicMailbox:input.allowPublicMailbox===true,
-      retentionDays:Number.isInteger(input.retentionDays)?input.retentionDays:30};
+      retentionDays:Number.isInteger(input.retentionDays)?input.retentionDays:(Number.isInteger(existingRetention)?existingRetention:30)};
     const before={...(settings.repositoryBridge||DEFAULT_REPOSITORY_BRIDGE)};
     const current=repositoryBridge?repositoryBridge.getState():{};
     if(Number(current.activeCount)>0 || Number(current.pendingCount)>0) throw new Error('Cannot switch the bridge repository while requests are active or queued.');
