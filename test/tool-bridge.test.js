@@ -173,8 +173,16 @@ test('tool capabilities advertise the separate upload and context-refresh contro
     const names = result.result.tools.map(tool => tool.name);
     assert.ok(names.includes('upload_workspace_file'));
     assert.ok(names.includes('refresh_environment_context'));
+    assert.ok(names.includes('session_start'));
+    assert.ok(names.includes('agent_status'));
+    assert.ok(names.includes('send_agent_message'));
+    assert.ok(names.includes('read_agent_messages'));
+    assert.ok(names.includes('reply_to_agent_message'));
+    assert.equal(result.result.catalog_version, 3);
     assert.equal(result.result.tools.find(tool => tool.name === 'upload_workspace_file').mode, 'approval-required');
     assert.equal(result.result.tools.find(tool => tool.name === 'refresh_environment_context').mode, 'repository-bridge-control');
+    assert.equal(result.result.tools.find(tool => tool.name === 'session_start').mode, 'repository-bridge-control');
+    assert.equal(result.result.tools.find(tool => tool.name === 'send_agent_message').mode, 'repository-bridge-control');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
