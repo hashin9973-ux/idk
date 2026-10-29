@@ -645,3 +645,15 @@ test('cloud sync implementation and tests are included in package validation', (
     assert.ok(pkg.scripts.check.includes('node --check ' + file), 'missing syntax validation: ' + file);
   }
 });
+
+
+test('in-app browser is disabled by default and can be explicitly enabled in settings', () => {
+  const main = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'main.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'dashboard.html'), 'utf8');
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'dashboard-renderer.js'), 'utf8');
+  assert.match(main, /settings\.browserEnabled = settings\.browserEnabled === true/);
+  assert.match(main, /if \(settings\.browserEnabled !== true\) throw new Error\('The in-app browser is disabled/);
+  assert.match(main, /settings\.browserEnabled = enabled/);
+  assert.match(html, /id="browser-enabled" type="checkbox"/);
+  assert.match(renderer, /browserEnabled\.addEventListener\('change'/);
+});
