@@ -1117,8 +1117,9 @@ function createToolBridge(deps) {
         purpose: 'Use the actual Windows environment as the working environment, through its GitHub mailbox.',
         rules: [
           'First inspect the published context and exact schemas, then submit a real local-tool request using the mailbox JSON envelope. Native GitHub MCP function names and local mailbox tool names are different interfaces.',
-          'Start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, and the local tool catalog in one result.',
+          'After session_start, start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, every agent seat’s current status, and the local tool catalog in one result.',
           'For unknown environment facts, run targeted discovery before asking the user: check installed application/game manifests, executable version metadata, likely install locations, frameworks and relevant project files.',
+          'When agents collaborate, check agent_status for the current seat/session inventory, send focused assignments or findings with send_agent_message, poll your inbox with read_agent_messages, and reply using reply_to_agent_message so the original conversation receives the response. Messages are addressed to session IDs, not permanently to seat numbers.',
           'Batch independent read-only inspections. Use one small inspection request, one focused edit request, and one verification request rather than one request per file or command.',
           'Match every result to its request_id. Inspect status, nested ok, exitCode, timedOut, stdout/stderr and truncation. A request or claim alone is not completion.',
           'If the result is missing, inspect its claim and worker state and reread that result. Never replay an uncertain side-effecting request.',
