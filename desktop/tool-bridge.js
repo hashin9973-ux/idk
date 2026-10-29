@@ -270,7 +270,14 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   agent_register: {
-    agent_id: { type: 'string', description: 'Existing Agent ID to restore. Supply together with agent_token; omit both to automatically allocate the next unused ID.', pattern: '^agent-[0-9]{3,}
+    agent_id: { type: 'string', description: 'Existing Agent ID to restore. Supply together with agent_token; omit both to automatically allocate the next unused ID.', pattern: '^agent-[0-9]{3,}$' },
+    agent_token: { type: 'string', description: 'Registration token previously returned for this conversation. Needed to restore an existing Agent ID.', pattern: '^[a-f0-9]{64}$' },
+    label: { type: 'string', description: 'Optional short label for this ChatGPT conversation. Defaults to Agent N.', maxLength: 64 }
+  },
+  agent_status: {
+    agent_id: { type: 'string', description: 'Optional Agent ID to inspect. Omit to list all registered agents and their current status.', pattern: '^agent-[0-9]{3,}$' }
+  },
+  tts: {
     text: { type: 'string', description: 'Speech text for Piper en_US-libritts-high, speaker ID 0. Maximum 2,000 characters.', minLength: 1, maxLength: 2000 },
     play: { type: 'boolean', description: 'Play the synthesized WAV locally on Windows. Defaults to true; false saves it without playback.', default: true }
   },
