@@ -5,17 +5,104 @@ const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
 let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const grid=12,minW=44,minH=36;
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
+
+let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
+function dashboardSnapshot(){
+  const records=new Map(browserTabData.map(item=>[item.id,item]));
+  const dim=(el,property,fallback,min,max)=>{
+    const raw=parseFloat(el.style[property]);const n=Number.isFinite(raw)?raw:fallback;
+    return Math.round(Math.max(min,Math.min(max,n)));
+  };
+  return {
+    tabs:tabs.map((tab,order)=>{
+      const saved=tab.kind==='browser'?records.get(tab.browserId):null;
+      return {id:tab.id,kind:tab.kind,label:tab.label,closable:tab.closable!==false,order,
+        ...(tab.kind==='browser'?{browserId:tab.browserId,url:saved&&saved.url||tab.url,title:saved&&saved.title||tab.title||tab.label}: {})};
+    }),
+    activeTabId:active,
+    widgets:{
+      queues:{x:dim(queue,'left',24,0,10000),y:dim(queue,'top',28,0,10000),width:dim(queue,'width',Math.max(180,mainPage.clientWidth-48),180,4000),height:dim(queue,'height',queue.scrollHeight||120,80,3000)},
+      controls:{x:dim(controls,'left',24,0,10000),y:dim(controls,'top',180,0,10000),width:dim(controls,'width',420,180,4000),height:dim(controls,'height',controls.scrollHeight||180,80,3000)}
+    }
+  };
+}
+function scheduleSaveDashboardState(){
+  if(!dashboardStateLoaded||suppressDashboardSave)return;
+  if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);
+  dashboardSaveTimer=setTimeout(async()=>{
+    dashboardSaveTimer=null;
+    try{await api.saveDashboardState(dashboardSnapshot())}catch(e){note('Could not save tabs and widgets: '+e.message,'error')}
+  },300);
+}
+function applyDashboardState(value){
+  const source=value&&typeof value==='object'?value:{};
+  suppressDashboardSave=true;
+  try{
+    if(Array.isArray(source.tabs)){
+      const incoming=[];
+      for(const raw of source.tabs.slice(0,100)){
+        if(!raw||!['main','settings','browser'].includes(raw.kind)||typeof raw.id!=='string')continue;
+        if(raw.kind==='browser'&&(!raw.browserId||!raw.url))continue;
+        incoming.push({id:raw.id,kind:raw.kind,label:String(raw.label||'Web').slice(0,80),closable:raw.kind!=='main',
+          ...(raw.kind==='browser'?{browserId:raw.browserId,url:raw.url,title:raw.title||raw.label}: {})});
+      }
+      if(!incoming.some(t=>t.id==='main'&&t.kind==='main'))incoming.unshift({id:'main',kind:'main',label:'Main',closable:false});
+      const unique=new Set();tabs=incoming.filter(t=>!unique.has(t.id)&&unique.add(t.id));
+      if(!tabs.some(t=>t.id==='settings'))tabs.splice(Math.min(1,tabs.length),0,{id:'settings',kind:'settings',label:'Settings',closable:true});
+    }
+    const widgets=source.widgets&&typeof source.widgets==='object'?source.widgets:{};
+    for(const [id,el] of [['queues',queue],['controls',controls]]){
+      const w=widgets[id];if(!w||typeof w!=='object')continue;
+      const num=(key,def,min,max)=>Number.isFinite(w[key])?Math.max(min,Math.min(max,Math.round(w[key]))):def;
+      Object.assign(el.style,{left:num('x',24,0,10000)+'px',top:num('y',id==='queues'?28:180,0,10000)+'px',
+        width:num('width',id==='queues'?Math.max(180,mainPage.clientWidth-48):420,180,4000)+'px',
+        height:num('height',el.scrollHeight||150,80,3000)+'px'});
+      widgetMoved[id]=true;
+    }
+    active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
+  }finally{suppressDashboardSave=false}
+}
+function applyTtsSettings(value){
+  const s=value&&typeof value==='object'?value:{};
+  $('tts-mode').value=s.mode==='notification'?'notification':'autoplay';
+  $('tts-captions-autoplay').checked=s.captionsOnAutoplay!==false;
+  $('tts-transparent-bg').checked=s.captionTransparent===true;
+  $('tts-caption-position').value=['top','center','bottom','custom'].includes(s.captionPosition)?s.captionPosition:'bottom';
+  $('tts-caption-x').value=String(Number.isFinite(s.captionX)?s.captionX:50);
+  $('tts-caption-y').value=String(Number.isFinite(s.captionY)?s.captionY:85);
+  $('tts-caption-x-value').textContent=$('tts-caption-x').value+'%';$('tts-caption-y-value').textContent=$('tts-caption-y').value+'%';
+  $('tts-caption-theme').value=['app','system','light','dark'].includes(s.captionTheme)?s.captionTheme:'app';
+  $('tts-custom-position').hidden=$('tts-caption-position').value!=='custom';
+}
+function readTtsSettings(){return {mode:$('tts-mode').value,captionsOnAutoplay:$('tts-captions-autoplay').checked,
+  captionTransparent:$('tts-transparent-bg').checked,captionPosition:$('tts-caption-position').value,
+  captionX:Number($('tts-caption-x').value),captionY:Number($('tts-caption-y').value),captionTheme:$('tts-caption-theme').value};}
+async function saveTtsSettings(){try{applyTtsSettings(await api.setTtsSettings(readTtsSettings()));note('Speech and caption settings saved.','success')}
+  catch(e){note('Could not save speech settings: '+e.message,'error');await refresh()}}
+function renderCloudStatus(value){
+  const s=value&&typeof value==='object'?value:{};const folder=String(s.folder||'');
+  $('cloud-folder-path').textContent=folder||'Not configured. Choose a synchronized local cloud folder.';
+  $('cloud-sync-enabled').checked=s.enabled===true;$('cloud-sync-now').disabled=s.enabled!==true||s.configured!==true;
+  let detail=s.state||(s.enabled?'connecting':'disabled');if(s.lastSyncedAt)detail+=' · last sync '+new Date(s.lastSyncedAt).toLocaleString();if(s.error)detail+=' · '+s.error;
+  $('cloud-sync-status').textContent=detail;$('cloud-sync-status').dataset.state=s.error?'error':s.enabled&&s.state==='ready'?'success':'';
+}
+async function applyInitialSettings(settings){
+  const s=settings&&typeof settings==='object'?settings:{};if(themeIds.includes(s.dashboardTheme))applyTheme(s.dashboardTheme);
+  if(Number.isFinite(s.ttsVolume)){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}
+  if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.observeFps))fps.value=String(s.observeFps);
+  if(typeof s.browserKeepActive==='boolean')keep.checked=s.browserKeepActive;if(typeof s.browserLowMemory==='boolean')low.checked=s.browserLowMemory;updateBrowserMode();
+}
 const themeIds=['midnight','light','ocean','forest','sunset','rose','high-contrast','aurora','cyberpunk','dracula','nord','solarized-light','terminal','lavender','graphite'];
 function applyTheme(raw){const theme=themeIds.includes(raw)?raw:'midnight';document.documentElement.dataset.theme=theme;themeSelect.value=theme;for(const card of themeGallery.querySelectorAll('[data-theme-id]'))card.setAttribute('aria-pressed',String(card.dataset.themeId===theme));}
 async function chooseTheme(requested){const previous=document.documentElement.dataset.theme||'midnight';applyTheme(requested);try{const saved=await api.setTheme(requested);applyTheme(saved.theme);note('Theme saved.','success')}catch(e){applyTheme(previous);note(e.message,'error')}}
 function setDot(el,s){el.classList.remove('online','waiting','error');el.classList.add(s)}
 function renderTabs(){tabList.replaceChildren();for(const t of tabs){const b=document.createElement('div');b.className='tab';b.tabIndex=0;b.dataset.tabId=t.id;b.setAttribute('role','tab');b.setAttribute('aria-selected',String(t.id===active));b.draggable=true;const l=document.createElement('span');l.className='tab-label';l.textContent=t.label;b.append(l);if(t.closable){const x=document.createElement('button');x.type='button';x.className='tab-close';x.textContent='×';x.title='Close tab';x.tabIndex=0;x.setAttribute('role','button');x.setAttribute('aria-label','Close '+t.label+' tab');x.addEventListener('pointerdown',e=>e.stopPropagation());x.addEventListener('click',e=>{e.stopPropagation();void closeTab(t.id)});b.append(x)}b.addEventListener('click',()=>{active=t.id;setPage()});b.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target===b){e.preventDefault();active=t.id;setPage()}});b.addEventListener('dragstart',e=>{dragId=t.id;b.classList.add('drag-source');e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',t.id)});b.addEventListener('dragover',e=>{e.preventDefault();b.classList.add('drag-over')});b.addEventListener('dragleave',()=>b.classList.remove('drag-over'));b.addEventListener('drop',e=>{e.preventDefault();reorderTab(dragId||e.dataTransfer.getData('text/plain'),t.id)});b.addEventListener('dragend',()=>{dragId=null;renderTabs()});tabList.append(b)}}
-function reorderTab(a,b){if(!a||a===b)return;const i=tabs.findIndex(t=>t.id===a),j=tabs.findIndex(t=>t.id===b);if(i<0||j<0)return;const [t]=tabs.splice(i,1);tabs.splice(j,0,t);renderTabs()}
+function reorderTab(a,b){if(!a||a===b)return;const i=tabs.findIndex(t=>t.id===a),j=tabs.findIndex(t=>t.id===b);if(i<0||j<0)return;const [t]=tabs.splice(i,1);tabs.splice(j,0,t);renderTabs();scheduleSaveDashboardState()}
 function ensureSettingsTab(){if(!tabs.some(t=>t.id==='settings'))tabs.splice(Math.min(1,tabs.length),0,{id:'settings',kind:'settings',label:'Settings',closable:true})}
 $('add-tab').addEventListener('click',()=>{ensureSettingsTab();active='settings';setPage()});
 async function closeTab(id){const t=tabs.find(v=>v.id===id);if(!t||!t.closable||t.id==='main')return;if(t.kind==='browser')await api.closeBrowserTab(t.browserId).catch(()=>{});tabs=tabs.filter(v=>v.id!==id);if(active===id)active='main';setPage()}
-function setPage(){const t=tabs.find(v=>v.id===active)||tabs[0],m=t.kind==='main',s=t.kind==='settings',b=t.kind==='browser';mainPage.hidden=!m;settingsPage.hidden=!s;browserPage.hidden=!b;if(b)void api.setBrowserTabActive(t.browserId).catch(e=>note(e.message,'error'));else void api.setBrowserTabActive(null).catch(()=>{});renderTabs();updateBrowserBounds()}
-function syncBrowserTabs(list){const ids=new Set(list.map(t=>t.id));tabs=tabs.filter(t=>t.kind!=='browser'||ids.has(t.browserId));for(const r of list){let t=tabs.find(x=>x.kind==='browser'&&x.browserId===r.id);if(!t){t={id:'tab-'+r.id,kind:'browser',browserId:r.id,label:r.title||'Web',closable:true};tabs.push(t)}else t.label=r.title||t.label}if(!tabs.some(t=>t.id===active))active='main';renderTabs();if(tabs.some(t=>t.id===active&&t.kind==='browser'))setPage()}
+function setPage(){const t=tabs.find(v=>v.id===active)||tabs[0],m=t.kind==='main',s=t.kind==='settings',b=t.kind==='browser';mainPage.hidden=!m;settingsPage.hidden=!s;browserPage.hidden=!b;if(b)void api.setBrowserTabActive(t.browserId).catch(e=>note(e.message,'error'));else void api.setBrowserTabActive(null).catch(()=>{});renderTabs();updateBrowserBounds();scheduleSaveDashboardState()}
+function syncBrowserTabs(list){browserTabData=Array.isArray(list)?list:[];const ids=new Set(browserTabData.map(t=>t.id));tabs=tabs.filter(t=>t.kind!=='browser'||ids.has(t.browserId));for(const r of browserTabData){let t=tabs.find(x=>x.kind==='browser'&&x.browserId===r.id);if(!t){t={id:'tab-'+r.id,kind:'browser',browserId:r.id,label:r.title||'Web',url:r.url,title:r.title,closable:true};tabs.push(t)}else{t.label=r.title||t.label;t.url=r.url||t.url;t.title=r.title||t.title}}if(!tabs.some(t=>t.id===active))active='main';renderTabs();if(tabs.some(t=>t.id===active&&t.kind==='browser'))setPage();scheduleSaveDashboardState()}
 function snap(v){return Math.round(v/grid)*grid}
 function renderQueues(a,p){const total=a+p,ap=total?Math.round(a/total*100):0,pp=total-ap;const rows=[{label:'Active requests',n:a,p:ap,c:'active'},{label:'Queued requests',n:p,p:pp,c:'queued'}];$('queue-list').replaceChildren();for(const r of rows){const row=document.createElement('div');row.className='queue-row';const label=document.createElement('div');label.className='queue-label';label.textContent=r.label+' ('+r.n+')';const track=document.createElement('div');track.className='queue-track';const fill=document.createElement('div');fill.className='queue-fill '+r.c;fill.style.width=r.p+'%';track.append(fill);const pct=document.createElement('div');pct.className='queue-percent';pct.textContent=r.p+'%';pct.title='Share of current active plus queued requests';row.append(label,track,pct);$('queue-list').append(row)}if(!widgetMoved.queues){queue.style.left='24px';queue.style.top='28px';queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';queue.style.height=(queue.scrollHeight+4)+'px'}positionControls()}
 function positionControls(){if(widgetMoved.controls)return;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||120)+18)+'px';controls.style.width=Math.min(590,Math.max(330,mainPage.clientWidth-48))+'px'}
@@ -25,27 +112,112 @@ function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\
 function renderObserve(){obs.setAttribute('aria-pressed',String(observe.enabled===true));$('observe-status').textContent=(observe.enabled?'ON':'OFF')+' · '+Number(observe.fps||fps.value||2)+' fps';if(observe.fps)fps.value=String(observe.fps)}
 function renderAccept(){acceptBtn.setAttribute('aria-pressed',String(autoAccept));$('auto-accept-status').textContent=autoAccept?'ON':'OFF'}
 function updateBrowserMode(){memory.title=keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
-async function refresh(){try{const s=await api.getState();renderWorker(s.bridge||{});renderWorkspace(s.workspace||{});applyTheme(s.settings&&s.settings.dashboardTheme||'midnight');const c=s.settings&&s.settings.repositoryBridge||s.bridge||{};if(!busy.repo){$('repo-owner').value=c.owner||'';$('repo-name').value=c.repo||'';$('repo-branch').value=c.branch||'';$('allow-public-mailbox').checked=c.allowPublicMailbox===true}if(!busy.volume){const v=Number.isFinite(s.settings&&s.settings.ttsVolume)?s.settings.ttsVolume:100;volume.value=String(v);volumeValue.textContent=v+'%'}}catch(e){note('Could not refresh app status: '+e.message,'error')}try{renderGitHub(await api.getGitHubState())}catch{}try{observe=await api.getObserveStatus();renderObserve()}catch{}try{const b=await api.getBrowserSettings();keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}}
+async function refresh(){
+  try{
+    const s=await api.getState();
+    renderWorker(s.bridge||{});
+    renderWorkspace(s.workspace||{});
+    if(!dashboardStateLoaded){
+      await applyInitialSettings(s.settings||{});
+      if(Array.isArray(s.browserTabs))syncBrowserTabs(s.browserTabs);
+      if(s.dashboardState)applyDashboardState(s.dashboardState);
+      if(s.cloudSync)renderCloudStatus(s.cloudSync);
+      dashboardStateLoaded=true;
+      scheduleSaveDashboardState();
+    }
+    applyTheme(s.settings&&s.settings.dashboardTheme||'midnight');
+    const c=s.settings&&s.settings.repositoryBridge||s.bridge||{};
+    if(!busy.repo){
+      $('repo-owner').value=c.owner||'';
+      $('repo-name').value=c.repo||'';
+      $('repo-branch').value=c.branch||'';
+      $('allow-public-mailbox').checked=c.allowPublicMailbox===true;
+    }
+    if(!busy.volume){
+      const v=Number.isFinite(s.settings&&s.settings.ttsVolume)?s.settings.ttsVolume:100;
+      volume.value=String(v);volumeValue.textContent=v+'%';
+    }
+  }catch(e){note('Could not refresh app status: '+e.message,'error')}
+  try{renderGitHub(await api.getGitHubState())}catch{}
+  try{observe=await api.getObserveStatus();renderObserve()}catch{}
+  try{const b=await api.getBrowserSettings();keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
+}
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
 function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label'))return;const r=el.getBoundingClientRect(),edge=9,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;gesture={el,mode:L||R||T||B?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
 function moveGesture(e){if(!gesture)return;const g=gesture,dx=e.clientX-g.sx,dy=e.clientY-g.sy;let x=g.x,y=g.y,w=g.w,h=g.h;if(g.mode==='drag'){x+=dx;y+=dy}else{if(g.R)w+=dx;if(g.B)h+=dy;if(g.L){x+=dx;w-=dx}if(g.T){y+=dy;h-=dy}if(w<minW){if(g.L)x-=minW-w;w=minW}if(h<minH){if(g.T)y-=minH-h;h=minH}}g.el.style.left=x+'px';g.el.style.top=y+'px';if(g.mode==='resize'){g.el.style.width=w+'px';g.el.style.height=h+'px'}}
-function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,Math.min(Math.max(0,r.height-h),y));Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls()}
+function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,Math.min(Math.max(0,r.height-h),y));Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls();scheduleSaveDashboardState()}
 for(const el of [queue,controls]){el.addEventListener('pointerdown',e=>beginGesture(e,el));el.addEventListener('pointermove',moveGesture);el.addEventListener('pointerup',endGesture);el.addEventListener('pointercancel',endGesture)}
 obs.addEventListener('click',async()=>{if(busy.observe)return;busy.observe=true;obs.disabled=true;try{observe=await api.setObserveEnabled(!observe.enabled);renderObserve();note('Observe mode updated.','success')}catch(e){note(e.message,'error')}finally{busy.observe=false;obs.disabled=false}});
 acceptBtn.addEventListener('click',async()=>{if(busy.accept)return;busy.accept=true;acceptBtn.disabled=true;try{const r=await api.setAutoAcceptAll(!autoAccept);autoAccept=Boolean(r.autoAcceptAll);renderAccept();note(autoAccept?'Auto-accept enabled after confirmation.':'Auto-accept disabled.','success')}catch(e){note(e.message,'error')}finally{busy.accept=false;acceptBtn.disabled=false}});
 fps.addEventListener('change',async()=>{try{observe=await api.setObserveFps(Number(fps.value));renderObserve()}catch(e){note(e.message,'error')}});
 async function chooseWorkspace(){if(busy.workspace)return;busy.workspace=true;try{const r=await api.selectWorkspace();if(!r.canceled){renderWorkspace(r.workspace);note('Workspace updated.','success')}}catch(e){note(e.message,'error')}finally{busy.workspace=false}}
 workspace.addEventListener('click',()=>void chooseWorkspace());$('settings-workspace-button').addEventListener('click',()=>void chooseWorkspace());
-$('open-overlay').addEventListener('click',()=>void api.showOverlay().catch(e=>note(e.message,'error')));
+$('minimize-to-tray').addEventListener('click',()=>void api.minimizeToTray().catch(e=>note(e.message,'error')));
+$('quit-app').addEventListener('click',()=>void api.quit().catch(e=>note(e.message,'error')));
 colab.addEventListener('click',async()=>{if(busy.colab)return;busy.colab=true;colab.disabled=true;colab.querySelector('small').textContent='Opening Colab…';try{const opened=await api.openColabTab();syncBrowserTabs(await api.getBrowserTabs());const tab=tabs.find(v=>v.kind==='browser'&&v.browserId===opened.id);if(tab){active=tab.id;setPage()}const result=await api.connectColab();const currentTabs=await api.getBrowserTabs();syncBrowserTabs(currentTabs);const colabTab=currentTabs.find(v=>v.url&&v.url.startsWith('https://colab.research.google.com/'));const activeColabTab=colabTab&&tabs.find(v=>v.kind==='browser'&&v.browserId===colabTab.id);if(activeColabTab){active=activeColabTab.id;setPage()}$('colab-status').textContent=result.message||result.status||'Connection requested';note(result.message||'Colab connection requested.',result.connected?'success':'')}catch(e){$('colab-status').textContent=e.message;note(e.message,'error')}finally{busy.colab=false;colab.disabled=false}});
 $('github-connect').addEventListener('click',async()=>{if(busy.github)return;busy.github=true;$('github-connect').disabled=true;try{const cur=await api.getGitHubState(),flow=cur.authenticated?await api.reconnectGitHub():await api.startGitHubLogin();if(flow&&flow.userCode){note('GitHub device code: '+flow.userCode+' — complete authorization in the browser.');let n=0;const poll=async()=>{if(!busy.github)return;try{const s=await api.pollGitHubLogin();if(s.status==='authenticated'){busy.github=false;$('github-connect').disabled=false;await refresh();return}if(s.status==='error'){note(s.message||'GitHub sign-in failed.','error');busy.github=false;$('github-connect').disabled=false;return}}catch{}if(++n<200)window.setTimeout(poll,3000);else{busy.github=false;$('github-connect').disabled=false;note('GitHub authorization polling stopped.','error')}};window.setTimeout(poll,3000)}else{await refresh();busy.github=false;$('github-connect').disabled=false}}catch(e){note(e.message,'error');busy.github=false;$('github-connect').disabled=false}});
 repoForm.addEventListener('submit',async e=>{e.preventDefault();if(busy.repo)return;busy.repo=true;repoMsg.textContent='Validating and switching repository…';try{const r=await api.setRepositoryBridgeConfig({owner:$('repo-owner').value.trim(),repo:$('repo-name').value.trim(),branch:$('repo-branch').value.trim(),allowPublicMailbox:$('allow-public-mailbox').checked});repoMsg.textContent='Repository saved and worker restarted.';repoMsg.dataset.state='success';note('Bridge environment repository updated.','success');renderWorker(r.bridge||{})}catch(e){repoMsg.textContent=e.message;repoMsg.dataset.state='error';note(e.message,'error');await refresh()}finally{busy.repo=false}});
 themeSelect.addEventListener('change',()=>void chooseTheme(themeSelect.value));themeGallery.addEventListener('click',e=>{const card=e.target.closest('[data-theme-id]');if(card&&themeIds.includes(card.dataset.themeId))void chooseTheme(card.dataset.themeId)});
 volume.addEventListener('input',()=>volumeValue.textContent=volume.value+'%');volume.addEventListener('change',async()=>{if(busy.volume)return;busy.volume=true;try{const v=await api.setTtsVolume(Number(volume.value));volumeValue.textContent=v.volume+'%';note('TTS volume saved.','success')}catch(e){note(e.message,'error')}finally{busy.volume=false}});
+
+for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){
+  $(id).addEventListener('change',()=>{applyTtsSettings(readTtsSettings());void saveTtsSettings()});
+}
+for(const id of ['tts-caption-x','tts-caption-y']){
+  $(id).addEventListener('input',()=>{ $(id+'-value').textContent=$(id).value+'%'; $('tts-custom-position').hidden=$('tts-caption-position').value!=='custom'; });
+  $(id).addEventListener('change',()=>void saveTtsSettings());
+}
+$('tts-caption-preview').addEventListener('click',async()=>{try{await api.previewCaptions();note('Caption preview opened.','success')}catch(e){note(e.message,'error')}});
+$('save-now').addEventListener('click',async()=>{
+  const b=$('save-now');b.disabled=true;
+  try{if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}await api.saveDashboardState(dashboardSnapshot());const result=await api.saveNow();$('save-status').textContent='Saved locally at '+new Date(result.savedAt).toLocaleTimeString();note('Application state saved locally.','success')}
+  catch(e){note('Could not save application state: '+e.message,'error')}
+  finally{b.disabled=false}
+});
+$('cloud-folder-choose').addEventListener('click',async()=>{
+  const b=$('cloud-folder-choose');b.disabled=true;
+  try{const r=await api.chooseCloudFolder();if(!r.canceled){renderCloudStatus({...r.status,folder:r.folder,enabled:$('cloud-sync-enabled').checked});note('Cloud folder configured. Enable live sync to share state.','success')}}
+  catch(e){note('Could not configure cloud folder: '+e.message,'error')}
+  finally{b.disabled=false}
+});
+$('cloud-sync-enabled').addEventListener('change',async()=>{
+  const checkbox=$('cloud-sync-enabled');checkbox.disabled=true;
+  try{const r=await api.configureCloudSync({enabled:checkbox.checked});renderCloudStatus({...r,folder:$('cloud-folder-path').textContent});if(r.error)note(r.error,'error');else note(r.enabled?'Live cloud sync enabled.':'Live cloud sync disabled.','success')}
+  catch(e){checkbox.checked=!checkbox.checked;note(e.message,'error')}
+  finally{checkbox.disabled=false}
+});
+$('cloud-sync-now').addEventListener('click',async()=>{
+  const b=$('cloud-sync-now');b.disabled=true;
+  try{const r=await api.syncCloudNow();renderCloudStatus({...r,folder:$('cloud-folder-path').textContent});if(r.error)note(r.error,'error');else note('Cloud sync completed.','success')}
+  catch(e){note('Cloud sync failed: '+e.message,'error')}
+  finally{b.disabled=!$('cloud-sync-enabled').checked}
+});
+$('vision-endpoint-connect').addEventListener('click',async()=>{
+  const b=$('vision-endpoint-connect'),endpoint=$('vision-endpoint-url').value.trim();
+  if(!endpoint){$('vision-status-details').textContent='Enter the HTTPS endpoint shown by the running Colab notebook.';return}
+  b.disabled=true;$('vision-status-details').textContent='Validating endpoint and connecting…';
+  try{const r=await api.connectColab(endpoint);$('vision-status-details').textContent=[r.status||'unknown',r.message||''].filter(Boolean).join(' · ');$('vision-status-details').dataset.state=r.connected?'success':r.status==='error'?'error':'';if(r.connected)note('Colab connected.','success')}
+  catch(e){$('vision-status-details').textContent=e.message;$('vision-status-details').dataset.state='error'}
+  finally{b.disabled=false}
+});
+$('vision-setup-check').addEventListener('click',async()=>{
+  const b=$('vision-setup-check');b.disabled=true;$('vision-status-details').textContent='Running setup checks…';
+  try{const r=await api.checkVisionSetup();const checks=r.checks&&typeof r.checks==='object'?Object.entries(r.checks).map(([name,item])=>name+': '+(item.status||'unknown')+(item.message?' — '+item.message:'')).join(' | '):'';$('vision-status-details').textContent=[r.status||'checked',checks,(Array.isArray(r.next_steps)?r.next_steps.join(' '):'')].filter(Boolean).join(' · ');$('vision-status-details').dataset.state=r.status==='passed'?'success':r.status==='failed'?'error':''}
+  catch(e){$('vision-status-details').textContent=e.message;$('vision-status-details').dataset.state='error'}
+  finally{b.disabled=false}
+});
+
 async function changeBrowserMode(){try{const v=await api.setBrowserSettings({keepActive:keep.checked,lowMemory:low.checked});keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode()}catch(e){note(e.message,'error');await refresh()}}
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
-api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';if(v.privateMb>100)memory.title='Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
-window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>ro.disconnect());
-applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();window.setInterval(()=>void refresh(),7000);
+api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
+api.onPrepareForTray(async payload=>{
+  if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
+  const state=dashboardSnapshot();let saved=state;
+  try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
+  try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
+});
+api.onBrowserTabsChanged(syncBrowserTabs);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';if(v.privateMb>100)memory.title='Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
+window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
+applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();

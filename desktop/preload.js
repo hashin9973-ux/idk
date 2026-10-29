@@ -5,7 +5,6 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   getState: () => ipcRenderer.invoke('app:get-state'),
   openDashboard: () => ipcRenderer.invoke('app:open-dashboard'),
-  showOverlay: () => ipcRenderer.invoke('app:show-overlay'),
   getBrowserTabs: () => ipcRenderer.invoke('app:browser-tabs'),
   openBrowserTab: url => ipcRenderer.invoke('app:browser-open-tab', url),
   openColabTab: () => ipcRenderer.invoke('app:colab-open-tab'),
@@ -16,7 +15,41 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   setBrowserSettings: value => ipcRenderer.invoke('app:browser-settings', value),
   setTtsVolume: value => ipcRenderer.invoke('app:tts-volume', value),
   setTheme: theme => ipcRenderer.invoke('app:set-theme', theme),
+  saveDashboardState: state => ipcRenderer.invoke('app:save-dashboard-state', state),
+  acknowledgeTrayState: (requestId, state) => ipcRenderer.invoke('app:tray-state-saved', { requestId, state }),
+  onPrepareForTray(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => callback(value && typeof value === 'object' ? value : {});
+    ipcRenderer.on('app:prepare-for-tray', listener);
+    return () => ipcRenderer.removeListener('app:prepare-for-tray', listener);
+  },
+  saveNow: () => ipcRenderer.invoke('app:save-now'),
+  getTtsSettings: () => ipcRenderer.invoke('app:tts-settings'),
+  setTtsSettings: settings => ipcRenderer.invoke('app:tts-settings', settings),
+  previewCaptions: () => ipcRenderer.invoke('app:caption-preview'),
+  getCloudSyncStatus: () => ipcRenderer.invoke('app:cloud-sync-status'),
+  chooseCloudFolder: () => ipcRenderer.invoke('app:cloud-sync-choose-folder'),
+  configureCloudSync: value => ipcRenderer.invoke('app:cloud-sync-config', value),
+  syncCloudNow: () => ipcRenderer.invoke('app:cloud-sync-now'),
   setRepositoryBridgeConfig: value => ipcRenderer.invoke('app:repository-bridge-config', value),
+  onDashboardState(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, state) => callback(state && typeof state === 'object' ? state : {});
+    ipcRenderer.on('app:dashboard-state', listener);
+    return () => ipcRenderer.removeListener('app:dashboard-state', listener);
+  },
+  onPreferences(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => callback(value && typeof value === 'object' ? value : {});
+    ipcRenderer.on('app:preferences', listener);
+    return () => ipcRenderer.removeListener('app:preferences', listener);
+  },
+  onCloudSyncStatus(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => callback(value && typeof value === 'object' ? value : {});
+    ipcRenderer.on('app:cloud-sync-status', listener);
+    return () => ipcRenderer.removeListener('app:cloud-sync-status', listener);
+  },
   onBrowserTabsChanged(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, tabs) => callback(Array.isArray(tabs) ? tabs : []);

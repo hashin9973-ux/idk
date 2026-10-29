@@ -65,7 +65,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(main, /clearStaleContext\(\)/);
   assert.match(main, /Promise\.allSettled\(disposals\)\.finally\(\(\) => app\.quit\(\)\)/);
   assert.doesNotMatch(main, /void observeService\.dispose\(\)\.catch/);
-  assert.match(main, /height: 402/);
+  assert.match(main, /minHeight: 540/);
   assert.match(main, /createObserveService/);
   assert.match(main, /const screenWidth = Math\.max\(1, Math\.round\(primaryDisplay\.size\.width \* scaleFactor\)\)/);
   assert.match(main, /thumbnailSize: \{ width: screenWidth, height: screenHeight \}/);
@@ -124,7 +124,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
-  assert.match(main, /height: 402/);
+  assert.match(main, /minHeight: 540/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
   assert.match(main, /const freshnessWindowMs = Math\.max\(15000, scanInterval \* 3\)/);
@@ -132,7 +132,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /current\.lastPollError \|\| current\.lastError/);
   assert.match(main, /const connectionError = workerStatus === 'online' \? '' :/);
   assert.match(main, /'app:vision-manual-panel'/);
-  assert.match(main, /VISION_MANUAL_HEIGHT = 500/);
+  assert.doesNotMatch(main, /STATUS_SIZE|VISION_MANUAL_HEIGHT|function clampBounds\(|function defaultBounds\(/);
   assert.match(main, /'app:vision-setup-check'/);
   const visionStatusHandler = main.slice(
     main.indexOf("ipcMain.handle('app:vision-status'"),
@@ -199,9 +199,9 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(html, /100 MB/);
 });
 
-test('preload exposes the compact overlay and separate dashboard APIs', () => {
+test('preload exposes the single-dashboard, caption, persistence, sync and bridge APIs', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'openDashboard', 'showOverlay', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
+  for (const action of ['getState', 'openDashboard', 'saveDashboardState', 'saveNow', 'getTtsSettings', 'setTtsSettings', 'previewCaptions', 'getCloudSyncStatus', 'chooseCloudFolder', 'configureCloudSync', 'syncCloudNow', 'acknowledgeTrayState', 'onPrepareForTray', 'onDashboardState', 'onPreferences', 'onCloudSyncStatus', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
@@ -266,15 +266,15 @@ test('inline GitHub auth stores an encrypted app-side credential and does not re
   assert.doesNotMatch(auth, /localStorage|github_api/);
 });
 
-test('the status window minimizes to the system tray and the worker starts automatically', () => {
+test('the single dashboard unloads to the system tray while the worker stays alive', () => {
   const main = read('desktop', 'main.js');
-  const html = read('desktop', 'index.html');
+  const html = read('desktop', 'dashboard.html');
   assert.match(main, /new Tray\(/);
   assert.match(main, /tray\.setContextMenu/);
-  assert.match(main, /label: 'Open status'/);
+  assert.match(main, /label: 'Open Windows Bridge'/);
   assert.match(main, /label: 'Quit'/);
-  assert.match(main, /mainWindow\.on\('minimize', event => \{\s*event\.preventDefault\(\);\s*hideToTray\(\);/);
-  assert.match(main, /mainWindow\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*hideToTray\(\);/);
+  assert.match(main, /win\.on\('minimize', event => \{\s*event\.preventDefault\(\);\s*if \(tray\) void destroyDashboardWindowToTray\(\);/);
+  assert.match(main, /win\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*if \(tray\) void destroyDashboardWindowToTray\(\);/);
   assert.match(main, /function startAutoConnectLoop\(\)/);
   assert.match(main, /setInterval\(\(\) => \{ void attemptAutoConnect\(\); \}, AUTO_CONNECT_INTERVAL_MS\)/);
   assert.match(main, /owner: 'hashin9973-ux'/);
@@ -282,8 +282,13 @@ test('the status window minimizes to the system tray and the worker starts autom
   assert.match(main, /branch: 'bridge-mailbox'/);
   assert.match(main, /startAutoConnectLoop\(\)/);
   assert.doesNotMatch(main, /app:start-bridge|app:stop-bridge/);
-  assert.doesNotMatch(html, /Start worker|worker-toggle|titlebar|settings-panel/);
-  assert.match(main, /Keep the worker and tray icon alive while the status window is hidden/);
+  assert.doesNotMatch(html, /Start worker|worker-toggle|titlebar|open-overlay/);
+  assert.match(main, /function destroyDashboardWindowToTray\(\)/);
+  assert.match(main, /trayStateResolvers = new Map\(\)/);
+  assert.match(main, /loadFile\(path\.join\(__dirname, 'dashboard\.html'\)\)/);
+  assert.doesNotMatch(main, /loadFile\(path\.join\(__dirname, 'index\.html'\)\)/);
+  assert.doesNotMatch(main, /app:show-overlay/);
+  assert.match(main, /startAutoConnectLoop\(\)/);
 });
 
 test('environment snapshots and result artifacts stay in the repository channel', () => {
@@ -582,4 +587,43 @@ test('Colab vision notebook becomes ready after model download without startup i
   const readme = read('README.md');
   assert.match(readme, /prebuilt Ollama runtime/i);
   assert.match(readme, /does not compile llama\.cpp/i);
+});
+
+
+test('dashboard persists layout and exposes complete TTS and cloud folder settings', () => {
+  const html = read('desktop', 'dashboard.html');
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const main = read('desktop', 'main.js');
+  for (const id of ['minimize-to-tray', 'quit-app', 'tts-mode', 'tts-captions-autoplay',
+    'tts-transparent-bg', 'tts-caption-position', 'tts-caption-x', 'tts-caption-y',
+    'tts-caption-theme', 'tts-caption-preview', 'save-now', 'cloud-folder-choose',
+    'cloud-sync-enabled', 'cloud-sync-now', 'cloud-sync-status']) {
+    assert.ok(html.includes('id="' + id + '"'), 'missing setting: ' + id);
+  }
+  assert.match(renderer, /function dashboardSnapshot\(\)/);
+  assert.match(renderer, /function applyDashboardState\(value\)/);
+  assert.match(renderer, /api\.saveDashboardState\(dashboardSnapshot\(\)\)/);
+  assert.match(renderer, /api\.onPrepareForTray/);
+  assert.match(renderer, /api\.acknowledgeTrayState/);
+  assert.match(main, /function createCaptionWindow\(\)/);
+  assert.match(main, /function updateCaptionPlaybackProgress\(/);
+  assert.match(main, /nativeTheme\.on\('updated'/);
+  assert.match(main, /app:cloud-sync-config/);
+  assert.match(main, /safeShareUrl\(tab\.url\)/);
+  assert.doesNotMatch(html, /id="open-overlay"/);
+});
+
+test('cloud sync implementation and tests are included in package validation', () => {
+  const pkg = JSON.parse(read('package.json'));
+  const sync = read('desktop', 'cloud-sync.js');
+  const caption = read('desktop', 'caption-renderer.js');
+  assert.match(sync, /function createCloudSync/);
+  assert.match(sync, /function mergeRecords/);
+  assert.match(sync, /function sanitizeSharedState/);
+  assert.match(sync, /MAX_RECORD_BYTES/);
+  assert.match(caption, /textContent/);
+  assert.match(caption, /bridge\.play\(\)/);
+  for (const file of ['desktop/cloud-sync.js', 'desktop/caption-preload.js', 'desktop/caption-renderer.js', 'test/cloud-sync.test.js']) {
+    assert.ok(pkg.scripts.check.includes('node --check ' + file), 'missing syntax validation: ' + file);
+  }
 });

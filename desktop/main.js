@@ -20,20 +20,22 @@ const {
   Menu,
   nativeImage,
   clipboard,
-  desktopCapturer
+  desktopCapturer,
+  nativeTheme
 } = require('electron');
-const { clampRectToWorkArea } = require('./geometry');
 const { resolveWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint } = require('./colab-direct-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
+const { MAX_SPEECH_CHUNKS } = require('./speech-text');
 const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
+const { createCloudSync, safeShareUrl } = require('./cloud-sync');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -97,8 +99,6 @@ app.on('child-process-gone', (_event, details) => {
 });
 appendDiagnosticLog('startup', 'Main process loaded; pid=' + process.pid);
 
-const STATUS_SIZE = { width: 360, height: 402 };
-const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const COLAB_HANDOFF_SCHEME = 'windows-repository-bridge';
@@ -114,6 +114,16 @@ const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest
 let mainWindow = null;
 let dashboardWindow = null;
 let tray = null;
+let cloudSync = null;
+let cloudSyncStatus = { enabled: false, configured: false, state: 'disabled', lastSyncedAt: '', error: '' };
+let captionWindow = null;
+let captionWindowLoaded = false;
+let activeCaptionPayload = null;
+let captionCloseTimer = null;
+let captionProgressTimer = null;
+let captionPlaybackInFlight = false;
+let trayUnloadPromise = null;
+const trayStateResolvers = new Map();
 const browserTabs = new Map();
 let activeBrowserTabId = null;
 let browserBounds = { x: 0, y: 0, width: 1, height: 1 };
@@ -123,7 +133,6 @@ let autoConnectInFlight = false;
 let autoConnectionStatus = 'connecting';
 let autoConnectionError = '';
 let settings = {};
-let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
@@ -406,43 +415,6 @@ function selectWorkspace() {
   });
 }
 
-function clampBounds(bounds) {
-  const safe = {
-    x: Number.isFinite(Number(bounds && bounds.x)) ? Number(bounds.x) : 0,
-    y: Number.isFinite(Number(bounds && bounds.y)) ? Number(bounds.y) : 0,
-    width: STATUS_SIZE.width,
-    height: STATUS_SIZE.height
-  };
-  const display = screen.getDisplayMatching(safe);
-  return clampRectToWorkArea(safe, display.workArea, 280, 84);
-}
-
-function defaultBounds() {
-  const work = screen.getPrimaryDisplay().workArea;
-  return clampBounds({
-    x: work.x + Math.max(0, work.width - STATUS_SIZE.width - 24),
-    y: work.y + Math.max(0, work.height - STATUS_SIZE.height - 24),
-    ...STATUS_SIZE
-  });
-}
-
-function saveWindowBounds() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const [x, y] = mainWindow.getPosition();
-  settings.bounds = { x, y, width: STATUS_SIZE.width, height: STATUS_SIZE.height };
-  persistSettings();
-}
-
-function saveWindowBoundsSoon() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveWindowBounds, 250);
-}
-
-function hideToTray() {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-}
-
 function safeBrowserUrl(raw) {
   try {
     const url = new URL(String(raw || ''));
@@ -590,7 +562,7 @@ async function openBrowserTab(raw) {
   showDashboardWindow();
   let tab = [...browserTabs.values()].find(item => item.url === parsed.href);
   if (tab) { attachBrowserTab(tab.id); return { id: tab.id, url: tab.url, title: tab.title, reused: true }; }
-  tab = { id: 'web-' + (++nextBrowserTabId), url: parsed.href, title: parsed.hostname, view: null, error: '' };
+  tab = { id: 'web-' + (++nextBrowserTabId) + '-' + crypto.randomUUID(), url: parsed.href, title: parsed.hostname, view: null, error: '' };
   browserTabs.set(tab.id, tab); attachBrowserTab(tab.id); publishBrowserTabs();
   return { id: tab.id, url: tab.url, title: tab.title, reused: false };
 }
@@ -609,42 +581,125 @@ function closeBrowserTab(id) {
   publishBrowserTabs(); return { closed: true };
 }
 function showDashboardWindow() {
-  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
-  if (dashboardWindow.isMinimized()) dashboardWindow.restore();
-  dashboardWindow.show(); dashboardWindow.focus(); publishBrowserTabs(); return { opened: true };
+  showMainWindow();
+  return { opened: true };
 }
+
+function destroyEmbeddedBrowserViews() {
+  saveBrowserTabMetadata();
+  for (const tab of browserTabs.values()) {
+    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+    tab.memoryTimer = null;
+    if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
+    if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    tab.view = null;
+  }
+}
+
+function destroyDashboardWindowToTray() {
+  if (trayUnloadPromise) return trayUnloadPromise;
+  const win = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null;
+  if (!win) return Promise.resolve({ hidden: true, destroyed: false });
+  const operation = (async () => {
+    let savedState = null;
+    if (dashboardWindow === win && !win.webContents.isDestroyed()) {
+      const requestId = crypto.randomUUID();
+      savedState = await new Promise(resolve => {
+        const timer = setTimeout(() => { trayStateResolvers.delete(requestId); resolve(null); }, 750);
+        trayStateResolvers.set(requestId, { win, resolve, timer });
+        dashboardSend('app:prepare-for-tray', { requestId });
+      });
+    }
+    if (savedState) {
+      settings.dashboardState = normalizeDashboardState(savedState);
+      syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    }
+    try { settings.dashboardBounds = win.getBounds(); } catch {}
+    saveBrowserTabMetadata();
+    persistSettings();
+    destroyEmbeddedBrowserViews();
+    if (mainWindow === win) mainWindow = null;
+    if (dashboardWindow === win) dashboardWindow = null;
+    try { win.destroy(); } catch (error) { appendDiagnosticLog('dashboard-destroy-to-tray-failed', error); }
+    return { hidden: true, destroyed: true, stateSaved: Boolean(savedState) };
+  })();
+  trayUnloadPromise = operation.finally(() => { trayUnloadPromise = null; });
+  return trayUnloadPromise;
+}
+
+
 function createDashboardWindow() {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) return dashboardWindow;
   const saved = settings.dashboardBounds && typeof settings.dashboardBounds === 'object' ? settings.dashboardBounds : {};
-  dashboardWindow = new BrowserWindow({
-    x: Number.isFinite(saved.x) ? saved.x : undefined, y: Number.isFinite(saved.y) ? saved.y : undefined,
+  const win = new BrowserWindow({
+    x: Number.isFinite(saved.x) ? saved.x : undefined,
+    y: Number.isFinite(saved.y) ? saved.y : undefined,
     width: Number.isFinite(saved.width) ? Math.max(760, saved.width) : 1060,
     height: Number.isFinite(saved.height) ? Math.max(540, saved.height) : 760,
-    minWidth: 760, minHeight: 540, show: false, backgroundColor: '#11161d',
+    minWidth: 760, minHeight: 540, show: false, backgroundColor: '#11161d', skipTaskbar: Boolean(tray),
     title: 'Windows Repository Bridge',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
   });
-  dashboardWindow.setMenuBarVisibility(false);
-  dashboardWindow.on('resize', () => {
-    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    settings.dashboardBounds = dashboardWindow.getBounds(); persistSettings();
+  dashboardWindow = win;
+  mainWindow = win;
+  win.setMenuBarVisibility(false);
+  win.on('resize', () => {
+    if (dashboardWindow !== win || win.isDestroyed()) return;
+    settings.dashboardBounds = win.getBounds(); persistSettings(); publishSharedState();
     dashboardSend('app:browser-bounds-refresh', {});
   });
-  dashboardWindow.on('move', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) { settings.dashboardBounds = dashboardWindow.getBounds(); persistSettings(); } });
-  dashboardWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  dashboardWindow.once('ready-to-show', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.show(); });
-  dashboardWindow.on('closed', () => {
+  win.on('move', () => {
+    if (dashboardWindow !== win || win.isDestroyed()) return;
+    settings.dashboardBounds = win.getBounds(); persistSettings();
+  });
+  win.on('minimize', event => {
+    event.preventDefault();
+    if (tray) void destroyDashboardWindowToTray();
+    else {
+      win.show(); win.focus();
+      void dialog.showMessageBox(win, { type: 'warning', title: 'System tray unavailable', message: 'The window cannot be unloaded because the system tray is unavailable.', detail: trayInitializationError || 'No tray icon was created.' });
+    }
+  });
+  win.on('close', event => {
+    if (!finishingQuit) {
+      event.preventDefault();
+      if (tray) void destroyDashboardWindowToTray();
+      else {
+        win.show(); win.focus();
+        void dialog.showMessageBox(win, { type: 'warning', title: 'System tray unavailable', message: 'The window will remain open because the system tray could not be initialized.', detail: trayInitializationError || 'No tray icon was created.' });
+      }
+      return;
+    }
+    try { settings.dashboardBounds = win.getBounds(); } catch {}
+    persistSettings();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    if (isMainFrame && code !== -3) appendDiagnosticLog('dashboard-load-failed', { code, description, url });
+  });
+  win.on('closed', () => {
     for (const tab of browserTabs.values()) {
       if (tab.memoryTimer) clearInterval(tab.memoryTimer);
       tab.memoryTimer = null;
       if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+      tab.view = null;
     }
-    browserTabs.clear(); activeBrowserTabId = null; dashboardWindow = null;
+    if (dashboardWindow === win) dashboardWindow = null;
+    if (mainWindow === win) mainWindow = null;
   });
-  dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html')).catch(error => appendDiagnosticLog('dashboard-load-failed', error));
-  return dashboardWindow;
+  const reveal = () => {
+    if (dashboardWindow !== win || win.isDestroyed()) return;
+    win.show(); win.focus(); publishBrowserTabs();
+  };
+  win.once('ready-to-show', reveal);
+  win.webContents.once('did-finish-load', reveal);
+  win.loadFile(path.join(__dirname, 'dashboard.html')).catch(error => {
+    appendDiagnosticLog('dashboard-load-failed', error);
+    if (!win.isDestroyed()) win.show();
+  });
+  return win;
 }
+
 function setBrowserBounds(value) {
   const size = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow.getContentBounds() : { width: 0, height: 0 };
   const v = value && typeof value === 'object' ? value : {};
@@ -661,7 +716,7 @@ function getBrowserSettings() {
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
   const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
-  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
+  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings(); publishSharedState();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
     const enabled = keepActive && tab.id === activeBrowserTabId;
     tab.view.webContents.setBackgroundThrottling(!enabled);
@@ -677,30 +732,28 @@ function setBrowserSettings(value) {
   return getBrowserSettings();
 }
 
-function hideToTray() {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-}
+
 
 function minimizeToTray() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) hideToTray();
-  else mainWindow.minimize();
+  if (!tray) {
+    const error = trayInitializationError || 'The system tray is unavailable, so the window cannot be unloaded safely.';
+    if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, { type: 'warning', title: 'System tray unavailable', message: 'Windows Repository Bridge will keep its window open.', detail: error });
+    return Promise.resolve({ hidden: false, error });
+  }
+  return destroyDashboardWindowToTray();
 }
 
 function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.setAlwaysOnTop(true);
-  mainWindow.focus();
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
+  const win = dashboardWindow;
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus(); publishBrowserTabs();
+  return { opened: true };
 }
 
-function toggleOverlay() {
-  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
-    showMainWindow();
-    return;
-  }
-  hideToTray();
+function toggleDashboardWindow() {
+  if (!dashboardWindow || dashboardWindow.isDestroyed() || !dashboardWindow.isVisible()) showMainWindow();
+  else if (tray) destroyDashboardWindowToTray();
 }
 
 function createTray() {
@@ -714,8 +767,7 @@ function createTray() {
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
     tray.setToolTip('Windows Repository Bridge');
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Open status', click: showMainWindow },
-      { label: 'Open dashboard', click: showDashboardWindow },
+      { label: 'Open Windows Bridge', click: showMainWindow },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() }
     ]));
@@ -1097,30 +1149,520 @@ function bringMainWindowForward() {
 }
 
 function assertLocalUi(event, filename) {
-  const trusted = [
-    { window: mainWindow, file: 'index.html' },
-    { window: dashboardWindow, file: 'dashboard.html' }
-  ].find(item => item.window && !item.window.isDestroyed() && item.window.webContents === event.sender);
-  if (!trusted) throw new Error('Only a trusted local desktop window may invoke this action.');
+  const trusted = dashboardWindow && !dashboardWindow.isDestroyed() && dashboardWindow.webContents === event.sender;
+  if (!trusted) throw new Error('Only the trusted local dashboard may invoke this action.');
   const url = event.senderFrame && event.senderFrame.url || '';
-  if (!url.startsWith('file://') || !url.endsWith('/desktop/' + trusted.file) ||
-      (filename !== trusted.file && !(filename === 'index.html' && trusted.file === 'dashboard.html'))) {
-    throw new Error('Unexpected IPC sender.');
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/dashboard.html') ||
+      (filename !== 'dashboard.html' && filename !== 'index.html')) throw new Error('Unexpected IPC sender.');
+}
+
+function getTtsSettings() {
+  const source = settings.ttsSettings && typeof settings.ttsSettings === 'object' ? settings.ttsSettings : {};
+  return {
+    mode: source.mode === 'notification' ? 'notification' : 'autoplay',
+    captionsOnAutoplay: source.captionsOnAutoplay !== false,
+    captionTransparent: source.captionTransparent === true,
+    captionPosition: ['top', 'center', 'bottom', 'custom'].includes(source.captionPosition) ? source.captionPosition : 'bottom',
+    captionX: Number.isFinite(source.captionX) ? Math.round(Math.max(0, Math.min(100, source.captionX))) : 50,
+    captionY: Number.isFinite(source.captionY) ? Math.round(Math.max(0, Math.min(100, source.captionY))) : 85,
+    captionTheme: ['app', 'system', 'light', 'dark'].includes(source.captionTheme) ? source.captionTheme : 'app'
+  };
+}
+
+function normalizeTtsSettings(value) {
+  const current = getTtsSettings();
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    mode: source.mode === 'notification' || source.mode === 'autoplay' ? source.mode : current.mode,
+    captionsOnAutoplay: typeof source.captionsOnAutoplay === 'boolean' ? source.captionsOnAutoplay : current.captionsOnAutoplay,
+    captionTransparent: typeof source.captionTransparent === 'boolean' ? source.captionTransparent : current.captionTransparent,
+    captionPosition: ['top', 'center', 'bottom', 'custom'].includes(source.captionPosition) ? source.captionPosition : current.captionPosition,
+    captionX: Number.isFinite(source.captionX) ? Math.round(Math.max(0, Math.min(100, source.captionX))) : current.captionX,
+    captionY: Number.isFinite(source.captionY) ? Math.round(Math.max(0, Math.min(100, source.captionY))) : current.captionY,
+    captionTheme: ['app', 'system', 'light', 'dark'].includes(source.captionTheme) ? source.captionTheme : current.captionTheme
+  };
+}
+
+function normalizeDashboardState(input) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const seen = new Set();
+  const tabs = [];
+  for (const raw of (Array.isArray(source.tabs) ? source.tabs : []).slice(0, 100)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const id = String(raw.id || '').slice(0, 80);
+    if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,79}$/.test(id) || seen.has(id)) continue;
+    const kind = ['main', 'settings', 'browser'].includes(raw.kind) ? raw.kind : null;
+    if (!kind) continue;
+    const order = Number.isFinite(raw.order) ? Math.round(Math.max(0, Math.min(10000, raw.order))) : tabs.length;
+    const tab = { id, kind, label: String(raw.label || (kind === 'main' ? 'Main' : kind === 'settings' ? 'Settings' : 'Web')).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80), order, closable: kind !== 'main' };
+    if (kind === 'browser') {
+      const url = safeBrowserUrl(raw.url);
+      const browserId = String(raw.browserId || '').slice(0, 80);
+      if (!url || !/^web-\d{1,12}(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(browserId)) continue;
+      tab.browserId = browserId;
+      tab.url = url.href;
+      tab.title = String(raw.title || tab.label).slice(0, 120);
+    } else if (kind === 'main') {
+      tab.closable = false;
+    }
+    seen.add(id);
+    tabs.push(tab);
+  }
+  if (!seen.has('main')) tabs.unshift({ id: 'main', kind: 'main', label: 'Main', order: 0, closable: false });
+  const widgetSource = source.widgets && typeof source.widgets === 'object' && !Array.isArray(source.widgets) ? source.widgets : {};
+  const widgets = {};
+  for (const id of ['queues', 'controls']) {
+    const widget = widgetSource[id];
+    if (!widget || typeof widget !== 'object') continue;
+    const n = (key, fallback, min, max) => Number.isFinite(widget[key]) ? Math.round(Math.max(min, Math.min(max, widget[key]))) : fallback;
+    widgets[id] = {
+      x: n('x', 24, 0, 10000), y: n('y', 24, 0, 10000),
+      width: n('width', id === 'queues' ? 600 : 420, 180, 4000),
+      height: n('height', 160, 80, 3000)
+    };
+  }
+  const activeTabId = String(source.activeTabId || 'main').slice(0, 80);
+  tabs.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  return { tabs, activeTabId: tabs.some(tab => tab.id === activeTabId) ? activeTabId : 'main', widgets };
+}
+
+function defaultDashboardState() {
+  const tabs = [
+    { id: 'main', kind: 'main', label: 'Main', closable: false, order: 0 },
+    { id: 'settings', kind: 'settings', label: 'Settings', closable: true, order: 1 }
+  ];
+  for (const tab of browserTabs.values()) {
+    if (safeBrowserUrl(tab.url)) tabs.push({
+      id: 'tab-' + tab.id, kind: 'browser', browserId: tab.id, url: tab.url,
+      title: tab.title || tab.url, label: tab.title || 'Web', closable: true, order: tabs.length
+    });
+  }
+  return normalizeDashboardState({ tabs, activeTabId: 'main', widgets: {} });
+}
+
+function saveBrowserTabMetadata() {
+  settings.browserTabs = [...browserTabs.values()].filter(tab => safeBrowserUrl(tab.url)).map(tab => ({
+    id: tab.id, url: tab.url, title: String(tab.title || tab.url).slice(0, 120)
+  })).slice(0, 100);
+  settings.activeBrowserTabId = browserTabs.has(activeBrowserTabId) ? activeBrowserTabId : null;
+}
+
+function restoreBrowserTabsFromSettings() {
+  browserTabs.clear();
+  const saved = Array.isArray(settings.browserTabs) ? settings.browserTabs : [];
+  for (const item of saved.slice(0, 100)) {
+    const id = String(item && item.id || '');
+    const url = safeBrowserUrl(item && item.url);
+    if (!/^web-\d{1,12}(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(id) || !url || browserTabs.has(id)) continue;
+    browserTabs.set(id, { id, url: url.href, title: String(item.title || url.href).slice(0, 120), view: null, error: '' });
+    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4).split('-')[0]) || 0);
+  }
+  activeBrowserTabId = browserTabs.has(settings.activeBrowserTabId) ? settings.activeBrowserTabId : null;
+}
+
+function syncBrowserRegistryFromDashboardState(value) {
+  const normalized = normalizeDashboardState(value);
+  const wanted = new Map(normalized.tabs.filter(tab => tab.kind === 'browser').map(tab => [tab.browserId, tab]));
+  for (const [id, tab] of browserTabs) {
+    if (wanted.has(id)) continue;
+    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+    tab.memoryTimer = null;
+    if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) {
+      try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
+    }
+    if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    browserTabs.delete(id);
+    if (activeBrowserTabId === id) activeBrowserTabId = null;
+  }
+  for (const [id, item] of wanted) {
+    const previous = browserTabs.get(id);
+    if (previous && previous.url !== item.url && previous.view) {
+      if (previous.memoryTimer) clearInterval(previous.memoryTimer);
+      try { previous.view.webContents.close(); } catch {}
+      previous.view = null;
+      previous.memoryTimer = null;
+    }
+    browserTabs.set(id, {
+      ...(previous || {}), id, url: item.url,
+      title: item.title || item.label || item.url,
+      view: previous && previous.url === item.url ? previous.view : null,
+      error: previous && previous.error || ''
+    });
+    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4).split('-')[0]) || 0);
+  }
+  settings.dashboardState = normalized;
+  saveBrowserTabMetadata();
+  publishBrowserTabs();
+}
+
+function collectSharedPreferences() {
+  const tts = getTtsSettings();
+  return {
+    dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
+    ttsVolume: Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, settings.ttsVolume)) : 100,
+    browserKeepActive: settings.browserKeepActive === true,
+    browserLowMemory: settings.browserLowMemory === true,
+    observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS,
+    ttsMode: tts.mode, captionsOnAutoplay: tts.captionsOnAutoplay,
+    captionTransparent: tts.captionTransparent, captionPosition: tts.captionPosition,
+    captionX: tts.captionX, captionY: tts.captionY, captionTheme: tts.captionTheme
+  };
+}
+
+function getCloudSyncLocalState() {
+  const state = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
+  return {
+    preferences: collectSharedPreferences(),
+    tabs: state.tabs,
+    widgets: Object.entries(state.widgets).map(([id, widget]) => ({ id, ...widget })),
+    activeTabId: state.activeTabId
+  };
+}
+
+function publishSharedState() {
+  if (!cloudSync || !settings.cloudSync || settings.cloudSync.enabled !== true) return;
+  void cloudSync.publishLocal().then(status => {
+    cloudSyncStatus = status;
+    dashboardSend('app:cloud-sync-status', status);
+  }).catch(error => appendDiagnosticLog('cloud-sync-publish-failed', error));
+}
+
+function applyCloudRemoteState(shared) {
+  const source = shared && typeof shared === 'object' ? shared : {};
+  const preferences = source.preferences && typeof source.preferences === 'object' ? source.preferences : {};
+  if (DASHBOARD_THEME_IDS.includes(preferences.dashboardTheme)) settings.dashboardTheme = preferences.dashboardTheme;
+  if (Number.isFinite(preferences.ttsVolume)) settings.ttsVolume = Math.round(Math.max(0, Math.min(100, preferences.ttsVolume)));
+  if (typeof preferences.browserKeepActive === 'boolean') settings.browserKeepActive = preferences.browserKeepActive;
+  if (typeof preferences.browserLowMemory === 'boolean') settings.browserLowMemory = preferences.browserLowMemory;
+  if ([0.5, 1, 2, 4, 8].includes(preferences.observeFps)) settings.observeFps = preferences.observeFps;
+  settings.ttsSettings = normalizeTtsSettings({
+    ...getTtsSettings(),
+    ...(typeof preferences.ttsMode === 'string' ? { mode: preferences.ttsMode } : {}),
+    ...(typeof preferences.captionsOnAutoplay === 'boolean' ? { captionsOnAutoplay: preferences.captionsOnAutoplay } : {}),
+    ...(typeof preferences.captionTransparent === 'boolean' ? { captionTransparent: preferences.captionTransparent } : {}),
+    ...(typeof preferences.captionPosition === 'string' ? { captionPosition: preferences.captionPosition } : {}),
+    ...(Number.isFinite(preferences.captionX) ? { captionX: preferences.captionX } : {}),
+    ...(Number.isFinite(preferences.captionY) ? { captionY: preferences.captionY } : {}),
+    ...(typeof preferences.captionTheme === 'string' ? { captionTheme: preferences.captionTheme } : {})
+  });
+  const remoteTabs = Array.isArray(source.tabs) ? source.tabs : [];
+  const remoteIds = new Set(remoteTabs.map(tab => tab && tab.id).filter(Boolean));
+  const localPrivateTabs = normalizeDashboardState(settings.dashboardState || defaultDashboardState()).tabs.filter(tab =>
+    tab.kind === 'browser' && !safeShareUrl(tab.url) && !remoteIds.has(tab.id));
+  settings.dashboardState = normalizeDashboardState({
+    tabs: [...remoteTabs, ...localPrivateTabs],
+    activeTabId: source.activeTabId,
+    widgets: Object.fromEntries((Array.isArray(source.widgets) ? source.widgets : []).map(widget => [widget.id, widget]))
+  });
+  syncBrowserRegistryFromDashboardState(settings.dashboardState);
+  for (const tab of browserTabs.values()) {
+    if (!tab.view || tab.view.webContents.isDestroyed()) continue;
+    const active = settings.browserKeepActive === true && tab.id === activeBrowserTabId;
+    tab.view.webContents.setBackgroundThrottling(!active);
+  }
+  persistSettings();
+  dashboardSend('app:dashboard-state', settings.dashboardState);
+  dashboardSend('app:preferences', getUiState().settings);
+  if (activeCaptionPayload) updateCaptionWindowPayload();
+}
+
+function initializeCloudSync() {
+  settings.cloudSync = settings.cloudSync && typeof settings.cloudSync === 'object' ? settings.cloudSync : {};
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(settings.cloudSync.deviceId || ''))) settings.cloudSync.deviceId = crypto.randomUUID();
+  cloudSync = createCloudSync({
+    deviceId: settings.cloudSync.deviceId,
+    getLocalState: getCloudSyncLocalState,
+    applyRemoteState: applyCloudRemoteState,
+    onStatus: value => {
+      cloudSyncStatus = value;
+      dashboardSend('app:cloud-sync-status', value);
+    }
+  });
+  void cloudSync.configure({ folder: settings.cloudSync.folder || '', enabled: settings.cloudSync.enabled === true });
+}
+
+function captionThemeId() {
+  const tts = getTtsSettings();
+  if (tts.captionTheme === 'light') return 'light';
+  if (tts.captionTheme === 'dark') return 'midnight';
+  if (tts.captionTheme === 'system') return nativeTheme.shouldUseDarkColors ? 'midnight' : 'light';
+  return DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
+}
+
+function captionBounds() {
+  const work = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(760, Math.max(360, work.width - 24));
+  const height = 168;
+  const tts = getTtsSettings();
+  let x = work.x + Math.round((work.width - width) / 2);
+  let y = work.y + work.height - height - 24;
+  if (tts.captionPosition === 'top') y = work.y + 24;
+  else if (tts.captionPosition === 'center') y = work.y + Math.round((work.height - height) / 2);
+  else if (tts.captionPosition === 'custom') {
+    x = work.x + Math.round(Math.max(0, work.width - width) * tts.captionX / 100);
+    y = work.y + Math.round(Math.max(0, work.height - height) * tts.captionY / 100);
+  }
+  return { x: Math.round(x), y: Math.round(y), width, height };
+}
+
+function currentCaptionPayload() {
+  if (!activeCaptionPayload) return null;
+  const payload = activeCaptionPayload;
+  const idleNotification = payload.mode === 'notification' && !payload.speechJobId;
+  const chunks = Array.isArray(payload.chunks) && payload.chunks.length ? payload.chunks : [payload.fullText || ''];
+  const index = Math.max(0, Math.min(chunks.length - 1, Number(payload.chunkIndex) || 0));
+  return {
+    id: payload.id,
+    text: idleNotification ? payload.fullText : String(chunks[index] || payload.fullText || ''),
+    mode: payload.mode,
+    showPlayButton: payload.showPlayButton === true,
+    status: payload.status || '',
+    error: payload.error || '',
+    chunkIndex: index,
+    chunkCount: chunks.length,
+    theme: captionThemeId(),
+    transparent: getTtsSettings().captionTransparent
+  };
+}
+
+function updateCaptionWindowPayload() {
+  if (!captionWindow || captionWindow.isDestroyed() || captionWindow.webContents.isDestroyed() || !activeCaptionPayload) return;
+  if (captionWindow.isVisible()) captionWindow.setBounds(captionBounds());
+  if (captionWindowLoaded) captionWindow.webContents.send('caption:update', currentCaptionPayload());
+}
+
+function createCaptionWindow() {
+  if (captionWindow && !captionWindow.isDestroyed()) return captionWindow;
+  if (!activeCaptionPayload) return null;
+  captionWindowLoaded = false;
+  const current = new BrowserWindow({
+    ...captionBounds(), frame: false, transparent: true, backgroundColor: '#00000000',
+    hasShadow: false, resizable: false, minimizable: false, maximizable: false,
+    closable: true, focusable: activeCaptionPayload.mode === 'notification',
+    skipTaskbar: true, show: false, alwaysOnTop: true, title: 'Windows Bridge Speech',
+    webPreferences: { preload: path.join(__dirname, 'caption-preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
+  });
+  captionWindow = current;
+  current.setMenuBarVisibility(false);
+  current.setAlwaysOnTop(true);
+  try { current.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
+  current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  current.webContents.once('did-finish-load', () => {
+    if (captionWindow !== current || current.isDestroyed()) return;
+    captionWindowLoaded = true;
+    current.webContents.send('caption:update', currentCaptionPayload());
+  });
+  current.once('ready-to-show', () => {
+    if (captionWindow !== current || current.isDestroyed()) return;
+    if (activeCaptionPayload && activeCaptionPayload.mode === 'notification') current.show();
+    else current.showInactive();
+  });
+  current.on('closed', () => {
+    if (captionWindow !== current) return;
+    captionWindow = null;
+    captionWindowLoaded = false;
+    activeCaptionPayload = null;
+    if (captionCloseTimer) clearTimeout(captionCloseTimer);
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionCloseTimer = null;
+    captionProgressTimer = null;
+  });
+  current.loadFile(path.join(__dirname, 'caption.html')).catch(error => appendDiagnosticLog('caption-window-load-failed', error));
+  return current;
+}
+
+function showSpeechCaption(request) {
+  if (!request || typeof request.text !== 'string') return null;
+  const text = request.text.trim().slice(0, 12000);
+  if (!text) return null;
+  const mode = request.mode === 'notification' ? 'notification' : 'autoplay';
+  if (mode === 'autoplay' && !getTtsSettings().captionsOnAutoplay) return null;
+  if (captionCloseTimer) clearTimeout(captionCloseTimer);
+  if (captionProgressTimer) clearInterval(captionProgressTimer);
+  captionCloseTimer = null;
+  captionProgressTimer = null;
+  let chunks;
+  try {
+    const normalized = normalizeSpeechText(text);
+    const targetChunkChars = Math.min(240, Math.max(40, Math.ceil(normalized.length / MAX_SPEECH_CHUNKS) + 4));
+    chunks = splitSpeechIntoChunks(normalized, targetChunkChars);
+  } catch { chunks = [text]; }
+  if (!Array.isArray(chunks) || !chunks.length) chunks = [text];
+  const payload = {
+    id: String(request.id || crypto.randomUUID()), fullText: text, chunks,
+    chunkIndex: 0, speechJobId: '', mode,
+    showPlayButton: mode === 'notification',
+    status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…',
+    error: ''
+  };
+  const previousMode = activeCaptionPayload && activeCaptionPayload.mode;
+  activeCaptionPayload = payload;
+  if (captionWindow && !captionWindow.isDestroyed() && previousMode !== mode) {
+    const old = captionWindow;
+    captionWindow = null;
+    captionWindowLoaded = false;
+    old.close();
+    createCaptionWindow();
+  } else if (!captionWindow || captionWindow.isDestroyed()) {
+    createCaptionWindow();
+  } else {
+    captionWindow.setBounds(captionBounds());
+    if (!captionWindow.isVisible()) mode === 'notification' ? captionWindow.show() : captionWindow.showInactive();
+    updateCaptionWindowPayload();
+  }
+  return payload.id;
+}
+
+function estimateSpeechDurationMs(text) {
+  return Math.max(3500, Math.min(90000, Math.ceil(String(text || '').length / 13 * 1000 + 3500)));
+}
+
+function scheduleCaptionClose(milliseconds) {
+  if (captionCloseTimer) clearTimeout(captionCloseTimer);
+  captionCloseTimer = setTimeout(() => {
+    captionCloseTimer = null;
+    if (captionWindow && !captionWindow.isDestroyed()) captionWindow.close();
+  }, Math.max(1000, Math.min(120000, milliseconds)));
+  if (typeof captionCloseTimer.unref === 'function') captionCloseTimer.unref();
+}
+
+function updateCaptionPlaybackProgress(requestId, speechJobId) {
+  if (!activeCaptionPayload || activeCaptionPayload.id !== requestId || activeCaptionPayload.speechJobId !== speechJobId) {
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionProgressTimer = null;
+    return;
+  }
+  let playback;
+  try { playback = visionService && typeof visionService.speechPlaybackStatus === 'function' ? visionService.speechPlaybackStatus() : null; } catch {}
+  const job = playback && Array.isArray(playback.jobs) ? playback.jobs.find(item => item.job_id === speechJobId) : null;
+  if (!job) return;
+  const chunks = activeCaptionPayload.chunks;
+  const nextIndex = Math.max(0, Math.min(chunks.length - 1, Number(job.chunks_completed) || 0));
+  let changed = activeCaptionPayload.chunkIndex !== nextIndex;
+  activeCaptionPayload.chunkIndex = nextIndex;
+  if (job.status === 'completed') {
+    activeCaptionPayload.chunkIndex = Math.max(0, chunks.length - 1);
+    activeCaptionPayload.status = 'Finished';
+    activeCaptionPayload.error = '';
+    changed = true;
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionProgressTimer = null;
+    if (changed) updateCaptionWindowPayload();
+    scheduleCaptionClose(2200);
+    return;
+  }
+  if (job.status === 'failed' || job.status === 'cancelled') {
+    activeCaptionPayload.status = 'Speech playback failed';
+    activeCaptionPayload.error = String(job.error || 'The audio stream ended unexpectedly.').slice(0, 220);
+    changed = true;
+    if (captionProgressTimer) clearInterval(captionProgressTimer);
+    captionProgressTimer = null;
+    if (changed) updateCaptionWindowPayload();
+    scheduleCaptionClose(6500);
+    return;
+  }
+  const status = 'Speaking · ' + Math.min(nextIndex + 1, chunks.length) + ' of ' + chunks.length;
+  if (activeCaptionPayload.status !== status) { activeCaptionPayload.status = status; changed = true; }
+  if (changed) updateCaptionWindowPayload();
+}
+
+function startCaptionProgress(requestId, speechJobId) {
+  if (captionProgressTimer) clearInterval(captionProgressTimer);
+  captionProgressTimer = null;
+  if (!speechJobId || !visionService || typeof visionService.speechPlaybackStatus !== 'function') {
+    scheduleCaptionClose(estimateSpeechDurationMs(activeCaptionPayload && activeCaptionPayload.fullText || ''));
+    return;
+  }
+  if (activeCaptionPayload && activeCaptionPayload.id === requestId) {
+    activeCaptionPayload.speechJobId = speechJobId;
+    activeCaptionPayload.chunkIndex = 0;
+    activeCaptionPayload.status = 'Speaking · 1 of ' + Math.max(1, activeCaptionPayload.chunks.length);
+    updateCaptionWindowPayload();
+  }
+  captionProgressTimer = setInterval(() => updateCaptionPlaybackProgress(requestId, speechJobId), 180);
+  if (typeof captionProgressTimer.unref === 'function') captionProgressTimer.unref();
+}
+
+function finishSpeechCaption(request, output) {
+  if (!request || !activeCaptionPayload || request.id !== activeCaptionPayload.id) return;
+  if (request.mode === 'notification') {
+    if (output && output.status === 'tts_notification_pending') {
+      activeCaptionPayload.status = 'Ready to play · click Play to begin';
+      activeCaptionPayload.error = '';
+    } else {
+      activeCaptionPayload.status = 'Speech preparation failed';
+      activeCaptionPayload.error = String(output && (output.error || output.message) || 'Speech could not be prepared.').slice(0, 220);
+      activeCaptionPayload.showPlayButton = false;
+    }
+    updateCaptionWindowPayload();
+    return;
+  }
+  if (output && output.status === 'tts_started') {
+    activeCaptionPayload.status = 'Speaking…';
+    activeCaptionPayload.error = '';
+    startCaptionProgress(request.id, output.speech_job_id);
+  } else {
+    activeCaptionPayload.status = 'Speech could not start';
+    activeCaptionPayload.error = String(output && (output.error || output.message) || 'TTS did not start.').slice(0, 220);
+    updateCaptionWindowPayload();
+    scheduleCaptionClose(6500);
   }
 }
 
+async function playActiveCaption() {
+  if (!activeCaptionPayload || activeCaptionPayload.mode !== 'notification') throw new Error('There is no pending speech notification.');
+  if (captionPlaybackInFlight) return { started: false, busy: true };
+  if (!visionService || typeof visionService.synthesizeSpeech !== 'function') throw new Error('The Colab TTS service is unavailable.');
+  captionPlaybackInFlight = true;
+  const request = { ...activeCaptionPayload, fullText: activeCaptionPayload.fullText || activeCaptionPayload.text };
+  activeCaptionPayload.mode = 'autoplay';
+  activeCaptionPayload.showPlayButton = false;
+  activeCaptionPayload.speechJobId = '';
+  activeCaptionPayload.chunkIndex = 0;
+  activeCaptionPayload.status = 'Preparing speech…';
+  activeCaptionPayload.error = '';
+  updateCaptionWindowPayload();
+  try {
+    const output = await visionService.synthesizeSpeech({ text: request.fullText, play: true }, crypto.randomUUID());
+    if (activeCaptionPayload && activeCaptionPayload.id === request.id && output && output.status === 'tts_started') {
+      startCaptionProgress(request.id, output.speech_job_id);
+      return { started: true, speech_job_id: output.speech_job_id };
+    }
+    if (activeCaptionPayload && activeCaptionPayload.id === request.id) {
+      activeCaptionPayload.mode = 'notification';
+      activeCaptionPayload.status = 'Playback failed';
+      activeCaptionPayload.error = String(output && (output.error || output.message) || 'TTS playback failed.').slice(0, 220);
+      activeCaptionPayload.showPlayButton = true;
+      activeCaptionPayload.speechJobId = '';
+      updateCaptionWindowPayload();
+    }
+    throw new Error(String(output && (output.error || output.message) || 'TTS playback failed.'));
+  } finally {
+    captionPlaybackInFlight = false;
+  }
+}
+
+function assertCaptionUi(event) {
+  if (!captionWindow || captionWindow.isDestroyed() || captionWindow.webContents !== event.sender) throw new Error('Only the local speech window may invoke this action.');
+  const url = event.senderFrame && event.senderFrame.url || '';
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/caption.html')) throw new Error('Unexpected speech-window IPC sender.');
+}
 function getUiState() {
+  const cloud = settings.cloudSync && typeof settings.cloudSync === 'object' ? settings.cloudSync : {};
   return {
     settings: {
       repositoryBridge: settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE,
       dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
       ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
+      ttsSettings: getTtsSettings(),
       browserKeepActive: settings.browserKeepActive === true,
-      browserLowMemory: settings.browserLowMemory === true
+      browserLowMemory: settings.browserLowMemory === true,
+      observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
     },
+    dashboardState: normalizeDashboardState(settings.dashboardState || defaultDashboardState()),
+    browserTabs: browserTabSnapshot(),
+    cloudSync: { ...cloudSyncStatus, enabled: cloud.enabled === true, configured: Boolean(cloud.folder), folder: String(cloud.folder || '') },
     bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false }),
-    // This state is returned only to the local desktop UI. Absolute local paths
-    // are not added to the GitHub mailbox context or shared worker state.
     workspace: {
       root: getWorkspaceRoot(),
       index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
@@ -1134,6 +1676,30 @@ function getUiState() {
   };
 }
 
+function saveDashboardState(value) {
+  const normalized = normalizeDashboardState(value);
+  settings.dashboardState = normalized;
+  syncBrowserRegistryFromDashboardState(normalized);
+  saveBrowserTabMetadata();
+  persistSettings();
+  publishSharedState();
+  dashboardSend('app:dashboard-state', normalized);
+  return normalized;
+}
+
+async function chooseCloudFolder() {
+  const options = { title: 'Choose your synchronized Windows Bridge folder', properties: ['openDirectory', 'createDirectory'] };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) return { canceled: true, status: cloudSyncStatus };
+  settings.cloudSync = { ...(settings.cloudSync || {}), folder: path.resolve(result.filePaths[0]) };
+  persistSettings();
+  if (cloudSync) cloudSyncStatus = await cloudSync.configure({ folder: settings.cloudSync.folder, enabled: settings.cloudSync.enabled === true });
+  dashboardSend('app:cloud-sync-status', cloudSyncStatus);
+  return { canceled: false, folder: settings.cloudSync.folder, status: cloudSyncStatus };
+}
+
 function registerIpc() {
   if (ipcRegistered) return;
   ipcMain.handle('app:get-state', event => {
@@ -1141,7 +1707,57 @@ function registerIpc() {
     return getUiState();
   });
   ipcMain.handle('app:open-dashboard', event => { assertLocalUi(event, 'index.html'); return showDashboardWindow(); });
-  ipcMain.handle('app:show-overlay', event => { assertLocalUi(event, 'index.html'); showMainWindow(); return { opened: true }; });
+  ipcMain.handle('app:tray-state-saved', (event, value) => {
+    const requestId = value && typeof value.requestId === 'string' ? value.requestId : '';
+    const pending = trayStateResolvers.get(requestId);
+    if (!pending || pending.win.isDestroyed() || pending.win.webContents !== event.sender) throw new Error('No matching trusted tray-save request exists.');
+    trayStateResolvers.delete(requestId); clearTimeout(pending.timer);
+    pending.resolve(value && value.state && typeof value.state === 'object' ? value.state : null);
+    return { acknowledged: true };
+  });
+  ipcMain.handle('app:save-dashboard-state', (event, value) => { assertLocalUi(event, 'index.html'); return saveDashboardState(value); });
+  ipcMain.handle('app:save-now', event => { assertLocalUi(event, 'index.html'); persistSettings(); return { saved: true, savedAt: new Date().toISOString() }; });
+  ipcMain.handle('app:cloud-sync-status', event => { assertLocalUi(event, 'index.html'); return getUiState().cloudSync; });
+  ipcMain.handle('app:cloud-sync-choose-folder', async event => { assertLocalUi(event, 'index.html'); return chooseCloudFolder(); });
+  ipcMain.handle('app:cloud-sync-config', async (event, value) => {
+    assertLocalUi(event, 'index.html');
+    if (!value || typeof value.enabled !== 'boolean') throw new Error('Cloud sync enabled must be a boolean.');
+    const folder = String(settings.cloudSync && settings.cloudSync.folder || '');
+    if (value.enabled && !folder) throw new Error('Choose a synchronized cloud folder before enabling live sync.');
+    settings.cloudSync = { ...(settings.cloudSync || {}), enabled: value.enabled };
+    persistSettings();
+    cloudSyncStatus = cloudSync ? await cloudSync.configure({ folder, enabled: value.enabled }) : { enabled: false, configured: Boolean(folder), state: 'unavailable', error: 'Cloud sync service is not initialized.' };
+    dashboardSend('app:cloud-sync-status', cloudSyncStatus);
+    return cloudSyncStatus;
+  });
+  ipcMain.handle('app:cloud-sync-now', async event => {
+    assertLocalUi(event, 'index.html');
+    if (!cloudSync || !settings.cloudSync || settings.cloudSync.enabled !== true) throw new Error('Enable cloud sync and choose a folder first.');
+    cloudSyncStatus = await cloudSync.syncNow();
+    dashboardSend('app:cloud-sync-status', cloudSyncStatus);
+    return cloudSyncStatus;
+  });
+  ipcMain.handle('app:tts-settings', (event, value) => {
+    assertLocalUi(event, 'index.html');
+    if (value === undefined) return getTtsSettings();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('TTS settings must be an object.');
+    settings.ttsSettings = normalizeTtsSettings({ ...getTtsSettings(), ...value });
+    persistSettings(); publishSharedState();
+    if (activeCaptionPayload) updateCaptionWindowPayload();
+    dashboardSend('app:preferences', getUiState().settings);
+    return getTtsSettings();
+  });
+  ipcMain.handle('app:caption-preview', event => {
+    assertLocalUi(event, 'index.html');
+    showSpeechCaption({ id: crypto.randomUUID(), mode: getTtsSettings().mode, text: 'This is a preview of your speech captions.' });
+    return { shown: Boolean(captionWindow) };
+  });
+  ipcMain.handle('caption:play', event => { assertCaptionUi(event); return playActiveCaption(); });
+  ipcMain.handle('caption:dismiss', event => {
+    assertCaptionUi(event);
+    if (captionWindow && !captionWindow.isDestroyed()) captionWindow.close();
+    return { dismissed: true };
+  });
   ipcMain.handle('app:browser-tabs', event => { assertLocalUi(event, 'index.html'); return browserTabSnapshot(); });
   ipcMain.handle('app:browser-open-tab', (event, url) => { assertLocalUi(event, 'index.html'); return openBrowserTab(url); });
   ipcMain.handle('app:colab-open-tab', event => { assertLocalUi(event, 'index.html'); return openColabBrowserTab(); });
@@ -1152,14 +1768,15 @@ function registerIpc() {
   ipcMain.handle('app:tts-volume', (event, raw) => {
     assertLocalUi(event, 'index.html'); const value = Number(raw);
     if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('TTS volume must be between 0 and 100.');
-    settings.ttsVolume = Math.round(value); persistSettings(); return { volume: settings.ttsVolume };
+    settings.ttsVolume = Math.round(value); persistSettings(); publishSharedState(); return { volume: settings.ttsVolume };
   });
   ipcMain.handle('app:set-theme', (event, raw) => {
     assertLocalUi(event, 'index.html');
     const theme = String(raw || '');
     if (!DASHBOARD_THEME_IDS.includes(theme)) throw new Error('Choose one of the available dashboard themes.');
     settings.dashboardTheme = theme;
-    persistSettings();
+    persistSettings(); publishSharedState();
+    dashboardSend('app:preferences', getUiState().settings);
     return { theme };
   });
   ipcMain.handle('app:repository-bridge-config', async (event, input) => {
@@ -1217,10 +1834,9 @@ function registerIpc() {
     if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
     return { autoAcceptAll: settings.autoAcceptAll };
   });
-  ipcMain.handle('app:minimize-to-tray', event => {
+  ipcMain.handle('app:minimize-to-tray', async event => {
     assertLocalUi(event, 'index.html');
-    minimizeToTray();
-    return { hidden: true };
+    return await minimizeToTray();
   });
   ipcMain.handle('app:quit', event => {
     assertLocalUi(event, 'index.html');
@@ -1253,7 +1869,7 @@ function registerIpc() {
     try {
       const state = await observeService.setFps(fps);
       settings.observeFps = state.fps ?? DEFAULT_SAMPLE_FPS;
-      persistSettings();
+      persistSettings(); publishSharedState();
       return state;
     } catch (error) {
       // setFps can apply the local timer before its mailbox status update fails.
@@ -1261,7 +1877,7 @@ function registerIpc() {
       const state = observeService.status();
       if (Number.isFinite(state.fps)) {
         settings.observeFps = state.fps;
-        persistSettings();
+        persistSettings(); publishSharedState();
       }
       throw error;
     }
@@ -1320,14 +1936,7 @@ function registerIpc() {
     }
     return { ...result, automatic_handoff_ready: Boolean(colabHandoffServer && colabHandoffServer.status().ready), automatic_handoff_armed: colabHandoffArmed };
   });
-  ipcMain.handle('app:vision-manual-panel', (event, visible) => {
-    assertLocalUi(event, 'index.html');
-    const expanded = visible === true;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setSize(STATUS_SIZE.width, expanded ? VISION_MANUAL_HEIGHT : STATUS_SIZE.height);
-    }
-    return { expanded };
-  });
+  ipcMain.handle('app:vision-manual-panel', (event, visible) => { assertLocalUi(event, 'index.html'); return { expanded: visible === true }; });
   ipcMain.handle('app:vision-setup-check', async event => {
     assertLocalUi(event, 'index.html');
     const githubState = githubAuth
@@ -1450,95 +2059,11 @@ function registerIpc() {
 }
 
 function createMainWindow() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    showMainWindow();
-    return;
-  }
-  const bounds = clampBounds(settings.bounds || defaultBounds());
-  mainWindow = new BrowserWindow({
-    ...bounds,
-    width: STATUS_SIZE.width,
-    height: STATUS_SIZE.height,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    hasShadow: true,
-    resizable: false,
-    minimizable: true,
-    maximizable: false,
-    movable: true,
-    alwaysOnTop: true,
-    // A visible taskbar entry is the fallback if Windows cannot create a tray icon.
-    skipTaskbar: Boolean(tray),
-    show: false,
-    title: 'Windows Repository Bridge',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true
-    }
-  });
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.setAlwaysOnTop(true);
-  mainWindow.on('move', saveWindowBoundsSoon);
-  mainWindow.on('minimize', event => {
-    event.preventDefault();
-    hideToTray();
-  });
-  mainWindow.on('close', event => {
-    if (!finishingQuit) {
-      event.preventDefault();
-      hideToTray();
-      return;
-    }
-    saveWindowBounds();
-  });
-  let loadErrorReported = false;
-  let showFallbackTimer = null;
-  const revealWindow = () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (showFallbackTimer) clearTimeout(showFallbackTimer);
-    showFallbackTimer = null;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.setAlwaysOnTop(true);
-    mainWindow.focus();
-  };
-  const reportLoadFailure = error => {
-    const message = String(error && error.message || error || 'Unknown window loading error').slice(0, 1200);
-    console.error('Could not load the status window:', message);
-    revealWindow();
-    if (!loadErrorReported) {
-      loadErrorReported = true;
-      dialog.showErrorBox(
-        'Windows Repository Bridge could not load its window',
-        message + '\n\nThe app process is still running. Reinstall the latest Windows build if this keeps happening.'
-      );
-    }
-  };
-  mainWindow.on('closed', () => {
-    if (showFallbackTimer) clearTimeout(showFallbackTimer);
-    mainWindow = null;
-  });
-  mainWindow.once('ready-to-show', revealWindow);
-  mainWindow.webContents.once('did-finish-load', revealWindow);
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    if (!isMainFrame || errorCode === -3) return;
-    reportLoadFailure(errorDescription + ' (' + errorCode + ') while loading ' + validatedURL);
-  });
-  showFallbackTimer = setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      console.warn('Status window did not report ready-to-show before the fallback timeout.');
-      revealWindow();
-    }
-  }, 5000);
-  mainWindow.loadFile(path.join(__dirname, 'index.html')).catch(reportLoadFailure);
+  return createDashboardWindow();
 }
 
 function registerHotkey() {
-  if (!globalShortcut.register(SHORTCUT, toggleOverlay)) {
+  if (!globalShortcut.register(SHORTCUT, toggleDashboardWindow)) {
     console.warn('Global shortcut could not be registered:', SHORTCUT);
   }
 }
@@ -1575,6 +2100,15 @@ if (!hasInstanceLock) {
       ? settings.repositoryBridge : {};
     settings.dashboardTheme = DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
     settings.ttsVolume = Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, Math.round(settings.ttsVolume))) : 100;
+    settings.ttsSettings = normalizeTtsSettings(settings.ttsSettings);
+    settings.cloudSync = settings.cloudSync && typeof settings.cloudSync === 'object' ? settings.cloudSync : {};
+    settings.cloudSync.folder = typeof settings.cloudSync.folder === 'string' ? settings.cloudSync.folder : '';
+    settings.cloudSync.enabled = settings.cloudSync.enabled === true;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(settings.cloudSync.deviceId || ''))) settings.cloudSync.deviceId = crypto.randomUUID();
+    settings.observeFps = [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS;
+    restoreBrowserTabsFromSettings();
+    settings.dashboardState = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
+    syncBrowserRegistryFromDashboardState(settings.dashboardState);
     settings.browserKeepActive = settings.browserKeepActive === true;
     settings.browserLowMemory = settings.browserLowMemory === true;
     settings.repositoryBridge = {
@@ -1592,6 +2126,8 @@ if (!hasInstanceLock) {
     registerIpc();
     createTray();
     createMainWindow();
+    initializeCloudSync();
+    nativeTheme.on('updated', () => { if (activeCaptionPayload) updateCaptionWindowPayload(); });
     registerHotkey();
     app.on('activate', showMainWindow);
 
@@ -1670,6 +2206,9 @@ if (!hasInstanceLock) {
           githubAuth,
           uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
           getAutoAcceptAll: () => settings.autoAcceptAll === true,
+          getTtsSettings,
+          onTtsRequest: showSpeechCaption,
+          onTtsResult: finishSpeechCaption,
           visionService
         });
 
