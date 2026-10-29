@@ -491,7 +491,7 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.ok(python.includes('navigator.permissions.query({ name: "loopback-network" })'));
   assert.ok(python.includes('targetAddressSpace: "loopback"'));
   assert.ok(python.includes('if (loopbackPermission === "granted" && loopbackPolicyAllowed)'));
-  assert.ok(python.includes('This request originates directly by this click'));
+  assert.ok(python.includes('The first loopback request is initiated directly by this click'));
   assert.doesNotMatch(python, /sendToWindowsBridge\(false\)/);
   assert.match(python, /document\.createElement\("textarea"\)/);
   assert.match(python, /Clipboard access was blocked\. Use the one-click app handoff/);
