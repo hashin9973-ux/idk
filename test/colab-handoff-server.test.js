@@ -72,6 +72,19 @@ test('allowed Colab output can hand off a validated endpoint with a quick 202 ac
   assert.deepEqual(f.deliveries, [ENDPOINT]);
 });
 
+test('valid endpoint is rejected when the desktop does not authorize an active handoff', async t => {
+  const f = makeServer({ onEndpoint: () => false });
+  const url = await start(t, f);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Origin: OUTPUT_ORIGIN, 'Sec-Fetch-Site': 'cross-site', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: ENDPOINT })
+  });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { accepted: false, error: 'handoff_not_accepted' });
+  assert.deepEqual(f.deliveries, []);
+});
+
 test('preflight permits only the bounded POST JSON contract', async t => {
   const f = makeServer();
   const url = await start(t, f);
