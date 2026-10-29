@@ -7,6 +7,7 @@ let busy={observe:false,accept:false,colab:false,workspace:false,github:false,re
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
 let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
+let refreshInFlight=false,refreshRequested=false,lastBrowserActivation=Symbol('unset');
 function dashboardSnapshot(){
   const records=new Map(browserTabData.map(item=>[item.id,item]));
   const dim=(el,property,fallback,min,max)=>{
@@ -104,7 +105,20 @@ function reorderTab(a,b){if(!a||a===b)return;const i=tabs.findIndex(t=>t.id===a)
 function ensureSettingsTab(){if(!tabs.some(t=>t.id==='settings'))tabs.splice(Math.min(1,tabs.length),0,{id:'settings',kind:'settings',label:'Settings',closable:true})}
 $('add-tab').addEventListener('click',()=>{ensureSettingsTab();active='settings';setPage()});
 async function closeTab(id){const t=tabs.find(v=>v.id===id);if(!t||!t.closable||t.id==='main')return;if(t.kind==='browser')await api.closeBrowserTab(t.browserId).catch(()=>{});tabs=tabs.filter(v=>v.id!==id);if(active===id)active='main';setPage()}
-function setPage(){const t=tabs.find(v=>v.id===active)||tabs[0],m=t.kind==='main',s=t.kind==='settings',b=t.kind==='browser';mainPage.hidden=!m;settingsPage.hidden=!s;browserPage.hidden=!b;if(b)void api.setBrowserTabActive(t.browserId).catch(e=>note(e.message,'error'));else void api.setBrowserTabActive(null).catch(()=>{});renderTabs();updateBrowserBounds();scheduleSaveDashboardState()}
+function setPage(){
+  const t=tabs.find(v=>v.id===active)||tabs[0],m=t.kind==='main',s=t.kind==='settings',b=t.kind==='browser';
+  mainPage.hidden=!m;settingsPage.hidden=!s;browserPage.hidden=!b;
+  const browserTarget=b?t.browserId:null;
+  if(lastBrowserActivation!==browserTarget){
+    lastBrowserActivation=browserTarget;
+    const activation=b?api.setBrowserTabActive(t.browserId):api.setBrowserTabActive(null);
+    void activation.catch(e=>{
+      if(lastBrowserActivation===browserTarget)lastBrowserActivation=Symbol('retry');
+      if(b)note(e.message,'error');
+    });
+  }
+  renderTabs();updateBrowserBounds();scheduleSaveDashboardState()
+}
 function syncBrowserTabs(list){browserTabData=Array.isArray(list)?list:[];const ids=new Set(browserTabData.map(t=>t.id));tabs=tabs.filter(t=>t.kind!=='browser'||ids.has(t.browserId));for(const r of browserTabData){let t=tabs.find(x=>x.kind==='browser'&&x.browserId===r.id);if(!t){t={id:'tab-'+r.id,kind:'browser',browserId:r.id,label:r.title||'Web',url:r.url,title:r.title,closable:true};tabs.push(t)}else{t.label=r.title||t.label;t.url=r.url||t.url;t.title=r.title||t.title}}if(!tabs.some(t=>t.id===active))active='main';renderTabs();setPage();scheduleSaveDashboardState()}
 function activateOpenedBrowserTab(value){const id=value&&typeof value.id==='string'?value.id:'';const tab=tabs.find(t=>t.kind==='browser'&&t.browserId===id);if(!tab)return;active=tab.id;setPage()}
 function snap(v){return Math.round(v/grid)*grid}
@@ -117,34 +131,42 @@ function renderObserve(){obs.setAttribute('aria-pressed',String(observe.enabled=
 function renderAccept(){acceptBtn.setAttribute('aria-pressed',String(autoAccept));$('auto-accept-status').textContent=autoAccept?'ON':'OFF'}
 function updateBrowserMode(){keep.disabled=!browserEnabled.checked;low.disabled=!browserEnabled.checked;memory.title=!browserEnabled.checked?'In-app browser is disabled.':keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
 async function refresh(){
+  if(refreshInFlight){refreshRequested=true;return}
+  refreshInFlight=true;
   try{
-    const s=await api.getState();
-    renderWorker(s.bridge||{});
-    renderWorkspace(s.workspace||{});
-    if(!dashboardStateLoaded){
-      await applyInitialSettings(s.settings||{});
-      if(Array.isArray(s.browserTabs))syncBrowserTabs(s.browserTabs);
-      if(s.dashboardState)applyDashboardState(s.dashboardState);
-      if(s.cloudSync)renderCloudStatus(s.cloudSync);
-      dashboardStateLoaded=true;
-      scheduleSaveDashboardState();
-    }
-    applyTheme(s.settings&&s.settings.dashboardTheme||'midnight');
-    const c=s.settings&&s.settings.repositoryBridge||s.bridge||{};
-    if(!busy.repo){
-      $('repo-owner').value=c.owner||'';
-      $('repo-name').value=c.repo||'';
-      $('repo-branch').value=c.branch||'';
-      $('allow-public-mailbox').checked=c.allowPublicMailbox===true;
-    }
-    if(!busy.volume){
-      const v=Number.isFinite(s.settings&&s.settings.ttsVolume)?s.settings.ttsVolume:100;
-      volume.value=String(v);volumeValue.textContent=v+'%';
-    }
-  }catch(e){note('Could not refresh app status: '+e.message,'error')}
-  try{renderGitHub(await api.getGitHubState())}catch{}
-  try{observe=await api.getObserveStatus();renderObserve()}catch{}
-  try{const b=await api.getBrowserSettings();browserEnabled.checked=b.enabled===true;keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
+    try{
+      const s=await api.getState();
+      renderWorker(s.bridge||{});
+      renderWorkspace(s.workspace||{});
+      if(!dashboardStateLoaded){
+        await applyInitialSettings(s.settings||{});
+        if(Array.isArray(s.browserTabs))syncBrowserTabs(s.browserTabs);
+        if(s.dashboardState)applyDashboardState(s.dashboardState);
+        if(s.cloudSync)renderCloudStatus(s.cloudSync);
+        dashboardStateLoaded=true;
+        scheduleSaveDashboardState();
+      }
+      applyTheme(s.settings&&s.settings.dashboardTheme||'midnight');
+      const c=s.settings&&s.settings.repositoryBridge||s.bridge||{};
+      if(!busy.repo){
+        $('repo-owner').value=c.owner||'';
+        $('repo-name').value=c.repo||'';
+        $('repo-branch').value=c.branch||'';
+        $('allow-public-mailbox').checked=c.allowPublicMailbox===true;
+      }
+      if(!busy.volume){
+        const v=Number.isFinite(s.settings&&s.settings.ttsVolume)?s.settings.ttsVolume:100;
+        volume.value=String(v);volumeValue.textContent=v+'%';
+      }
+    }catch(e){note('Could not refresh app status: '+e.message,'error')}
+    try{renderGitHub(await api.getGitHubState())}catch{}
+    try{observe=await api.getObserveStatus();renderObserve()}catch{}
+    try{const b=await api.getBrowserSettings();browserEnabled.checked=b.enabled===true;keep.checked=b.keepActive;low.checked=b.lowMemory;updateBrowserMode()}catch{}
+  
+  }finally{
+    refreshInFlight=false;
+    if(refreshRequested){refreshRequested=false;queueMicrotask(()=>void refresh())}
+  }
 }
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
