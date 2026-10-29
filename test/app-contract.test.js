@@ -178,7 +178,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(renderer, /snap\(/);
   assert.match(renderer, /pointerdown/);
   assert.match(renderer, /setBrowserBounds/);
-  assert.match(renderer, /openColabTab/);
+  assert.match(renderer, /connectColab/);
   assert.match(styles, /tabbar/);
   assert.match(styles, /\.widget\.dragging/);
   assert.match(html, /100 MB/);
