@@ -461,9 +461,8 @@ function browserTabSnapshot() {
 }
 function publishBrowserTabs() { dashboardSend('app:browser-tabs-changed', browserTabSnapshot()); }
 
-function applyPageFocusCompatibility(tab) {
+function applyPageFocusCompatibility(tab, enabled = settings.browserKeepActive === true && tab.id === activeBrowserTabId) {
   if (!tab || !tab.view || tab.view.webContents.isDestroyed()) return;
-  const enabled = settings.browserKeepActive === true;
   const script = `(() => {
     const key = Symbol.for('windows-repository-bridge.focus-descriptors');
     if (!window[key]) Object.defineProperty(window, key, { configurable: false, value: {
@@ -508,10 +507,16 @@ function createBrowserView(tab) {
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = String(title || tab.url).slice(0, 120); publishBrowserTabs(); });
   view.webContents.on('did-navigate', (_event, url) => {
     const safe = safeBrowserUrl(url); if (safe) tab.url = safe.href;
-    if (settings.browserKeepActive) applyPageFocusCompatibility(tab);
+    const active = settings.browserKeepActive === true && tab.id === activeBrowserTabId;
+    view.webContents.setBackgroundThrottling(!active);
+    applyPageFocusCompatibility(tab, active);
     publishBrowserTabs(); measureBrowserMemory(tab);
   });
-  view.webContents.on('dom-ready', () => { if (settings.browserKeepActive) applyPageFocusCompatibility(tab); measureBrowserMemory(tab); });
+  view.webContents.on('dom-ready', () => {
+    const active = settings.browserKeepActive === true && tab.id === activeBrowserTabId;
+    view.webContents.setBackgroundThrottling(!active);
+    applyPageFocusCompatibility(tab, active); measureBrowserMemory(tab);
+  });
   view.webContents.on('render-process-gone', (_event, details) => appendDiagnosticLog('embedded-browser-renderer-gone', { tabId: tab.id, details }));
   tab.memoryTimer = setInterval(() => measureBrowserMemory(tab), 10000);
   view.webContents.loadURL(tab.url).catch(error => { tab.error = String(error && error.message || error).slice(0, 400); publishBrowserTabs(); });
@@ -527,12 +532,19 @@ function measureBrowserMemory(tab) {
 function attachBrowserTab(id) {
   const tab = browserTabs.get(id);
   if (!dashboardWindow || dashboardWindow.isDestroyed() || !tab) return false;
-  for (const other of browserTabs.values()) if (other.view) { try { dashboardWindow.contentView.removeChildView(other.view); } catch {} }
+  for (const other of browserTabs.values()) if (other.view) {
+    try { dashboardWindow.contentView.removeChildView(other.view); } catch {}
+    if (other.id !== id) {
+      other.view.webContents.setBackgroundThrottling(true);
+      applyPageFocusCompatibility(other, false);
+    }
+  }
   if (!tab.view || tab.view.webContents.isDestroyed()) createBrowserView(tab);
   tab.view.setBounds(browserBounds);
   dashboardWindow.contentView.addChildView(tab.view);
   activeBrowserTabId = id;
-  if (settings.browserKeepActive) applyPageFocusCompatibility(tab);
+  tab.view.webContents.setBackgroundThrottling(!settings.browserKeepActive);
+  applyPageFocusCompatibility(tab, settings.browserKeepActive === true);
   if (settings.browserLowMemory) for (const other of browserTabs.values()) {
     if (other.id !== id && other.view) {
       if (other.memoryTimer) clearInterval(other.memoryTimer);
@@ -547,7 +559,11 @@ function setBrowserTabActive(id) {
   const idValue = typeof id === 'string' && browserTabs.has(id) ? id : null;
   if (idValue) return attachBrowserTab(idValue);
   if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
-    if (tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
+    if (tab.view) {
+      try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
+      tab.view.webContents.setBackgroundThrottling(true);
+      applyPageFocusCompatibility(tab, false);
+    }
   }
   activeBrowserTabId = null;
   if (settings.browserLowMemory) for (const tab of browserTabs.values()) {
@@ -640,8 +656,9 @@ function setBrowserSettings(value) {
   const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
   settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
-    tab.view.webContents.setBackgroundThrottling(!keepActive);
-    applyPageFocusCompatibility(tab);
+    const enabled = keepActive && tab.id === activeBrowserTabId;
+    tab.view.webContents.setBackgroundThrottling(!enabled);
+    applyPageFocusCompatibility(tab, enabled);
   }
   if (lowMemory) for (const tab of browserTabs.values()) {
     if (tab.id === activeBrowserTabId || !tab.view) continue;
