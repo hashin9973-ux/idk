@@ -56,30 +56,43 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
     if (request.tool !== 'session_start' && typeof request.session_id === 'string' &&
         /^session-[a-f0-9]{32}$/.test(request.session_id)) queuedSessions.add(request.session_id);
   }
-  for (const sessionId of queuedSessions) {
+  for (const sessionId of queuedSessions) seedSession(sessionId);
+
+  function seedSession(sessionId = DEFAULT_TEST_SESSION_ID, label = 'Test agent') {
+    if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) throw new Error('Invalid test session ID');
     const sessionPath = 'bridge/sessions/' + sessionId + '.json';
-    if (files.has(sessionPath)) continue;
-    let nextAgentNumber = 1;
-    let agentId;
-    do { agentId = 'agent-' + String(nextAgentNumber++).padStart(3, '0'); }
-    while (files.has('bridge/agents/' + agentId + '.json'));
+    const existingSession = files.get(sessionPath);
+    if (existingSession) return decode(existingSession);
+    let agentId = null;
+    for (const [filePath, stored] of files) {
+      if (!/^bridge\/agents\/agent-[0-9]{3,}\.json$/.test(filePath)) continue;
+      try {
+        const value = decode(stored);
+        if (value.current_session_id === sessionId) { agentId = value.agent_id; break; }
+      } catch {}
+    }
+    if (!agentId) {
+      let number = 1;
+      do { agentId = 'agent-' + String(number++).padStart(3, '0'); }
+      while (files.has('bridge/agents/' + agentId + '.json'));
+    }
     const now = new Date().toISOString();
-    const seat = {
-      protocol: 'chatgpt-local-agent-seat/v2', agent_id: agentId, current_session_id: sessionId,
-      label: 'Test agent', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
-      last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
-    };
+    const seatPath = 'bridge/agents/' + agentId + '.json';
+    if (!files.has(seatPath)) {
+      const seat = {
+        protocol: 'chatgpt-local-agent-seat/v2', agent_id: agentId, current_session_id: sessionId,
+        label, status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+        last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+      };
+      files.set(seatPath, { name: agentId + '.json', path: seatPath, type: 'file', encoding: 'base64', content: encode(seat), sha: 'sha-' + nextSha++ });
+    }
     const session = {
       protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: agentId,
-      label: 'Test agent', status: 'active', created_at: now, updated_at: now, last_activity_at: now,
+      label, status: 'active', created_at: now, updated_at: now, last_activity_at: now,
       last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
     };
-    for (const [recordPath, value] of [
-      ['bridge/agents/' + agentId + '.json', seat],
-      [sessionPath, session]
-    ]) files.set(recordPath, {
-      name: recordPath.split('/').pop(), type: 'file', encoding: 'base64', content: encode(value), sha: 'sha-' + nextSha++
-    });
+    files.set(sessionPath, { name: sessionId + '.json', path: sessionPath, type: 'file', encoding: 'base64', content: encode(session), sha: 'sha-' + nextSha++ });
+    return session;
   }
   const calls = [];
   let requestTreeFailuresRemaining = 0;
@@ -241,7 +254,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
     }
   };
   return {
-    githubAuth, files, calls,
+    githubAuth, files, calls, seedSession,
     treeRef: relativePath => treeShaForPath(relativePath),
     failNextRequestTreeReads: count => { requestTreeFailuresRemaining = Math.max(0, Number(count) || 0); }
   };
