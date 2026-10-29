@@ -558,16 +558,33 @@ function attachBrowserTab(id) {
   publishBrowserTabs(); measureBrowserMemory(tab); return true;
 }
 function setBrowserTabActive(id) {
-  if (settings.browserEnabled !== true) {
-    destroyEmbeddedBrowserViews();
-    activeBrowserTabId = null;
-    publishBrowserTabs();
-    return { active: false, disabled: true };
-  }
   const idValue = typeof id === 'string' && browserTabs.has(id) ? id : null;
-  if (idValue) return attachBrowserTab(idValue);
+  if (settings.browserEnabled !== true) {
+    // Tab selection is called on every dashboard page change. Do not emit a
+    // browser-tabs-changed event for an already-empty/disabled browser: the
+    // renderer handles that event by syncing tabs and selecting the current
+    // page again, which otherwise creates an unbounded IPC/render feedback loop.
+    const hasLiveViews = [...browserTabs.values()].some(tab => tab.view || tab.memoryTimer);
+    if (hasLiveViews) destroyEmbeddedBrowserViews();
+    const changed = activeBrowserTabId !== null || hasLiveViews;
+    activeBrowserTabId = null;
+    if (changed) publishBrowserTabs();
+    return { active: false, disabled: true, unchanged: !changed };
+  }
+  if (idValue) {
+    // attachBrowserTab publishes the tab list. Re-entering it from the
+    // renderer's resulting sync event must be a no-op, or it loops forever.
+    const activeTab = browserTabs.get(idValue);
+    if (activeBrowserTabId === idValue && activeTab && activeTab.view &&
+        !activeTab.view.webContents.isDestroyed()) {
+      return { active: true, unchanged: true };
+    }
+    return attachBrowserTab(idValue);
+  }
+  let changed = activeBrowserTabId !== null;
   if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
     if (tab.view) {
+      changed = true;
       try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
       tab.view.webContents.setBackgroundThrottling(true);
       applyPageFocusCompatibility(tab, false);
@@ -576,13 +593,17 @@ function setBrowserTabActive(id) {
   activeBrowserTabId = null;
   if (settings.browserLowMemory) for (const tab of browserTabs.values()) {
     if (tab.view) {
+      changed = true;
       if (tab.memoryTimer) clearInterval(tab.memoryTimer);
       tab.memoryTimer = null;
       try { tab.view.webContents.close(); } catch {}
       tab.view = null;
     }
   }
-  publishBrowserTabs(); return { active: false };
+  // Only broadcast an actual activation/deactivation change. Broadcasting an
+  // unchanged null selection makes the renderer call this IPC again forever.
+  if (changed) publishBrowserTabs();
+  return { active: false, unchanged: !changed };
 }
 async function openBrowserTab(raw) {
   const parsed = safeBrowserUrl(raw);
