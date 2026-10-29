@@ -27,7 +27,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   const renderer = read('desktop', 'renderer.js');
   const styles = read('desktop', 'styles.css');
   const main = read('desktop', 'main.js');
-  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'minimize', 'quit']) {
+  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'open-dashboard', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(html, /title="Observe the desktop at the selected sampling rate/);
@@ -163,12 +163,45 @@ test('main process opens login in the system browser and returns focus after Git
   assert.doesNotMatch(main, /clearGitHubCliCredentials|auth', 'logout/);
   assert.doesNotMatch(main, /const connected = await githubAuth\.importToken\(token\)/);
   assert.match(main, /repositoryBridge\.stop\(\)/);
-  assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|WebContentsView|conversation-mirror|installChatToolBridge/);
+  assert.doesNotMatch(main, /accountsWindow|assertAccountUi|createAccountsWindow|conversation-mirror|installChatToolBridge/);
+  assert.match(main, /WebContentsView/);
+  assert.match(main, /function createDashboardWindow/);
+  assert.match(main, /'app:browser-settings'/);
+  assert.match(main, /'app:repository-bridge-config'/);
+  assert.match(main, /'app:set-theme'/);
 });
 
-test('preload exposes only the minimal status, tray, and GitHub login actions', () => {
+test('the separate dashboard implements tabbed widgets, settings, and embedded-browser controls', () => {
+  const html = read('desktop', 'dashboard.html');
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const styles = read('desktop', 'dashboard.css');
+  const main = read('desktop', 'main.js');
+  for (const id of ['tab-list', 'add-tab', 'main-page', 'settings-page', 'queues-widget', 'controls-widget',
+    'queue-list', 'observe-toggle', 'auto-accept-toggle', 'quick-colab-connect', 'workspace-button',
+    'github-connect', 'repo-owner', 'repo-name', 'repo-branch', 'allow-public-mailbox',
+    'tts-volume', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
+    assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
+  }
+  assert.match(renderer, /snap\(/);
+  assert.match(renderer, /pointerdown/);
+  assert.match(renderer, /setBrowserBounds/);
+  assert.match(renderer, /connectColab/);
+  assert.match(renderer, /api\.setTheme/);
+  assert.match(renderer, /applyTheme/);
+  assert.match(renderer, /themeGallery\.addEventListener/);
+  assert.match(html, /preview-graph/);
+  assert.match(main, /DASHBOARD_THEME_IDS = Object\.freeze/);
+  assert.match(main, /settings\.dashboardTheme = DASHBOARD_THEME_IDS\.includes/);
+  assert.match(main, /settings\.dashboardTheme = theme;\s*persistSettings\(\)/);
+  for (const theme of ['midnight','light','ocean','forest','sunset','rose','high-contrast','aurora','cyberpunk','dracula','nord','solarized-light','terminal','lavender','graphite']) { assert.match(styles, new RegExp('data-theme="' + theme + '"')); assert.ok(html.includes('data-theme-id="' + theme + '"'), 'missing visual theme card: ' + theme); }
+  assert.match(styles, /tabbar/);
+  assert.match(styles, /\.widget\.dragging/);
+  assert.match(html, /100 MB/);
+});
+
+test('preload exposes the compact overlay and separate dashboard APIs', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
+  for (const action of ['getState', 'openDashboard', 'showOverlay', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);

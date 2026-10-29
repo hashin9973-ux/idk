@@ -51,3 +51,17 @@ npm start
 ```
 
 On Windows, `npm start` prepares the pinned CLI helper automatically. To build the installer locally, `npm run dist:win` performs the same verified download and packages it with the app.
+
+
+## Separate dashboard and embedded Colab browser
+
+The compact overlay remains available. Open the separate Dashboard from the arrow button in the overlay or from the tray menu. The dashboard has Main and Settings tabs at the bottom; the Settings tab can be closed and restored with the + control. Dashboard widgets can be moved and resized with invisible resize edges and snap to a fine positioning grid.
+
+Settings reuse the app's GitHub sign-in, workspace selection, Observe sampling, and repository bridge configuration. Repository changes are refused while any requests are active or queued and the previous configuration is restored if a replacement cannot be started. Public mailbox use requires an explicit checkbox. TTS volume scales local 16-bit PCM samples before playback.
+
+Quick Colab connect opens the existing notebook in an embedded tab using the app's existing automatic clipboard endpoint watcher and authenticated HTTPS registration. Remote web content runs in an isolated WebContentsView with no application preload or Node integration. The optional background-focus compatibility mode disables Chromium background throttling and makes document visibility/focus APIs report active; it does not focus the native window or synthesize input, and some sites may use other focus signals. Low-memory mode unloads inactive web tabs instead, so the two options are mutually exclusive. The app measures the embedded renderer's private memory, but 100 MB is a best-effort target, not a guaranteed cap; Chromium and Colab can exceed it.
+
+
+## Dashboard color themes
+
+The dashboard Settings tab includes a visual theme gallery with 15 selectable designs: Midnight (default), Light, Ocean, Forest, Sunset, Rose, High contrast, Aurora, Cyberpunk, Dracula, Nord, Solarized light, Terminal, Lavender, and Graphite. Each card includes a miniature dashboard preview; the presets vary color palette and selected surface, border, glow, shape, and typography treatments as well as accents. The selected theme is persisted in the app's settings and restored at dashboard startup. Theme names are validated in the main process; theme choices only affect the dashboard's visual presentation.

@@ -176,6 +176,38 @@ function safeTunnelUrl(value) {
   return endpoint ? endpoint.url : null;
 }
 
+function scaleWavVolume(audio, requestedVolume = 100) {
+  if (!Buffer.isBuffer(audio) || audio.length < 44 ||
+      audio.subarray(0, 4).toString('ascii') !== 'RIFF' ||
+      audio.subarray(8, 12).toString('ascii') !== 'WAVE') {
+    throw new Error('TTS volume control received an invalid WAV file.');
+  }
+  const volume = Number.isFinite(Number(requestedVolume)) ? Math.max(0, Math.min(100, Number(requestedVolume))) : 100;
+  if (volume >= 99.999) return audio;
+  const output = Buffer.from(audio);
+  let offset = 12, pcm16 = false, foundData = false;
+  while (offset + 8 <= output.length) {
+    const name = output.subarray(offset, offset + 4).toString('ascii');
+    const size = output.readUInt32LE(offset + 4);
+    const start = offset + 8, end = start + size;
+    if (end > output.length) throw new Error('TTS WAV contains a truncated chunk.');
+    if (name === 'fmt ' && size >= 16) {
+      pcm16 = output.readUInt16LE(start) === 1 && output.readUInt16LE(start + 14) === 16;
+    } else if (name === 'data') {
+      if (!pcm16 || size % 2) throw new Error('TTS volume control requires 16-bit PCM WAV audio.');
+      const gain = volume / 100;
+      for (let i = start; i + 1 < end; i += 2) {
+        const scaled = Math.round(output.readInt16LE(i) * gain);
+        output.writeInt16LE(Math.max(-32768, Math.min(32767, scaled)), i);
+      }
+      foundData = true;
+    }
+    offset = end + (size & 1);
+  }
+  if (!foundData) throw new Error('TTS WAV is missing its audio data chunk.');
+  return output;
+}
+
 function createVisionService(deps) {
   const {
     githubAuth,
@@ -195,6 +227,7 @@ function createVisionService(deps) {
     pollIntervalMs = 250,
     clipboardPollIntervalMs = 3000,
     clipboardWatchTimeoutMs = 20 * 60 * 1000,
+    getTtsVolume = null,
     fetchImpl = globalThis.fetch
   } = deps || {};
 
@@ -223,10 +256,12 @@ function createVisionService(deps) {
       repo: String(configured.repo || DEFAULT_MAILBOX.repo),
       branch: String(configured.branch || DEFAULT_MAILBOX.branch)
     };
-    if (result.owner !== DEFAULT_MAILBOX.owner || result.repo !== DEFAULT_MAILBOX.repo || result.branch !== DEFAULT_MAILBOX.branch) {
-      throw new Error('Vision uses the existing hashin9973-ux/qdqwg mailbox on branch bridge-mailbox.');
-    }
     return result;
+  }
+
+  function currentTtsVolume() {
+    const configured = typeof getTtsVolume === 'function' ? Number(getTtsVolume()) : 100;
+    return Number.isFinite(configured) ? Math.max(0, Math.min(100, configured)) : 100;
   }
 
   async function readMailboxJson(relativePath) {
@@ -1286,10 +1321,11 @@ function createVisionService(deps) {
         const chunkDeliveryIntervalMs = Math.max(0, receivedAt - (lastChunkRecordAt === null ? streamRequestStartedAt : lastChunkRecordAt));
         lastChunkRecordAt = receivedAt;
         const generated = validateTtsAudioResponse(record, expected.request_id);
+        const playbackAudio = scaleWavVolume(generated.audio, currentTtsVolume());
         const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id +
           '-chunk-' + String(expected.index + 1).padStart(2, '0') + '.wav');
         const writeStartedAt = now();
-        await fsImpl.promises.writeFile(filePath, generated.audio, { flag: 'wx' });
+        await fsImpl.promises.writeFile(filePath, playbackAudio, { flag: 'wx' });
         const fileWrittenAt = now();
         try {
           const queueStartedAt = now();
@@ -1307,7 +1343,7 @@ function createVisionService(deps) {
             record_to_queue_ms: Math.max(0, queuedAt - receivedAt),
             file_write_ms: Math.max(0, fileWrittenAt - writeStartedAt),
             queue_ack_ms: Math.max(0, queuedAt - queueStartedAt),
-            audio_bytes: generated.audio.length,
+            audio_bytes: playbackAudio.length,
             duration_seconds: Number.isFinite(generated.remote.duration_seconds) ? generated.remote.duration_seconds : null
           });
           acceptedChunks += 1;
@@ -1401,7 +1437,8 @@ function createVisionService(deps) {
   }
   async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
     const requestStartedAt = now();
-    const generated = await requestTtsAudio(text, requestId, 45000);
+    const remoteGenerated = await requestTtsAudio(text, requestId, 45000);
+    const generated = { ...remoteGenerated, audio: scaleWavVolume(remoteGenerated.audio, currentTtsVolume()) };
     const receivedAt = now();
     const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
     const writeStartedAt = now();
@@ -1582,7 +1619,7 @@ function createVisionService(deps) {
           () => worker()
         ));
         if (generationError) throw generationError;
-        const audio = combineWavBuffers(generated);
+        const audio = scaleWavVolume(combineWavBuffers(generated), currentTtsVolume());
         if (audio.length > MAX_TTS_AUDIO_BYTES) throw new Error('Combined Piper audio exceeds the local WAV size limit.');
         const hash = crypto.createHash('sha256').update(audio).digest('hex');
         const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + jobId + '.wav');
@@ -2029,5 +2066,5 @@ module.exports = {
   VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS,
   MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES, VISION_CONTEXT_SCHEMA, validateVisionContext, validateBoundingBox, validJobId,
   safeTunnelUrl, safeApiKey, parseTunnelEndpoint, buildGaplessPlaybackScript,
-  normalizeSpeechText, splitSpeechIntoChunks
+  scaleWavVolume, normalizeSpeechText, splitSpeechIntoChunks
 };
