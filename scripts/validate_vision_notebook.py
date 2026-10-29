@@ -404,7 +404,7 @@ def main():
         "Piper is warmed before TTS readiness": 'voice.synthesize_wav(\n                    "Ready.", warmup_wav',
         "TTS warm-up duration is observable": '"tts_warmup_ms": round(float(_tts_warmup_ms)',
         "detailed Qwen structured report retains its compact budget": "at most 8 regions, 24 text spans, 16 controls, and 12 objects",
-        "larger passive context window": "PASSIVE_CONTEXT_TOKENS = 16384",
+        "passive context matches observed effective runtime ceiling": "PASSIVE_CONTEXT_TOKENS = 8192",
         "bounded structured report size": "MAX_STRUCTURED_REPORT_CHARS = 1000000",
         "compact fallback text preview": "enumerate(ocr_spans[:64])",
         "full OCR retained in fallback": '"text_spans": ocr_spans[:800]',
