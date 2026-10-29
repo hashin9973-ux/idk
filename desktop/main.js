@@ -28,7 +28,8 @@ const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
-const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks, MAX_TTS_TEXT_CHARS } = require('./colab-direct-service');
+const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
+const { MAX_SPEECH_CHUNKS } = require('./speech-text');
 const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
@@ -1483,7 +1484,8 @@ function showSpeechCaption(request) {
   let chunks;
   try {
     const normalized = normalizeSpeechText(text);
-    chunks = splitSpeechIntoChunks(normalized, MAX_TTS_TEXT_CHARS);
+    const targetChunkChars = Math.min(240, Math.max(40, Math.ceil(normalized.length / MAX_SPEECH_CHUNKS) + 4));
+    chunks = splitSpeechIntoChunks(normalized, targetChunkChars);
   } catch { chunks = [text]; }
   if (!Array.isArray(chunks) || !chunks.length) chunks = [text];
   const payload = {
