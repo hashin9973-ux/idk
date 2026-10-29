@@ -63,6 +63,12 @@ function applyDashboardState(value){
         savedWidgetLayout[id]={x:layout.x,y:layout.y,width:layout.width,height:layout.height};
       }
     }
+    for(const [id,el] of agentWidgets){
+      const layout=savedWidgetLayout[id];
+      if(layout&&Number.isFinite(layout.x)&&Number.isFinite(layout.y)&&Number.isFinite(layout.width)&&Number.isFinite(layout.height)){
+        Object.assign(el.style,{left:layout.x+'px',top:layout.y+'px',width:layout.width+'px',height:layout.height+'px'});
+      }
+    }
     const savedSeatLayouts=Object.keys(savedWidgetLayout).length>0;
     for(const [id,el] of [['queues',queue],['controls',controls]]){
       const w=widgets[id]&&typeof widgets[id]==='object'?widgets[id]:{};
@@ -319,7 +325,7 @@ async function refresh(){
 }
 function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.getBoundingClientRect();void api.setBrowserBounds({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height)}).catch(()=>{})}
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
-function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label,details,summary,pre,[data-no-widget-drag]'))return;const r=el.getBoundingClientRect(),edge=10,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;const resize=L||R||T||B;const isAgent=el.classList.contains('agent-console');if(isAgent&&!resize&&!e.target.closest('.agent-console-header'))return;if(!isAgent&&!resize&&e.target.closest('.agent-console'))return;gesture={el,mode:resize?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
+function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label,details,summary,pre'))return;const r=el.getBoundingClientRect(),edge=10,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;const resize=L||R||T||B;const isAgent=el.classList.contains('agent-console');if(isAgent&&!resize&&!e.target.closest('.agent-console-header'))return;if(!isAgent&&!resize&&e.target.closest('[data-no-widget-drag]'))return;gesture={el,mode:resize?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
 function moveGesture(e){if(!gesture)return;const g=gesture,dx=e.clientX-g.sx,dy=e.clientY-g.sy;let x=g.x,y=g.y,w=g.w,h=g.h;if(g.mode==='drag'){x+=dx;y+=dy}else{if(g.R)w+=dx;if(g.B)h+=dy;if(g.L){x+=dx;w-=dx}if(g.T){y+=dy;h-=dy}if(w<minW){if(g.L)x-=minW-w;w=minW}if(h<minH){if(g.T)y-=minH-h;h=minH}}g.el.style.left=x+'px';g.el.style.top=y+'px';if(g.mode==='resize'){g.el.style.width=w+'px';g.el.style.height=h+'px'}}
 function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,Math.min(Math.max(0,r.height-h),y));Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls();scheduleSaveDashboardState()}
 for(const el of [queue,controls])attachWidgetGesture(el)
