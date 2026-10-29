@@ -1357,6 +1357,61 @@ test('mailbox cleanup removes only old terminal request groups and associated ar
   }
 });
 
+test('message retention deletes only expired messages with valid read receipts', async () => {
+  const now = Date.now();
+  const oldTimestamp = String(now - 60 * 24 * 60 * 60 * 1000).padStart(13, '0');
+  const recentTimestamp = String(now).padStart(13, '0');
+  const sessionId = 'session-' + 'b'.repeat(32);
+  const oldReadId = 'msg-' + oldTimestamp + '-' + 'a'.repeat(32);
+  const oldUnreadId = 'msg-' + oldTimestamp + '-' + 'c'.repeat(32);
+  const recentReadId = 'msg-' + recentTimestamp + '-' + 'd'.repeat(32);
+  const nowIso = new Date().toISOString();
+  const session = {
+    protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: 'agent-001',
+    label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
+    last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+  };
+  const seat = {
+    protocol: 'chatgpt-local-agent-seat/v2', agent_id: 'agent-001', current_session_id: sessionId,
+    label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
+    last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+  };
+  const message = (messageId, createdAt) => ({
+    protocol: 'chatgpt-local-agent-message/v1', message_id: messageId, thread_id: messageId,
+    sender_session_id: 'session-' + 'e'.repeat(32), sender_agent_id: 'agent-002',
+    recipient_session_id: sessionId, recipient_agent_id: 'agent-001', subject: 'retention test',
+    message: 'test message', created_at: createdAt, in_reply_to: null, read_at: null
+  });
+  const receipt = messageId => ({
+    protocol: 'chatgpt-local-agent-message-receipt/v1', message_id: messageId,
+    recipient_session_id: sessionId, created_at: nowIso, read_at: nowIso
+  });
+  const oldDate = new Date(Number(oldTimestamp)).toISOString();
+  const recentDate = new Date(Number(recentTimestamp)).toISOString();
+  const fake = fakeGitHub({ initial: [
+    ['bridge/sessions/' + sessionId + '.json', session],
+    ['bridge/agents/agent-001.json', seat],
+    ['bridge/agent-messages/' + sessionId + '/' + oldReadId + '.json', message(oldReadId, oldDate)],
+    ['bridge/agent-message-receipts/' + sessionId + '/' + oldReadId + '.json', receipt(oldReadId)],
+    ['bridge/agent-messages/' + sessionId + '/' + oldUnreadId + '.json', message(oldUnreadId, oldDate)],
+    ['bridge/agent-messages/' + sessionId + '/' + recentReadId + '.json', message(recentReadId, recentDate)],
+    ['bridge/agent-message-receipts/' + sessionId + '/' + recentReadId + '.json', receipt(recentReadId)]
+  ] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => ({ ok: true, result: {} }), intervalMs: 5000, cleanupIntervalMs: 1000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => !fake.files.has('bridge/agent-messages/' + sessionId + '/' + oldReadId + '.json'), 5000);
+    assert.equal(fake.files.has('bridge/agent-message-receipts/' + sessionId + '/' + oldReadId + '.json'), false);
+    assert.equal(fake.files.has('bridge/agent-messages/' + sessionId + '/' + oldUnreadId + '.json'), true, 'old unread messages must be retained');
+    assert.equal(fake.files.has('bridge/agent-messages/' + sessionId + '/' + recentReadId + '.json'), true, 'recent read messages must be retained');
+    assert.equal(fake.files.has('bridge/agent-message-receipts/' + sessionId + '/' + recentReadId + '.json'), true);
+  } finally { await bridge.stop(); }
+});
+
 test('filesystem index publishes to a stable path and skips unchanged snapshots', async () => {
   const fake = fakeGitHub();
   const fixture = settingsFixture();
