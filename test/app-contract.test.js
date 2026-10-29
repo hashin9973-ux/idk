@@ -728,3 +728,35 @@ test('in-app browser defaults off, never leaves an overlay attached when disable
   assert.match(renderer, /browserEnabled\.addEventListener\('change'/);
   assert.match(renderer, /setPage\(\);scheduleSaveDashboardState\(\)/);
 });
+
+
+test('unstable Windows network status does not gate mailbox connection attempts', () => {
+  const main = read('desktop', 'main.js');
+  const start = main.indexOf('async function attemptAutoConnect()');
+  const end = main.indexOf('function retryConnectionNow()', start);
+  const connect = main.slice(start, end);
+  assert.ok(start >= 0 && end > start, 'auto-connect implementation is present');
+  assert.match(connect, /if \(!auth\.authenticated\)/);
+  assert.doesNotMatch(connect, /!auth\.authenticated\s*\|\|\s*auth\.verificationPending/);
+  assert.match(connect, /repositoryBridge\.start\(\)/);
+  assert.match(connect, /testing mailbox access directly/);
+  assert.match(main, /return current\.running \? 'reconnecting' : 'connecting'/);
+
+  const html = read('desktop', 'dashboard.html');
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const styles = read('desktop', 'dashboard.css');
+  assert.ok(html.includes('id="agent-mailbox-list"'));
+  assert.ok(html.includes('id="agent-mailbox-count"'));
+  assert.match(renderer, /function renderAgentMailboxes\(rawAgents\)/);
+  assert.match(renderer, /appendConsoleJsonDetails/);
+  assert.match(renderer, /request\.tool/);
+  assert.match(renderer, /request\.request_json/);
+  assert.match(renderer, /request\.claim_json/);
+  assert.match(renderer, /request\.result_json/);
+  assert.match(renderer, /request\.progress/);
+  assert.match(styles, /\.agent-console\s*\{/);
+  assert.match(styles, /background:#020403/);
+  assert.match(styles, /\.agent-json-details/);
+  assert.match(renderer, /details,summary,pre,\[data-no-widget-drag\]/);
+  assert.doesNotMatch(renderer, /innerHTML\s*=/, 'console output must be rendered as text, not HTML');
+});
