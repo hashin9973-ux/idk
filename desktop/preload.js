@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   getBrowserSettings: () => ipcRenderer.invoke('app:browser-settings'),
   setBrowserSettings: value => ipcRenderer.invoke('app:browser-settings', value),
   setTtsVolume: value => ipcRenderer.invoke('app:tts-volume', value),
+  setTheme: theme => ipcRenderer.invoke('app:set-theme', theme),
   setRepositoryBridgeConfig: value => ipcRenderer.invoke('app:repository-bridge-config', value),
   onBrowserTabsChanged(callback) {
     if (typeof callback !== 'function') return () => {};
