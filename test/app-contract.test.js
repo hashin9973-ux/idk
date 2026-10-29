@@ -513,7 +513,7 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.doesNotMatch(main, /COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
   assert.doesNotMatch(python, /wrb_pair_nonce/);
-  assert.doesNotMatch(python, /print\("PUBLIC_VISION_ENDPOINT=" \+ endpoint_url/);
+  assert.equal(python.includes('print("PUBLIC_VISION_ENDPOINT=" + endpoint_url'), false);
 });
 
 test('Colab vision notebook becomes ready after model download without startup image inference', () => {
