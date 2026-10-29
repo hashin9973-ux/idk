@@ -197,13 +197,13 @@ function createColabHandoffServer(options = {}) {
       return;
     }
 
-    // The app callback must synchronously confirm that an explicit Connect Colab
-    // action armed this one-shot handoff window. Queueing starts async HTTPS work,
-    // but the callback itself returns immediately. Never echo the secret endpoint.
+    // The app callback must synchronously confirm that it accepted this validated
+    // endpoint for processing. The connection handshake runs asynchronously; never
+    // echo the secret endpoint in this HTTP response.
     let accepted = false;
     try { accepted = onEndpoint(endpoint.url) === true; } catch {}
     if (!accepted) {
-      sendJson(response, 403, { accepted: false, error: 'handoff_not_armed' }, origin);
+      sendJson(response, 409, { accepted: false, error: 'handoff_not_accepted' }, origin);
       return;
     }
     sendJson(response, 202, { accepted: true, status: 'verification_pending' }, origin);
