@@ -315,7 +315,7 @@ function createRepositoryBridge(deps) {
       setAgentDirectoryEntry(next.agentId, {
         ...(next.agentLabel ? { label: next.agentLabel } : {}),
         ...(next.status === 'completed' || next.status === 'failed' || next.status === 'rejected' || next.status === 'cancelled' || next.status === 'partial'
-          ? { status: 'idle' } : ['queued', 'loading', 'claiming', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(next.status)
+          ? { status: 'idle' } : ['queued', 'loading', 'validating', 'claiming', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(next.status)
             ? { status: 'active' } : {})
       });
     }
@@ -343,7 +343,7 @@ function createRepositoryBridge(deps) {
       });
       groups.get(id).requests.push(item);
     }
-    const rank = { queued: 0, loading: 0, claiming: 1, claimed: 2, executing: 3, publishing: 4, 'waiting-result': 5 };
+    const rank = { queued: 0, loading: 0, validating: 1, claiming: 2, claimed: 3, executing: 4, publishing: 5, 'waiting-result': 6 };
     return [...groups.values()].map(group => {
       const rows = group.requests || [];
       const isLive = item => !['completed', 'failed', 'rejected', 'cancelled', 'partial'].includes(item.status);
@@ -357,7 +357,7 @@ function createRepositoryBridge(deps) {
         agent_id: group.agent_id,
         label: group.label || group.agent_id || 'Legacy / unassigned',
         status: live.length ? 'active' : (group.status || 'idle'),
-        active_count: rows.filter(item => ['claimed', 'executing', 'publishing', 'waiting-result'].includes(item.status)).length,
+        active_count: rows.filter(item => ['validating', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(item.status)).length,
         queued_count: rows.filter(item => ['queued', 'loading', 'claiming'].includes(item.status)).length,
         request_count: rows.length,
         requests: visible.map(item => ({
