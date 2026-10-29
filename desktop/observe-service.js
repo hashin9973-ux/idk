@@ -342,7 +342,7 @@ function createObserveService(deps = {}) {
               publicationRevision += 1;
             }
           }
-          pendingVisionFrame = { sequence: frame.sequence, frameId: frame.frame_id, captured, screen, accessibility, epoch: item.epoch };
+          pendingVisionFrame = { sequence: frame.sequence, frameId: frame.frame_id, captured, screen, accessibility: frameAccessibility, epoch: item.epoch };
           void drainVisionQueue();
         }
         void publishLatestWhenDue();
