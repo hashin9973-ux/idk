@@ -16,8 +16,8 @@
 <section id="queues-widget" class="widget queue-widget" data-widget="queues" aria-label="Agent mailboxes and current queues">
 <h2>Mailbox Monitor</h2>
 <div id="queue-list" class="queue-list" aria-label="Aggregate queue summary"></div>
-<div class="agent-mailbox-heading"><h3>Agent Mailboxes</h3><span id="agent-mailbox-count">0 agents</span></div>
-<div id="agent-mailbox-list" class="agent-mailbox-list" data-no-widget-drag aria-live="polite"><div class="agent-console-empty">Waiting for mailbox activity…</div></div>
+<div class="agent-mailbox-heading"><h3>Agent Seats</h3><span id="agent-mailbox-count">0 seats</span></div>
+<p class="agent-seat-help">Each seat has its own movable terminal. Seats are reused after inactivity.</p>
 </section>
 <section id="controls-widget" class="widget controls-widget" data-widget="controls" aria-label="Bridge controls">
 <h2>Controls</h2><div class="control-grid">
@@ -26,6 +26,7 @@
 <button id="quick-colab-connect" class="action-button" type="button"><span class="action-symbol">↗</span><span><strong>Quick Colab connect</strong><small id="colab-status">Open notebook and watch for its endpoint</small></span></button>
 <button id="workspace-button" class="action-button" type="button"><span class="action-symbol">⌂</span><span><strong>Workspace</strong><small id="workspace-status">Choose a folder or drive</small></span></button>
 </div><p id="dashboard-message" class="inline-message" role="status" aria-live="polite"></p></section>
+<div id="agent-widget-host" class="agent-widget-host" aria-label="Independent agent terminals"></div>
 </section>
 <section id="settings-page" class="page settings-page" aria-label="Settings" hidden><div class="settings-scroll">
 <section class="settings-panel appearance-panel"><div class="section-heading"><h2>Appearance</h2><p>Pick a visual design. Each preset changes the palette, surface treatment, and accent details.</p></div>
