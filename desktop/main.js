@@ -529,6 +529,7 @@ function measureBrowserMemory(tab) {
 }
 
 function attachBrowserTab(id) {
+  if (settings.browserEnabled !== true) return false;
   const tab = browserTabs.get(id);
   if (!dashboardWindow || dashboardWindow.isDestroyed() || !tab) return false;
   for (const other of browserTabs.values()) if (other.view) {
@@ -555,6 +556,12 @@ function attachBrowserTab(id) {
   publishBrowserTabs(); measureBrowserMemory(tab); return true;
 }
 function setBrowserTabActive(id) {
+  if (settings.browserEnabled !== true) {
+    destroyEmbeddedBrowserViews();
+    activeBrowserTabId = null;
+    publishBrowserTabs();
+    return { active: false, disabled: true };
+  }
   const idValue = typeof id === 'string' && browserTabs.has(id) ? id : null;
   if (idValue) return attachBrowserTab(idValue);
   if (dashboardWindow && !dashboardWindow.isDestroyed()) for (const tab of browserTabs.values()) {
@@ -576,9 +583,12 @@ function setBrowserTabActive(id) {
   publishBrowserTabs(); return { active: false };
 }
 async function openBrowserTab(raw) {
-  if (settings.browserEnabled !== true) throw new Error('The in-app browser is disabled. Enable it in Settings to open web tabs.');
   const parsed = safeBrowserUrl(raw);
   if (!parsed) throw new Error('The embedded browser only accepts public HTTPS URLs.');
+  if (settings.browserEnabled !== true) {
+    await shell.openExternal(parsed.href);
+    return { id: null, url: parsed.href, title: parsed.hostname, external: true, reused: false };
+  }
   if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
   showDashboardWindow();
   let tab = [...browserTabs.values()].find(item => item.url === parsed.href);
@@ -723,6 +733,7 @@ function createDashboardWindow() {
 }
 
 function setBrowserBounds(value) {
+  if (settings.browserEnabled !== true) return { applied: false, disabled: true };
   const size = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow.getContentBounds() : { width: 0, height: 0 };
   const v = value && typeof value === 'object' ? value : {};
   const x = Number(v.x), y = Number(v.y), width = Number(v.width), height = Number(v.height);
@@ -737,8 +748,27 @@ function getBrowserSettings() {
 }
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
-  const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
-  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings(); publishSharedState();
+  const enabled = v.enabled === true;
+  settings.browserEnabled = enabled;
+  settings.browserKeepActive = enabled && v.keepActive === true;
+  settings.browserLowMemory = enabled && v.lowMemory === true;
+
+  if (!enabled) {
+    // Never leave a native WebContentsView attached above the dashboard DOM.
+    // Remove browser tabs from persisted state so they cannot overlay controls or reopen automatically.
+    const current = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
+    const browserWasActive = current.tabs.some(tab => tab.id === current.activeTabId && tab.kind === 'browser');
+    settings.dashboardState = normalizeDashboardState({
+      ...current,
+      tabs: current.tabs.filter(tab => tab.kind !== 'browser'),
+      activeTabId: browserWasActive ? 'main' : current.activeTabId
+    });
+    syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    dashboardSend('app:dashboard-state', settings.dashboardState);
+    activeBrowserTabId = null;
+  }
+
+  persistSettings(); publishSharedState();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
     const enabled = keepActive && tab.id === activeBrowserTabId;
     tab.view.webContents.setBackgroundThrottling(!enabled);
@@ -751,6 +781,7 @@ function setBrowserSettings(value) {
     try { tab.view.webContents.close(); } catch {}
     tab.view = null;
   }
+  dashboardSend('app:preferences', getUiState().settings);
   return getBrowserSettings();
 }
 
@@ -2133,8 +2164,18 @@ if (!hasInstanceLock) {
     settings.dashboardState = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
     syncBrowserRegistryFromDashboardState(settings.dashboardState);
     settings.browserEnabled = settings.browserEnabled === true;
-    settings.browserKeepActive = settings.browserKeepActive === true;
-    settings.browserLowMemory = settings.browserLowMemory === true;
+    settings.browserKeepActive = settings.browserEnabled && settings.browserKeepActive === true;
+    settings.browserLowMemory = settings.browserEnabled && settings.browserLowMemory === true;
+    if (!settings.browserEnabled) {
+      const savedState = normalizeDashboardState(settings.dashboardState);
+      const browserWasActive = savedState.tabs.some(tab => tab.id === savedState.activeTabId && tab.kind === 'browser');
+      settings.dashboardState = normalizeDashboardState({
+        ...savedState,
+        tabs: savedState.tabs.filter(tab => tab.kind !== 'browser'),
+        activeTabId: browserWasActive ? 'main' : savedState.activeTabId
+      });
+      syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    }
     settings.repositoryBridge = {
       ...DEFAULT_REPOSITORY_BRIDGE,
       ...savedBridge,
