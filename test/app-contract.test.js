@@ -178,7 +178,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   for (const id of ['tab-list', 'add-tab', 'main-page', 'settings-page', 'queues-widget', 'controls-widget',
     'queue-list', 'observe-toggle', 'auto-accept-toggle', 'quick-colab-connect', 'workspace-button',
     'github-connect', 'repo-owner', 'repo-name', 'repo-branch', 'allow-public-mailbox',
-    'tts-volume', 'theme-select', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
+    'tts-volume', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
   }
   assert.match(renderer, /snap\(/);
@@ -187,10 +187,12 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(renderer, /connectColab/);
   assert.match(renderer, /api\.setTheme/);
   assert.match(renderer, /applyTheme/);
+  assert.match(renderer, /themeGallery\.addEventListener/);
+  assert.match(html, /preview-graph/);
   assert.match(main, /DASHBOARD_THEME_IDS = Object\.freeze/);
   assert.match(main, /settings\.dashboardTheme = DASHBOARD_THEME_IDS\.includes/);
   assert.match(main, /settings\.dashboardTheme = theme;\s*persistSettings\(\)/);
-  for (const theme of ['midnight','light','ocean','forest','sunset','rose','high-contrast']) assert.match(styles, new RegExp('data-theme="' + theme + '"'));
+  for (const theme of ['midnight','light','ocean','forest','sunset','rose','high-contrast','aurora','cyberpunk','dracula','nord','solarized-light','terminal','lavender','graphite']) { assert.match(styles, new RegExp('data-theme="' + theme + '"')); assert.ok(html.includes('data-theme-id="' + theme + '"'), 'missing visual theme card: ' + theme); }
   assert.match(styles, /tabbar/);
   assert.match(styles, /\.widget\.dragging/);
   assert.match(html, /100 MB/);
