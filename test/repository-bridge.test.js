@@ -1583,7 +1583,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.equal(invocation.request_example.protocol, PROTOCOL);
     assert.equal(invocation.request_example.tool, 'get_agent_context');
     assert.deepEqual(invocation.request_example.args, {});
-    assert.match(invocation.calling_contract, /publish the request JSON.*read the result/i);
+    assert.match(invocation.calling_contract, /publish requests through GitHub MCP and read the matching result/i);
     assert.equal(index.agent_context.tool_catalog.tools[0].parameters.properties.path.description, 'Workspace-relative path');
     assert.equal(JSON.stringify(index.agent_context).includes('do not publish this instruction body'), false);
     assert.equal(JSON.stringify(index.agent_context).includes('private-host'), false);
