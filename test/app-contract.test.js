@@ -647,6 +647,19 @@ test('cloud sync implementation and tests are included in package validation', (
 });
 
 
+test('dashboard browser-tab IPC does not feed back into an unbounded renderer event loop', () => {
+  const main = read('desktop', 'main.js');
+  const activation = main.slice(
+    main.indexOf('function setBrowserTabActive(id) {'),
+    main.indexOf('async function openBrowserTab', main.indexOf('function setBrowserTabActive(id) {'))
+  );
+  assert.match(activation, /activeBrowserTabId === idValue[\s\S]*return \{ active: true, unchanged: true \}/);
+  assert.match(activation, /if \(changed\) publishBrowserTabs\(\)/);
+  assert.match(activation, /unchanged: !changed/);
+  assert.match(activation, /hasLiveViews = \[\.\.\.browserTabs\.values\(\)\]\.some\(tab => tab\.view \|\| tab\.memoryTimer\)/);
+  assert.match(activation, /Only broadcast an actual activation\/deactivation change/);
+});
+
 test('in-app browser defaults off, never leaves an overlay attached when disabled, and is wired to Settings', () => {
   const main = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'main.js'), 'utf8');
   const html = fs.readFileSync(path.join(__dirname, '..', 'desktop', 'dashboard.html'), 'utf8');
