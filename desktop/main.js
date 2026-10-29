@@ -598,7 +598,6 @@ async function openBrowserTab(raw) {
   return { id: tab.id, url: tab.url, title: tab.title, reused: false };
 }
 function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
-  if (settings.browserEnabled !== true) throw new Error('The in-app browser is disabled. Enable it in Settings to open Colab inside the app.');
   const parsed = safeBrowserUrl(raw);
   if (!parsed || parsed.hostname !== 'colab.research.google.com') throw new Error('The Colab action can only open Google Colab notebook URLs.');
   return openBrowserTab(parsed.href);
