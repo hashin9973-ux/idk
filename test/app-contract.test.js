@@ -757,7 +757,7 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   const html = read('desktop', 'dashboard.html');
   const renderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'dashboard.css');
-  assert.ok(html.includes('id="agent-mailbox-list"'));
+  assert.ok(html.includes('id="agent-widget-host"'));
   assert.ok(html.includes('id="agent-mailbox-count"'));
   assert.match(renderer, /function renderAgentMailboxes\(rawAgents\)/);
   assert.match(renderer, /appendConsoleJsonDetails/);
