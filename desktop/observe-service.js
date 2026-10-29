@@ -9,6 +9,10 @@ const SAMPLE_INTERVAL_MS = 1000 / DEFAULT_SAMPLE_FPS;
 const PUBLISH_INTERVAL_MS = 1000;
 const PASSIVE_VISION_MIN_INTERVAL_MS = 1000;
 const PASSIVE_VISION_RETRY_INTERVAL_MS = 5000;
+// UI Automation starts a fresh PowerShell process. Bound this expensive scan to at most
+// once per second, while retaining precise full-resolution image/frame IDs at sample FPS.
+const ACCESSIBILITY_REFRESH_INTERVAL_MS = 1000;
+const MAX_ACCESSIBILITY_SNAPSHOT_AGE_MS = 1500;
 
 function normalizeSampleFps(value) {
   const fps = Number(value);
@@ -49,6 +53,9 @@ function createObserveService(deps = {}) {
   let disposed = false;
   let lastFingerprint = '';
   let lastPublishedAt = 0;
+  let latestAccessibilitySnapshot = null;
+  let lastAccessibilitySnapshotAt = 0;
+  let lastAccessibilityDimensionsKey = '';
   let lastError = '';
   let sequence = 0;
   let observeEpoch = 0;
@@ -216,6 +223,49 @@ function createObserveService(deps = {}) {
     return { ...latestCapturedFrame, age_ms: ageMs };
   }
 
+  async function getAccessibilitySnapshotForFrame(screen) {
+    if (typeof getAccessibleSnapshot !== 'function') {
+      return { available: false, source: 'windows_uia', reason: 'not_configured' };
+    }
+    const frame = { width: screen.frame_width, height: screen.frame_height };
+    const dimensionsKey = [screen.width, screen.height, frame.width, frame.height].join('x');
+    const refreshDue = !latestAccessibilitySnapshot ||
+      dimensionsKey !== lastAccessibilityDimensionsKey ||
+      now() - lastAccessibilitySnapshotAt >= ACCESSIBILITY_REFRESH_INTERVAL_MS;
+    let refreshed = false;
+    if (refreshDue) {
+      refreshed = true;
+      try {
+        latestAccessibilitySnapshot = await getAccessibleSnapshot({ screen, frame });
+        if (!latestAccessibilitySnapshot || typeof latestAccessibilitySnapshot !== 'object') {
+          latestAccessibilitySnapshot = { available: false, source: 'windows_uia', reason: 'empty_snapshot' };
+        }
+      } catch (error) {
+        latestAccessibilitySnapshot = {
+          available: false, source: 'windows_uia',
+          reason: safeText(error && error.message || error || 'UI Automation failed', 120)
+        };
+      } finally {
+        // The cooldown starts when the query completes, not when it starts, to avoid
+        // immediately spawning another PowerShell process after a slow UIA scan.
+        lastAccessibilitySnapshotAt = now();
+        lastAccessibilityDimensionsKey = dimensionsKey;
+      }
+    }
+    const ageMs = lastAccessibilitySnapshotAt ? Math.max(0, now() - lastAccessibilitySnapshotAt) : Number.POSITIVE_INFINITY;
+    if (ageMs > MAX_ACCESSIBILITY_SNAPSHOT_AGE_MS) {
+      return {
+        available: false, source: 'windows_uia', reason: 'snapshot_stale',
+        snapshot_age_ms: ageMs, snapshot_reused: !refreshed
+      };
+    }
+    return {
+      ...latestAccessibilitySnapshot,
+      snapshot_age_ms: Number.isFinite(ageMs) ? ageMs : null,
+      snapshot_reused: !refreshed
+    };
+  }
+
   async function drainChangedCapture() {
     if (contextInFlight || !pendingCapture || !enabled || disposed) return;
     contextInFlight = true;
@@ -232,15 +282,16 @@ function createObserveService(deps = {}) {
           frame_height: Number(captured.height) || 0,
           display_id: safeText(captured.display_id, 80) || null
         };
-        let accessibility = { available: false, source: 'windows_uia', reason: 'unavailable' };
-        try {
-          accessibility = await getAccessibleSnapshot({ screen, frame: { width: screen.frame_width, height: screen.frame_height } });
-        } catch (error) {
-          accessibility = { available: false, source: 'windows_uia', reason: safeText(error && error.message || error, 120) };
-        }
+        const accessibility = await getAccessibilitySnapshotForFrame(screen);
         if (!enabled || disposed || item.epoch !== observeEpoch) break;
+        let frameAccessibility = accessibility;
         if (now() - item.capturedAt > 2500 && accessibility && accessibility.available === true) {
-          accessibility = { available: false, source: 'windows_uia', reason: 'snapshot_too_old_for_frame', truncated: false, node_count: accessibility.node_count ?? null };
+          frameAccessibility = {
+            available: false, source: 'windows_uia', reason: 'snapshot_too_old_for_frame',
+            truncated: false, node_count: accessibility.node_count ?? null,
+            snapshot_age_ms: accessibility.snapshot_age_ms ?? null,
+            snapshot_reused: accessibility.snapshot_reused === true
+          };
         }
         const frame = {
           sequence: ++sequence,
@@ -255,16 +306,18 @@ function createObserveService(deps = {}) {
             height_px: Number(screen.frame_height) || null,
             space: 'screenshot_jpeg_px', origin: 'top-left', x_axis: 'right', y_axis: 'down'
           },
-          cursor: accessibility && accessibility.cursor || null,
-          active_window: accessibility && accessibility.active_window || null,
-          focused_control: accessibility && accessibility.focused_control || null,
-          controls: Array.isArray(accessibility && accessibility.controls) ? accessibility.controls.slice(0, 800) : [],
+          cursor: frameAccessibility && frameAccessibility.cursor || null,
+          active_window: frameAccessibility && frameAccessibility.active_window || null,
+          focused_control: frameAccessibility && frameAccessibility.focused_control || null,
+          controls: Array.isArray(frameAccessibility && frameAccessibility.controls) ? frameAccessibility.controls.slice(0, 800) : [],
           accessibility: {
-            available: accessibility && accessibility.available === true,
-            source: safeText(accessibility && accessibility.source || 'windows_uia', 40),
-            reason: safeText(accessibility && accessibility.reason || '', 120),
-            truncated: accessibility && accessibility.truncated === true,
-            node_count: Number.isFinite(accessibility && accessibility.node_count) ? accessibility.node_count : null
+            available: frameAccessibility && frameAccessibility.available === true,
+            source: safeText(frameAccessibility && frameAccessibility.source || 'windows_uia', 40),
+            reason: safeText(frameAccessibility && frameAccessibility.reason || '', 120),
+            truncated: frameAccessibility && frameAccessibility.truncated === true,
+            node_count: Number.isFinite(frameAccessibility && frameAccessibility.node_count) ? frameAccessibility.node_count : null,
+            snapshot_age_ms: Number.isFinite(frameAccessibility && frameAccessibility.snapshot_age_ms) ? frameAccessibility.snapshot_age_ms : null,
+            snapshot_reused: frameAccessibility && frameAccessibility.snapshot_reused === true
           },
           fingerprint: item.fingerprint.slice(0, 64),
           vision_status: typeof analyzeFrame === 'function' ? 'pending' : 'not_configured',
@@ -439,9 +492,10 @@ function createObserveService(deps = {}) {
       };
       latestCapturedFrame = captured;
       const fingerprint = await fingerprintScreenshot(captured);
-      // Prefer the real full-frame identity supplied by Electron. Lightweight test/alternate
-      // capture providers can still use their explicit fingerprint to signal changed pixels.
-      const frameChangeKey = sourceFrameId || fingerprint;
+      // frame_id is the exact hash of the full-resolution image and remains the coordinate
+      // freshness token. Use the downsampled visual fingerprint for change detection instead:
+      // clocks, cursors, videos, and small animations can change raw bytes every sample.
+      const frameChangeKey = fingerprint;
       if (!fingerprint || !frameChangeKey || frameChangeKey === lastFingerprint) return;
       lastFingerprint = frameChangeKey;
       lastChangeAt = capturedAt;
@@ -496,6 +550,9 @@ function createObserveService(deps = {}) {
       if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('Sign in to GitHub before enabling Observe mode.');
       enabled = true;
       lastFingerprint = '';
+      latestAccessibilitySnapshot = null;
+      lastAccessibilitySnapshotAt = 0;
+      lastAccessibilityDimensionsKey = '';
       frames = [];
       activeVisionFrame = null;
       lastCompletedVisionFrame = null;
@@ -543,6 +600,9 @@ function createObserveService(deps = {}) {
     latestCapturedFrame = null;
     pendingCapture = null;
     pendingVisionFrame = null;
+    latestAccessibilitySnapshot = null;
+    lastAccessibilitySnapshotAt = 0;
+    lastAccessibilityDimensionsKey = '';
     latestVisionStatus = 'off';
     lastVisionError = '';
     lastFingerprint = '';
@@ -610,6 +670,9 @@ function createObserveService(deps = {}) {
     activeVisionFrame = null;
     lastCompletedVisionFrame = null;
     lastFingerprint = '';
+    latestAccessibilitySnapshot = null;
+    lastAccessibilitySnapshotAt = 0;
+    lastAccessibilityDimensionsKey = '';
     if (wasEnabled) {
       try {
         while (publishInFlight) await sleep(50);
@@ -622,4 +685,8 @@ function createObserveService(deps = {}) {
   return { status, setEnabled, setFps, clearStaleContext, getLatestFrame, dispose };
 }
 
-module.exports = { createObserveService, OBSERVE_PROTOCOL, DEFAULT_SAMPLE_FPS, OBSERVE_FPS_OPTIONS, SAMPLE_INTERVAL_MS, PUBLISH_INTERVAL_MS, FRAME_LIMIT, intervalForFps };
+module.exports = {
+  createObserveService, OBSERVE_PROTOCOL, DEFAULT_SAMPLE_FPS, OBSERVE_FPS_OPTIONS,
+  SAMPLE_INTERVAL_MS, PUBLISH_INTERVAL_MS, FRAME_LIMIT, ACCESSIBILITY_REFRESH_INTERVAL_MS,
+  MAX_ACCESSIBILITY_SNAPSHOT_AGE_MS, intervalForFps
+};
