@@ -34,6 +34,7 @@
   const visionMessage = byId('vision-message');
   const minimizeButton = byId('minimize');
   const quitButton = byId('quit');
+  const openDashboardButton = byId('open-dashboard');
 
   let githubState = null;
   let currentBridgeState = null;
@@ -811,6 +812,9 @@
   visionSetupButton.addEventListener('click', () => { void runVisionSetupCheck(); });
   minimizeButton.addEventListener('click', () => window.windowsBridge.minimizeToTray().catch(() => {}));
   quitButton.addEventListener('click', () => window.windowsBridge.quit().catch(() => {}));
+  openDashboardButton.addEventListener('click', () => window.windowsBridge.openDashboard().catch(error => {
+    openDashboardButton.title = String(error && error.message || error);
+  }));
   window.windowsBridge.onBridgeState(renderWorker);
   window.windowsBridge.onGitHubState(state => renderGitHub(state));
   window.windowsBridge.onColabHandoffResult(result => {
