@@ -313,7 +313,7 @@
     let state = 'not_verified';
 
     if (vision.endpoint_test_in_progress === true || status === 'checking_endpoint') {
-      message = 'Endpoint copied. Testing the direct HTTPS health response and registration acknowledgement…';
+      message = 'Colab endpoint received. Testing the direct HTTPS health response and registration acknowledgement…';
       state = 'in_progress';
     } else if (vision.runtime_fresh === true && status === 'incompatible_runtime') {
       message = 'Colab is reachable, but its running notebook is out of date: ' +
@@ -340,7 +340,9 @@
         message = 'Connection attempt failed; still watching. ' + summarizeVisionFailure(failure);
         state = 'failed';
       } else if (status === 'waiting_for_endpoint' || vision.endpoint_watch_active === true) {
-        message = 'Waiting for the notebook URL. Run “Start the direct Colab vision server”; this line will change when the app tests it.';
+        message = vision.automatic_handoff_ready === true
+          ? 'Waiting for Colab to send its endpoint directly. Allow the browser loopback-access prompt once; future URLs are automatic.'
+          : 'Waiting for Colab endpoint handoff. If local access is unavailable, click Open Windows Bridge once; no copying or pasting is needed.';
         state = 'in_progress';
       } else if (vision.connection_registered === true) {
         message = 'The endpoint was detected, but Colab is not responding: ' + summarizeVisionFailure(sourceMessage || 'No live HTTPS response.');
@@ -419,7 +421,8 @@
         visionColabDetail.title = String(vision.message || 'The app is testing the copied endpoint now.');
         visionColabDetail.dataset.state = 'in_progress';
       } else if (status === 'waiting_for_endpoint' || vision.endpoint_watch_active === true) {
-        visionColabDetail.textContent = endpointFailure ? 'Endpoint failed; retrying' : 'Waiting for notebook URL';
+        visionColabDetail.textContent = endpointFailure ? 'Endpoint failed; retrying' :
+          (vision.automatic_handoff_ready === true ? 'Waiting for direct handoff' : 'Waiting for Colab handoff');
         visionColabDetail.title = String(vision.message || vision.endpoint_watch_error || 'Run the server cell to create a fresh endpoint.');
         visionColabDetail.dataset.state = endpointFailure ? 'failed' : 'in_progress';
       } else if (vision.connection_registered === true) {

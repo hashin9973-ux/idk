@@ -875,7 +875,11 @@ test('notebook output JavaScript attempts direct app handoff with clipboard copy
   assert.ok(browserSource.includes('Copy endpoint (fallback)'));
   assert.ok(browserSource.includes('Connect to Windows Bridge'));
   assert.ok(browserSource.includes('windows-repository-bridge://connect-colab?endpoint='));
-  assert.ok(browserSource.includes('sendToWindowsBridge(false)'));
+  assert.ok(browserSource.includes('http://127.0.0.1:43817/handoff'));
+  assert.ok(browserSource.includes('navigator.permissions.query({ name: "loopback-network" })'));
+  assert.ok(browserSource.includes('if (loopbackPermission === "granted" && loopbackPolicyAllowed)'));
+  assert.ok(browserSource.includes('sendEndpointToBridge(false)'));
+  assert.doesNotMatch(browserSource, /sendToWindowsBridge\\(false\\)/);
 });
 
 test('notebook scopes its public API to the random URL path token and keeps the model off', () => {
@@ -883,7 +887,8 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   const notebook = JSON.parse(fs.readFileSync(notebookPath, 'utf8'));
   const source = (notebook.cells || []).filter(cell => cell.cell_type === 'code')
     .map(cell => Array.isArray(cell.source) ? cell.source.join('') : String(cell.source || '')).join('\n');
-  assert.match(source, /PUBLIC_VISION_ENDPOINT=/);
+  assert.ok(source.includes('PUBLIC_VISION_ENDPOINT generated; the raw URL is kept in the handoff panel, not notebook text output.'));
+  assert.equal(source.includes('print("PUBLIC_VISION_ENDPOINT=" + endpoint_url'), false);
   assert.match(source, /def display_public_endpoint/);
   assert.match(source, /navigator\.clipboard\.writeText/);
   assert.match(source, /def _route_path\(self\)/);
@@ -892,7 +897,8 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   assert.match(source, /registration\/ack/);
   assert.ok(source.includes('windows-repository-bridge://connect-colab?endpoint='));
   assert.match(source, /Connect to Windows Bridge/);
-  assert.doesNotMatch(source, /register_tunnel_with_desktop|display_desktop_pairing_link|wrb_pair_nonce|targetAddressSpace/);
+  assert.doesNotMatch(source, /register_tunnel_with_desktop|display_desktop_pairing_link|wrb_pair_nonce/);
+  assert.ok(source.includes('targetAddressSpace: "loopback"'));
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
 

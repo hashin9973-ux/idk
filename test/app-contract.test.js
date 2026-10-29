@@ -79,7 +79,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(renderer, /windowsBridge\.checkVisionSetup/);
   assert.match(renderer, /runVisionSetupCheck/);
   assert.match(renderer, /Vision: ready/);
-  assert.match(renderer, /Endpoint copied\. Testing the direct HTTPS health response/);
+  assert.match(renderer, /Colab endpoint received\. Testing the direct HTTPS health response/);
   assert.match(renderer, /HTTP 530 from Cloudflare/);
   assert.match(renderer, /Connection attempt failed; still watching/);
   assert.match(renderer, /incompatible_runtime: 'Colab: update notebook'/);
@@ -142,7 +142,8 @@ test('main process opens login in the system browser and returns focus after Git
     main.indexOf("ipcMain.handle('app:vision-connect-colab'"),
     main.indexOf("ipcMain.handle('app:vision-manual-panel'")
   );
-  assert.match(visionStatusHandler, /return visionService\.status\(\)/);
+  assert.match(visionStatusHandler, /const state = visionService\.status\(\)/);
+  assert.match(visionStatusHandler, /automatic_handoff_ready/);
   assert.doesNotMatch(visionStatusHandler, /githubAuth\.getState|githubState\.authenticated/);
   assert.match(connectColabHandler, /return visionService\.connectColab/);
   assert.doesNotMatch(connectColabHandler, /githubAuth\.getState|visionService\.setupCheck|mailboxCheck/);
@@ -460,7 +461,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('original_frame_region_px'));
   assert.ok(python.includes('region_px must be an in-frame crop'));
   assert.ok(python.includes('display_public_endpoint'));
-  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT='));
+  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT generated; the raw URL is kept in the handoff panel, not notebook text output.'));
   assert.ok(python.includes('navigator.clipboard.writeText'));
   assert.ok(python.includes('def _route_path(self)'));
   assert.ok(!python.includes('QDQWG_TOKEN'));
@@ -480,22 +481,39 @@ test('Colab connection hands the discovered public endpoint to Windows without c
   assert.match(service, /if \(text\) \{\s*const endpoint = endpointFromClipboard\(text\)/);
   assert.doesNotMatch(service, /text !== watch\.baseline/);
   assert.match(service, /parseTunnelEndpoint\(match\[0\]\)/);
-  assert.match(python, /PUBLIC_VISION_ENDPOINT=/);
+  assert.ok(python.includes('PUBLIC_VISION_ENDPOINT generated; the raw URL is kept in the handoff panel, not notebook text output.'));
   assert.match(python, /navigator\.clipboard\.writeText/);
   assert.ok(python.includes('Copy endpoint (fallback)'));
   assert.match(python, /Connect to Windows Bridge/);
   assert.ok(python.includes('windows-repository-bridge://connect-colab?endpoint='));
-  assert.ok(python.includes('sendToWindowsBridge(false)'));
+  assert.ok(python.includes('http://127.0.0.1:43817/handoff'));
+  assert.ok(python.includes('body: JSON.stringify({ endpoint })'));
+  assert.ok(python.includes('navigator.permissions.query({ name: "loopback-network" })'));
+  assert.ok(python.includes('targetAddressSpace: "loopback"'));
+  assert.ok(python.includes('if (loopbackPermission === "granted" && loopbackPolicyAllowed)'));
+  assert.ok(python.includes('The first loopback request is initiated directly by this click'));
+  assert.doesNotMatch(python, /sendToWindowsBridge\(false\)/);
   assert.match(python, /document\.createElement\("textarea"\)/);
-  assert.match(python, /Clipboard access was blocked\. The endpoint is selected/);
-  assert.match(python, /Paste URL in Windows Repository Bridge/);
+  assert.match(python, /Clipboard access was blocked\. Use the one-click app handoff/);
+  assert.match(python, /copying and pasting is the last resort/);
   assert.match(main, /'app:vision-manual-panel'/);
   assert.ok(main.includes('setAsDefaultProtocolClient(COLAB_HANDOFF_SCHEME)'));
+  assert.ok(main.includes('createColabHandoffServer({'));
+  assert.ok(main.includes('onEndpoint: queueColabEndpoint'));
+  assert.ok(main.includes('automatic_handoff_ready: handoff.ready === true'));
+  assert.ok(service.includes('once allowed, future endpoint URLs are sent automatically'));
   assert.ok(main.includes("app.on('open-url'"));
   assert.ok(main.includes("parseTunnelEndpoint(uri.searchParams.get('endpoint'))"));
+  const receiver = read('desktop', 'colab-handoff-server.js');
+  assert.ok(receiver.includes("const DEFAULT_PORT = 43817;"));
+  assert.ok(receiver.includes("const HANDOFF_PATH = '/handoff';"));
+  assert.ok(receiver.includes('isAllowedColabOrigin(origin)'));
+  assert.ok(receiver.includes('parseEndpoint(parsed.endpoint)'));
+  assert.ok(receiver.includes('request.resume()'));
   assert.doesNotMatch(main, /COLAB_PROTOCOL_SCHEME|receiveColabProtocolLink/);
   assert.doesNotMatch(service, /registerColabTunnel|wrb_pair_nonce|COLAB_PROTOCOL_SCHEME/);
-  assert.doesNotMatch(python, /wrb_pair_nonce|targetAddressSpace|navigator\.permissions/);
+  assert.doesNotMatch(python, /wrb_pair_nonce/);
+  assert.equal(python.includes('print("PUBLIC_VISION_ENDPOINT=" + endpoint_url'), false);
 });
 
 test('Colab vision notebook becomes ready after model download without startup image inference', () => {

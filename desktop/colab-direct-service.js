@@ -509,11 +509,11 @@ function createVisionService(deps) {
         endpoint_watch_active: Boolean(opened.watching),
         vision_activated: false, notebook_url: COLAB_NOTEBOOK_URL,
         message: opened.watching
-          ? 'The app is watching the Windows clipboard for the random public HTTPS endpoint from Colab. Run the server cell; if automatic detection keeps waiting, click Paste URL in this app and paste the complete PUBLIC_VISION_ENDPOINT line from the notebook output. The app verifies the endpoint over authenticated HTTPS. Vision remains off.'
+          ? 'Waiting for Colab to hand its temporary HTTPS endpoint directly to Windows Repository Bridge. The first connection may ask you to allow Colab to contact the local Bridge; once allowed, future endpoint URLs are sent automatically.'
           : opened.throttled
-            ? 'The app is already watching for a public endpoint or recently opened the notebook. Run the server cell in Colab; click Paste URL here if automatic detection does not work.'
-            : 'The app could not start watching for the notebook endpoint.',
-        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'If clipboard auto-detection fails, copy the full PUBLIC_VISION_ENDPOINT line and paste it using Paste URL in this app. The endpoint is a temporary secret; keep it private. Vision remains off until explicitly enabled.']
+            ? 'The app is already waiting for Colab endpoint handoff. Run the server cell; endpoint delivery is automatic after the browser grants loopback access.'
+            : 'The app could not start waiting for the notebook endpoint.',
+        next_steps: ['Run the notebook cell titled “Start the direct Colab vision server”.', 'On first use, allow Colab to contact Windows Repository Bridge when the browser asks. After that, newly generated endpoint URLs are sent automatically. If the browser blocks loopback access, click the one-click Windows app handoff button; copying and pasting is a last resort. The endpoint is a temporary secret; keep it private. Vision remains off until explicitly enabled.']
       };
     } catch (error) {
       return { status: 'error', connected: false, opened: false, vision_activated: false, error: messageOf(error), message: 'Could not initialize direct Colab connection: ' + messageOf(error) };

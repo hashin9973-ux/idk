@@ -28,6 +28,7 @@ const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint } = require('./colab-direct-service');
+const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
@@ -118,6 +119,7 @@ let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
+let colabHandoffServer = null;
 let observeService = null;
 let windowsInputController = null;
 let repositoryBridge = null;
@@ -126,6 +128,7 @@ let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
 let finishingVisionDispose = false;
+let finishingHandoffServerStop = false;
 let pendingGitHubCliLogin = null;
 let pendingColabHandoffUrl = '';
 let colabHandoffInFlight = false;
@@ -681,6 +684,14 @@ function queueColabHandoff(raw) {
   return true;
 }
 
+function queueColabEndpoint(raw) {
+  const endpoint = parseTunnelEndpoint(raw);
+  if (!endpoint || typeof endpoint.url !== 'string') return false;
+  pendingColabHandoffUrl = endpoint.url;
+  if (visionService) processPendingColabHandoff();
+  return true;
+}
+
 function setAutoConnectionStatus(status, error = '') {
   autoConnectionStatus = status;
   autoConnectionError = String(error || '');
@@ -931,7 +942,9 @@ function registerIpc() {
     }
     // Colab's direct HTTPS health endpoint is independent of the GitHub mailbox.
     // Do not hide a live Colab runtime because a separate GitHub /user probe timed out.
-    return visionService.status();
+    const state = visionService.status();
+    const handoff = colabHandoffServer ? colabHandoffServer.status() : { ready: false, lastError: 'not_initialized' };
+    return { ...state, automatic_handoff_ready: handoff.ready === true, automatic_handoff_error: handoff.lastError || '' };
   });
   ipcMain.handle('app:vision-connect-colab', async (event, endpointUrl) => {
     assertLocalUi(event, 'index.html');
@@ -944,9 +957,18 @@ function registerIpc() {
         message: appInitializationError || 'Colab vision service is unavailable in this app session.'
       };
     }
-    // Connecting Colab needs only its authenticated, high-entropy HTTPS endpoint.
-    // GitHub mailbox access is checked separately by Setup check and by normal tool
-    // requests; a transient GitHub outage must not prevent opening/reconnecting Colab.
+    // Start/re-arm the localhost receiver before opening Colab. The browser asks
+    // for loopback permission on the notebook's user gesture; later endpoints are
+    // sent automatically once that permission is granted.
+    if (colabHandoffServer && !colabHandoffServer.status().ready) {
+      try { await colabHandoffServer.start(); }
+      catch (error) {
+        appendDiagnosticLog('colab-loopback-handoff-start-failed', {
+          code: String(error && error.code || ''),
+          message: String(error && error.message || error).slice(0, 240)
+        });
+      }
+    }
     return visionService.connectColab(typeof endpointUrl === 'string' ? endpointUrl : '');
   });
   ipcMain.handle('app:vision-manual-panel', (event, visible) => {
@@ -1265,6 +1287,16 @@ if (!hasInstanceLock) {
           readClipboardText: () => clipboard.readText(),
           publishWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file)
         });
+        colabHandoffServer = createColabHandoffServer({
+          parseEndpoint: parseTunnelEndpoint,
+          onEndpoint: queueColabEndpoint
+        });
+        void colabHandoffServer.start().catch(error => {
+          appendDiagnosticLog('colab-loopback-handoff-listen-failed', {
+            code: String(error && error.code || ''),
+            message: String(error && error.message || error).slice(0, 240)
+          });
+        });
         observeService = createObserveService({
           githubAuth,
           getSampleFps: () => settings.observeFps ?? DEFAULT_SAMPLE_FPS,
@@ -1377,6 +1409,18 @@ app.on('before-quit', event => {
     if (visionService && typeof visionService.dispose === 'function') disposals.push(visionService.dispose());
     else if (windowsInputController && typeof windowsInputController.dispose === 'function') disposals.push(windowsInputController.dispose());
     Promise.allSettled(disposals).finally(() => app.quit());
+    return;
+  }
+  if (colabHandoffServer && !finishingHandoffServerStop) {
+    event.preventDefault();
+    finishingHandoffServerStop = true;
+    const server = colabHandoffServer;
+    void server.stop().catch(error => {
+      appendDiagnosticLog('colab-loopback-handoff-stop-failed', String(error && error.message || error));
+    }).finally(() => {
+      colabHandoffServer = null;
+      app.quit();
+    });
     return;
   }
 });
