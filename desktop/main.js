@@ -23,7 +23,6 @@ const {
   desktopCapturer,
   nativeTheme
 } = require('electron');
-const { clampRectToWorkArea } = require('./geometry');
 const { resolveWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
@@ -99,8 +98,6 @@ app.on('child-process-gone', (_event, details) => {
 });
 appendDiagnosticLog('startup', 'Main process loaded; pid=' + process.pid);
 
-const STATUS_SIZE = { width: 360, height: 402 };
-const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const COLAB_HANDOFF_SCHEME = 'windows-repository-bridge';
@@ -135,7 +132,6 @@ let autoConnectInFlight = false;
 let autoConnectionStatus = 'connecting';
 let autoConnectionError = '';
 let settings = {};
-let saveTimer = null;
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
@@ -417,42 +413,6 @@ function selectWorkspace() {
     return { canceled: false, workspaceRoot: selected };
   });
 }
-
-function clampBounds(bounds) {
-  const safe = {
-    x: Number.isFinite(Number(bounds && bounds.x)) ? Number(bounds.x) : 0,
-    y: Number.isFinite(Number(bounds && bounds.y)) ? Number(bounds.y) : 0,
-    width: STATUS_SIZE.width,
-    height: STATUS_SIZE.height
-  };
-  const display = screen.getDisplayMatching(safe);
-  return clampRectToWorkArea(safe, display.workArea, 280, 84);
-}
-
-function defaultBounds() {
-  const work = screen.getPrimaryDisplay().workArea;
-  return clampBounds({
-    x: work.x + Math.max(0, work.width - STATUS_SIZE.width - 24),
-    y: work.y + Math.max(0, work.height - STATUS_SIZE.height - 24),
-    ...STATUS_SIZE
-  });
-}
-
-function saveWindowBounds() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const [x, y] = mainWindow.getPosition();
-  settings.bounds = { x, y, width: STATUS_SIZE.width, height: STATUS_SIZE.height };
-  persistSettings();
-}
-
-function saveWindowBoundsSoon() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(saveWindowBounds, 250);
-}
-
-function hideToTray() { destroyDashboardWindowToTray(); }
-
 
 function safeBrowserUrl(raw) {
   try {
@@ -771,7 +731,6 @@ function setBrowserSettings(value) {
   return getBrowserSettings();
 }
 
-function hideToTray() { destroyDashboardWindowToTray(); }
 
 
 function minimizeToTray() {

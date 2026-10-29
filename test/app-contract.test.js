@@ -132,7 +132,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /current\.lastPollError \|\| current\.lastError/);
   assert.match(main, /const connectionError = workerStatus === 'online' \? '' :/);
   assert.match(main, /'app:vision-manual-panel'/);
-  assert.match(main, /VISION_MANUAL_HEIGHT = 500/);
+  assert.doesNotMatch(main, /STATUS_SIZE|VISION_MANUAL_HEIGHT|function clampBounds\(|function defaultBounds\(/);
   assert.match(main, /'app:vision-setup-check'/);
   const visionStatusHandler = main.slice(
     main.indexOf("ipcMain.handle('app:vision-status'"),
