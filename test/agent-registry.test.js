@@ -99,7 +99,7 @@ test('session identity is mandatory, activity and busy state are separate, and i
 
   advance(SESSION_INACTIVE_AFTER_MS + 1000);
   state = await registry.statuses(first.agent_id);
-  assert.equal(state.agents[0].status, 'active', 'a running request pins its seat');
+  assert.equal(state.agents[0].status, 'inactive', 'active/inactive reports recent activity, not execution state');
   assert.equal(state.agents[0].busy, true);
   const second = await registry.startSession({ label: 'Second conversation' });
   assert.equal(second.agent_id, 'agent-002', 'busy seat is not reused even after the activity window');
