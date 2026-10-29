@@ -107,6 +107,7 @@ const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
   branch: 'bridge-mailbox',
   allowPublicMailbox: false
 });
+const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest', 'sunset', 'rose', 'high-contrast']);
 
 let mainWindow = null;
 let dashboardWindow = null;
@@ -1070,6 +1071,7 @@ function getUiState() {
   return {
     settings: {
       repositoryBridge: settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE,
+      dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
       ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true
@@ -1109,6 +1111,14 @@ function registerIpc() {
     assertLocalUi(event, 'index.html'); const value = Number(raw);
     if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('TTS volume must be between 0 and 100.');
     settings.ttsVolume = Math.round(value); persistSettings(); return { volume: settings.ttsVolume };
+  });
+  ipcMain.handle('app:set-theme', (event, raw) => {
+    assertLocalUi(event, 'index.html');
+    const theme = String(raw || '');
+    if (!DASHBOARD_THEME_IDS.includes(theme)) throw new Error('Choose one of the available dashboard themes.');
+    settings.dashboardTheme = theme;
+    persistSettings();
+    return { theme };
   });
   ipcMain.handle('app:repository-bridge-config', async (event, input) => {
     assertLocalUi(event, 'index.html');
@@ -1498,6 +1508,7 @@ if (!hasInstanceLock) {
     settings = loadSettings();
     const savedBridge = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
       ? settings.repositoryBridge : {};
+    settings.dashboardTheme = DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
     settings.ttsVolume = Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, Math.round(settings.ttsVolume))) : 100;
     settings.browserKeepActive = settings.browserKeepActive === true;
     settings.browserLowMemory = settings.browserLowMemory === true;
