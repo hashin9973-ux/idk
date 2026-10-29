@@ -73,12 +73,12 @@ function applyDashboardState(value){
     for(const [id,el] of [['queues',queue],['controls',controls]]){
       const w=widgets[id]&&typeof widgets[id]==='object'?widgets[id]:{};
       const num=(key,def,min,max)=>Number.isFinite(w[key])?Math.max(min,Math.min(max,Math.round(w[key]))):def;
-      let widthDefault=id==='queues'?360:360;
-      if(!savedSeatLayouts&&id==='queues'&&Number(w.width)>650)widthDefault=360;
-      if(!savedSeatLayouts&&id==='controls'&&Number(w.width)>520)widthDefault=380;
+      const widthDefault=id==='queues'?360:360;
+      let width=num('width',widthDefault,180,4000);
+      if(!savedSeatLayouts&&id==='queues'&&width>650)width=360;
+      if(!savedSeatLayouts&&id==='controls'&&width>520)width=380;
       Object.assign(el.style,{left:num('x',24,0,10000)+'px',top:num('y',id==='queues'?28:210,0,10000)+'px',
-        width:num('width',widthDefault,180,4000)+'px',
-        height:num('height',id==='queues'?160:207,80,3000)+'px'});
+        width:width+'px',height:num('height',id==='queues'?160:207,80,3000)+'px'});
       widgetMoved[id]=Boolean(w&&Object.keys(w).length);
     }
     active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
@@ -217,6 +217,10 @@ function renderAgentMailboxes(rawAgents){
   agents.forEach((agent,index)=>{
     let card=agentWidgets.get(agent.agent_id);
     if(!card)card=makeAgentWidget(agent,index);
+    if(!savedWidgetLayout[agent.agent_id]&&!widgetMoved[agent.agent_id]){
+      const layout=agentLayoutFor(agent.agent_id,index);
+      Object.assign(card.style,{left:layout.x+'px',top:layout.y+'px',width:layout.width+'px',height:layout.height+'px'});
+    }
     const header=card.querySelector('.agent-console-header');
     const name=header.querySelector('.agent-console-name');
     const identityLine=header.querySelector('.agent-console-id');
@@ -400,6 +404,6 @@ api.onPrepareForTray(async payload=>{
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
 api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
-window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';positionControls();updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
+window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width='360px';positionControls();renderAgentMailboxes(bridge.agentMailboxes);updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
 applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();
