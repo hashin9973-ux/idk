@@ -215,9 +215,8 @@ function makeAgentWidget(agent,index){
   const header=document.createElement('div');header.className='agent-console-header';header.dataset.agentDragHandle='true';
   const identity=document.createElement('div');identity.className='agent-console-identity';
   const name=document.createElement('strong');name.className='agent-console-name';
-  const identityLine=document.createElement('div');identityLine.className='agent-console-id';
   const sessionLine=document.createElement('div');sessionLine.className='agent-console-session';
-  identity.append(name,identityLine,sessionLine);
+  identity.append(name,sessionLine);
   const status=document.createElement('span');status.className='agent-console-status';
   const busy=document.createElement('span');busy.className='agent-console-busy';
   const counts=document.createElement('span');counts.className='agent-console-counts';
@@ -240,13 +239,13 @@ function renderAgentMailboxes(rawAgents){
     }
     const header=card.querySelector('.agent-console-header');
     const name=header.querySelector('.agent-console-name');
-    const identityLine=header.querySelector('.agent-console-id');
     const sessionLine=header.querySelector('.agent-console-session');
     const status=header.querySelector('.agent-console-status');
     const busy=header.querySelector('.agent-console-busy');
     const counts=header.querySelector('.agent-console-counts');
-    name.textContent=String(agent.label||agent.agent_id);
-    identityLine.textContent='ID '+agent.agent_id;
+    // The panel belongs to the seat, not the task/session label. Individual
+    // requests and their tool names remain listed in the console body below.
+    name.textContent=String(agent.agent_id);
     sessionLine.textContent='SESSION '+String(agent.session_id||'none');
     sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
     const active=agent.status==='active';
