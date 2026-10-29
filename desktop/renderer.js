@@ -118,6 +118,7 @@
         : pending > 0 ? 'Worker online · ' + pending + ' queued'
           : 'Worker online · idle',
       connecting: 'Worker connecting…',
+      reconnecting: 'Worker reconnecting · retrying GitHub mailbox',
       offline: 'Worker cannot reach the GitHub mailbox',
       github: 'Worker waiting for GitHub sign-in',
       setup: 'Worker needs configuration',
