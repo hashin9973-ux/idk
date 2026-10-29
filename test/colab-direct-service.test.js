@@ -898,7 +898,7 @@ test('notebook scopes its public API to the random URL path token and keeps the 
   assert.ok(source.includes('windows-repository-bridge://connect-colab?endpoint='));
   assert.match(source, /Connect to Windows Bridge/);
   assert.doesNotMatch(source, /register_tunnel_with_desktop|display_desktop_pairing_link|wrb_pair_nonce/);
-  assert.match(source, /targetAddressSpace: \\"loopback\\"/);
+  assert.ok(source.includes('targetAddressSpace: "loopback"'));
   assert.doesNotMatch(source, /QDQWG_TOKEN|userdata\.get|api\.github\.com\/repos\/hashin9973-ux\/qdqwg/);
 });
 
