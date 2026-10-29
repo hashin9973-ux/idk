@@ -125,6 +125,7 @@ let activeCaptionPayload = null;
 let captionCloseTimer = null;
 let captionProgressTimer = null;
 let captionPlaybackInFlight = false;
+let trayUnloadPromise = null;
 const browserTabs = new Map();
 let activeBrowserTabId = null;
 let browserBounds = { x: 0, y: 0, width: 1, height: 1 };
@@ -635,17 +636,48 @@ function destroyEmbeddedBrowserViews() {
 }
 
 function destroyDashboardWindowToTray() {
+  if (trayUnloadPromise) return trayUnloadPromise;
   const win = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null;
-  if (!win) return { hidden: true, destroyed: false };
-  try { settings.dashboardBounds = win.getBounds(); } catch {}
-  saveBrowserTabMetadata();
-  persistSettings();
-  destroyEmbeddedBrowserViews();
-  if (mainWindow === win) mainWindow = null;
-  if (dashboardWindow === win) dashboardWindow = null;
-  try { win.destroy(); } catch (error) { appendDiagnosticLog('dashboard-destroy-to-tray-failed', error); }
-  return { hidden: true, destroyed: true };
+  if (!win) return Promise.resolve({ hidden: true, destroyed: false });
+  const operation = (async () => {
+    let savedState = null;
+    if (dashboardWindow === win && !win.webContents.isDestroyed()) {
+      const requestId = crypto.randomUUID();
+      savedState = await new Promise(resolve => {
+        let settled = false;
+        const finish = value => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          ipcMain.removeListener('app:tray-state-saved', onSaved);
+          resolve(value && typeof value === 'object' ? value : null);
+        };
+        const onSaved = (event, value) => {
+          if (event.sender !== win.webContents || !value || value.requestId !== requestId) return;
+          finish(value.state);
+        };
+        const timer = setTimeout(() => finish(null), 650);
+        ipcMain.on('app:tray-state-saved', onSaved);
+        dashboardSend('app:prepare-for-tray', { requestId });
+      });
+    }
+    if (savedState) {
+      settings.dashboardState = normalizeDashboardState(savedState);
+      syncBrowserRegistryFromDashboardState(settings.dashboardState);
+    }
+    try { settings.dashboardBounds = win.getBounds(); } catch {}
+    saveBrowserTabMetadata();
+    persistSettings();
+    destroyEmbeddedBrowserViews();
+    if (mainWindow === win) mainWindow = null;
+    if (dashboardWindow === win) dashboardWindow = null;
+    try { win.destroy(); } catch (error) { appendDiagnosticLog('dashboard-destroy-to-tray-failed', error); }
+    return { hidden: true, destroyed: true, stateSaved: Boolean(savedState) };
+  })();
+  trayUnloadPromise = operation.finally(() => { trayUnloadPromise = null; });
+  return trayUnloadPromise;
 }
+
 
 function createDashboardWindow() {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) return dashboardWindow;
