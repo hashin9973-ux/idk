@@ -317,6 +317,25 @@ test('repository API allows only the configured mailbox contents routes', async 
   });
   assert.deepEqual(listing.result, [{ name: 'req-test.json', type: 'file' }]);
 
+  // Startup and agent registration now use this sibling mailbox directory.
+  const agentsListing = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/agents',
+    query: { ref: 'bridge-mailbox' }
+  });
+  assert.deepEqual(agentsListing.result, [{ name: 'req-test.json', type: 'file' }]);
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/agents/agent-test.json',
+    body: {
+      message: '[local bridge] register agent',
+      content: Buffer.from(JSON.stringify({ agent_id: 'agent-test', status: 'idle' })).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  });
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/agents?ref=bridge-mailbox')));
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/agents/agent-test.json')));
+
   const legacyArtifactRead = await auth.requestApi({
     method: 'GET',
     path: '/repos/example/private-repo/contents/bridge/artifacts/req-test-batch-output-001.json',
@@ -462,7 +481,7 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.equal(writeCall.options.headers.Authorization, 'Bearer gho-mailbox-test-token');
   assert.equal(JSON.parse(writeCall.options.body).branch, 'bridge-mailbox');
 
-  for (const folder of ['requests', 'results', 'claims', 'state', 'context', 'artifacts']) {
+  for (const folder of ['requests', 'results', 'claims', 'state', 'context', 'artifacts', 'agents']) {
     await auth.requestApi({
       method: 'PUT',
       path: '/repos/example/private-repo/contents/bridge/' + folder + '/.gitkeep',
