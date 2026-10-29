@@ -1145,26 +1145,12 @@ function bringMainWindowForward() {
 }
 
 function assertLocalUi(event, filename) {
-  const trusted = dashboardWindow && !dashboardWindow.isDestroyed() && dashboardWindow.webContents === event.sender ? { file: 'dashboard.html' } : null;
+  const trusted = dashboardWindow && !dashboardWindow.isDestroyed() && dashboardWindow.webContents === event.sender;
   if (!trusted) throw new Error('Only the trusted local dashboard may invoke this action.');
   const url = event.senderFrame && event.senderFrame.url || '';
   if (!url.startsWith('file://') || !url.endsWith('/desktop/dashboard.html') ||
-      (filename !== trusted.file && !(filename === 'index.html' && trusted.file === 'dashboard.html'))) throw new Error('Unexpected IPC sender.');
+      (filename !== 'dashboard.html' && filename !== 'index.html')) throw new Error('Unexpected IPC sender.');
 }
-
-
-  const trusted = [
-    { window: mainWindow, file: 'index.html' },
-    { window: dashboardWindow, file: 'dashboard.html' }
-  ].find(item => item.window && !item.window.isDestroyed() && item.window.webContents === event.sender);
-  if (!trusted) throw new Error('Only a trusted local desktop window may invoke this action.');
-  const url = event.senderFrame && event.senderFrame.url || '';
-  if (!url.startsWith('file://') || !url.endsWith('/desktop/' + trusted.file) ||
-      (filename !== trusted.file && !(filename === 'index.html' && trusted.file === 'dashboard.html'))) {
-    throw new Error('Unexpected IPC sender.');
-  }
-}
-
 
 function getTtsSettings() {
   const source = settings.ttsSettings && typeof settings.ttsSettings === 'object' ? settings.ttsSettings : {};
@@ -1608,31 +1594,6 @@ async function chooseCloudFolder() {
   if (cloudSync) cloudSyncStatus = await cloudSync.configure({ folder: settings.cloudSync.folder, enabled: settings.cloudSync.enabled === true });
   dashboardSend('app:cloud-sync-status', cloudSyncStatus);
   return { canceled: false, folder: settings.cloudSync.folder, status: cloudSyncStatus };
-}
-
-
-  return {
-    settings: {
-      repositoryBridge: settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE,
-      dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
-      ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
-      browserKeepActive: settings.browserKeepActive === true,
-      browserLowMemory: settings.browserLowMemory === true
-    },
-    bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false }),
-    // This state is returned only to the local desktop UI. Absolute local paths
-    // are not added to the GitHub mailbox context or shared worker state.
-    workspace: {
-      root: getWorkspaceRoot(),
-      index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
-      syncError: workspaceInitializationError || filesystemIndexSyncError || ''
-    },
-    initialization: {
-      error: appInitializationError || workspaceInitializationError || '',
-      trayAvailable: Boolean(tray),
-      trayError: trayInitializationError
-    }
-  };
 }
 
 function registerIpc() {
