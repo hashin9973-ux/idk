@@ -65,7 +65,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.match(main, /clearStaleContext\(\)/);
   assert.match(main, /Promise\.allSettled\(disposals\)\.finally\(\(\) => app\.quit\(\)\)/);
   assert.doesNotMatch(main, /void observeService\.dispose\(\)\.catch/);
-  assert.match(main, /height: 402/);
+  assert.match(main, /minHeight: 540/);
   assert.match(main, /createObserveService/);
   assert.match(main, /const screenWidth = Math\.max\(1, Math\.round\(primaryDisplay\.size\.width \* scaleFactor\)\)/);
   assert.match(main, /thumbnailSize: \{ width: screenWidth, height: screenHeight \}/);
@@ -124,7 +124,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /startup failed/i);
   assert.match(main, /'app:select-workspace'/);
   assert.match(main, /function selectWorkspace\(\)/);
-  assert.match(main, /height: 402/);
+  assert.match(main, /minHeight: 540/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
   assert.match(main, /const freshnessWindowMs = Math\.max\(15000, scanInterval \* 3\)/);
