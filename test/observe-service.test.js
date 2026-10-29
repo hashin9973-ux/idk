@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createObserveService, OBSERVE_PROTOCOL, FRAME_LIMIT, DEFAULT_SAMPLE_FPS, SAMPLE_INTERVAL_MS } = require('../desktop/observe-service');
+const { createObserveService, OBSERVE_PROTOCOL, FRAME_LIMIT, DEFAULT_SAMPLE_FPS, SAMPLE_INTERVAL_MS, ACCESSIBILITY_REFRESH_INTERVAL_MS } = require('../desktop/observe-service');
 
 test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling ten-frame buffer', async () => {
   let tick = null;
@@ -98,6 +98,81 @@ test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling 
   await service.dispose();
 });
 
+
+
+test('Observe uses the downsampled visual fingerprint for changes and throttles expensive UI Automation refreshes', async () => {
+  let tick = null;
+  let clock = 10000;
+  let rawFrame = 0;
+  let fingerprint = 'static-screen';
+  let accessibilityCalls = 0;
+  const published = [];
+  const service = createObserveService({
+    githubAuth: {
+      requestApi: async input => {
+        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
+        published.push(JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8')));
+        return { result: { content: { sha: 'b'.repeat(40) } } };
+      }
+    },
+    now: () => clock,
+    captureScreenshot: async () => ({
+      bytes: Buffer.from('full-frame-' + (++rawFrame)),
+      frame_id: 'exact-full-frame-' + rawFrame,
+      width: 1920, height: 1080, screen_width: 1920, screen_height: 1080,
+      captured_at: clock, display_id: '1'
+    }),
+    fingerprintScreenshot: async () => fingerprint,
+    getAccessibleSnapshot: async () => {
+      accessibilityCalls++;
+      return {
+        available: true, source: 'windows_uia',
+        active_window: { title: 'Browser', bbox_screen_px: [0, 0, 1920, 1080] },
+        focused_control: null, controls: [{ label: 'Search', role: 'Edit' }],
+        node_count: 2
+      };
+    },
+    sleep: async () => {},
+    setIntervalImpl: fn => { tick = fn; return 1; },
+    clearIntervalImpl: () => {}
+  });
+
+  assert.equal(ACCESSIBILITY_REFRESH_INTERVAL_MS, 1000);
+  await service.setEnabled(true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.status().frame_count, 1);
+  assert.equal(accessibilityCalls, 1);
+
+  // Full-resolution bytes and frame_id change, but unchanged visual content must not
+  // spawn a new accessibility query or append a redundant passive-context frame.
+  clock += 500;
+  await tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.status().capture_count, 2);
+  assert.equal(service.status().frame_count, 1);
+  assert.equal(accessibilityCalls, 1);
+
+  // A meaningful change inside one second reuses recent UI Automation geometry.
+  clock += 500;
+  fingerprint = 'changed-screen-a';
+  await tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.status().frame_count, 2);
+  assert.equal(accessibilityCalls, 2);
+
+  clock += 500;
+  fingerprint = 'changed-screen-b';
+  await tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.status().frame_count, 3);
+  assert.equal(accessibilityCalls, 2, 'UI Automation is capped at once per second even as pixels change');
+  const latestFrame = published.at(-1).frames.at(-1);
+  assert.equal(latestFrame.frame_id, 'exact-full-frame-' + rawFrame);
+  assert.equal(latestFrame.accessibility.snapshot_reused, true);
+  assert.equal(latestFrame.accessibility.snapshot_age_ms, 500);
+
+  await service.dispose();
+});
 
 test('Observe coalesces pending passive analysis to the newest frame and marks skipped frames', async t => {
   let tick = null;
