@@ -212,3 +212,6 @@ button.status-row:disabled { cursor: default; }
 .vision-message[data-state="action_required"],
 .vision-message[data-state="not_verified"],
 .vision-message[data-state="in_progress"] { color: #e1c176; }
+
+.dashboard-control { right: 53px; font-size: 12px; }
+.dashboard-control:hover { background: rgba(114,224,198,.14); color: var(--accent); }
