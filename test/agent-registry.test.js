@@ -126,7 +126,7 @@ test('session identity is mandatory, activity and busy state are separate, and i
 });
 
 test('agent-to-agent messages and replies use exact session inboxes even when seats are reusable', async () => {
-  const { registry, advance } = mockMailbox();
+  const { registry, advance, records } = mockMailbox();
   const sender = await registry.startSession({ label: 'Coordinator' });
   const recipient = await registry.startSession({ label: 'Implementer' });
 
@@ -139,8 +139,13 @@ test('agent-to-agent messages and replies use exact session inboxes even when se
   assert.equal(sent.to_agent_id, recipient.agent_id);
   assert.ok(sent.message_id);
   assert.equal(sent.thread_id, sent.message_id);
+  const immutablePath = registry.messagePath(recipient.session_id, sent.message_id);
+  const immutableBeforeRead = structuredClone(records.get(immutablePath).value);
+  assert.equal(immutableBeforeRead.read_at, null);
 
   const incoming = await registry.readMessages(recipient.session_id, { unread_only: true });
+  assert.deepEqual(records.get(immutablePath).value, immutableBeforeRead, 'read state must not mutate message bodies');
+  assert.ok(records.has('bridge/agent-message-receipts/' + recipient.session_id + '/' + sent.message_id + '.json'));
   assert.equal(incoming.count, 1);
   const original = incoming.messages[0];
   assert.equal(original.message, '[' + sender.session_id + '][' + sender.agent_id + '] Please check the API contract and report back.');
@@ -168,6 +173,37 @@ test('agent-to-agent messages and replies use exact session inboxes even when se
   advance(SESSION_INACTIVE_AFTER_MS + 1);
   await assert.rejects(
     registry.sendMessage(sender.session_id, { to_agent_id: recipient.agent_id, message: 'Are you there?' }),
-    /inactive/i
+    /inactive|SESSION_EXPIRED/i
   );
+});
+
+test('an idle session is rejected after its inactivity lease expires', async () => {
+  const { registry, advance } = mockMailbox();
+  const first = await registry.startSession({ label: 'Original conversation' });
+  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_EXPIRED/i);
+  const replacement = await registry.startSession({ label: 'Replacement conversation' });
+  assert.equal(replacement.agent_id, first.agent_id);
+  assert.notEqual(replacement.session_id, first.session_id);
+});
+
+test('recent legacy seats are protected until their activity expires', async () => {
+  const { registry, records, advance } = mockMailbox();
+  const lastSeen = new Date().toISOString();
+  records.set('bridge/agents/agent-001.json', {
+    value: {
+      protocol: 'chatgpt-local-agent-record/v1', agent_id: 'agent-001',
+      label: 'Legacy active agent', status: 'active', created_at: lastSeen,
+      updated_at: lastSeen, last_seen_at: lastSeen, active_request_ids: [],
+      recent_request_ids: [], last_request_id: null, last_completed_at: null
+    }, sha: 'legacy-seat-sha'
+  });
+  const status = await registry.statuses();
+  assert.equal(status.agents[0].status, 'active');
+  assert.equal(status.agents[0].legacy_record, true);
+  const newSession = await registry.startSession({ label: 'New conversation' });
+  assert.equal(newSession.agent_id, 'agent-002');
+  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  const replacement = await registry.startSession({ label: 'Replacement conversation' });
+  assert.equal(replacement.agent_id, 'agent-001');
 });

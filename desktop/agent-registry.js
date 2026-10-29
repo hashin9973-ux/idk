@@ -54,6 +54,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
     return inboxPath(sessionId) + '/' + messageId + '.json';
   }
+  function messageReceiptPath(sessionId, messageId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
+    if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
+    return 'bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json';
+  }
 
   async function withLock(key, operation) {
     const prior = locks.get(key) || Promise.resolve();
@@ -149,8 +154,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   function activityTime(seat, session) {
-    const values = [seat && seat.last_activity_at, session && session.last_activity_at]
-      .map(value => Date.parse(String(value || ''))).filter(Number.isFinite);
+    const values = [
+      seat && seat.last_activity_at, seat && seat.last_seen_at, seat && seat.updated_at,
+      session && session.last_activity_at, session && session.updated_at,
+      seat && seat.created_at, session && session.created_at
+    ].map(value => Date.parse(String(value || ''))).filter(Number.isFinite);
     return values.length ? Math.max(...values) : 0;
   }
 
@@ -162,9 +170,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   function isInactive(seat, session) {
-    if (!seat || seat.protocol !== AGENT_RECORD_PROTOCOL || !seat.current_session_id) return true;
+    if (!seat) return true;
     if (isBusy(seat, session)) return false;
     const last = activityTime(seat, session);
+    if (seat.protocol !== AGENT_RECORD_PROTOCOL) return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
+    if (!seat.current_session_id) return true;
     return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || session.status === 'expired';
   }
 
@@ -198,9 +208,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       for (let attempt = 0; attempt < 64; attempt++) {
         const ids = await listSeatIds();
         const rows = await Promise.all(ids.map(readSeatAndSession));
-        const candidate = rows.find(row => !row.remote || !row.seat ||
-          row.seat.protocol !== AGENT_RECORD_PROTOCOL || !row.seat.current_session_id ||
-          isInactive(row.seat, row.session));
+        const candidate = rows.find(row => !row.remote || !row.seat || isInactive(row.seat, row.session));
 
         let agentId;
         let priorSessionId = null;
@@ -232,8 +240,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
             const seat = current && current.value;
             const currentSession = seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id
               ? (await readSession(seat.current_session_id))?.value || null : null;
-            if (seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id &&
-                !isInactive(seat, currentSession)) {
+            if (seat && !isInactive(seat, currentSession)) {
               return null;
             }
             const nextSeat = {
@@ -280,6 +287,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
         seatRemote.value.current_session_id !== sessionId) {
       throw new Error('SESSION_EXPIRED: The reusable seat has been leased to another conversation. Call session_start for a new session_id.');
     }
+    if (!isBusy(seatRemote.value, session) && isInactive(seatRemote.value, session)) {
+      throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window. Call session_start to obtain a current session_id.');
+    }
     return { session_id: sessionId, agent_id: session.agent_id, agent_label: session.label || session.agent_id };
   }
 
@@ -290,6 +300,13 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
           seatRemote.value.current_session_id !== request.session_id) {
         throw new Error('SESSION_EXPIRED: This conversation no longer owns its assigned seat. Call session_start.');
+      }
+      const sessionRemote = await readSession(request.session_id);
+      if (!sessionRemote || sessionRemote.value.status === 'expired') {
+        throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+      }
+      if (!isBusy(seatRemote.value, sessionRemote.value) && isInactive(seatRemote.value, sessionRemote.value)) {
+        throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window before execution. Call session_start.');
       }
       const now = timestamp();
       await mutateSession(request.session_id, current => {
@@ -346,12 +363,16 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       if (!row.remote) return null;
       const seat = row.seat;
       if (seat.protocol !== AGENT_RECORD_PROTOCOL) {
+        const lastActivity = activityTime(seat, null);
+        const busy = isBusy(seat, null);
+        const active = Boolean(lastActivity && clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
         return {
-          agent_id: agentId, label: agentId, status: 'inactive', busy: false, session_id: null,
-          last_activity_at: seat.last_seen_at || seat.created_at || null,
+          agent_id: agentId, label: seat.label || agentId, status: active ? 'active' : 'inactive', busy,
+          session_id: null, last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
           last_request_id: seat.last_request_id || null, last_completed_at: seat.last_completed_at || null,
           recent_request_ids: Array.isArray(seat.recent_request_ids) ? seat.recent_request_ids.slice(-50) : [],
-          active_request_ids: [], reusable: true, legacy_record: true
+          active_request_ids: Array.isArray(seat.active_request_ids) ? seat.active_request_ids.slice(-50) : [],
+          reusable: !busy && !active, legacy_record: true
         };
       }
       const session = row.session;
@@ -402,6 +423,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
         seat.value.current_session_id !== sessionId) {
       throw new Error('SESSION_EXPIRED: The seat has been reassigned; start a new session before messaging.');
+    }
+    if (!isBusy(seat.value, session) && isInactive(seat.value, session)) {
+      throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window. Call session_start before messaging.');
     }
     return { session, seat: seat.value };
   }
@@ -460,26 +484,44 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     };
   }
 
-  async function markMessageRead(sessionId, messageId) {
+  async function markMessageRead(sessionId, messageId, knownRecord = null) {
     const path = messagePath(sessionId, messageId);
-    for (let attempt = 0; attempt < 5; attempt++) {
+    let value = knownRecord;
+    if (!value) {
       const remote = await readRemoteFile(path);
       if (!remote) return null;
-      const value = remote.value;
-      if (!value || value.protocol !== 'chatgpt-local-agent-message/v1' ||
-          value.message_id !== messageId || value.recipient_session_id !== sessionId) {
-        throw new Error('Message record is malformed or addressed to another session.');
+      value = remote.value;
+    }
+    if (!value || value.protocol !== 'chatgpt-local-agent-message/v1' ||
+        value.message_id !== messageId || value.recipient_session_id !== sessionId) {
+      throw new Error('Message record is malformed or addressed to another session.');
+    }
+    const receiptPath = messageReceiptPath(sessionId, messageId);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existing = await readRemoteFile(receiptPath);
+      if (existing) {
+        const receipt = existing.value;
+        if (!receipt || receipt.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
+            receipt.message_id !== messageId || receipt.recipient_session_id !== sessionId ||
+            typeof receipt.read_at !== 'string') {
+          throw new Error('Message read receipt is malformed or addressed to another session.');
+        }
+        return { ...value, read_at: receipt.read_at };
       }
-      if (value.read_at) return value;
+      const readAt = timestamp();
+      const receipt = {
+        protocol: 'chatgpt-local-agent-message-receipt/v1',
+        message_id: messageId, recipient_session_id: sessionId,
+        created_at: readAt, read_at: readAt
+      };
       try {
-        const next = { ...value, read_at: timestamp(), updated_at: timestamp() };
-        const saved = await writeRemoteJson(path, next, remote.sha, false);
-        if (saved && saved.ok) return next;
+        const saved = await writeRemoteJson(receiptPath, receipt, null, true);
+        if (saved && saved.ok) return { ...value, read_at: readAt };
       } catch (error) {
         if (!isConflictError(error) || attempt === 4) throw error;
       }
     }
-    throw new Error('Could not mark message as read after repeated mailbox conflicts.');
+    throw new Error('Could not publish a read receipt after repeated mailbox conflicts.');
   }
 
   async function readMessages(sessionId, args = {}) {
@@ -491,9 +533,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
-      .sort().slice(-500);
+      .sort().slice(-200);
     const found = [];
-    for (let start = Math.max(0, names.length - 500); start < names.length; start += 16) {
+    for (let start = 0; start < names.length; start += 16) {
       const group = names.slice(start, start + 16);
       const rows = await Promise.all(group.map(async name => {
         const messageId = name.slice(0, -5);
@@ -509,13 +551,20 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       found.push(...rows.filter(Boolean));
     }
     found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
-    const selected = found.filter(record => !unreadOnly || !record.read_at).slice(-limit);
+    let receiptEntries;
+    try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = []; else throw error; }
+    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
+      .map(name => name.slice(0, -5)));
+    const selected = found.filter(record => !unreadOnly ||
+      (!receiptIds.has(record.message_id) && !record.read_at)).slice(-limit);
     const read = [];
-    for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id));
+    for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
     return {
       session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
-      messages: read.filter(Boolean),
-      note: 'Messages are scoped to the exact recipient session_id. Replies are written into the original sender session inbox, so a recycled agent_id can never redirect an old conversation message to a new occupant.'
+      scanned_recent_limit: 200, messages: read.filter(Boolean),
+      note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
     };
   }
 
@@ -543,7 +592,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       created_at: timestamp(), read_at: null, in_reply_to: original.message_id
     };
     await writeMessage(recipientSessionId, record);
-    await markMessageRead(sessionId, original.message_id);
+    await markMessageRead(sessionId, original.message_id, original);
     return {
       message_id: id, thread_id: record.thread_id, in_reply_to: original.message_id,
       sender_agent_id: record.sender_agent_id, to_agent_id: record.recipient_agent_id,
