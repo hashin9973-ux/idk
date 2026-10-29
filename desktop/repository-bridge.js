@@ -86,8 +86,8 @@ function validateRequest(requestId, request) {
   const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
-  if (request.agent_id !== undefined || request.session_id !== undefined) {
-    throw new Error('Legacy agent_id/session_id request identity is no longer supported. Call session_start and include session_id.');
+  if (request.agent_id !== undefined || request.agent_token !== undefined) {
+    throw new Error('Legacy agent_id/agent_token request identity is no longer supported. Call session_start and include session_id.');
   }
   const hasSessionId = request.session_id !== undefined && request.session_id !== null && request.session_id !== '';
   if (isSessionBootstrap && hasSessionId) throw new Error('session_start is the bootstrap request and must omit session_id.');
@@ -1814,6 +1814,7 @@ function createRepositoryBridge(deps) {
       updateMailboxUiRecord(requestId, { status: 'rejected', progress: 100, error: rejected.error, resultJson: consoleJson(rejected) });
       mailboxRequestCache.delete(requestId);
       requestAgents.delete(requestId);
+      requestSessions.delete(requestId);
       announce();
       return;
     }
@@ -1826,6 +1827,7 @@ function createRepositoryBridge(deps) {
       updateMailboxUiRecord(requestId, { status: 'waiting-result', progress: 25, claimJson: claim.value ? consoleJson(claim.value) : '' });
       mailboxRequestCache.delete(requestId);
       requestAgents.delete(requestId);
+      requestSessions.delete(requestId);
       announce();
       return;
     }
@@ -2003,6 +2005,7 @@ function createRepositoryBridge(deps) {
       protocol: 'chatgpt-local-repo-claim/v1',
       request_id: requestId,
       ...(claimAgentId ? { agent_id: claimAgentId } : {}),
+      ...(request.session_id ? { session_id: request.session_id } : (resultRecord.session_id ? { session_id: resultRecord.session_id } : {})),
       worker_id: workerId,
       tool: request.tool,
       status: 'completed',
