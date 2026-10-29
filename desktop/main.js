@@ -20,7 +20,8 @@ const {
   Menu,
   nativeImage,
   clipboard,
-  desktopCapturer
+  desktopCapturer,
+  nativeTheme
 } = require('electron');
 const { clampRectToWorkArea } = require('./geometry');
 const { resolveWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
@@ -34,6 +35,7 @@ const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
+const { createCloudSync } = require('./cloud-sync');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -114,6 +116,13 @@ const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest
 let mainWindow = null;
 let dashboardWindow = null;
 let tray = null;
+let cloudSync = null;
+let cloudSyncStatus = { enabled: false, configured: false, state: 'disabled', lastSyncedAt: '', error: '' };
+let captionWindow = null;
+let captionWindowLoaded = false;
+let activeCaptionPayload = null;
+let captionCloseTimer = null;
+let captionPlaybackInFlight = false;
 const browserTabs = new Map();
 let activeBrowserTabId = null;
 let browserBounds = { x: 0, y: 0, width: 1, height: 1 };
@@ -653,7 +662,7 @@ function createDashboardWindow() {
   win.setMenuBarVisibility(false);
   win.on('resize', () => {
     if (dashboardWindow !== win || win.isDestroyed()) return;
-    settings.dashboardBounds = win.getBounds(); persistSettings();
+    settings.dashboardBounds = win.getBounds(); persistSettings(); publishSharedState();
     dashboardSend('app:browser-bounds-refresh', {});
   });
   win.on('move', () => {
@@ -709,7 +718,7 @@ function getBrowserSettings() {
 function setBrowserSettings(value) {
   const v = value && typeof value === 'object' ? value : {};
   const keepActive = v.keepActive === true, lowMemory = v.lowMemory === true;
-  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
+  settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings(); publishSharedState();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
     const enabled = keepActive && tab.id === activeBrowserTabId;
     tab.view.webContents.setBackgroundThrottling(!enabled);
@@ -1156,7 +1165,452 @@ function assertLocalUi(event, filename) {
   }
 }
 
+
+function getTtsSettings() {
+  const source = settings.ttsSettings && typeof settings.ttsSettings === 'object' ? settings.ttsSettings : {};
+  return {
+    mode: source.mode === 'notification' ? 'notification' : 'autoplay',
+    captionsOnAutoplay: source.captionsOnAutoplay !== false,
+    captionTransparent: source.captionTransparent === true,
+    captionPosition: ['top', 'center', 'bottom', 'custom'].includes(source.captionPosition) ? source.captionPosition : 'bottom',
+    captionX: Number.isFinite(source.captionX) ? Math.round(Math.max(0, Math.min(100, source.captionX))) : 50,
+    captionY: Number.isFinite(source.captionY) ? Math.round(Math.max(0, Math.min(100, source.captionY))) : 85,
+    captionTheme: ['app', 'system', 'light', 'dark'].includes(source.captionTheme) ? source.captionTheme : 'app'
+  };
+}
+
+function normalizeTtsSettings(value) {
+  const current = getTtsSettings();
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    mode: source.mode === 'notification' || source.mode === 'autoplay' ? source.mode : current.mode,
+    captionsOnAutoplay: typeof source.captionsOnAutoplay === 'boolean' ? source.captionsOnAutoplay : current.captionsOnAutoplay,
+    captionTransparent: typeof source.captionTransparent === 'boolean' ? source.captionTransparent : current.captionTransparent,
+    captionPosition: ['top', 'center', 'bottom', 'custom'].includes(source.captionPosition) ? source.captionPosition : current.captionPosition,
+    captionX: Number.isFinite(source.captionX) ? Math.round(Math.max(0, Math.min(100, source.captionX))) : current.captionX,
+    captionY: Number.isFinite(source.captionY) ? Math.round(Math.max(0, Math.min(100, source.captionY))) : current.captionY,
+    captionTheme: ['app', 'system', 'light', 'dark'].includes(source.captionTheme) ? source.captionTheme : current.captionTheme
+  };
+}
+
+function normalizeDashboardState(input) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const seen = new Set();
+  const tabs = [];
+  for (const raw of (Array.isArray(source.tabs) ? source.tabs : []).slice(0, 100)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const id = String(raw.id || '').slice(0, 80);
+    if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,79}$/.test(id) || seen.has(id)) continue;
+    const kind = ['main', 'settings', 'browser'].includes(raw.kind) ? raw.kind : null;
+    if (!kind) continue;
+    const order = Number.isFinite(raw.order) ? Math.round(Math.max(0, Math.min(10000, raw.order))) : tabs.length;
+    const tab = { id, kind, label: String(raw.label || (kind === 'main' ? 'Main' : kind === 'settings' ? 'Settings' : 'Web')).replace(/[\u0000-\u001f\u007f]/g, '').slice(0, 80), order, closable: kind !== 'main' };
+    if (kind === 'browser') {
+      const url = safeBrowserUrl(raw.url);
+      const browserId = String(raw.browserId || '').slice(0, 80);
+      if (!url || !/^web-\d{1,12}$/.test(browserId)) continue;
+      tab.browserId = browserId;
+      tab.url = url.href;
+      tab.title = String(raw.title || tab.label).slice(0, 120);
+    } else if (kind === 'main') {
+      tab.closable = false;
+    }
+    seen.add(id);
+    tabs.push(tab);
+  }
+  if (!seen.has('main')) tabs.unshift({ id: 'main', kind: 'main', label: 'Main', order: 0, closable: false });
+  const widgetSource = source.widgets && typeof source.widgets === 'object' && !Array.isArray(source.widgets) ? source.widgets : {};
+  const widgets = {};
+  for (const id of ['queues', 'controls']) {
+    const widget = widgetSource[id];
+    if (!widget || typeof widget !== 'object') continue;
+    const n = (key, fallback, min, max) => Number.isFinite(widget[key]) ? Math.round(Math.max(min, Math.min(max, widget[key]))) : fallback;
+    widgets[id] = {
+      x: n('x', 24, 0, 10000), y: n('y', 24, 0, 10000),
+      width: n('width', id === 'queues' ? 600 : 420, 180, 4000),
+      height: n('height', 160, 80, 3000)
+    };
+  }
+  const activeTabId = String(source.activeTabId || 'main').slice(0, 80);
+  tabs.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+  return { tabs, activeTabId: tabs.some(tab => tab.id === activeTabId) ? activeTabId : 'main', widgets };
+}
+
+function defaultDashboardState() {
+  const tabs = [
+    { id: 'main', kind: 'main', label: 'Main', closable: false, order: 0 },
+    { id: 'settings', kind: 'settings', label: 'Settings', closable: true, order: 1 }
+  ];
+  for (const tab of browserTabs.values()) {
+    if (safeBrowserUrl(tab.url)) tabs.push({
+      id: 'tab-' + tab.id, kind: 'browser', browserId: tab.id, url: tab.url,
+      title: tab.title || tab.url, label: tab.title || 'Web', closable: true, order: tabs.length
+    });
+  }
+  return normalizeDashboardState({ tabs, activeTabId: 'main', widgets: {} });
+}
+
+function saveBrowserTabMetadata() {
+  settings.browserTabs = [...browserTabs.values()].filter(tab => safeBrowserUrl(tab.url)).map(tab => ({
+    id: tab.id, url: tab.url, title: String(tab.title || tab.url).slice(0, 120)
+  })).slice(0, 100);
+  settings.activeBrowserTabId = browserTabs.has(activeBrowserTabId) ? activeBrowserTabId : null;
+}
+
+function restoreBrowserTabsFromSettings() {
+  browserTabs.clear();
+  const saved = Array.isArray(settings.browserTabs) ? settings.browserTabs : [];
+  for (const item of saved.slice(0, 100)) {
+    const id = String(item && item.id || '');
+    const url = safeBrowserUrl(item && item.url);
+    if (!/^web-\d{1,12}$/.test(id) || !url || browserTabs.has(id)) continue;
+    browserTabs.set(id, { id, url: url.href, title: String(item.title || url.href).slice(0, 120), view: null, error: '' });
+    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4)) || 0);
+  }
+  activeBrowserTabId = browserTabs.has(settings.activeBrowserTabId) ? settings.activeBrowserTabId : null;
+}
+
+function syncBrowserRegistryFromDashboardState(value) {
+  const normalized = normalizeDashboardState(value);
+  const wanted = new Map(normalized.tabs.filter(tab => tab.kind === 'browser').map(tab => [tab.browserId, tab]));
+  for (const [id, tab] of browserTabs) {
+    if (wanted.has(id)) continue;
+    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+    tab.memoryTimer = null;
+    if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) {
+      try { dashboardWindow.contentView.removeChildView(tab.view); } catch {}
+    }
+    if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    browserTabs.delete(id);
+    if (activeBrowserTabId === id) activeBrowserTabId = null;
+  }
+  for (const [id, item] of wanted) {
+    const previous = browserTabs.get(id);
+    if (previous && previous.url !== item.url && previous.view) {
+      if (previous.memoryTimer) clearInterval(previous.memoryTimer);
+      try { previous.view.webContents.close(); } catch {}
+      previous.view = null;
+      previous.memoryTimer = null;
+    }
+    browserTabs.set(id, {
+      ...(previous || {}), id, url: item.url,
+      title: item.title || item.label || item.url,
+      view: previous && previous.url === item.url ? previous.view : null,
+      error: previous && previous.error || ''
+    });
+    nextBrowserTabId = Math.max(nextBrowserTabId, Number(id.slice(4)) || 0);
+  }
+  settings.dashboardState = normalized;
+  saveBrowserTabMetadata();
+}
+
+function collectSharedPreferences() {
+  const tts = getTtsSettings();
+  return {
+    dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
+    ttsVolume: Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, settings.ttsVolume)) : 100,
+    browserKeepActive: settings.browserKeepActive === true,
+    browserLowMemory: settings.browserLowMemory === true,
+    observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS,
+    ttsMode: tts.mode, captionsOnAutoplay: tts.captionsOnAutoplay,
+    captionTransparent: tts.captionTransparent, captionPosition: tts.captionPosition,
+    captionX: tts.captionX, captionY: tts.captionY, captionTheme: tts.captionTheme
+  };
+}
+
+function getCloudSyncLocalState() {
+  const state = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
+  return {
+    preferences: collectSharedPreferences(),
+    tabs: state.tabs,
+    widgets: Object.entries(state.widgets).map(([id, widget]) => ({ id, ...widget })),
+    activeTabId: state.activeTabId
+  };
+}
+
+function publishSharedState() {
+  if (!cloudSync || !settings.cloudSync || settings.cloudSync.enabled !== true) return;
+  void cloudSync.publishLocal().then(status => {
+    cloudSyncStatus = status;
+    dashboardSend('app:cloud-sync-status', status);
+  }).catch(error => appendDiagnosticLog('cloud-sync-publish-failed', error));
+}
+
+function applyCloudRemoteState(shared) {
+  const source = shared && typeof shared === 'object' ? shared : {};
+  const preferences = source.preferences && typeof source.preferences === 'object' ? source.preferences : {};
+  if (DASHBOARD_THEME_IDS.includes(preferences.dashboardTheme)) settings.dashboardTheme = preferences.dashboardTheme;
+  if (Number.isFinite(preferences.ttsVolume)) settings.ttsVolume = Math.round(Math.max(0, Math.min(100, preferences.ttsVolume)));
+  if (typeof preferences.browserKeepActive === 'boolean') settings.browserKeepActive = preferences.browserKeepActive;
+  if (typeof preferences.browserLowMemory === 'boolean') settings.browserLowMemory = preferences.browserLowMemory;
+  if ([0.5, 1, 2, 4, 8].includes(preferences.observeFps)) settings.observeFps = preferences.observeFps;
+  settings.ttsSettings = normalizeTtsSettings({
+    ...getTtsSettings(),
+    ...(typeof preferences.ttsMode === 'string' ? { mode: preferences.ttsMode } : {}),
+    ...(typeof preferences.captionsOnAutoplay === 'boolean' ? { captionsOnAutoplay: preferences.captionsOnAutoplay } : {}),
+    ...(typeof preferences.captionTransparent === 'boolean' ? { captionTransparent: preferences.captionTransparent } : {}),
+    ...(typeof preferences.captionPosition === 'string' ? { captionPosition: preferences.captionPosition } : {}),
+    ...(Number.isFinite(preferences.captionX) ? { captionX: preferences.captionX } : {}),
+    ...(Number.isFinite(preferences.captionY) ? { captionY: preferences.captionY } : {}),
+    ...(typeof preferences.captionTheme === 'string' ? { captionTheme: preferences.captionTheme } : {})
+  });
+  settings.dashboardState = normalizeDashboardState({
+    tabs: source.tabs,
+    activeTabId: source.activeTabId,
+    widgets: Object.fromEntries((Array.isArray(source.widgets) ? source.widgets : []).map(widget => [widget.id, widget]))
+  });
+  syncBrowserRegistryFromDashboardState(settings.dashboardState);
+  for (const tab of browserTabs.values()) {
+    if (!tab.view || tab.view.webContents.isDestroyed()) continue;
+    const active = settings.browserKeepActive === true && tab.id === activeBrowserTabId;
+    tab.view.webContents.setBackgroundThrottling(!active);
+  }
+  persistSettings();
+  dashboardSend('app:dashboard-state', settings.dashboardState);
+  dashboardSend('app:preferences', getUiState().settings);
+  if (activeCaptionPayload) updateCaptionWindowPayload();
+}
+
+function initializeCloudSync() {
+  settings.cloudSync = settings.cloudSync && typeof settings.cloudSync === 'object' ? settings.cloudSync : {};
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(settings.cloudSync.deviceId || ''))) settings.cloudSync.deviceId = crypto.randomUUID();
+  cloudSync = createCloudSync({
+    deviceId: settings.cloudSync.deviceId,
+    getLocalState: getCloudSyncLocalState,
+    applyRemoteState: applyCloudRemoteState,
+    onStatus: value => {
+      cloudSyncStatus = value;
+      dashboardSend('app:cloud-sync-status', value);
+    }
+  });
+  void cloudSync.configure({ folder: settings.cloudSync.folder || '', enabled: settings.cloudSync.enabled === true });
+}
+
+function captionThemeId() {
+  const tts = getTtsSettings();
+  if (tts.captionTheme === 'light') return 'light';
+  if (tts.captionTheme === 'dark') return 'midnight';
+  if (tts.captionTheme === 'system') return nativeTheme.shouldUseDarkColors ? 'light' : 'midnight';
+  return DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
+}
+
+function captionBounds() {
+  const work = screen.getPrimaryDisplay().workArea;
+  const width = Math.min(760, Math.max(360, work.width - 24));
+  const height = 168;
+  const tts = getTtsSettings();
+  let x = work.x + Math.round((work.width - width) / 2);
+  let y = work.y + work.height - height - 24;
+  if (tts.captionPosition === 'top') y = work.y + 24;
+  else if (tts.captionPosition === 'center') y = work.y + Math.round((work.height - height) / 2);
+  else if (tts.captionPosition === 'custom') {
+    x = work.x + Math.round(Math.max(0, work.width - width) * tts.captionX / 100);
+    y = work.y + Math.round(Math.max(0, work.height - height) * tts.captionY / 100);
+  }
+  return { x: Math.round(x), y: Math.round(y), width, height };
+}
+
+function currentCaptionPayload() {
+  if (!activeCaptionPayload) return null;
+  return { ...activeCaptionPayload, theme: captionThemeId(), transparent: getTtsSettings().captionTransparent };
+}
+
+function updateCaptionWindowPayload() {
+  if (!captionWindow || captionWindow.isDestroyed() || captionWindow.webContents.isDestroyed() || !activeCaptionPayload) return;
+  if (captionWindow.isVisible()) captionWindow.setBounds(captionBounds());
+  if (captionWindowLoaded) captionWindow.webContents.send('caption:update', currentCaptionPayload());
+}
+
+function createCaptionWindow() {
+  if (captionWindow && !captionWindow.isDestroyed()) return captionWindow;
+  if (!activeCaptionPayload) return null;
+  captionWindowLoaded = false;
+  const current = new BrowserWindow({
+    ...captionBounds(), frame: false, transparent: true, backgroundColor: '#00000000',
+    hasShadow: false, resizable: false, minimizable: false, maximizable: false,
+    closable: true, focusable: activeCaptionPayload.mode === 'notification',
+    skipTaskbar: true, show: false, alwaysOnTop: true, title: 'Windows Bridge Speech',
+    webPreferences: { preload: path.join(__dirname, 'caption-preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
+  });
+  captionWindow = current;
+  current.setMenuBarVisibility(false);
+  current.setAlwaysOnTop(true);
+  try { current.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch {}
+  current.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  current.webContents.once('did-finish-load', () => {
+    if (captionWindow !== current || current.isDestroyed()) return;
+    captionWindowLoaded = true;
+    current.webContents.send('caption:update', currentCaptionPayload());
+  });
+  current.once('ready-to-show', () => {
+    if (captionWindow !== current || current.isDestroyed()) return;
+    if (activeCaptionPayload && activeCaptionPayload.mode === 'notification') current.show();
+    else current.showInactive();
+  });
+  current.on('closed', () => {
+    if (captionWindow === current) {
+      captionWindow = null;
+      captionWindowLoaded = false;
+      activeCaptionPayload = null;
+    }
+    if (captionCloseTimer) clearTimeout(captionCloseTimer);
+    captionCloseTimer = null;
+  });
+  current.loadFile(path.join(__dirname, 'caption.html')).catch(error => appendDiagnosticLog('caption-window-load-failed', error));
+  return current;
+}
+
+function showSpeechCaption(request) {
+  if (!request || typeof request.text !== 'string') return null;
+  const text = request.text.trim().slice(0, 240);
+  if (!text) return null;
+  const mode = request.mode === 'notification' ? 'notification' : 'autoplay';
+  if (mode === 'autoplay' && !getTtsSettings().captionsOnAutoplay) return null;
+  if (captionCloseTimer) clearTimeout(captionCloseTimer);
+  captionCloseTimer = null;
+  const payload = {
+    id: String(request.id || crypto.randomUUID()), text, mode,
+    showPlayButton: mode === 'notification', status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…', error: ''
+  };
+  const previousMode = activeCaptionPayload && activeCaptionPayload.mode;
+  activeCaptionPayload = payload;
+  if (captionWindow && !captionWindow.isDestroyed() && previousMode !== mode) {
+    const old = captionWindow;
+    old.close();
+    if (!captionWindow || captionWindow.isDestroyed()) createCaptionWindow();
+  } else if (!captionWindow || captionWindow.isDestroyed()) {
+    createCaptionWindow();
+  } else {
+    captionWindow.setBounds(captionBounds());
+    if (!captionWindow.isVisible()) mode === 'notification' ? captionWindow.show() : captionWindow.showInactive();
+    updateCaptionWindowPayload();
+  }
+  return payload.id;
+}
+
+function estimateSpeechDurationMs(text) {
+  return Math.max(3500, Math.min(90000, Math.ceil(String(text || '').length / 13 * 1000 + 3500)));
+}
+
+function scheduleCaptionClose(milliseconds) {
+  if (captionCloseTimer) clearTimeout(captionCloseTimer);
+  captionCloseTimer = setTimeout(() => {
+    captionCloseTimer = null;
+    if (captionWindow && !captionWindow.isDestroyed()) captionWindow.close();
+  }, Math.max(1000, Math.min(120000, milliseconds)));
+  if (typeof captionCloseTimer.unref === 'function') captionCloseTimer.unref();
+}
+
+function finishSpeechCaption(request, output) {
+  if (!request || !activeCaptionPayload || request.id !== activeCaptionPayload.id) return;
+  if (request.mode === 'notification') {
+    activeCaptionPayload.status = output && output.status === 'tts_completed' ? 'Speech ready · press Play' : 'Speech prepared';
+    activeCaptionPayload.error = output && output.status === 'tts_failed' ? String(output.error || 'Speech preparation failed.') : '';
+    updateCaptionWindowPayload();
+    return;
+  }
+  if (output && output.status === 'tts_started') {
+    activeCaptionPayload.status = 'Speaking…';
+    activeCaptionPayload.error = '';
+    updateCaptionWindowPayload();
+    scheduleCaptionClose(estimateSpeechDurationMs(request.text));
+  } else {
+    activeCaptionPayload.status = 'Speech could not start';
+    activeCaptionPayload.error = String(output && (output.error || output.message) || 'TTS did not start.').slice(0, 220);
+    updateCaptionWindowPayload();
+    scheduleCaptionClose(6500);
+  }
+}
+
+async function playActiveCaption() {
+  if (!activeCaptionPayload || activeCaptionPayload.mode !== 'notification') throw new Error('There is no pending speech notification.');
+  if (captionPlaybackInFlight) return { started: false, busy: true };
+  if (!visionService || typeof visionService.synthesizeSpeech !== 'function') throw new Error('The Colab TTS service is unavailable.');
+  captionPlaybackInFlight = true;
+  const request = { ...activeCaptionPayload };
+  activeCaptionPayload.status = 'Preparing speech…';
+  activeCaptionPayload.error = '';
+  updateCaptionWindowPayload();
+  try {
+    const output = await visionService.synthesizeSpeech({ text: request.text, play: true }, crypto.randomUUID());
+    if (activeCaptionPayload && activeCaptionPayload.id === request.id && output && output.status === 'tts_started') {
+      activeCaptionPayload.status = 'Speaking…';
+      activeCaptionPayload.showPlayButton = false;
+      updateCaptionWindowPayload();
+      scheduleCaptionClose(estimateSpeechDurationMs(request.text));
+      return { started: true, speech_job_id: output.speech_job_id };
+    }
+    if (activeCaptionPayload && activeCaptionPayload.id === request.id) {
+      activeCaptionPayload.status = 'Playback failed';
+      activeCaptionPayload.error = String(output && (output.error || output.message) || 'TTS playback failed.').slice(0, 220);
+      activeCaptionPayload.showPlayButton = true;
+      updateCaptionWindowPayload();
+    }
+    throw new Error(String(output && (output.error || output.message) || 'TTS playback failed.'));
+  } finally {
+    captionPlaybackInFlight = false;
+  }
+}
+
+function assertCaptionUi(event) {
+  if (!captionWindow || captionWindow.isDestroyed() || captionWindow.webContents !== event.sender) throw new Error('Only the local speech window may invoke this action.');
+  const url = event.senderFrame && event.senderFrame.url || '';
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/caption.html')) throw new Error('Unexpected speech-window IPC sender.');
+}
 function getUiState() {
+  const cloud = settings.cloudSync && typeof settings.cloudSync === 'object' ? settings.cloudSync : {};
+  return {
+    settings: {
+      repositoryBridge: settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE,
+      dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
+      ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
+      ttsSettings: getTtsSettings(),
+      browserKeepActive: settings.browserKeepActive === true,
+      browserLowMemory: settings.browserLowMemory === true,
+      observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
+    },
+    dashboardState: normalizeDashboardState(settings.dashboardState || defaultDashboardState()),
+    browserTabs: browserTabSnapshot(),
+    cloudSync: { ...cloudSyncStatus, enabled: cloud.enabled === true, configured: Boolean(cloud.folder), folder: String(cloud.folder || '') },
+    bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false }),
+    workspace: {
+      root: getWorkspaceRoot(),
+      index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
+      syncError: workspaceInitializationError || filesystemIndexSyncError || ''
+    },
+    initialization: {
+      error: appInitializationError || workspaceInitializationError || '',
+      trayAvailable: Boolean(tray),
+      trayError: trayInitializationError
+    }
+  };
+}
+
+function saveDashboardState(value) {
+  const normalized = normalizeDashboardState(value);
+  settings.dashboardState = normalized;
+  syncBrowserRegistryFromDashboardState(normalized);
+  saveBrowserTabMetadata();
+  persistSettings();
+  publishSharedState();
+  dashboardSend('app:dashboard-state', normalized);
+  return normalized;
+}
+
+async function chooseCloudFolder() {
+  const options = { title: 'Choose your synchronized Windows Bridge folder', properties: ['openDirectory', 'createDirectory'] };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) return { canceled: true, status: cloudSyncStatus };
+  settings.cloudSync = { ...(settings.cloudSync || {}), folder: path.resolve(result.filePaths[0]) };
+  persistSettings();
+  if (cloudSync) cloudSyncStatus = await cloudSync.configure({ folder: settings.cloudSync.folder, enabled: settings.cloudSync.enabled === true });
+  dashboardSend('app:cloud-sync-status', cloudSyncStatus);
+  return { canceled: false, folder: settings.cloudSync.folder, status: cloudSyncStatus };
+}
+
+
   return {
     settings: {
       repositoryBridge: settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE,
@@ -1188,6 +1642,49 @@ function registerIpc() {
     return getUiState();
   });
   ipcMain.handle('app:open-dashboard', event => { assertLocalUi(event, 'index.html'); return showDashboardWindow(); });
+  ipcMain.handle('app:save-dashboard-state', (event, value) => { assertLocalUi(event, 'index.html'); return saveDashboardState(value); });
+  ipcMain.handle('app:save-now', event => { assertLocalUi(event, 'index.html'); persistSettings(); return { saved: true, savedAt: new Date().toISOString() }; });
+  ipcMain.handle('app:cloud-sync-status', event => { assertLocalUi(event, 'index.html'); return getUiState().cloudSync; });
+  ipcMain.handle('app:cloud-sync-choose-folder', async event => { assertLocalUi(event, 'index.html'); return chooseCloudFolder(); });
+  ipcMain.handle('app:cloud-sync-config', async (event, value) => {
+    assertLocalUi(event, 'index.html');
+    if (!value || typeof value.enabled !== 'boolean') throw new Error('Cloud sync enabled must be a boolean.');
+    const folder = String(settings.cloudSync && settings.cloudSync.folder || '');
+    if (value.enabled && !folder) throw new Error('Choose a synchronized cloud folder before enabling live sync.');
+    settings.cloudSync = { ...(settings.cloudSync || {}), enabled: value.enabled };
+    persistSettings();
+    cloudSyncStatus = cloudSync ? await cloudSync.configure({ folder, enabled: value.enabled }) : { enabled: false, configured: Boolean(folder), state: 'unavailable', error: 'Cloud sync service is not initialized.' };
+    dashboardSend('app:cloud-sync-status', cloudSyncStatus);
+    return cloudSyncStatus;
+  });
+  ipcMain.handle('app:cloud-sync-now', async event => {
+    assertLocalUi(event, 'index.html');
+    if (!cloudSync || !settings.cloudSync || settings.cloudSync.enabled !== true) throw new Error('Enable cloud sync and choose a folder first.');
+    cloudSyncStatus = await cloudSync.syncNow();
+    dashboardSend('app:cloud-sync-status', cloudSyncStatus);
+    return cloudSyncStatus;
+  });
+  ipcMain.handle('app:tts-settings', (event, value) => {
+    assertLocalUi(event, 'index.html');
+    if (value === undefined) return getTtsSettings();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('TTS settings must be an object.');
+    settings.ttsSettings = normalizeTtsSettings({ ...getTtsSettings(), ...value });
+    persistSettings(); publishSharedState();
+    if (activeCaptionPayload) updateCaptionWindowPayload();
+    dashboardSend('app:preferences', getUiState().settings);
+    return getTtsSettings();
+  });
+  ipcMain.handle('app:caption-preview', event => {
+    assertLocalUi(event, 'index.html');
+    showSpeechCaption({ id: crypto.randomUUID(), mode: getTtsSettings().mode, text: 'This is a preview of your speech captions.' });
+    return { shown: Boolean(captionWindow) };
+  });
+  ipcMain.handle('caption:play', event => { assertCaptionUi(event); return playActiveCaption(); });
+  ipcMain.handle('caption:dismiss', event => {
+    assertCaptionUi(event);
+    if (captionWindow && !captionWindow.isDestroyed()) captionWindow.close();
+    return { dismissed: true };
+  });
   ipcMain.handle('app:browser-tabs', event => { assertLocalUi(event, 'index.html'); return browserTabSnapshot(); });
   ipcMain.handle('app:browser-open-tab', (event, url) => { assertLocalUi(event, 'index.html'); return openBrowserTab(url); });
   ipcMain.handle('app:colab-open-tab', event => { assertLocalUi(event, 'index.html'); return openColabBrowserTab(); });
@@ -1198,14 +1695,15 @@ function registerIpc() {
   ipcMain.handle('app:tts-volume', (event, raw) => {
     assertLocalUi(event, 'index.html'); const value = Number(raw);
     if (!Number.isFinite(value) || value < 0 || value > 100) throw new Error('TTS volume must be between 0 and 100.');
-    settings.ttsVolume = Math.round(value); persistSettings(); return { volume: settings.ttsVolume };
+    settings.ttsVolume = Math.round(value); persistSettings(); publishSharedState(); return { volume: settings.ttsVolume };
   });
   ipcMain.handle('app:set-theme', (event, raw) => {
     assertLocalUi(event, 'index.html');
     const theme = String(raw || '');
     if (!DASHBOARD_THEME_IDS.includes(theme)) throw new Error('Choose one of the available dashboard themes.');
     settings.dashboardTheme = theme;
-    persistSettings();
+    persistSettings(); publishSharedState();
+    dashboardSend('app:preferences', getUiState().settings);
     return { theme };
   });
   ipcMain.handle('app:repository-bridge-config', async (event, input) => {
@@ -1299,7 +1797,7 @@ function registerIpc() {
     try {
       const state = await observeService.setFps(fps);
       settings.observeFps = state.fps ?? DEFAULT_SAMPLE_FPS;
-      persistSettings();
+      persistSettings(); publishSharedState();
       return state;
     } catch (error) {
       // setFps can apply the local timer before its mailbox status update fails.
@@ -1307,7 +1805,7 @@ function registerIpc() {
       const state = observeService.status();
       if (Number.isFinite(state.fps)) {
         settings.observeFps = state.fps;
-        persistSettings();
+        persistSettings(); publishSharedState();
       }
       throw error;
     }
@@ -1366,14 +1864,7 @@ function registerIpc() {
     }
     return { ...result, automatic_handoff_ready: Boolean(colabHandoffServer && colabHandoffServer.status().ready), automatic_handoff_armed: colabHandoffArmed };
   });
-  ipcMain.handle('app:vision-manual-panel', (event, visible) => {
-    assertLocalUi(event, 'index.html');
-    const expanded = visible === true;
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.setSize(STATUS_SIZE.width, expanded ? VISION_MANUAL_HEIGHT : STATUS_SIZE.height);
-    }
-    return { expanded };
-  });
+  ipcMain.handle('app:vision-manual-panel', (event, visible) => { assertLocalUi(event, 'index.html'); return { expanded: visible === true }; });
   ipcMain.handle('app:vision-setup-check', async event => {
     assertLocalUi(event, 'index.html');
     const githubState = githubAuth
@@ -1537,8 +2028,15 @@ if (!hasInstanceLock) {
       ? settings.repositoryBridge : {};
     settings.dashboardTheme = DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
     settings.ttsVolume = Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, Math.round(settings.ttsVolume))) : 100;
+    settings.ttsSettings = normalizeTtsSettings(settings.ttsSettings);
+    settings.cloudSync = settings.cloudSync && typeof settings.cloudSync === 'object' ? settings.cloudSync : {};
+    settings.cloudSync.folder = typeof settings.cloudSync.folder === 'string' ? settings.cloudSync.folder : '';
+    settings.cloudSync.enabled = settings.cloudSync.enabled === true;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(settings.cloudSync.deviceId || ''))) settings.cloudSync.deviceId = crypto.randomUUID();
+    settings.observeFps = [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS;
     restoreBrowserTabsFromSettings();
     settings.dashboardState = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
+    syncBrowserRegistryFromDashboardState(settings.dashboardState);
     settings.browserKeepActive = settings.browserKeepActive === true;
     settings.browserLowMemory = settings.browserLowMemory === true;
     settings.repositoryBridge = {
@@ -1556,6 +2054,7 @@ if (!hasInstanceLock) {
     registerIpc();
     createTray();
     createMainWindow();
+    initializeCloudSync();
     registerHotkey();
     app.on('activate', showMainWindow);
 
