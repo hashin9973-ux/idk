@@ -198,7 +198,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (remaining === 0) activeRequestCounts.delete(agentId);
     else activeRequestCounts.set(agentId, remaining);
     const now = new Date().toISOString();
-    await mutateRecord(agentId, request.agent_token, record => ({
+    return mutateRecord(agentId, request.agent_token, record => ({
       ...record,
       status: remaining > 0 ? 'active' : 'idle',
       last_seen_at: now,

@@ -373,6 +373,7 @@ test('agent identity appears in claim/result and status returns to idle after ex
     assert.doesNotMatch(task.claim_json, /b{64}/);
     assert.ok(task.result_json.includes('"status": "completed"'));
     assert.doesNotMatch(task.result_json, /b{64}/);
+    assert.doesNotMatch(bridge.getState().lastError, /Agent status update failed/i);
   } finally { await bridge.stop(); }
 });
 

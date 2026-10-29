@@ -79,7 +79,10 @@ test('agent status transitions active to idle, preserves request history, and ma
   assert.equal(status.agents[0].status, 'active');
   assert.deepEqual(status.agents[0].active_request_ids, [request.request_id]);
 
-  await registry.requestCompleted(request);
+  const completedRecord = await registry.requestCompleted(request);
+  assert.equal(completedRecord.agent_id, registered.agent_id);
+  assert.equal(completedRecord.status, 'idle');
+  assert.deepEqual(completedRecord.active_request_ids, []);
   status = await registry.statuses(registered.agent_id);
   assert.equal(status.counts.idle, 1);
   assert.equal(status.agents[0].status, 'idle');
