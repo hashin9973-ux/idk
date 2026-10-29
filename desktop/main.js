@@ -532,6 +532,8 @@ function attachBrowserTab(id) {
   if (settings.browserEnabled !== true) return false;
   const tab = browserTabs.get(id);
   if (!dashboardWindow || dashboardWindow.isDestroyed() || !tab) return false;
+  // Re-clamp on every attach; the window may have changed size since the last renderer measurement.
+  browserBounds = clampBrowserBounds(browserBounds, dashboardWindow.getContentBounds());
   for (const other of browserTabs.values()) if (other.view) {
     try { dashboardWindow.contentView.removeChildView(other.view); } catch {}
     if (other.id !== id) {
@@ -731,15 +733,31 @@ function createDashboardWindow() {
   return win;
 }
 
+function clampBrowserBounds(value, size) {
+  const contentWidth = Math.max(1, Number(size && size.width) || 1);
+  const contentHeight = Math.max(1, Number(size && size.height) || 1);
+  const v = value && typeof value === 'object' ? value : {};
+  const rawX = Number(v.x), rawY = Number(v.y), rawWidth = Number(v.width), rawHeight = Number(v.height);
+  const minY = Math.min(68, contentHeight - 1);
+  const maxBottom = Math.max(minY + 1, contentHeight - 42);
+  const x = Math.max(0, Math.min(contentWidth - 1, Number.isFinite(rawX) ? rawX : 0));
+  const y = Math.max(minY, Math.min(maxBottom - 1, Number.isFinite(rawY) ? rawY : minY));
+  const width = Math.max(1, Math.min(contentWidth - x, Number.isFinite(rawWidth) ? rawWidth : contentWidth - x));
+  const height = Math.max(1, Math.min(maxBottom - y, Number.isFinite(rawHeight) ? rawHeight : maxBottom - y));
+  return { x, y, width, height };
+}
+
 function setBrowserBounds(value) {
   if (settings.browserEnabled !== true) return { applied: false, disabled: true };
   const size = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow.getContentBounds() : { width: 0, height: 0 };
   const v = value && typeof value === 'object' ? value : {};
   const x = Number(v.x), y = Number(v.y), width = Number(v.width), height = Number(v.height);
-  if (![x,y,width,height].every(Number.isFinite) || width < 1 || height < 1) return { applied: false };
-  const left = Math.max(0, Math.min(size.width - 1, x)), top = Math.max(0, Math.min(size.height - 1, y));
-  browserBounds = { x: left, y: top, width: Math.max(1, Math.min(size.width-left,width)), height: Math.max(1, Math.min(size.height-top,height)) };
-  const tab = browserTabs.get(activeBrowserTabId); if (tab && tab.view) tab.view.setBounds(browserBounds);
+  if (![x,y,width,height].every(Number.isFinite) || width < 1 || height < 1 ||
+      !Number.isFinite(Number(size.width)) || !Number.isFinite(Number(size.height)) ||
+      size.width < 1 || size.height < 1) return { applied: false };
+  browserBounds = clampBrowserBounds({ x, y, width, height }, size);
+  const tab = browserTabs.get(activeBrowserTabId);
+  if (tab && tab.view) tab.view.setBounds(browserBounds);
   return { applied: true, bounds: browserBounds };
 }
 function getBrowserSettings() {
