@@ -769,6 +769,6 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.match(styles, /\.agent-console\s*\{/);
   assert.match(styles, /\.agent-console\s*\{[^}]*background:#000/);
   assert.match(styles, /\.agent-json-details/);
-  assert.match(renderer, /details,summary,pre,\.agent-console,\[data-no-widget-drag\]/);
+  assert.match(renderer, /isAgent&&!resize&&!e\.target\.closest\('\.agent-console-header'\)/);
   assert.doesNotMatch(renderer, /innerHTML\s*=/, 'console output must be rendered as text, not HTML');
 });
