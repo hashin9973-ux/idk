@@ -176,6 +176,38 @@ function safeTunnelUrl(value) {
   return endpoint ? endpoint.url : null;
 }
 
+function scaleWavVolume(audio, requestedVolume = 100) {
+  if (!Buffer.isBuffer(audio) || audio.length < 44 ||
+      audio.subarray(0, 4).toString('ascii') !== 'RIFF' ||
+      audio.subarray(8, 12).toString('ascii') !== 'WAVE') {
+    throw new Error('TTS volume control received an invalid WAV file.');
+  }
+  const volume = Number.isFinite(Number(requestedVolume)) ? Math.max(0, Math.min(100, Number(requestedVolume))) : 100;
+  if (volume >= 99.999) return audio;
+  const output = Buffer.from(audio);
+  let offset = 12, pcm16 = false, foundData = false;
+  while (offset + 8 <= output.length) {
+    const name = output.subarray(offset, offset + 4).toString('ascii');
+    const size = output.readUInt32LE(offset + 4);
+    const start = offset + 8, end = start + size;
+    if (end > output.length) throw new Error('TTS WAV contains a truncated chunk.');
+    if (name === 'fmt ' && size >= 16) {
+      pcm16 = output.readUInt16LE(start) === 1 && output.readUInt16LE(start + 14) === 16;
+    } else if (name === 'data') {
+      if (!pcm16 || size % 2) throw new Error('TTS volume control requires 16-bit PCM WAV audio.');
+      const gain = volume / 100;
+      for (let i = start; i + 1 < end; i += 2) {
+        const scaled = Math.round(output.readInt16LE(i) * gain);
+        output.writeInt16LE(Math.max(-32768, Math.min(32767, scaled)), i);
+      }
+      foundData = true;
+    }
+    offset = end + (size & 1);
+  }
+  if (!foundData) throw new Error('TTS WAV is missing its audio data chunk.');
+  return output;
+}
+
 function createVisionService(deps) {
   const {
     githubAuth,
@@ -230,38 +262,6 @@ function createVisionService(deps) {
   function currentTtsVolume() {
     const configured = typeof getTtsVolume === 'function' ? Number(getTtsVolume()) : 100;
     return Number.isFinite(configured) ? Math.max(0, Math.min(100, configured)) : 100;
-  }
-
-  function scaleWavVolume(audio, requestedVolume = 100) {
-    if (!Buffer.isBuffer(audio) || audio.length < 44 ||
-        audio.subarray(0, 4).toString('ascii') !== 'RIFF' ||
-        audio.subarray(8, 12).toString('ascii') !== 'WAVE') {
-      throw new Error('TTS volume control received an invalid WAV file.');
-    }
-    const volume = Number.isFinite(Number(requestedVolume)) ? Math.max(0, Math.min(100, Number(requestedVolume))) : 100;
-    if (volume >= 99.999) return audio;
-    const output = Buffer.from(audio);
-    let offset = 12, pcm16 = false, foundData = false;
-    while (offset + 8 <= output.length) {
-      const name = output.subarray(offset, offset + 4).toString('ascii');
-      const size = output.readUInt32LE(offset + 4);
-      const start = offset + 8, end = start + size;
-      if (end > output.length) throw new Error('TTS WAV contains a truncated chunk.');
-      if (name === 'fmt ' && size >= 16) {
-        pcm16 = output.readUInt16LE(start) === 1 && output.readUInt16LE(start + 14) === 16;
-      } else if (name === 'data') {
-        if (!pcm16 || size % 2) throw new Error('TTS volume control requires 16-bit PCM WAV audio.');
-        const gain = volume / 100;
-        for (let i = start; i + 1 < end; i += 2) {
-          const scaled = Math.round(output.readInt16LE(i) * gain);
-          output.writeInt16LE(Math.max(-32768, Math.min(32767, scaled)), i);
-        }
-        foundData = true;
-      }
-      offset = end + (size & 1);
-    }
-    if (!foundData) throw new Error('TTS WAV is missing its audio data chunk.');
-    return output;
   }
 
   async function readMailboxJson(relativePath) {
