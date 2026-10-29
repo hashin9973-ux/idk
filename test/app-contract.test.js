@@ -127,9 +127,10 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /minHeight: 540/);
   assert.match(main, /'app:vision-status'/);
   assert.match(main, /'app:vision-connect-colab'/);
-  assert.match(main, /const freshnessWindowMs = Math\.max\(15000, scanInterval \* 3\)/);
-  assert.match(main, /if \(pollFresh\) return 'online'/);
-  assert.match(main, /current\.lastPollError \|\| current\.lastError/);
+  const workerStatus = read('desktop', 'worker-status.js');
+  assert.match(workerStatus, /const scanFreshnessWindowMs = Math\.max\(15000, scanInterval \* 3\)/);
+  assert.match(workerStatus, /if \(scanFresh \|\| probeFresh\) return 'online'/);
+  assert.match(workerStatus, /current\.lastPollError \|\| polling\.lastRequestCommitProbeError \|\| current\.lastError/);
   assert.match(main, /const connectionError = workerStatus === 'online' \? '' :/);
   assert.match(main, /'app:vision-manual-panel'/);
   assert.doesNotMatch(main, /STATUS_SIZE|VISION_MANUAL_HEIGHT|function clampBounds\(|function defaultBounds\(/);
@@ -740,8 +741,9 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.doesNotMatch(connect, /!auth\.authenticated\s*\|\|\s*auth\.verificationPending/);
   assert.match(connect, /repositoryBridge\.start\(\)/);
   assert.match(connect, /testing mailbox access directly/);
-  assert.ok(main.includes("if (connectionError && isNetworkError(connectionError)) return 'reconnecting'"));
-  assert.ok(main.includes("return 'reconnecting'"));
+  assert.ok(main.includes("return resolveMailboxWorkerStatus(current, autoConnectionStatus);"));
+  assert.ok(main.includes("const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');"));
+  assert.ok(read('desktop', 'worker-status.js').includes("return 'reconnecting'"));
 
   const html = read('desktop', 'dashboard.html');
   const renderer = read('desktop', 'dashboard-renderer.js');

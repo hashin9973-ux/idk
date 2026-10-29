@@ -36,6 +36,7 @@ const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
 const { createCloudSync, safeShareUrl } = require('./cloud-sync');
+const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');
 
 const DIAGNOSTIC_LOG_NAME = 'startup-crash.log';
 
@@ -1016,28 +1017,9 @@ function encodeVisionJpeg(input) {
     ' (' + smallest.bytes.length + ' bytes). The image was not downscaled; use a larger supported transfer budget or a smaller display resolution.');
 }
 
-function isNetworkError(message) {
-  return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused/i.test(String(message || ''));
-}
-
 function resolveWorkerStatus(state) {
   const current = state || (repositoryBridge ? repositoryBridge.getState() : {});
-  if (!current.configured) return 'setup';
-  if (!current.running) return autoConnectionStatus;
-
-  // A missed poll is transport health, not a reason to stop an active worker.
-  // Keep the worker alive and label transient transport failure as reconnecting;
-  // actual repository requests remain the source of truth, not Windows NCSI.
-  const lastPollAt = Date.parse(String(current.lastPollAt || ''));
-  const scanInterval = Math.max(1000, Number(current.requestPolling && current.requestPolling.requestTreeScanIntervalMs) || 5000);
-  const freshnessWindowMs = Math.max(15000, scanInterval * 3);
-  const pollFresh = Number.isFinite(lastPollAt) && Date.now() - lastPollAt <= freshnessWindowMs;
-  if (pollFresh) return 'online';
-
-  const connectionError = String(current.lastPollError || current.lastError || '');
-  if (connectionError && isNetworkError(connectionError)) return 'reconnecting';
-  if (connectionError) return 'attention';
-  return 'reconnecting';
+  return resolveMailboxWorkerStatus(current, autoConnectionStatus);
 }
 
 function enrichedBridgeState(state) {
