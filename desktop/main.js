@@ -439,9 +439,8 @@ function saveWindowBoundsSoon() {
   saveTimer = setTimeout(saveWindowBounds, 250);
 }
 
-function hideToTray() {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-}
+function hideToTray() { destroyDashboardWindowToTray(); }
+
 
 function safeBrowserUrl(raw) {
   try {
@@ -609,42 +608,91 @@ function closeBrowserTab(id) {
   publishBrowserTabs(); return { closed: true };
 }
 function showDashboardWindow() {
-  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(false);
-  if (dashboardWindow.isMinimized()) dashboardWindow.restore();
-  dashboardWindow.show(); dashboardWindow.focus(); publishBrowserTabs(); return { opened: true };
+  showMainWindow();
+  return { opened: true };
 }
+
+function destroyEmbeddedBrowserViews() {
+  saveBrowserTabMetadata();
+  for (const tab of browserTabs.values()) {
+    if (tab.memoryTimer) clearInterval(tab.memoryTimer);
+    tab.memoryTimer = null;
+    if (dashboardWindow && !dashboardWindow.isDestroyed() && tab.view) { try { dashboardWindow.contentView.removeChildView(tab.view); } catch {} }
+    if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+    tab.view = null;
+  }
+}
+
+function destroyDashboardWindowToTray() {
+  const win = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow : null;
+  if (!win) return { hidden: true, destroyed: false };
+  try { settings.dashboardBounds = win.getBounds(); } catch {}
+  saveBrowserTabMetadata();
+  persistSettings();
+  destroyEmbeddedBrowserViews();
+  if (mainWindow === win) mainWindow = null;
+  if (dashboardWindow === win) dashboardWindow = null;
+  try { win.destroy(); } catch (error) { appendDiagnosticLog('dashboard-destroy-to-tray-failed', error); }
+  return { hidden: true, destroyed: true };
+}
+
 function createDashboardWindow() {
   if (dashboardWindow && !dashboardWindow.isDestroyed()) return dashboardWindow;
   const saved = settings.dashboardBounds && typeof settings.dashboardBounds === 'object' ? settings.dashboardBounds : {};
-  dashboardWindow = new BrowserWindow({
-    x: Number.isFinite(saved.x) ? saved.x : undefined, y: Number.isFinite(saved.y) ? saved.y : undefined,
+  const win = new BrowserWindow({
+    x: Number.isFinite(saved.x) ? saved.x : undefined,
+    y: Number.isFinite(saved.y) ? saved.y : undefined,
     width: Number.isFinite(saved.width) ? Math.max(760, saved.width) : 1060,
     height: Number.isFinite(saved.height) ? Math.max(540, saved.height) : 760,
-    minWidth: 760, minHeight: 540, show: false, backgroundColor: '#11161d',
+    minWidth: 760, minHeight: 540, show: false, backgroundColor: '#11161d', skipTaskbar: Boolean(tray),
     title: 'Windows Repository Bridge',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true }
   });
-  dashboardWindow.setMenuBarVisibility(false);
-  dashboardWindow.on('resize', () => {
-    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    settings.dashboardBounds = dashboardWindow.getBounds(); persistSettings();
+  dashboardWindow = win;
+  mainWindow = win;
+  win.setMenuBarVisibility(false);
+  win.on('resize', () => {
+    if (dashboardWindow !== win || win.isDestroyed()) return;
+    settings.dashboardBounds = win.getBounds(); persistSettings();
     dashboardSend('app:browser-bounds-refresh', {});
   });
-  dashboardWindow.on('move', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) { settings.dashboardBounds = dashboardWindow.getBounds(); persistSettings(); } });
-  dashboardWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  dashboardWindow.once('ready-to-show', () => { if (dashboardWindow && !dashboardWindow.isDestroyed()) dashboardWindow.show(); });
-  dashboardWindow.on('closed', () => {
+  win.on('move', () => {
+    if (dashboardWindow !== win || win.isDestroyed()) return;
+    settings.dashboardBounds = win.getBounds(); persistSettings();
+  });
+  win.on('minimize', event => { event.preventDefault(); destroyDashboardWindowToTray(); });
+  win.on('close', event => {
+    if (!finishingQuit) { event.preventDefault(); destroyDashboardWindowToTray(); return; }
+    try { settings.dashboardBounds = win.getBounds(); } catch {}
+    persistSettings();
+  });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('did-fail-load', (_event, code, description, url, isMainFrame) => {
+    if (isMainFrame && code !== -3) appendDiagnosticLog('dashboard-load-failed', { code, description, url });
+  });
+  win.on('closed', () => {
     for (const tab of browserTabs.values()) {
       if (tab.memoryTimer) clearInterval(tab.memoryTimer);
       tab.memoryTimer = null;
       if (tab.view && !tab.view.webContents.isDestroyed()) { try { tab.view.webContents.close(); } catch {} }
+      tab.view = null;
     }
-    browserTabs.clear(); activeBrowserTabId = null; dashboardWindow = null;
+    if (dashboardWindow === win) dashboardWindow = null;
+    if (mainWindow === win) mainWindow = null;
   });
-  dashboardWindow.loadFile(path.join(__dirname, 'dashboard.html')).catch(error => appendDiagnosticLog('dashboard-load-failed', error));
-  return dashboardWindow;
+  const reveal = () => {
+    if (dashboardWindow !== win || win.isDestroyed()) return;
+    win.show(); win.focus(); publishBrowserTabs();
+  };
+  win.once('ready-to-show', reveal);
+  win.webContents.once('did-finish-load', reveal);
+  win.loadFile(path.join(__dirname, 'dashboard.html')).catch(error => {
+    appendDiagnosticLog('dashboard-load-failed', error);
+    if (!win.isDestroyed()) win.show();
+  });
+  return win;
 }
+
 function setBrowserBounds(value) {
   const size = dashboardWindow && !dashboardWindow.isDestroyed() ? dashboardWindow.getContentBounds() : { width: 0, height: 0 };
   const v = value && typeof value === 'object' ? value : {};
@@ -677,30 +725,22 @@ function setBrowserSettings(value) {
   return getBrowserSettings();
 }
 
-function hideToTray() {
-  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
-}
+function hideToTray() { destroyDashboardWindowToTray(); }
 
-function minimizeToTray() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (mainWindow.isMinimized()) hideToTray();
-  else mainWindow.minimize();
-}
+
+function minimizeToTray() { return destroyDashboardWindowToTray(); }
 
 function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.show();
-  mainWindow.setAlwaysOnTop(true);
-  mainWindow.focus();
+  if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
+  const win = dashboardWindow;
+  if (win.isMinimized()) win.restore();
+  win.show(); win.focus(); publishBrowserTabs();
+  return { opened: true };
 }
 
-function toggleOverlay() {
-  if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
-    showMainWindow();
-    return;
-  }
-  hideToTray();
+function toggleDashboardWindow() {
+  if (!dashboardWindow || dashboardWindow.isDestroyed() || !dashboardWindow.isVisible()) showMainWindow();
+  else destroyDashboardWindowToTray();
 }
 
 function createTray() {
@@ -714,8 +754,7 @@ function createTray() {
     tray = new Tray(icon.resize({ width: 16, height: 16 }));
     tray.setToolTip('Windows Repository Bridge');
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Open status', click: showMainWindow },
-      { label: 'Open dashboard', click: showDashboardWindow },
+      { label: 'Open Windows Bridge', click: showMainWindow },
       { type: 'separator' },
       { label: 'Quit', click: () => app.quit() }
     ]));
@@ -1097,6 +1136,14 @@ function bringMainWindowForward() {
 }
 
 function assertLocalUi(event, filename) {
+  const trusted = dashboardWindow && !dashboardWindow.isDestroyed() && dashboardWindow.webContents === event.sender ? { file: 'dashboard.html' } : null;
+  if (!trusted) throw new Error('Only the trusted local dashboard may invoke this action.');
+  const url = event.senderFrame && event.senderFrame.url || '';
+  if (!url.startsWith('file://') || !url.endsWith('/desktop/dashboard.html') ||
+      (filename !== trusted.file && !(filename === 'index.html' && trusted.file === 'dashboard.html'))) throw new Error('Unexpected IPC sender.');
+}
+
+
   const trusted = [
     { window: mainWindow, file: 'index.html' },
     { window: dashboardWindow, file: 'dashboard.html' }
@@ -1141,7 +1188,6 @@ function registerIpc() {
     return getUiState();
   });
   ipcMain.handle('app:open-dashboard', event => { assertLocalUi(event, 'index.html'); return showDashboardWindow(); });
-  ipcMain.handle('app:show-overlay', event => { assertLocalUi(event, 'index.html'); showMainWindow(); return { opened: true }; });
   ipcMain.handle('app:browser-tabs', event => { assertLocalUi(event, 'index.html'); return browserTabSnapshot(); });
   ipcMain.handle('app:browser-open-tab', (event, url) => { assertLocalUi(event, 'index.html'); return openBrowserTab(url); });
   ipcMain.handle('app:colab-open-tab', event => { assertLocalUi(event, 'index.html'); return openColabBrowserTab(); });
@@ -1450,95 +1496,11 @@ function registerIpc() {
 }
 
 function createMainWindow() {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    showMainWindow();
-    return;
-  }
-  const bounds = clampBounds(settings.bounds || defaultBounds());
-  mainWindow = new BrowserWindow({
-    ...bounds,
-    width: STATUS_SIZE.width,
-    height: STATUS_SIZE.height,
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
-    hasShadow: true,
-    resizable: false,
-    minimizable: true,
-    maximizable: false,
-    movable: true,
-    alwaysOnTop: true,
-    // A visible taskbar entry is the fallback if Windows cannot create a tray icon.
-    skipTaskbar: Boolean(tray),
-    show: false,
-    title: 'Windows Repository Bridge',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true
-    }
-  });
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.setAlwaysOnTop(true);
-  mainWindow.on('move', saveWindowBoundsSoon);
-  mainWindow.on('minimize', event => {
-    event.preventDefault();
-    hideToTray();
-  });
-  mainWindow.on('close', event => {
-    if (!finishingQuit) {
-      event.preventDefault();
-      hideToTray();
-      return;
-    }
-    saveWindowBounds();
-  });
-  let loadErrorReported = false;
-  let showFallbackTimer = null;
-  const revealWindow = () => {
-    if (!mainWindow || mainWindow.isDestroyed()) return;
-    if (showFallbackTimer) clearTimeout(showFallbackTimer);
-    showFallbackTimer = null;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.setAlwaysOnTop(true);
-    mainWindow.focus();
-  };
-  const reportLoadFailure = error => {
-    const message = String(error && error.message || error || 'Unknown window loading error').slice(0, 1200);
-    console.error('Could not load the status window:', message);
-    revealWindow();
-    if (!loadErrorReported) {
-      loadErrorReported = true;
-      dialog.showErrorBox(
-        'Windows Repository Bridge could not load its window',
-        message + '\n\nThe app process is still running. Reinstall the latest Windows build if this keeps happening.'
-      );
-    }
-  };
-  mainWindow.on('closed', () => {
-    if (showFallbackTimer) clearTimeout(showFallbackTimer);
-    mainWindow = null;
-  });
-  mainWindow.once('ready-to-show', revealWindow);
-  mainWindow.webContents.once('did-finish-load', revealWindow);
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
-    if (!isMainFrame || errorCode === -3) return;
-    reportLoadFailure(errorDescription + ' (' + errorCode + ') while loading ' + validatedURL);
-  });
-  showFallbackTimer = setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      console.warn('Status window did not report ready-to-show before the fallback timeout.');
-      revealWindow();
-    }
-  }, 5000);
-  mainWindow.loadFile(path.join(__dirname, 'index.html')).catch(reportLoadFailure);
+  return createDashboardWindow();
 }
 
 function registerHotkey() {
-  if (!globalShortcut.register(SHORTCUT, toggleOverlay)) {
+  if (!globalShortcut.register(SHORTCUT, toggleDashboardWindow)) {
     console.warn('Global shortcut could not be registered:', SHORTCUT);
   }
 }
@@ -1575,6 +1537,8 @@ if (!hasInstanceLock) {
       ? settings.repositoryBridge : {};
     settings.dashboardTheme = DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight';
     settings.ttsVolume = Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, Math.round(settings.ttsVolume))) : 100;
+    restoreBrowserTabsFromSettings();
+    settings.dashboardState = normalizeDashboardState(settings.dashboardState || defaultDashboardState());
     settings.browserKeepActive = settings.browserKeepActive === true;
     settings.browserLowMemory = settings.browserLowMemory === true;
     settings.repositoryBridge = {
