@@ -759,7 +759,14 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   const styles = read('desktop', 'dashboard.css');
   assert.ok(html.includes('id="agent-widget-host"'));
   assert.ok(html.includes('id="agent-mailbox-count"'));
+  assert.doesNotMatch(html, /id="agent-mailbox-list"/, 'seat consoles must not be nested in the aggregate queue widget');
   assert.match(renderer, /function renderAgentMailboxes\(rawAgents\)/);
+  assert.match(renderer, /function makeAgentWidget\(/);
+  assert.match(renderer, /function agentLayoutFor\(/);
+  assert.match(renderer, /previous session history is hidden/);
+  assert.match(renderer, /agentWidgets\.set\(agent\.agent_id,card\)/);
+  assert.match(renderer, /savedWidgetLayout\[agent\.agent_id\]/);
+  assert.match(read('desktop', 'repository-bridge.js'), /item\.sessionId === group\.session_id/);
   assert.match(renderer, /appendConsoleJsonDetails/);
   assert.match(renderer, /request\.tool/);
   assert.match(renderer, /request\.request_json/);
@@ -769,6 +776,7 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.match(styles, /\.agent-console\s*\{/);
   assert.match(styles, /\.agent-console\s*\{[^}]*background:#000/);
   assert.match(styles, /\.agent-json-details/);
+  assert.match(styles, /#main-page\{overflow:auto/);
   assert.match(renderer, /isAgent&&!resize&&!e\.target\.closest\('\.agent-console-header'\)/);
   assert.doesNotMatch(renderer, /innerHTML\s*=/, 'console output must be rendered as text, not HTML');
 });

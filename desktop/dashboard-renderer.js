@@ -156,11 +156,12 @@ function renderQueues(a,p){
     row.append(label,track,pct);$('queue-list').append(row);
   }
   if(!widgetMoved.queues){
-    queue.style.left='24px';queue.style.top='28px';queue.style.width=Math.max(180,mainPage.clientWidth-48)+'px';
-    // Keep the controls widget visible; long console histories scroll inside this widget.
+    const viewportWidth=mainPage.clientWidth||window.innerWidth||1200;
+    queue.style.left='24px';queue.style.top='28px';
+    queue.style.width=Math.min(360,Math.max(270,Math.round(viewportWidth*0.28)))+'px';
     const controlsHeight=controls.offsetHeight||207;
-    const maxHeight=Math.max(180,mainPage.clientHeight-28-controlsHeight-26);
-    queue.style.height=Math.min(Math.max(180,queue.scrollHeight+4),maxHeight)+'px';
+    const maxHeight=Math.max(160,(mainPage.clientHeight||window.innerHeight||800)-28-controlsHeight-26);
+    queue.style.height=Math.min(Math.max(150,queue.scrollHeight+4),maxHeight)+'px';
   }
   positionControls();
 }
@@ -176,12 +177,28 @@ function agentLayoutFor(agentId,index){
   if(saved&&Number.isFinite(saved.x)&&Number.isFinite(saved.y)&&Number.isFinite(saved.width)&&Number.isFinite(saved.height)){
     return {x:saved.x,y:saved.y,width:saved.width,height:saved.height};
   }
-  const width=360,height=320;
-  const minX=Math.max((queue.offsetLeft||24)+(queue.offsetWidth||360)+18,(controls.offsetLeft||24)+(controls.offsetWidth||360)+18,420);
-  const candidateX=minX+(index%2)*24;
-  const x=Math.min(Math.max(0,mainPage.clientWidth-width),candidateX);
-  const y=24+Math.floor(index/2)*(height+18);
-  return {x,y,width,height};
+  const viewportWidth=mainPage.clientWidth||window.innerWidth||1200;
+  const viewportHeight=mainPage.clientHeight||window.innerHeight||800;
+  const width=Math.min(360,Math.max(220,viewportWidth-48));
+  const height=Math.min(320,Math.max(180,viewportHeight-48));
+  const gap=18,utilityWidth=Math.min(360,Math.max(270,Math.round(viewportWidth*0.28)));
+  const rightX=24+utilityWidth+gap,hasRightColumn=rightX+width<=viewportWidth-12;
+  const baseX=hasRightColumn?rightX:24;
+  const baseY=hasRightColumn?24:Math.max((queue.offsetTop||28)+(queue.offsetHeight||150)+18,(controls.offsetTop||220)+(controls.offsetHeight||207)+18);
+  const columns=hasRightColumn?Math.max(1,Math.floor((viewportWidth-baseX-24+gap)/(width+gap))):1;
+  const overlaps=(x,y)=>{
+    const rects=[
+      {left:queue.offsetLeft,top:queue.offsetTop,right:queue.offsetLeft+queue.offsetWidth,bottom:queue.offsetTop+queue.offsetHeight},
+      {left:controls.offsetLeft,top:controls.offsetTop,right:controls.offsetLeft+controls.offsetWidth,bottom:controls.offsetTop+controls.offsetHeight},
+      ...[...agentWidgets.entries()].filter(([id])=>id!==agentId).map(([,el])=>({left:el.offsetLeft,top:el.offsetTop,right:el.offsetLeft+el.offsetWidth,bottom:el.offsetTop+el.offsetHeight}))
+    ];
+    return rects.some(r=>x<r.right+1&&x+width>r.left-1&&y<r.bottom+1&&y+height>r.top-1);
+  };
+  for(let slot=0;slot<500;slot++){
+    const x=baseX+(slot%columns)*(width+gap),y=baseY+Math.floor(slot/columns)*(height+gap);
+    if(!overlaps(x,y))return {x,y,width,height};
+  }
+  return {x:baseX,y:baseY+index*(height+gap),width,height};
 }
 function attachWidgetGesture(el){
   el.addEventListener('pointerdown',e=>beginGesture(e,el));
@@ -236,12 +253,25 @@ function renderAgentMailboxes(rawAgents){
     status.className='agent-console-status '+(active?'is-active':'is-inactive');
     status.textContent=active?'ACTIVE':'INACTIVE';
     busy.className='agent-console-busy '+(agent.busy?'is-busy':'');
-    busy.textContent=agent.busy?'BUSY':'READY';
+    busy.textContent=agent.busy?'BUSY':'IDLE';
     counts.textContent=Number(agent.active_count||0)+' active · '+Number(agent.queued_count||0)+' queued';
     const body=card.querySelector('.agent-console-body');
-    const scrollTop=body.scrollTop;
+    const previousSessionId=card.dataset.sessionId||'';
+    const currentSessionId=String(agent.session_id||'');
+    const sessionChanged=Boolean(previousSessionId&&previousSessionId!==currentSessionId);
+    const scrollTop=sessionChanged?0:body.scrollTop;
+    if(sessionChanged){
+      const prefix=agent.agent_id+'|';
+      for(const key of openAgentDetails)if(key.startsWith(prefix))openAgentDetails.delete(key);
+    }
+    card.dataset.sessionId=currentSessionId;
     for(const detail of body.querySelectorAll('details[data-detail-key]'))if(detail.open)openAgentDetails.add(detail.dataset.detailKey);
     body.replaceChildren();
+    if(sessionChanged){
+      const handoff=document.createElement('div');handoff.className='agent-console-empty';
+      handoff.textContent='Seat reassigned from '+previousSessionId+'; previous session history is hidden.';
+      body.append(handoff);
+    }
     const requests=Array.isArray(agent.requests)?agent.requests:[];
     if(!requests.length){
       const idle=document.createElement('div');idle.className='agent-console-empty';
@@ -282,7 +312,7 @@ function renderAgentMailboxes(rawAgents){
     body.scrollTop=scrollTop;
   });
 }
-function positionControls(){if(widgetMoved.controls)return;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||160)+18)+'px';controls.style.width=Math.min(380,Math.max(330,mainPage.clientWidth-48))+'px'}
+function positionControls(){if(widgetMoved.controls)return;const width=mainPage.clientWidth||window.innerWidth||1200;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||150)+18)+'px';controls.style.width=Math.min(360,Math.max(270,Math.round(width*0.28)))+'px'}
 function renderWorker(v){bridge=v||{};const s=String(bridge.workerStatus||bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='reconnecting'?'Worker reconnecting · retrying mailbox':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderAgentMailboxes(bridge.agentMailboxes);renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
 function renderGitHub(v){github=v||{};githubStatus.textContent=github.authenticated?'GitHub connected':github.verificationPending?'GitHub verifying…':'GitHub not connected';$('github-detail').textContent=github.authenticated?'Signed in as '+(github.login||'GitHub user'):'GitHub not connected';$('github-connect').textContent=github.authenticated?'Reconnect':'Sign in'}
 function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root;$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root}
@@ -404,6 +434,25 @@ api.onPrepareForTray(async payload=>{
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
 api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
-window.addEventListener('resize',()=>{if(!widgetMoved.queues)queue.style.width='360px';positionControls();renderAgentMailboxes(bridge.agentMailboxes);updateBrowserBounds()});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
+window.addEventListener('resize',()=>{
+  if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
+  positionControls();
+  let layoutChanged=false;
+  if(!mainPage.hidden&&mainPage.clientWidth>0){
+    for(const [id,el] of agentWidgets){
+      const width=Math.min(el.offsetWidth,Math.max(180,mainPage.clientWidth-24));
+      const left=Math.max(0,Math.min(Math.max(0,mainPage.clientWidth-width),el.offsetLeft));
+      const top=Math.max(0,el.offsetTop);
+      if(width!==el.offsetWidth||left!==el.offsetLeft||top!==el.offsetTop){
+        Object.assign(el.style,{left:left+'px',top:top+'px',width:width+'px'});
+        savedWidgetLayout[id]={x:left,y:top,width,height:el.offsetHeight};
+        layoutChanged=true;
+      }
+    }
+  }
+  renderAgentMailboxes(bridge.agentMailboxes);
+  if(layoutChanged)scheduleSaveDashboardState();
+  updateBrowserBounds()
+});window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
 applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();

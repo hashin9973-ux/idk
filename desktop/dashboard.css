@@ -140,6 +140,7 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 .agent-mailbox-heading h3{margin:0;color:#eee;font:600 11px/16px Consolas,"Cascadia Mono",monospace;letter-spacing:.04em}
 #agent-mailbox-count{color:#aaa;font:10px/14px Consolas,"Cascadia Mono",monospace;font-variant-numeric:tabular-nums}
 .agent-seat-help{margin:0;color:#888;font:10px/1.5 Consolas,"Cascadia Mono",monospace}
+#main-page{overflow:auto;scrollbar-width:thin;scrollbar-color:#555 transparent}
 .agent-widget-host{position:absolute;inset:0;pointer-events:none;overflow:visible}
 .agent-console{
   display:flex;flex-direction:column;gap:8px;min-width:180px;min-height:100px;
