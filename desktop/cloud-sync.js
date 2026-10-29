@@ -389,11 +389,9 @@ function createCloudSync(options = {}) {
     await fs.promises.writeFile(temp, content, { encoding: 'utf8', flag: 'w', mode: 0o600 });
     try { await fs.promises.rename(temp, filename); }
     catch (error) {
-      try { await fs.promises.unlink(filename); } catch {}
-      await fs.promises.rename(temp, filename).catch(async renameError => {
-        try { await fs.promises.unlink(temp); } catch {}
-        throw renameError || error;
-      });
+      // Keep the last valid snapshot if replacement fails.
+      try { await fs.promises.unlink(temp); } catch {}
+      throw error;
     }
   }
 

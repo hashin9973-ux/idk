@@ -691,9 +691,24 @@ function createDashboardWindow() {
     if (dashboardWindow !== win || win.isDestroyed()) return;
     settings.dashboardBounds = win.getBounds(); persistSettings();
   });
-  win.on('minimize', event => { event.preventDefault(); destroyDashboardWindowToTray(); });
+  win.on('minimize', event => {
+    event.preventDefault();
+    if (tray) void destroyDashboardWindowToTray();
+    else {
+      win.show(); win.focus();
+      void dialog.showMessageBox(win, { type: 'warning', title: 'System tray unavailable', message: 'The window cannot be unloaded because the system tray is unavailable.', detail: trayInitializationError || 'No tray icon was created.' });
+    }
+  });
   win.on('close', event => {
-    if (!finishingQuit) { event.preventDefault(); destroyDashboardWindowToTray(); return; }
+    if (!finishingQuit) {
+      event.preventDefault();
+      if (tray) void destroyDashboardWindowToTray();
+      else {
+        win.show(); win.focus();
+        void dialog.showMessageBox(win, { type: 'warning', title: 'System tray unavailable', message: 'The window will remain open because the system tray could not be initialized.', detail: trayInitializationError || 'No tray icon was created.' });
+      }
+      return;
+    }
     try { settings.dashboardBounds = win.getBounds(); } catch {}
     persistSettings();
   });
@@ -759,7 +774,14 @@ function setBrowserSettings(value) {
 function hideToTray() { destroyDashboardWindowToTray(); }
 
 
-function minimizeToTray() { return destroyDashboardWindowToTray(); }
+function minimizeToTray() {
+  if (!tray) {
+    const error = trayInitializationError || 'The system tray is unavailable, so the window cannot be unloaded safely.';
+    if (mainWindow && !mainWindow.isDestroyed()) void dialog.showMessageBox(mainWindow, { type: 'warning', title: 'System tray unavailable', message: 'Windows Repository Bridge will keep its window open.', detail: error });
+    return Promise.resolve({ hidden: false, error });
+  }
+  return destroyDashboardWindowToTray();
+}
 
 function showMainWindow() {
   if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
@@ -771,7 +793,7 @@ function showMainWindow() {
 
 function toggleDashboardWindow() {
   if (!dashboardWindow || dashboardWindow.isDestroyed() || !dashboardWindow.isVisible()) showMainWindow();
-  else destroyDashboardWindowToTray();
+  else if (tray) destroyDashboardWindowToTray();
 }
 
 function createTray() {
@@ -1851,10 +1873,9 @@ function registerIpc() {
     if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
     return { autoAcceptAll: settings.autoAcceptAll };
   });
-  ipcMain.handle('app:minimize-to-tray', event => {
+  ipcMain.handle('app:minimize-to-tray', async event => {
     assertLocalUi(event, 'index.html');
-    minimizeToTray();
-    return { hidden: true };
+    return await minimizeToTray();
   });
   ipcMain.handle('app:quit', event => {
     assertLocalUi(event, 'index.html');
