@@ -310,6 +310,22 @@ test('repository API allows only the configured mailbox contents routes', async 
   settings.repositoryBridge = { owner: 'example', repo: 'private-repo', branch: 'bridge-mailbox' };
   await connect(auth);
 
+  const bridgeRoot = await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge',
+    query: { ref: 'bridge-mailbox' }
+  });
+  assert.deepEqual(bridgeRoot.result, [{ name: 'req-test.json', type: 'file' }]);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge',
+    body: {
+      message: '[local bridge] must not write a directory',
+      content: Buffer.from(JSON.stringify({ unsafe: true })).toString('base64'),
+      branch: 'bridge-mailbox'
+    }
+  }), /PUT is only permitted for mailbox file records/i);
+
   const listing = await auth.requestApi({
     method: 'GET',
     path: '/repos/example/private-repo/contents/bridge/requests',

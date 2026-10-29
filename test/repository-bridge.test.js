@@ -431,7 +431,9 @@ test('worker executes a request once, writes the actual result, claim and heartb
     assert.equal(state.workspace_selected, true);
     assert.equal('workspace_name' in state, false, 'shared state does not disclose the local workspace folder name');
     const createCommits = fake.calls.filter(call => call.method === 'PUT');
-    assert.ok(createCommits.length >= 5, 'folder markers, claim, result and state are committed');
+    assert.ok(createCommits.length >= 4, 'agent record, claim, result and state are committed');
+    assert.equal(fake.files.has('bridge/agents/.gitkeep'), false,
+      'worker startup does not create placeholder records before polling; the agent directory is created by real agent records when needed');
     const resultsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/results');
     const resultFolderTreeGetsBefore = fake.calls.filter(call => call.method === 'GET' && call.path === resultsTreePath).length;
     await bridge.pollOnce();
@@ -492,7 +494,9 @@ test('create-only HTTP 422 without an existing result is verified and retried', 
 });
 
 test('mailbox transport health is tracked separately from ordinary tool errors', async () => {
-  const fake = fakeGitHub();
+  // Match the real mailbox layout: request polling happens within an existing
+  // requests directory instead of relying on startup to create a placeholder.
+  const fake = fakeGitHub({ initial: [['bridge/requests/.gitkeep', { purpose: 'test mailbox directory' }]] });
   const fixture = settingsFixture();
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture,

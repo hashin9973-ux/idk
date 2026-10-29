@@ -641,27 +641,6 @@ function createRepositoryBridge(deps) {
 
   const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict });
 
-  async function ensureFolders() {
-    const folders = ['bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents'];
-    // Folder discovery is read-only, so fetch all six independently instead of
-    // making app startup pay six sequential GitHub round trips.
-    const discovered = await Promise.all(folders.map(async folder => ({
-      folder,
-      entries: await listFolder(folder)
-    })));
-    // Missing folder markers are writes to the shared branch; keep these serial
-    // to avoid unnecessary Contents API commit races during first-time setup.
-    for (const { folder, entries } of discovered) {
-      if (entries.length) continue;
-      const placeholder = folder + '/.gitkeep';
-      const existing = await readRemoteFile(placeholder);
-      if (existing) continue;
-      await writeRemoteJson(placeholder, {
-        purpose: 'Repository mailbox folder marker. Requests and results are stored as JSON files.'
-      }, null, true);
-    }
-  }
-
   async function publishState(force = false) {
     const now = Date.now();
     const snapshot = {
@@ -2325,7 +2304,10 @@ function createRepositoryBridge(deps) {
     if (publicRepository && !config.allowPublicMailbox) {
       throw new Error('The configured repository is public. Enable the explicit public-mailbox warning checkbox before allowing local results to be committed there.');
     }
-    await ensureFolders();
+    // Start mailbox polling without preflight scans or placeholder writes across
+    // every optional folder. The poll itself is the authoritative reachability test.
+    // Optional directories (including bridge/agents) are created automatically by
+    // GitHub when the first real record is written; they are not startup prerequisites.
     running = true;
     lastError = '';
     announce();
