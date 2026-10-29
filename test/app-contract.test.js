@@ -740,7 +740,8 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.doesNotMatch(connect, /!auth\.authenticated\s*\|\|\s*auth\.verificationPending/);
   assert.match(connect, /repositoryBridge\.start\(\)/);
   assert.match(connect, /testing mailbox access directly/);
-  assert.ok(main.includes("if (connectionError && isNetworkError(connectionError)) return 'reconnecting'"));
+  assert.ok(main.includes("return resolveMailboxWorkerStatus(current, autoConnectionStatus);"));
+  assert.ok(main.includes("const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');"));
   assert.ok(main.includes("return 'reconnecting'"));
 
   const html = read('desktop', 'dashboard.html');
