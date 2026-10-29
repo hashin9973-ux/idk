@@ -594,9 +594,17 @@ async function openBrowserTab(raw) {
   if (!dashboardWindow || dashboardWindow.isDestroyed()) createDashboardWindow();
   showDashboardWindow();
   let tab = [...browserTabs.values()].find(item => item.url === parsed.href);
-  if (tab) { attachBrowserTab(tab.id); return { id: tab.id, url: tab.url, title: tab.title, reused: true }; }
+  if (tab) {
+    attachBrowserTab(tab.id);
+    dashboardSend('app:browser-tab-opened', { id: tab.id });
+    return { id: tab.id, url: tab.url, title: tab.title, reused: true };
+  }
   tab = { id: 'web-' + (++nextBrowserTabId) + '-' + crypto.randomUUID(), url: parsed.href, title: parsed.hostname, view: null, error: '' };
-  browserTabs.set(tab.id, tab); attachBrowserTab(tab.id); publishBrowserTabs();
+  browserTabs.set(tab.id, tab);
+  attachBrowserTab(tab.id);
+  // Keep renderer tab selection synchronized with the native WebContentsView before
+  // that view can sit over the page underneath it.
+  dashboardSend('app:browser-tab-opened', { id: tab.id });
   return { id: tab.id, url: tab.url, title: tab.title, reused: false };
 }
 function openColabBrowserTab(raw = COLAB_NOTEBOOK_URL) {
