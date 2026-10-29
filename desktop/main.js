@@ -101,6 +101,7 @@ const VISION_MANUAL_HEIGHT = 500;
 const SHORTCUT = 'CommandOrControl+Shift+Space';
 const AUTO_CONNECT_INTERVAL_MS = 5000;
 const COLAB_HANDOFF_SCHEME = 'windows-repository-bridge';
+const COLAB_HANDOFF_ARM_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
   owner: 'hashin9973-ux',
   repo: 'qdqwg',
@@ -132,6 +133,8 @@ let finishingHandoffServerStop = false;
 let pendingGitHubCliLogin = null;
 let pendingColabHandoffUrl = '';
 let colabHandoffInFlight = false;
+let colabHandoffArmed = false;
+let colabHandoffArmTimer = null;
 let lastColabHandoffFingerprint = '';
 let lastColabHandoffAt = 0;
 const startupColabHandoffUri = process.argv.find(value => typeof value === 'string' && value.startsWith(COLAB_HANDOFF_SCHEME + '://')) || '';
@@ -638,6 +641,29 @@ function publishColabHandoffResult(result) {
   });
 }
 
+function disarmColabHandoff() {
+  colabHandoffArmed = false;
+  if (colabHandoffArmTimer) clearTimeout(colabHandoffArmTimer);
+  colabHandoffArmTimer = null;
+  pendingColabHandoffUrl = '';
+}
+
+function armColabHandoff() {
+  if (colabHandoffArmTimer) clearTimeout(colabHandoffArmTimer);
+  colabHandoffArmed = true;
+  colabHandoffArmTimer = setTimeout(() => {
+    colabHandoffArmed = false;
+    colabHandoffArmTimer = null;
+    pendingColabHandoffUrl = '';
+    publishColabHandoffResult({
+      connected: false,
+      status: 'handoff_window_expired',
+      message: 'Colab did not send an endpoint within 20 minutes. Click Connect Colab again to arm a new handoff.'
+    });
+  }, COLAB_HANDOFF_ARM_TIMEOUT_MS);
+  colabHandoffArmTimer.unref?.();
+}
+
 function processPendingColabHandoff() {
   if (colabHandoffInFlight || !visionService || !pendingColabHandoffUrl) return;
   const endpoint = pendingColabHandoffUrl;
@@ -653,6 +679,7 @@ function processPendingColabHandoff() {
         // failed health/registration attempt must remain immediately retryable.
         lastColabHandoffFingerprint = fingerprint;
         lastColabHandoffAt = Date.now();
+        if (!pendingColabHandoffUrl) disarmColabHandoff();
       } else if (lastColabHandoffFingerprint === fingerprint) {
         lastColabHandoffFingerprint = '';
         lastColabHandoffAt = 0;
@@ -685,6 +712,10 @@ function queueColabHandoff(raw) {
 }
 
 function queueColabEndpoint(raw) {
+  // The loopback receiver is always listening, but a valid endpoint is accepted
+  // only during a user-initiated Connect Colab window. This prevents unrelated
+  // Colab output frames from causing unsolicited tunnel registration/activation.
+  if (!colabHandoffArmed) return false;
   const endpoint = parseTunnelEndpoint(raw);
   if (!endpoint || typeof endpoint.url !== 'string') return false;
   pendingColabHandoffUrl = endpoint.url;
@@ -944,7 +975,7 @@ function registerIpc() {
     // Do not hide a live Colab runtime because a separate GitHub /user probe timed out.
     const state = visionService.status();
     const handoff = colabHandoffServer ? colabHandoffServer.status() : { ready: false, lastError: 'not_initialized' };
-    return { ...state, automatic_handoff_ready: handoff.ready === true, automatic_handoff_error: handoff.lastError || '' };
+    return { ...state, automatic_handoff_ready: handoff.ready === true, automatic_handoff_armed: colabHandoffArmed, automatic_handoff_error: handoff.lastError || '' };
   });
   ipcMain.handle('app:vision-connect-colab', async (event, endpointUrl) => {
     assertLocalUi(event, 'index.html');
@@ -957,9 +988,15 @@ function registerIpc() {
         message: appInitializationError || 'Colab vision service is unavailable in this app session.'
       };
     }
-    // Start/re-arm the localhost receiver before opening Colab. The browser asks
-    // for loopback permission on the notebook's user gesture; later endpoints are
-    // sent automatically once that permission is granted.
+    const manualEndpoint = typeof endpointUrl === 'string' && endpointUrl.trim().length > 0;
+    if (manualEndpoint) {
+      disarmColabHandoff();
+      return visionService.connectColab(endpointUrl);
+    }
+
+    // Arm only after a local user action invokes Connect Colab. The loopback
+    // receiver can remain bound at startup, but must not accept unsolicited
+    // endpoint posts from unrelated Colab tabs.
     if (colabHandoffServer && !colabHandoffServer.status().ready) {
       try { await colabHandoffServer.start(); }
       catch (error) {
@@ -969,7 +1006,13 @@ function registerIpc() {
         });
       }
     }
-    return visionService.connectColab(typeof endpointUrl === 'string' ? endpointUrl : '');
+    armColabHandoff();
+    const result = await visionService.connectColab('');
+    if (!(result && result.endpoint_watch_active === true) &&
+        !(result && result.status === 'waiting_for_runtime' && result.opened === true)) {
+      disarmColabHandoff();
+    }
+    return { ...result, automatic_handoff_ready: Boolean(colabHandoffServer && colabHandoffServer.status().ready), automatic_handoff_armed: colabHandoffArmed };
   });
   ipcMain.handle('app:vision-manual-panel', (event, visible) => {
     assertLocalUi(event, 'index.html');
@@ -1379,6 +1422,7 @@ if (!hasInstanceLock) {
 
 app.on('before-quit', event => {
   clearTimeout(saveTimer);
+  disarmColabHandoff();
   if (autoConnectTimer) clearInterval(autoConnectTimer);
   autoConnectTimer = null;
   globalShortcut.unregisterAll();
