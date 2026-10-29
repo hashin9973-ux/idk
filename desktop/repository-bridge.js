@@ -1417,6 +1417,9 @@ function createRepositoryBridge(deps) {
     const capabilityData = contextReports.capabilities && contextReports.capabilities.result || {};
     const instructionData = contextReports.instructions && contextReports.instructions.result || {};
     const projectCommandData = contextReports.project_commands && contextReports.project_commands.result || { available: false };
+    let agentStatusSnapshot;
+    try { agentStatusSnapshot = await agentRegistry.statuses(); }
+    catch (error) { agentStatusSnapshot = { agents: [], count: 0, error: cleanError(error.message), status_unavailable: true }; }
     const projectCommandList = [];
     const projectEntries = new Set((contextReports.project && contextReports.project.result && contextReports.project.result.topLevelEntries || []).map(String));
     const scripts = projectCommandData.scripts && typeof projectCommandData.scripts === 'object' ? projectCommandData.scripts : {};
@@ -1435,6 +1438,7 @@ function createRepositoryBridge(deps) {
       generated_at: generatedAt,
       worker_id: workerId,
       workspace_selected: Boolean(root),
+      agent_status: agentStatusSnapshot,
       retrieval_policy: 'Use agent_context as the compact workspace and tool entry point. The names-only filesystem index is maintained separately at bridge/context/filesystem-index.md and updated after filesystem changes, with periodic reconciliation. Other detailed snapshots are available via files only when needed.',
       agent_context: {
         protocol: 'chatgpt-local-agent-context/v1',
@@ -1442,6 +1446,8 @@ function createRepositoryBridge(deps) {
         environment: contextReports.environment && contextReports.environment.result || null,
         project: contextReports.project && contextReports.project.result || null,
         project_commands: { ...projectCommandData, suggested: projectCommandList },
+        agent_status: agentStatusSnapshot,
+        agents: agentStatusSnapshot.agents || [],
         directory_overview: contextReports.directory_tree && contextReports.directory_tree.result || null,
         filesystem_index: {
           path: 'bridge/context/filesystem-index.md',
@@ -1463,29 +1469,32 @@ function createRepositoryBridge(deps) {
           protocol: PROTOCOL,
           request_path_template: 'bridge/requests/<request_id>.json',
           result_path_template: 'bridge/results/<same-request-id>.json',
-          agent_registry_path: 'bridge/agents/<agent-id>.json',
-          agent_registration_tool: 'session_start',
+          agent_seat_path: 'bridge/agents/<agent-id>.json',
+          session_record_path: 'bridge/sessions/<session-id>.json',
+          message_inbox_path: 'bridge/agent-messages/<recipient-session-id>/<message-id>.json',
+          session_start_tool: 'session_start',
           agent_status_tool: 'agent_status',
+          agent_messaging_tools: ['send_agent_message', 'read_agent_messages', 'reply_to_agent_message'],
+          session_inactivity_window_ms: agentRegistry.SESSION_INACTIVE_AFTER_MS,
           artifact_path_template: 'bridge/artifacts/<request-id>/<artifact-name>',
           output_limit_fallback: 'If output_truncated is true, a result is partial, a field contains OUTPUT EXTERNALIZED, or the inline result says the repository size limit was exceeded, fetch the listed artifact paths through GitHub MCP before reasoning from the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the full JSON, then follow its artifacts manifest. For tool_output_part, fetch all parts for that field and concatenate in ascending part order. Critical: if nested stdout_truncated or stderr_truncated is true, the local runner discarded bytes before artifact publication; fetching the artifact recovers only the captured portion and is NOT a complete output. Rerun the command in bounded pages or redirect its full output to a workspace file, then read that file with read_file pages until EOF. Never report an output complete until all required parts are read and neither capture-truncation flag remains unexplained.',
           claim_path_template: 'bridge/claims/<same-request-id>.json',
           worker_state_path: 'bridge/state/windows-app.json',
           request_example: {
             protocol: PROTOCOL,
-            request_id: '<globally unique ID, preferably prefixed with assigned Agent ID>',
-            agent_id: '<agent-NNN from session_start>',
-            session_id: '<64-character token returned by session_start>',
+            request_id: '<globally unique request ID>',
+            session_id: '<session_id returned by session_start for this conversation>',
             created_at: '<current ISO-8601 timestamp>',
             tool: 'get_agent_context',
             args: {}
           },
-          agent_registration_example: { protocol: PROTOCOL, request_id: 'register-YYYYMMDD-unique', created_at: '<current ISO-8601 timestamp>', tool: 'session_start', args: {} },
-          calling_contract: 'Local tools are mailbox-backed, not native GitHub MCP function names. Use GitHub MCP file operations to publish the request JSON on the configured branch, then read the result at the matching request ID. Use bridge/context/capabilities.json for exact tool schemas.'
+          session_start_example: { protocol: PROTOCOL, request_id: 'session-start-<unique-suffix>', created_at: '<current ISO-8601 timestamp>', tool: 'session_start', args: {} },
+          calling_contract: 'At the beginning of each ChatGPT conversation, publish session_start without session_id. Keep the returned session_id for this conversation and include it on every following request. Local tools are mailbox-backed, not native GitHub MCP function names. Publish requests through GitHub MCP and read the matching result. Exact schemas are in bridge/context/capabilities.json.'
         },
         tool_failure_contract: {
         no_request: 'If bridge/requests/<request_id>.json was never published on the configured mailbox branch, the Windows worker never received the operation. Do not say the worker blocked it; publish a correctly formed request using the current tool catalog.',
         pending: 'If the request exists but its matching result is missing, inspect the same request claim and bridge/state/windows-app.json, then reread the same result. A delay or missing result is not proof of a safety rejection. Never replay an uncertain side effect.',
-        rejected: 'Only a matching result with status rejected and a concrete error proves that the bridge rejected the request envelope or tool registration. Report the exact reason and correct the request.',
+        rejected: 'Only a matching result with status rejected and a concrete error proves that the bridge rejected the request envelope, session identity, or tool arguments. Report the exact reason and correct the request.',
         failed: 'A result with status failed is an execution/tool error. Inspect nested ok, exitCode, timedOut, stdout, stderr, and error. Compiler errors, non-zero builds, missing files, invalid paths, and patch-context mismatches are not automatically safety blocks.',
         cancelled: 'A result with status cancelled means the operation was cancelled or local approval was declined. Check the exact result and current execution_policy.auto_accept_all before describing an approval issue.',
         partial: 'A partial result or output_truncated flag means inline output is incomplete. Inspect artifact_errors and artifacts first; fetch all referenced files before interpreting the result. If kind=complete_result_part is present, fetch every listed part, concatenate UTF-8 content in ascending part order, parse the reconstructed JSON result record, then fetch every artifact it references. For tool_output_part, fetch every part for the relevant field and concatenate in part order. If nested stdout_truncated or stderr_truncated is true, the local runner discarded bytes before artifact publication, so the artifact cannot contain those omitted bytes; do not treat it as complete. Rerun in bounded pages or redirect output to a local file and read it with read_file pagination until EOF. If artifacts are missing or artifact_errors is non-empty, retry the relevant read/search in smaller bounded pages. Output limits are not safety denials.',
@@ -2007,7 +2016,7 @@ function createRepositoryBridge(deps) {
       (mailboxUiRecords.get(requestId) || {}).agentLabel || resultAgentId || '';
     if (resultAgentId) setAgentDirectoryEntry(resultAgentId, {
       ...(resultAgentLabel ? { label: resultAgentLabel } : {}),
-      status: request.tool === 'session_start' ? 'idle' : (agentDirectory.get(resultAgentId) || {}).status || 'unknown'
+      status: request.tool === 'session_start' ? 'active' : (agentDirectory.get(resultAgentId) || {}).status || 'unknown'
     });
     updateMailboxUiRecord(requestId, {
       agentId: resultAgentId,
