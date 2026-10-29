@@ -174,6 +174,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   const html = read('desktop', 'dashboard.html');
   const renderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'dashboard.css');
+  const main = read('desktop', 'main.js');
   for (const id of ['tab-list', 'add-tab', 'main-page', 'settings-page', 'queues-widget', 'controls-widget',
     'queue-list', 'observe-toggle', 'auto-accept-toggle', 'quick-colab-connect', 'workspace-button',
     'github-connect', 'repo-owner', 'repo-name', 'repo-branch', 'allow-public-mailbox',
@@ -186,6 +187,9 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(renderer, /connectColab/);
   assert.match(renderer, /api\.setTheme/);
   assert.match(renderer, /applyTheme/);
+  assert.match(main, /DASHBOARD_THEME_IDS = Object\.freeze/);
+  assert.match(main, /settings\.dashboardTheme = DASHBOARD_THEME_IDS\.includes/);
+  assert.match(main, /settings\.dashboardTheme = theme;\s*persistSettings\(\)/);
   for (const theme of ['midnight','light','ocean','forest','sunset','rose','high-contrast']) assert.match(styles, new RegExp('data-theme="' + theme + '"'));
   assert.match(styles, /tabbar/);
   assert.match(styles, /\.widget\.dragging/);
