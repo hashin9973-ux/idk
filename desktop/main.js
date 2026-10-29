@@ -462,13 +462,33 @@ function browserTabSnapshot() {
 function publishBrowserTabs() { dashboardSend('app:browser-tabs-changed', browserTabSnapshot()); }
 
 function applyPageFocusCompatibility(tab) {
-  if (!tab || !tab.view || !settings.browserKeepActive || tab.view.webContents.isDestroyed()) return;
-  tab.view.webContents.setBackgroundThrottling(false);
-  // Opt-in compatibility for the unprivileged remote document only. This does
-  // not focus the native window or generate input events.
-  void tab.view.webContents.executeJavaScript(
-    "(() => { try { Object.defineProperty(Document.prototype, 'visibilityState', { configurable: true, get: () => 'visible' }); Object.defineProperty(Document.prototype, 'hidden', { configurable: true, get: () => false }); Object.defineProperty(Document.prototype, 'hasFocus', { configurable: true, value: () => true }); } catch {} })();"
-  ).catch(() => {});
+  if (!tab || !tab.view || tab.view.webContents.isDestroyed()) return;
+  const enabled = settings.browserKeepActive === true;
+  const script = `(() => {
+    const key = Symbol.for('windows-repository-bridge.focus-descriptors');
+    if (!window[key]) Object.defineProperty(window, key, { configurable: false, value: {
+      visibilityState: Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState'),
+      hidden: Object.getOwnPropertyDescriptor(Document.prototype, 'hidden'),
+      hasFocus: Object.getOwnPropertyDescriptor(Document.prototype, 'hasFocus')
+    }});
+    const saved = window[key];
+    const toggle = (name, descriptor) => { try {
+      if (enabled) Object.defineProperty(Document.prototype, name, descriptor);
+      else if (saved[name]) Object.defineProperty(Document.prototype, name, saved[name]);
+      else delete Document.prototype[name];
+    } catch {} };
+    toggle('visibilityState', { configurable: true, get: () => 'visible' });
+    toggle('hidden', { configurable: true, get: () => false });
+    toggle('hasFocus', { configurable: true, value: () => true });
+    if (!enabled) {
+      for (const name of ['visibilityState', 'hidden', 'hasFocus']) {
+        try { if (saved[name]) Object.defineProperty(Document.prototype, name, saved[name]); else delete Document.prototype[name]; } catch {}
+      }
+    } else {
+      try { document.dispatchEvent(new Event('visibilitychange')); } catch {}
+    }
+  })();`;
+  void tab.view.webContents.executeJavaScript(script).catch(() => {});
 }
 
 function createBrowserView(tab) {
@@ -484,6 +504,7 @@ function createBrowserView(tab) {
     return { action: 'deny' };
   });
   view.webContents.on('will-navigate', (event, url) => { if (!safeBrowserUrl(url)) event.preventDefault(); });
+  view.webContents.on('will-redirect', (event, url) => { if (!safeBrowserUrl(url)) event.preventDefault(); });
   view.webContents.on('page-title-updated', (_event, title) => { tab.title = String(title || tab.url).slice(0, 120); publishBrowserTabs(); });
   view.webContents.on('did-navigate', (_event, url) => {
     const safe = safeBrowserUrl(url); if (safe) tab.url = safe.href;
@@ -620,7 +641,7 @@ function setBrowserSettings(value) {
   settings.browserKeepActive = keepActive; settings.browserLowMemory = lowMemory; persistSettings();
   for (const tab of browserTabs.values()) if (tab.view && !tab.view.webContents.isDestroyed()) {
     tab.view.webContents.setBackgroundThrottling(!keepActive);
-    if (keepActive) applyPageFocusCompatibility(tab);
+    applyPageFocusCompatibility(tab);
   }
   if (lowMemory) for (const tab of browserTabs.values()) {
     if (tab.id === activeBrowserTabId || !tab.view) continue;
@@ -1461,7 +1482,7 @@ if (!hasInstanceLock) {
       ? settings.repositoryBridge : {};
     settings.ttsVolume = Number.isFinite(settings.ttsVolume) ? Math.max(0, Math.min(100, Math.round(settings.ttsVolume))) : 100;
     settings.browserKeepActive = settings.browserKeepActive === true;
-    settings.browserLowMemory = settings.browserLowMemory === true && settings.browserKeepActive !== true;
+    settings.browserLowMemory = settings.browserLowMemory === true;
     settings.repositoryBridge = {
       ...DEFAULT_REPOSITORY_BRIDGE,
       ...savedBridge,
