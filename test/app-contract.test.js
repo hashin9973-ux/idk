@@ -391,8 +391,11 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(python.includes('PIPER_VOICE_NAME = "en_US-libritts-high"'));
   assert.ok(python.includes('PIPER_SPEAKER_ID = 0'));
   assert.ok(python.includes('def ensure_tts_voice():'));
-  assert.ok(python.includes('voice.synthesize_wav(\n                    "Ready.", warmup_wav'));
+  assert.ok(python.includes('voice.synthesize_wav(\n            "Ready.", warmup_wav'));
   assert.ok(python.includes('"tts_warmup_ms": round(float(_tts_warmup_ms)'));
+  assert.ok(python.includes('_tts_warmup_ms = globals().get("_tts_warmup_ms")'));
+  assert.ok(python.includes('warm_tts_voice(_tts_voice)'));
+  assert.ok(python.includes('name="piper-tts-warmup"'));
   assert.ok(python.includes('up to 16 distinct screen regions'));
   assert.ok(python.includes('around 900-1300 generated tokens'));
   assert.ok(python.includes('if route == "/tts":'));
