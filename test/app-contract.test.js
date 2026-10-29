@@ -657,6 +657,9 @@ test('in-app browser defaults off, never leaves an overlay attached when disable
   assert.match(main, /browserBounds = clampBrowserBounds\(browserBounds, dashboardWindow\.getContentBounds\(\)\)/);
   assert.match(main, /settings\.browserEnabled !== true\) return \{ applied: false, disabled: true \}/);
   assert.match(main, /tabs: current\.tabs\.filter\(tab => tab\.kind !== 'browser'\)/);
+  assert.match(main, /settings\.browserEnabled === true \|\| !tab \|\| tab\.kind !== 'browser'/);
+  assert.match(main, /tabs: incoming\.tabs\.filter\(tab => tab\.kind !== 'browser'\)/);
+  assert.match(main, /keepActive: enabled && settings\.browserKeepActive === true/);
   assert.match(main, /await shell\.openExternal\(parsed\.href\)/);
   assert.match(html, /id="browser-enabled" type="checkbox"/);
   assert.match(renderer, /browserEnabled=\$\('browser-enabled'\)/);
