@@ -315,9 +315,7 @@ function createRepositoryBridge(deps) {
     if (next.agentId && typeof next.agentId === 'string') {
       setAgentDirectoryEntry(next.agentId, {
         ...(next.agentLabel ? { label: next.agentLabel } : {}),
-        ...(next.status === 'completed' || next.status === 'failed' || next.status === 'rejected' || next.status === 'cancelled' || next.status === 'partial'
-          ? { status: 'idle' } : ['queued', 'loading', 'validating', 'claiming', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(next.status)
-            ? { status: 'active' } : {})
+        ...(next.updated_at ? { last_activity_at: next.updated_at, last_seen_at: next.updated_at } : {})
       });
     }
     mailboxUiRecords.set(requestId, next);
@@ -357,7 +355,12 @@ function createRepositoryBridge(deps) {
       return {
         agent_id: group.agent_id,
         label: group.label || group.agent_id || 'Legacy / unassigned',
-        status: live.length ? 'active' : (group.status || 'idle'),
+        status: (() => {
+          const last = Date.parse(String(group.last_activity_at || group.last_seen_at || ''));
+          return last && Date.now() - last <= agentRegistry.SESSION_INACTIVE_AFTER_MS ? 'active' : 'inactive';
+        })(),
+        busy: Boolean(live.length || group.busy),
+        session_id: group.session_id || null,
         active_count: rows.filter(item => ['validating', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(item.status)).length,
         queued_count: rows.filter(item => ['queued', 'loading', 'claiming'].includes(item.status)).length,
         request_count: rows.length,
@@ -387,32 +390,21 @@ function createRepositoryBridge(deps) {
     agentDirectoryRefreshInFlight = true;
     lastAgentDirectoryRefreshAt = Date.now();
     try {
-      const entries = (await listFolder('bridge/agents'))
-        .filter(item => item && typeof item.name === 'string' && /^agent-[0-9]{3,}\.json$/.test(item.name))
-        .sort((a, b) => Number(a.name.slice(6, -5)) - Number(b.name.slice(6, -5)));
-      // Seed every registered ID immediately; labels and detailed status are enriched
-      // in bounded parallel reads so a large registry cannot starve request polling.
-      for (const entry of entries) {
-        const agentId = entry.name.slice(0, -5);
-        if (!agentDirectory.has(agentId)) setAgentDirectoryEntry(agentId, { label: agentId, status: 'unknown' });
-      }
-      const latest = entries.slice(-32);
-      for (let start = 0; start < latest.length; start += 8) {
-        const batch = latest.slice(start, start + 8);
-        await Promise.all(batch.map(async entry => {
-          try {
-            const remote = await readRemoteFile('bridge/agents/' + entry.name);
-            const value = remote && remote.value;
-            if (!value || value.protocol !== 'chatgpt-local-agent-record/v1') return;
-            setAgentDirectoryEntry(value.agent_id, {
-              label: value.label || value.agent_id,
-              status: value.status || 'unknown',
-              last_seen_at: value.last_seen_at || null,
-              last_request_id: value.last_request_id || null,
-              active_request_ids: Array.isArray(value.active_request_ids) ? value.active_request_ids.slice(0, 32) : []
-            });
-          } catch { /* Preserve the last good registry snapshot during network blips. */ }
-        }));
+      const snapshot = await agentRegistry.statuses();
+      for (const agent of snapshot.agents || []) {
+        setAgentDirectoryEntry(agent.agent_id, {
+          label: agent.label || agent.agent_id,
+          status: agent.status || 'inactive',
+          busy: agent.busy === true,
+          session_id: agent.session_id || null,
+          last_activity_at: agent.last_activity_at || null,
+          last_seen_at: agent.last_activity_at || null,
+          last_request_id: agent.last_request_id || null,
+          last_completed_at: agent.last_completed_at || null,
+          recent_request_ids: Array.isArray(agent.recent_request_ids) ? agent.recent_request_ids.slice(-50) : [],
+          active_request_ids: Array.isArray(agent.active_request_ids) ? agent.active_request_ids.slice(-50) : [],
+          reusable: agent.reusable === true
+        });
       }
       announce();
     } catch {
@@ -465,6 +457,7 @@ function createRepositoryBridge(deps) {
       allowPublicMailbox: config.allowPublicMailbox,
       mailboxRetentionDays: config.retentionDays,
       agentMailboxes: mailboxConsoleSnapshot(),
+      agentStatus: [...agentDirectory.values()].map(agent => ({ ...agent })),
       mailboxCleanup: {
         lastRunAt: mailboxCleanupLastRunAt,
         lastDeletedRecords: mailboxCleanupLastDeletedRecords,
