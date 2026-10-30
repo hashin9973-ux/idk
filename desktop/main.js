@@ -23,7 +23,7 @@ const {
   desktopCapturer,
   nativeTheme
 } = require('electron');
-const { resolveWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
+const { resolveWorkspaceRoot, resolveSessionWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -315,19 +315,18 @@ function getDefaultWorkspaceRoot() {
 function getWorkspaceRoot(sessionId = null) {
   // Overrides belong to a stable conversation session, not a reusable seat.
   // If an override becomes unavailable, fail closed instead of using another root.
-  if (typeof sessionId === 'string' && /^session-[a-f0-9]{32}$/.test(sessionId)) {
-    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
-      !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
-    const configured = overrides[sessionId];
-    if (typeof configured === 'string' && configured.trim()) {
-      const root = resolveWorkspaceRoot(configured, getDefaultWorkspaceRoot());
-      if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
-        throw new Error('The workspace configured for this agent is unavailable: ' + root + '. Choose another folder from this agent widget.');
-      }
-      return root;
+  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const configured = typeof sessionId === 'string' && /^session-[a-f0-9]{32}$/.test(sessionId)
+    ? overrides[sessionId] : null;
+  const hasSessionOverride = typeof configured === 'string' && Boolean(configured.trim());
+  const root = resolveSessionWorkspaceRoot(sessionId, overrides, settings.workspaceRoot, getDefaultWorkspaceRoot());
+  if (hasSessionOverride) {
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      throw new Error('The workspace configured for this agent is unavailable: ' + root + '. Choose another folder from this agent widget.');
     }
+    return root;
   }
-  const root = resolveWorkspaceRoot(settings.workspaceRoot, getDefaultWorkspaceRoot());
   if (settings.workspaceRoot !== root) {
     settings.workspaceRoot = root;
     persistSettings();
@@ -2061,6 +2060,21 @@ function registerIpc() {
     const result = await repositoryBridge.sendDashboardMessage(sessionId, message);
     broadcastBridgeState(repositoryBridge.getState());
     return result;
+  });
+  ipcMain.handle('app:agent-read-replies', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const sessionId = payload && payload.sessionId;
+    const messageIds = payload && payload.messageIds;
+    if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
+      throw new Error('A valid agent session ID is required to read dashboard replies.');
+    }
+    if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > 100) {
+      throw new Error('Reply lookup requires 1–100 message IDs.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.readDashboardReplies !== 'function') {
+      throw new Error('The repository worker is not available to read agent replies.');
+    }
+    return repositoryBridge.readDashboardReplies(sessionId, { message_ids: messageIds });
   });
   ipcMain.handle('app:set-auto-accept-all', async (event, enabled) => {
     assertLocalUi(event, 'index.html');

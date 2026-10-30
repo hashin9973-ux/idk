@@ -29,6 +29,15 @@ function resolveWorkspaceRoot(configuredPath, fallbackPath, pathApi = path) {
   throw new Error('No usable workspace directory is configured. Choose a drive or folder, or use the default Documents workspace.');
 }
 
+/** Resolve an optional conversation override without ever keying it by a reusable agent seat. */
+function resolveSessionWorkspaceRoot(sessionId, overrides, globalWorkspacePath, fallbackPath, pathApi = path) {
+  const isSessionId = typeof sessionId === 'string' && /^session-[a-f0-9]{32}$/.test(sessionId);
+  const mapping = overrides && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides : {};
+  const configured = isSessionId ? mapping[sessionId] : null;
+  const selected = typeof configured === 'string' && configured.trim() ? configured : globalWorkspacePath;
+  return resolveWorkspaceRoot(selected, fallbackPath, pathApi);
+}
+
 /**
  * Validate a workspace without trying to create it when it already exists.
  * This matters on Windows, where mkdir('C:\\', { recursive: true }) can throw
@@ -44,4 +53,4 @@ function ensureWorkspaceDirectory(workspacePath, fsApi = fs) {
   return workspacePath;
 }
 
-module.exports = { isFilesystemRoot, resolveWorkspaceRoot, ensureWorkspaceDirectory };
+module.exports = { isFilesystemRoot, resolveWorkspaceRoot, resolveSessionWorkspaceRoot, ensureWorkspaceDirectory };

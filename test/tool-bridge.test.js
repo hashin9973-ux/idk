@@ -161,6 +161,7 @@ test('declining the local artifact-upload approval performs no file publication'
 test('local tools and nested batch steps resolve the workspace by stable session ID', async () => {
   const root = fixture();
   const alternate = fixture();
+  const secondWorkspace = fixture();
   try {
     const calls = [];
     const local = {
@@ -171,10 +172,12 @@ test('local tools and nested batch steps resolve the workspace by stable session
       }
     };
     const activeSession = 'session-' + 'a'.repeat(32);
+    const secondSession = 'session-' + 'b'.repeat(32);
+    const recycledSeatSession = 'session-' + 'c'.repeat(32);
     const bridge = createToolBridge({
       dialog: { showMessageBox: async () => ({ response: 0 }) },
       getMainWindow: () => null,
-      getWorkspaceRoot: sessionId => sessionId === activeSession ? alternate : root,
+      getWorkspaceRoot: sessionId => sessionId === activeSession ? alternate : sessionId === secondSession ? secondWorkspace : root,
       localTools: local,
       githubAuth: {},
       getAutoAcceptAll: () => true
@@ -183,6 +186,14 @@ test('local tools and nested batch steps resolve the workspace by stable session
     assert.equal(direct.ok, true);
     assert.equal(direct.workspace, alternate);
     assert.equal(calls[0].workspaceRoot, alternate);
+    const secondDirect = await bridge.runTool('environment_info', {}, 'req-session-workspace-two', secondSession);
+    assert.equal(secondDirect.ok, true);
+    assert.equal(secondDirect.workspace, secondWorkspace);
+    assert.equal(calls[1].workspaceRoot, secondWorkspace);
+    const recycled = await bridge.runTool('environment_info', {}, 'req-session-workspace-recycled-seat', recycledSeatSession);
+    assert.equal(recycled.ok, true);
+    assert.equal(recycled.workspace, root);
+    assert.equal(calls[2].workspaceRoot, root);
     const batch = await bridge.runTool('batch', {
       steps: [{ id: 'probe', tool: 'environment_info', args: {} }], maxConcurrency: 1
     }, 'req-session-batch-workspace', activeSession);
@@ -192,6 +203,7 @@ test('local tools and nested batch steps resolve the workspace by stable session
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(alternate, { recursive: true, force: true });
+    fs.rmSync(secondWorkspace, { recursive: true, force: true });
   }
 });
 

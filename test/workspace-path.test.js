@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { isFilesystemRoot, resolveWorkspaceRoot, ensureWorkspaceDirectory } = require('../desktop/workspace-path');
+const { isFilesystemRoot, resolveWorkspaceRoot, resolveSessionWorkspaceRoot, ensureWorkspaceDirectory } = require('../desktop/workspace-path');
 
 test('allows an explicitly selected Windows drive root as a workspace', () => {
   assert.equal(isFilesystemRoot('C:\\', path.win32), true);
@@ -35,6 +35,26 @@ test('recognizes filesystem roots using the supplied path implementation', () =>
 test('normalizes a drive-relative-looking picker result to the full drive root', () => {
   assert.equal(isFilesystemRoot('C:', path.win32), true);
   assert.equal(resolveWorkspaceRoot('C:', 'C:\\Users\\Example', path.win32), 'C:\\');
+  assert.equal(resolveWorkspaceRoot('D:', 'C:\\Users\\Example', path.win32), 'D:\\');
+});
+
+test('resolves and restores separate workspace overrides by stable session ID', () => {
+  const globalRoot = 'C:\\GlobalWorkspace';
+  const firstSession = 'session-' + 'a'.repeat(32);
+  const secondSession = 'session-' + 'b'.repeat(32);
+  const recycledSeatNewSession = 'session-' + 'c'.repeat(32);
+  const persistedSettings = JSON.stringify({ agentWorkspaces: {
+    [firstSession]: 'D:',
+    [secondSession]: 'E:\\AgentTwo'
+  } });
+  const restoredSettings = JSON.parse(persistedSettings);
+  const overrides = restoredSettings.agentWorkspaces;
+
+  assert.equal(resolveSessionWorkspaceRoot(firstSession, overrides, globalRoot, globalRoot, path.win32), 'D:\\');
+  assert.equal(resolveSessionWorkspaceRoot(secondSession, overrides, globalRoot, globalRoot, path.win32), 'E:\\AgentTwo');
+  assert.equal(resolveSessionWorkspaceRoot(recycledSeatNewSession, overrides, globalRoot, globalRoot, path.win32), globalRoot);
+  assert.equal(resolveSessionWorkspaceRoot('invalid-session', overrides, globalRoot, globalRoot, path.win32), globalRoot);
+  assert.equal(resolveSessionWorkspaceRoot(firstSession, [], globalRoot, globalRoot, path.win32), globalRoot);
 });
 
 

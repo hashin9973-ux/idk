@@ -145,6 +145,38 @@ test('dashboard custom messages are written to the exact active session inbox', 
   assert.equal(inbox.messages[0].message, record.message);
 });
 
+test('agents can reply to dashboard messages and the dashboard reads replies in the same session mailbox', async () => {
+  const { registry, records } = mockMailbox();
+  const recipient = await registry.startSession({ label: 'Agent receiving a dashboard message' });
+  const sent = await registry.sendUserMessage(recipient.session_id, { message: 'Please report the result.' });
+  const inbox = await registry.readMessages(recipient.session_id, { unread_only: true });
+  assert.equal(inbox.count, 1);
+  assert.equal(inbox.messages[0].message_id, sent.message_id);
+
+  const reply = await registry.replyToMessage(recipient.session_id, {
+    message_id: sent.message_id,
+    message: 'Completed: the local tests passed.'
+  });
+  assert.equal(reply.status, 'sent');
+  assert.equal(reply.to_agent_id, 'user');
+  assert.equal(reply.in_reply_to, sent.message_id);
+  const replyRecord = records.get(registry.messagePath(recipient.session_id, reply.message_id)).value;
+  assert.equal(replyRecord.sender_session_id, recipient.session_id);
+  assert.equal(replyRecord.recipient_session_id, recipient.session_id);
+  assert.equal(replyRecord.sender_type, 'agent');
+  assert.equal(replyRecord.recipient_type, 'user');
+  assert.equal(replyRecord.recipient_agent_id, 'user');
+  assert.equal(replyRecord.thread_id, sent.thread_id);
+
+  const agentInbox = await registry.readMessages(recipient.session_id, { unread_only: true });
+  assert.equal(agentInbox.count, 0, 'an agent must not receive its own dashboard-directed reply as a new inbox message');
+  const dashboardReplies = await registry.readDashboardReplies(recipient.session_id, { message_ids: [sent.message_id] });
+  assert.equal(dashboardReplies.count, 1);
+  assert.equal(dashboardReplies.messages[0].message_id, reply.message_id);
+  assert.match(dashboardReplies.messages[0].message, /Completed: the local tests passed/);
+  await assert.rejects(registry.readDashboardReplies('session-' + 'f'.repeat(32), { message_ids: [sent.message_id] }), /SESSION_EXPIRED/);
+});
+
 test('agent-to-agent messages and replies use exact session inboxes even when seats are reusable', async () => {
   const { registry, advance, records } = mockMailbox();
   const sender = await registry.startSession({ label: 'Coordinator' });
@@ -226,4 +258,20 @@ test('recent legacy seats are protected until their activity expires', async () 
   advance(SESSION_INACTIVE_AFTER_MS + 1);
   const replacement = await registry.startSession({ label: 'Replacement conversation' });
   assert.equal(replacement.agent_id, 'agent-001');
+});
+
+
+test('agent registry allocates one hundred simultaneous active conversations', async () => {
+  const { registry } = mockMailbox();
+  const sessions = await Promise.all(Array.from({ length: 100 }, (_, index) =>
+    registry.startSession({ label: 'Concurrent conversation ' + (index + 1) })
+  ));
+  const ids = sessions.map(item => item.agent_id);
+  assert.equal(new Set(ids).size, 100);
+  assert.ok(ids.includes('agent-021'));
+  assert.ok(ids.includes('agent-100'));
+  const status = await registry.statuses();
+  assert.equal(status.count, 100);
+  assert.equal(status.counts.active, 100);
+  assert.equal(status.agents.filter(item => item.session_id).length, 100);
 });

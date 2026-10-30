@@ -2486,7 +2486,8 @@ function createRepositoryBridge(deps) {
     start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext,
     publishWorkspaceFile, publishFilesystemIndex,
     getAgentSession: sessionId => agentRegistry.authenticate({ session_id: sessionId }),
-    sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message })
+    sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message }),
+    readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)
   };
 }
 
