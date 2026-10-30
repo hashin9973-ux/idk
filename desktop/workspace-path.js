@@ -5,7 +5,8 @@ const fs = require('node:fs');
 
 function isFilesystemRoot(resolvedPath, pathApi = path) {
   if (typeof resolvedPath !== 'string' || !resolvedPath.trim()) return false;
-  const resolved = pathApi.resolve(resolvedPath);
+  const candidate = /^[a-z]:$/i.test(resolvedPath.trim()) ? resolvedPath.trim() + pathApi.sep : resolvedPath.trim();
+  const resolved = pathApi.resolve(candidate);
   const root = pathApi.parse(resolved).root;
   return Boolean(root && resolved.toLowerCase() === root.toLowerCase());
 }
@@ -19,7 +20,9 @@ function resolveWorkspaceRoot(configuredPath, fallbackPath, pathApi = path) {
   for (const candidate of [configuredPath, fallbackPath]) {
     if (typeof candidate !== 'string' || !candidate.trim()) continue;
     try {
-      const resolved = pathApi.resolve(candidate.trim());
+      // path.resolve('C:') is drive-relative on Windows, not the drive root.
+      const value = /^[a-z]:$/i.test(candidate.trim()) ? candidate.trim() + pathApi.sep : candidate.trim();
+      const resolved = pathApi.resolve(value);
       if (resolved) return resolved;
     } catch {}
   }

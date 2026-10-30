@@ -158,6 +158,43 @@ test('declining the local artifact-upload approval performs no file publication'
   }
 });
 
+test('local tools and nested batch steps resolve the workspace by stable session ID', async () => {
+  const root = fixture();
+  const alternate = fixture();
+  try {
+    const calls = [];
+    const local = {
+      ...localTools,
+      async executeTool(workspaceRoot, tool, args) {
+        calls.push({ workspaceRoot, tool, args });
+        return { ok: true, workspaceRoot, tool };
+      }
+    };
+    const activeSession = 'session-' + 'a'.repeat(32);
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => ({ response: 0 }) },
+      getMainWindow: () => null,
+      getWorkspaceRoot: sessionId => sessionId === activeSession ? alternate : root,
+      localTools: local,
+      githubAuth: {},
+      getAutoAcceptAll: () => true
+    });
+    const direct = await bridge.runTool('environment_info', {}, 'req-session-workspace', activeSession);
+    assert.equal(direct.ok, true);
+    assert.equal(direct.workspace, alternate);
+    assert.equal(calls[0].workspaceRoot, alternate);
+    const batch = await bridge.runTool('batch', {
+      steps: [{ id: 'probe', tool: 'environment_info', args: {} }], maxConcurrency: 1
+    }, 'req-session-batch-workspace', activeSession);
+    assert.equal(batch.ok, true);
+    assert.equal(calls.at(-1).workspaceRoot, alternate);
+    assert.equal(batch.result.steps[0].ok, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(alternate, { recursive: true, force: true });
+  }
+});
+
 test('tool capabilities advertise the separate upload and context-refresh controls', async () => {
   const root = fixture();
   try {

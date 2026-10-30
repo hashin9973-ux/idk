@@ -1952,7 +1952,7 @@ function createRepositoryBridge(deps) {
       } else if (request.tool === CONTEXT_REQUEST_TOOL) {
         report = { ok: true, result: await publishEnvironmentContext() };
       } else {
-        report = await executeTool(request.tool, request.args, requestId);
+        report = await executeTool(request.tool, request.args, requestId, request.session_id || null);
         if (request.tool === 'get_agent_context' && report && report.ok && report.result && typeof report.result === 'object') {
           report.result.agent_status = await agentRegistry.statuses();
           report.result.current_session = {
@@ -1968,7 +1968,9 @@ function createRepositoryBridge(deps) {
     }
 
     toolFinishedAt = Date.now();
-    const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    let workspaceRootForSanitization = '';
+    try { workspaceRootForSanitization = getWorkspaceRoot ? getWorkspaceRoot(request.session_id || null) : ''; } catch {}
+    const sanitizedReport = sanitizeForRepository(report, workspaceRootForSanitization);
     if (report && report.ok && request.tool === 'session_start' && report.result && report.result.agent_id) {
       requestAgents.set(requestId, report.result.agent_id);
       requestSessions.set(requestId, report.result.session_id);
@@ -2480,7 +2482,12 @@ function createRepositoryBridge(deps) {
     return stateSnapshot();
   }
 
-  return { start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext, publishWorkspaceFile, publishFilesystemIndex };
+  return {
+    start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext,
+    publishWorkspaceFile, publishFilesystemIndex,
+    getAgentSession: sessionId => agentRegistry.authenticate({ session_id: sessionId }),
+    sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message })
+  };
 }
 
 module.exports = {

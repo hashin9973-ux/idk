@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
     return () => ipcRenderer.removeListener('app:browser-bounds-refresh', listener);
   },
   selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
+  selectAgentWorkspace: sessionId => ipcRenderer.invoke('app:agent-select-workspace', sessionId),
+  sendAgentMessage: (sessionId, message) => ipcRenderer.invoke('app:agent-send-message', { sessionId, message }),
   setAutoAcceptAll: enabled => ipcRenderer.invoke('app:set-auto-accept-all', enabled),
   minimizeToTray: () => ipcRenderer.invoke('app:minimize-to-tray'),
   quit: () => ipcRenderer.invoke('app:quit'),

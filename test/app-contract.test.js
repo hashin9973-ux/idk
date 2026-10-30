@@ -22,6 +22,34 @@ test('packaging includes the native Windows worker and mailbox implementation', 
   assert.doesNotMatch(pkg.scripts.check, /accounts\.js/);
 });
 
+test('agent dashboard supports a scrollable multi-seat canvas and per-session controls', () => {
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const styles = read('desktop', 'dashboard.css');
+  const preload = read('desktop', 'preload.js');
+  const main = read('desktop', 'main.js');
+  const bridge = read('desktop', 'repository-bridge.js');
+  const toolBridge = read('desktop', 'tool-bridge.js');
+  assert.ok(styles.includes('#main-page{overflow:auto'));
+  assert.ok(styles.includes('.agent-widget-host{position:relative'));
+  assert.ok(renderer.includes('agent-workspace-button'));
+  assert.ok(renderer.includes('agent-message-button'));
+  assert.ok(renderer.includes('api.selectAgentWorkspace(sessionId)'));
+  assert.ok(renderer.includes('api.sendAgentMessage(sessionId,message)'));
+  assert.ok(renderer.includes('updateAgentCanvasHeight'));
+  assert.ok(preload.includes('selectAgentWorkspace: sessionId'));
+  assert.ok(preload.includes('sendAgentMessage: (sessionId, message)'));
+  assert.ok(main.includes('function getWorkspaceRoot(sessionId = null)'));
+  assert.ok(main.includes('settings.agentWorkspaces'));
+  assert.ok(main.includes('function selectAgentWorkspace(sessionId)'));
+  assert.ok(main.includes('app:agent-select-workspace'));
+  assert.ok(main.includes('app:agent-send-message'));
+  assert.ok(bridge.includes('executeTool(request.tool, request.args, requestId, request.session_id || null)'));
+  assert.ok(bridge.includes('getWorkspaceRoot(request.session_id || null)'));
+  assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId)'));
+  assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));
+  assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId)'));
+});
+
 test('dashboard is a minimal GitHub and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
@@ -278,7 +306,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
   const main = read('desktop', 'main.js');
-  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null\)/);
+  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
   assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);

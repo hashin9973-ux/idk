@@ -125,6 +125,26 @@ test('session identity is mandatory, activity and busy state are separate, and i
   assert.equal(seat.label, 'Replacement conversation');
 });
 
+test('dashboard custom messages are written to the exact active session inbox', async () => {
+  const { registry, records } = mockMailbox();
+  const recipient = await registry.startSession({ label: 'Agent receiving a custom message' });
+  const sent = await registry.sendUserMessage(recipient.session_id, {
+    message: 'Inspect the selected project and report the current test status.'
+  });
+  assert.equal(sent.status, 'sent');
+  assert.equal(sent.to_agent_id, recipient.agent_id);
+  const record = records.get(registry.messagePath(recipient.session_id, sent.message_id)).value;
+  assert.equal(record.sender_type, 'user');
+  assert.equal(record.sender_session_id, null);
+  assert.equal(record.sender_agent_id, 'user');
+  assert.equal(record.recipient_session_id, recipient.session_id);
+  assert.match(record.message, /^\[Windows Bridge User\] Inspect the selected project/);
+  const inbox = await registry.readMessages(recipient.session_id, { unread_only: true });
+  assert.equal(inbox.count, 1);
+  assert.equal(inbox.messages[0].sender_label, 'Windows Bridge User');
+  assert.equal(inbox.messages[0].message, record.message);
+});
+
 test('agent-to-agent messages and replies use exact session inboxes even when seats are reusable', async () => {
   const { registry, advance, records } = mockMailbox();
   const sender = await registry.startSession({ label: 'Coordinator' });
