@@ -2296,7 +2296,7 @@ function registerIpc() {
           exclusions: Array.isArray(dump.exclusions) ? dump.exclusions : [] } };
     }
     const value = payload.value && typeof payload.value === 'object' ? payload.value : {};
-    const nickname = String(value.nickname || '').replace(/[\\u0000-\\u001f\\u007f]/g, '').trim().slice(0, 32);
+    const nickname = String(value.nickname || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 32);
     const maxCount = Number.isFinite(Number(value.maxCount)) ? Math.max(0, Math.min(500, Math.round(Number(value.maxCount)))) : 0;
     const maxAgeMinutes = Number.isFinite(Number(value.maxAgeMinutes)) ? Math.max(0, Math.min(10080, Math.round(Number(value.maxAgeMinutes)))) : 0;
     const exclusions = Array.isArray(value.exclusions) ? [...new Set(value.exclusions.map(x => String(x).trim().toLowerCase()).filter(x => /^[a-z0-9_.-]{1,80}$/.test(x)))].slice(0, 50) : [];
