@@ -214,6 +214,7 @@ function createLocalPiperTts(options={}){
     await checkResourceGuard(config);
     await ensureReady();
     if(!wasReady)await verifyResourcesAfterLoad(config);
+    scheduleIdlePageOut();
     return getStatus();
   }
   async function synthesize(text,requestId){
@@ -244,6 +245,6 @@ function createLocalPiperTts(options={}){
     const current=child;child=null;if(current&&!current.killed){try{current.stdin.end()}catch{}try{current.kill()}catch{}}
     for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('Local Piper is shutting down.'))}pending.clear();state={...state,ready:false,status:'stopped'};
   }
-  return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256,PIPER_WHEEL_SHA256}};
+  return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,scheduleIdlePageOut,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256,PIPER_WHEEL_SHA256}};
 }
 module.exports={createLocalPiperTts,normalizeLocalTtsSettings,measureResources,PYTHON_WORKER_SOURCE};
