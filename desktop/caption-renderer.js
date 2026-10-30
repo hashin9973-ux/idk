@@ -15,6 +15,7 @@
     $('caption-previous').disabled = Number(value.chunkIndex || 0) <= 0;
     $('caption-next').disabled = Number(value.chunkIndex || 0) >= Math.max(0, Number(value.chunkCount || 1) - 1);
     $('caption-pause').textContent = value.paused === true ? '▶' : 'Ⅱ';
+    $('caption-pause').hidden = value.hasPlayback !== true;
     $('caption-pause').setAttribute('aria-label', value.paused === true ? 'Resume speech' : 'Pause speech');
     $('caption-controls').hidden = Number(value.chunkCount || 1) < 2 && value.mode !== 'autoplay';
     $('caption-status').textContent = String(value.status || '');
