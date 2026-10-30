@@ -525,6 +525,7 @@ function playAssignmentNotificationSound() {
       '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
       '-Command', '[System.Media.SystemSounds]::Asterisk.Play()'
     ], { windowsHide: true, stdio: 'ignore' });
+    sound.on('error', () => {});
     sound.unref();
   } catch {}
 }
