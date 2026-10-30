@@ -2247,11 +2247,13 @@ function registerIpc() {
       throw new Error('No matching active session assignment exists.');
     }
     if (payload.cancelled !== true && typeof payload.autoAssign !== 'boolean') throw new Error('Assignment mode must be explicitly selected.');
-    const agentId = payload.autoAssign === true ? null : (payload.agentId === '__next__' ? null : payload.agentId);
-    if (payload.cancelled !== true && payload.autoAssign !== true && agentId !== null &&
-        (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId))) {
-      throw new Error('Choose a valid agent ID or the next available seat.');
+    const selectedAgent = payload.autoAssign === true ? null : payload.agentId;
+    if (payload.cancelled !== true && payload.autoAssign !== true &&
+        (typeof selectedAgent !== 'string' ||
+          (selectedAgent !== '__next__' && !/^agent-[0-9]{3,}$/.test(selectedAgent)))) {
+      throw new Error('Choose a valid agent ID or explicitly select the next available seat.');
     }
+    const agentId = selectedAgent === '__next__' ? null : selectedAgent;
     const workspaceRoot = typeof payload.workspaceRoot === 'string' && payload.workspaceRoot.trim()
       ? resolveWorkspaceRoot(payload.workspaceRoot, getWorkspaceRoot()) : getWorkspaceRoot();
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';

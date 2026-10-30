@@ -32,7 +32,7 @@
     <div class="agent-assignment-heading"><div><h2 id="agent-assignment-title">Assign new agent session</h2><p id="agent-assignment-label">A ChatGPT conversation is waiting for an agent.</p></div><span class="agent-assignment-pulse" aria-hidden="true"></span></div>
     <label class="checkbox-row agent-assignment-toggle"><input id="agent-assignment-auto" type="checkbox"> Automatically assign the next available agent</label>
     <div id="agent-assignment-manual-fields">
-      <label class="field-label" for="agent-assignment-id">Agent ID<select id="agent-assignment-id"></select></label>
+      <label class="field-label" for="agent-assignment-id">Agent ID<select id="agent-assignment-id" required></select></label>
     </div>
     <div class="agent-assignment-workspace"><div><strong>Workspace</strong><small id="agent-assignment-workspace-path">Default workspace</small></div><button id="agent-assignment-choose-workspace" class="action-button compact" type="button">Choose folder</button></div>
     <label class="field-label" for="agent-assignment-message">Optional initial message<textarea id="agent-assignment-message" rows="3" maxlength="20000" placeholder="Send an initial instruction to the assigned agent…"></textarea></label>

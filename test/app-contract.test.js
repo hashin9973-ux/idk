@@ -35,6 +35,8 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('agent-message-button'));
   assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
+  assert.ok(renderer.includes('Select an agent ID or choose'));
+  assert.ok(html.includes('id="agent-assignment-id" required'));
   assert.ok(renderer.includes('No session was created.'));
   assert.ok(main.includes('playAssignmentNotificationSound'));
   assert.ok(renderer.includes('api.sendAgentMessage(sessionId,message)'));
@@ -55,6 +57,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('const sessionAssignmentQueue = []'));
   assert.ok(main.includes('const sessionIsCurrent = Boolean(sessionId)'));
   assert.ok(bridge.includes('SESSION_ASSIGNMENT_CANCELLED'));
+  assert.ok(main.includes('Choose a valid agent ID or explicitly select the next available seat.'));
   assert.ok(main.includes('onSessionAssigned: persistAssignedSessionWorkspace'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults'));
   assert.ok(renderer.includes('workspaceButton.disabled=false'));
@@ -860,6 +863,10 @@ test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate'
   assert.ok(local.includes('const SPEAKER_ID=0'));
   assert.ok(local.includes('resourceGuardEnabled'));
   assert.ok(local.includes('LOCAL_TTS_RESOURCE_GUARD'));
+  assert.ok(local.includes('from piper.config import SynthesisConfig'));
+  assert.ok(local.includes('except ImportError'));
+  assert.ok(local.includes('await checkResourceGuard(config)'));
+  assert.ok(local.includes('await verifyResourcesAfterLoad(config)'));
   assert.ok(local.includes('importlib.metadata'));
   assert.ok(local.includes('lastResourceCheckAt'));
   assert.ok(local.includes("piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl"));

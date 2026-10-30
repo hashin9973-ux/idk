@@ -1155,7 +1155,7 @@ function createToolBridge(deps) {
         const isTtsTool = tool === 'tts';
         if (isComputerTool && !visionService) throw new Error('The computer screenshot service is unavailable in this app build.');
         if (isTtsTool && (!visionService || typeof visionService.synthesizeSpeech !== 'function')) {
-          throw new Error('The Colab Piper TTS service is unavailable in this app build.');
+          throw new Error('The Piper TTS service is unavailable in this app build.');
         }
         if (isComputerTool && !['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'sequence', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'].includes(args.action)) {
           throw new Error('Unsupported computer action.');

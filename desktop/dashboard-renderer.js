@@ -642,8 +642,7 @@ function showAgentAssignment(payload){
   $('agent-assignment-auto').onchange=()=>{
     const automatic=$('agent-assignment-auto').checked;
     $('agent-assignment-manual-fields').hidden=automatic;
-    if(automatic){assignmentWorkspaceRoot=String(payload.defaultWorkspace||'');$('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace'}
-    else updateWorkspace();
+    if(!automatic)updateWorkspace();
   };
   $('agent-assignment-status').textContent='Choose an agent and workspace, then confirm. This request expires automatically if left unanswered.';
   $('agent-assignment-status').dataset.state='';
@@ -660,9 +659,19 @@ async function chooseAssignmentWorkspace(){
 }
 async function submitAgentAssignment(cancelled=false){
   if(!assignmentState)return;
-  const button=$('agent-assignment-confirm');button.disabled=true;
-  const payload={requestId:assignmentState.requestId,cancelled,autoAssign:$('agent-assignment-auto').checked,
-    agentId:$('agent-assignment-id').value||'__next__',workspaceRoot:assignmentWorkspaceRoot,
+  const button=$('agent-assignment-confirm');
+  const autoAssign=$('agent-assignment-auto').checked;
+  const selectedAgentId=$('agent-assignment-id').value;
+  if(!cancelled&&!autoAssign&&!selectedAgentId){
+    $('agent-assignment-status').textContent='Select an agent ID or choose “Create next available agent” before starting the session.';
+    $('agent-assignment-status').dataset.state='error';
+    $('agent-assignment-id').focus();
+    button.disabled=false;
+    return;
+  }
+  button.disabled=true;
+  const payload={requestId:assignmentState.requestId,cancelled,autoAssign,
+    agentId:selectedAgentId,workspaceRoot:assignmentWorkspaceRoot,
     message:$('agent-assignment-message').value.trim()};
   try{
     await api.respondAgentAssignment(payload);closeAgentAssignment();
