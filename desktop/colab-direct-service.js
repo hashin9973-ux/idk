@@ -1184,13 +1184,30 @@ function createVisionService(deps) {
         ended = true;
         try { child.kill(); } catch {}
       },
+      pause() { return setPlaybackProcessSuspended(child.pid, true); },
+      resume() { return setPlaybackProcessSuspended(child.pid, false); },
       pid: child.pid
     };
   }
+  function setPlaybackProcessSuspended(pid, suspended) {
+    if (process.platform !== 'win32' || !Number.isInteger(pid) || pid <= 0) return Promise.reject(new Error('Playback pause/resume is available only for native Windows playback.'));
+    const source='using System; using System.Runtime.InteropServices; public static class BridgePlaybackControl { [DllImport("kernel32.dll",SetLastError=true)] public static extern IntPtr OpenProcess(uint access,bool inherit,int pid); [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle); [DllImport("ntdll.dll")] public static extern int NtSuspendProcess(IntPtr process); [DllImport("ntdll.dll")] public static extern int NtResumeProcess(IntPtr process); }';
+    const command="$src=@'\n"+source+"\n'@; Add-Type -TypeDefinition $src; $h=[BridgePlaybackControl]::OpenProcess(0x1F0FFF,$false,"+pid+"); if($h -eq [IntPtr]::Zero){exit 2}; try { $status=[BridgePlaybackControl]::"+(suspended?"NtSuspendProcess":"NtResumeProcess")+"($h); if($status -ne 0){exit 3} } finally { [void][BridgePlaybackControl]::CloseHandle($h) }; exit 0";
+    return new Promise((resolve,reject)=>{let child;try{child=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,stdio:'ignore'})}catch(error){reject(error);return}child.once('error',reject);child.once('close',code=>code===0?resolve({paused:suspended}):reject(new Error('Windows could not '+(suspended?'pause':'resume')+' speech playback.')))});
+  }
+
   async function playAudioFile(filePath) {
     const player = startAudioPlayback(filePath);
     await player.done;
     return { played: true };
+  }
+
+  async function controlSpeechPlayback(action) {
+    if (!['pause','resume'].includes(action)) throw new Error('Unsupported speech playback control.');
+    const job = activeSpeechJobId ? speechJobs.get(activeSpeechJobId) : null;
+    const playback = job && job.currentPlayback;
+    if (!playback || typeof playback[action] !== 'function') throw new Error('No controllable native speech playback is active.');
+    return playback[action]();
   }
 
   function speechPlaybackStatus() {
@@ -2117,6 +2134,7 @@ function createVisionService(deps) {
     prepareLocalTts: () => localTts && typeof localTts.prepare === 'function' ? localTts.prepare() : Promise.reject(new Error('Local Piper TTS is unavailable.')),
     isControlSessionActive: () => controlSessionActive,
     speechPlaybackStatus,
+    controlSpeechPlayback,
     dispose,
     constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, VISION_CONTEXT_SCHEMA, VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
