@@ -915,11 +915,11 @@ function createToolBridge(deps) {
   async function executeLocalTool(root, tool, args, requestId, signal = null) {
     if (tool.startsWith('project_')) {
       if (!projectIntelligence) throw new Error('The local project intelligence service is unavailable.');
-      if (tool === 'project_index_status') return projectIntelligence.status(root);
-      if (tool === 'project_index_refresh') return projectIntelligence.refresh(root, args);
-      if (tool === 'project_search') return projectIntelligence.search(root, args);
-      if (tool === 'project_overview') return projectIntelligence.overview(root);
-      if (tool === 'project_impact') return projectIntelligence.impact(root, args);
+      if (tool === 'project_index_status') return projectIntelligence.status(root, { signal });
+      if (tool === 'project_index_refresh') return projectIntelligence.refresh(root, args, { signal });
+      if (tool === 'project_search') return projectIntelligence.search(root, args, { signal });
+      if (tool === 'project_overview') return projectIntelligence.overview(root, { signal });
+      if (tool === 'project_impact') return projectIntelligence.impact(root, args, { signal });
     }
     if (tool === 'upload_workspace_file') {
       if (typeof uploadWorkspaceFile !== 'function') throw new Error('Repository artifact upload is unavailable.');

@@ -14,11 +14,11 @@ The bridge keeps two complementary indexes.
 - Results contain paths and symbol metadata, not source text.
 - Drive-root workspaces are intentionally shallow. Select the specific project folder for recursive indexing.
 
-Supported extensions and generated-directory exclusions are defined in desktop/project-intelligence.js. Secret-like paths, symlinks, binary files, and files larger than 1 MiB are excluded. Defaults cap indexing at 50,000 files, 250,000 directory entries, and 1 GiB of source bytes per full pass. A truncated index is explicitly incomplete.
+Supported extensions and generated-directory exclusions are defined in desktop/project-intelligence.js. Secret-like paths, symlinks, binary files, and files larger than 1 MiB are excluded. Defaults cap indexing at 50,000 files, 250,000 directory entries, and 1 GiB of source bytes per full pass. A truncated index is explicitly incomplete: `incompleteReasons` and last-scan counters identify file-count, directory-entry, total-byte, per-file-size, and unreadable-path omissions. Directory traversal is sorted for repeatable capped results. Cache restoration validates every relative path and bounded metadata record before use.
 
 ## Scheduling and isolation
 
-A process-wide scheduler protects overlapping read/write paths and serializes barrier operations such as shell, tests, Git mutations, and desktop control. Independent reads and non-conflicting writes can run concurrently. It reports active/queued counts and average queue/execution timing. Existing per-request batch scheduling remains available for up to 100 steps.
+A process-wide scheduler protects overlapping read/write paths and serializes barrier operations such as shell, tests, Git mutations, and desktop control. Independent reads and non-conflicting writes can run concurrently. Index readers share a per-workspace read lock and refresh takes that resource's write lock. The process-wide scheduler bounds queued tasks, exposes task details, supports priority aging and cooperative cancellation, and aborts/drains active work during shutdown with a bounded wait. It reports active/queued counts and average queue/execution timing. Existing per-request batch scheduling remains available for up to 100 steps.
 
 The approval-gated git_worktree tool lists, creates, and removes non-forced worktrees. Worktrees are not created or deleted automatically; callers must choose their paths and branch strategy.
 
