@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { isFilesystemRoot, resolveWorkspaceRoot, resolveSessionWorkspaceRoot, ensureWorkspaceDirectory } = require('../desktop/workspace-path');
+const { isFilesystemRoot, resolveWorkspaceRoot, resolveAgentSessionWorkspaceRoot, resolveSessionWorkspaceRoot, ensureWorkspaceDirectory } = require('../desktop/workspace-path');
 
 test('allows an explicitly selected Windows drive root as a workspace', () => {
   assert.equal(isFilesystemRoot('C:\\', path.win32), true);
@@ -18,6 +18,18 @@ test('preserves a selected workspace folder', () => {
     resolveWorkspaceRoot('D:\\Projects\\my-work', 'C:\\Users\\Example\\Documents\\ChatGPTWorkspace', path.win32),
     'D:\\Projects\\my-work'
   );
+});
+
+test('workspace precedence is session override, then agent default, then global default', () => {
+  const fallback = 'C:\\Users\\Example\\Documents\\ChatGPTWorkspace';
+  const globalRoot = 'C:\\GlobalWorkspace';
+  const agentRoot = 'D:\\AgentDefault';
+  const sessionRoot = 'E:\\SessionOverride';
+
+  assert.equal(resolveAgentSessionWorkspaceRoot(sessionRoot, agentRoot, globalRoot, fallback, path.win32), sessionRoot);
+  assert.equal(resolveAgentSessionWorkspaceRoot(null, agentRoot, globalRoot, fallback, path.win32), agentRoot);
+  assert.equal(resolveAgentSessionWorkspaceRoot('', '', globalRoot, fallback, path.win32), globalRoot);
+  assert.equal(resolveAgentSessionWorkspaceRoot(null, null, '', fallback, path.win32), fallback);
 });
 
 test('uses the fallback for missing or empty settings', () => {
