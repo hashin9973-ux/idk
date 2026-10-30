@@ -406,6 +406,31 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
   } finally { await bridge.stop(); }
 });
 
+test('a dismissed or unanswered session assignment fails without creating or returning a session ID', async () => {
+  const request = {
+    protocol: PROTOCOL, request_id: 'session-start-no-assignment',
+    created_at: new Date().toISOString(), tool: 'session_start', args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + request.request_id + '.json', request]] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async () => null,
+    executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(result.result.ok, false);
+    assert.match(result.result.error, /SESSION_ASSIGNMENT_CANCELLED/);
+    assert.match(result.result.error, /no session_id was created/i);
+    assert.equal(result.result.result, undefined);
+    assert.equal([...fake.files.keys()].some(file => file.startsWith('bridge/sessions/')), false);
+  } finally { await bridge.stop(); }
+});
+
 test('session identity appears in claim/result and recent activity stays separate from busy state', async () => {
   const agentId = 'agent-001';
   const sessionId = 'session-' + 'b'.repeat(32);
