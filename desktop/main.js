@@ -1815,6 +1815,8 @@ function currentCaptionPayload() {
     error: payload.error || '',
     chunkIndex: index,
     chunkCount: chunks.length,
+    agentLabel: String(payload.agentLabel || payload.agentId || 'Windows Bridge').slice(0, 48),
+    paused: payload.paused === true,
     theme: captionThemeId(),
     transparent: getTtsSettings().captionTransparent
   };
@@ -1934,7 +1936,7 @@ function updateCaptionPlaybackProgress(requestId, speechJobId) {
   const chunks = activeCaptionPayload.chunks;
   const nextIndex = Math.max(0, Math.min(chunks.length - 1, Number(job.chunks_completed) || 0));
   let changed = activeCaptionPayload.chunkIndex !== nextIndex;
-  activeCaptionPayload.chunkIndex = nextIndex;
+  if (!activeCaptionPayload.manualChunkNavigation) activeCaptionPayload.chunkIndex = nextIndex;
   if (job.status === 'completed') {
     activeCaptionPayload.chunkIndex = Math.max(0, chunks.length - 1);
     activeCaptionPayload.status = 'Finished';
@@ -2186,6 +2188,28 @@ function registerIpc() {
     return { shown: Boolean(captionWindow) };
   });
   ipcMain.handle('caption:play', event => { assertCaptionUi(event); return playActiveCaption(); });
+  ipcMain.handle('caption:navigate', (event, direction) => {
+    assertCaptionUi(event);
+    if (!activeCaptionPayload) return { changed: false };
+    const chunks = Array.isArray(activeCaptionPayload.chunks) ? activeCaptionPayload.chunks : [];
+    if (!chunks.length) return { changed: false };
+    const delta = direction === 'previous' ? -1 : direction === 'next' ? 1 : 0;
+    if (!delta) throw new Error('Invalid caption navigation direction.');
+    activeCaptionPayload.chunkIndex = Math.max(0, Math.min(chunks.length - 1, Number(activeCaptionPayload.chunkIndex || 0) + delta));
+    activeCaptionPayload.manualChunkNavigation = true;
+    updateCaptionWindowPayload();
+    return { changed: true, chunkIndex: activeCaptionPayload.chunkIndex };
+  });
+  ipcMain.handle('caption:pause-toggle', async event => {
+    assertCaptionUi(event);
+    if (!activeCaptionPayload || !activeCaptionPayload.speechJobId || !visionService || typeof visionService.controlSpeechPlayback !== 'function') throw new Error('No controllable speech playback is active.');
+    const pause = activeCaptionPayload.paused !== true;
+    await visionService.controlSpeechPlayback(pause ? 'pause' : 'resume');
+    activeCaptionPayload.paused = pause;
+    activeCaptionPayload.status = pause ? 'Paused' : 'Speaking…';
+    updateCaptionWindowPayload();
+    return { paused: pause };
+  });
   ipcMain.handle('caption:dismiss', event => {
     assertCaptionUi(event);
     if (captionWindow && !captionWindow.isDestroyed()) captionWindow.close();
