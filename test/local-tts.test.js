@@ -5,11 +5,11 @@ const {spawnSync}=require('node:child_process');
 const {normalizeLocalTtsSettings,measureResources,PYTHON_WORKER_SOURCE}=require('../desktop/local-tts');
 
 test('local Piper defaults to disabled with a conservative CPU and free-RAM guard',()=>{
-  assert.deepEqual(normalizeLocalTtsSettings(),{enabled:false,resourceGuardEnabled:true,maxCpuPercent:75,minFreeRamGb:2});
+  assert.deepEqual(normalizeLocalTtsSettings(),{enabled:false,resourceGuardEnabled:true,allowModelDownload:false,pageIdleEnabled:false,pageIdleDelaySeconds:60,maxCpuPercent:75,minFreeRamGb:2});
 });
 test('local Piper settings clamp thresholds and reject non-finite values',()=>{
   assert.deepEqual(normalizeLocalTtsSettings({enabled:true,resourceGuardEnabled:false,maxCpuPercent:120,minFreeRamGb:0.1}),{
-    enabled:true,resourceGuardEnabled:false,maxCpuPercent:100,minFreeRamGb:0.5
+    enabled:true,resourceGuardEnabled:false,allowModelDownload:false,pageIdleEnabled:false,pageIdleDelaySeconds:60,maxCpuPercent:100,minFreeRamGb:0.5
   });
   assert.deepEqual(normalizeLocalTtsSettings({maxCpuPercent:'bad',minFreeRamGb:NaN}),{
     enabled:false,resourceGuardEnabled:true,maxCpuPercent:75,minFreeRamGb:2
