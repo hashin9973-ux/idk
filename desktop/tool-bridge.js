@@ -4,10 +4,17 @@ const { randomUUID, createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { isFilesystemRoot } = require('./workspace-path');
+const { createExecutionScheduler } = require('./execution-scheduler');
 
 const TOOL_ARGUMENT_KEYS = Object.freeze({
   get_capabilities: [],
   get_agent_context: [],
+  project_index_status: [],
+  project_index_refresh: ['force'],
+  project_search: ['query', 'path', 'kind', 'maxResults'],
+  project_overview: [],
+  project_impact: ['path', 'symbol'],
+  git_worktree: ['operation', 'path', 'branch', 'createBranch'],
   project_status: [],
   environment_info: [],
   list_dir: ['path'],
@@ -128,7 +135,14 @@ function getExecutionFootprint(tool, args = {}) {
     case 'git_changed_files':
     case 'discover_instructions':
     case 'get_agent_context':
+    case 'project_index_status':
+    case 'project_index_refresh':
+    case 'project_search':
+    case 'project_overview':
+    case 'project_impact':
       reads.push('*'); break;
+    case 'git_worktree':
+      barrier = true; break;
     case 'computer':
       resources.push('desktop');
       break;
@@ -167,6 +181,12 @@ function executionFootprintsConflict(left, right) {
 const TOOL_DESCRIPTIONS = Object.freeze({
   get_capabilities: 'List every callable local tool with exact arguments, constraints, permission mode, and result summary. This catalog is stable for the running app build.',
   get_agent_context: 'Return one compact snapshot of the selected Windows workspace, runtime, Git state, project commands, instruction-file locations, directory overview, and callable tool catalog. Full source and instruction contents stay on demand.',
+  project_index_status: 'Read the local persistent project-index status, including indexed files, symbols, dependencies, update state, truncation, and errors. Index metadata stays on Windows.',
+  project_index_refresh: 'Reconcile the local project index with the workspace, reusing unchanged metadata. force=true rebuilds every indexed file.',
+  project_search: 'Search the local project index by path, identifier, and declared symbol. Returns paths and symbol locations, not source contents. Uses lexical/symbol ranking, not embeddings.',
+  project_overview: 'Summarize indexed languages, likely entry points, test candidates, symbol count, and relative import-graph size.',
+  project_impact: 'Find direct and transitive dependents of an indexed file or symbol through resolvable relative imports.',
+  git_worktree: 'List, create, or remove linked Git worktrees inside the workspace. Add/remove need local approval; removal never forces away changes.',
   project_status: 'Summarize detected project technologies, whether the selected workspace is a Git repository, current branch/status, and top-level entries.',
   environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
   list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
@@ -207,7 +227,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   computer: 'Native local computer tool for the real Windows workspace. This fast interaction mode is an optional path: when the user requests rapid interaction, inspect the latest live state as needed and use one computer(action=sequence, mode=fast, steps=[...]) call for ordered local input without intermediate narration. The fast mode skips automatic post-action Colab inference unless observe=true, avoiding an extra model/tunnel round trip; request a fresh observation when verification or the next action depends on screen changes. This is an optional tool-loop optimization, not a switch that disables ChatGPT internal reasoning. Observe and detailed screenshots use the primary display at full physical pixel dimensions; JPEG compression lowers quality rather than spatially downscaling. The screenshot report includes active app/window, screen regions, readable text, control relationships, OCR and Windows UI Automation bounds when exposed, plus uncertainty. For closer inspection, pass region=[left,top,right,bottom] in the latest screenshot pixel frame; returned boxes are mapped back to the original full-frame coordinates. When using passive Observe coordinates, pass the matching frame_id with the input action; changed or stale frame IDs are rejected. Accessibility-grounded bounds are preferred to visual estimates. All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab. Ordered local mouse/keyboard inputs, up to 50 steps, can be submitted in one sequence; sequence batches up to 50 inputs. start_control enables a control session; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
   tts: 'Synthesize speech with Piper en_US-libritts-high using speaker ID 0. By default, start local playback as soon as the first punctuation-bounded chunk is ready; returns tts_started plus speech_job_id while remaining chunks play, and computer(action=status) reports progress. Set play=false to save without playback. The actual audio bytes stay local and are not published to GitHub.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
-  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
+  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32); a process-wide scheduler caps active local operations at 16 across all requests. Higher batch concurrency queues independent lightweight work; conflicting paths remain ordered. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
@@ -216,12 +236,17 @@ const REQUIRED_ARGUMENTS = Object.freeze({
   git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
   upload_workspace_file: ['path'], batch: ['steps'],
   send_agent_message: ['message'], reply_to_agent_message: ['message_id', 'message'],
-  computer: ['action'], tts: ['text']
+  project_search: ['query'], computer: ['action'], tts: ['text'], git_worktree: ['operation']
 });
 const BASE_FIELD_SCHEMAS = Object.freeze({
   path: { type: 'string', description: 'Path relative to the selected workspace or an absolute Windows path inside it. Paths outside the selected workspace and symlink escapes are rejected.' },
   pattern: { type: 'string', description: 'Glob pattern relative to the workspace, for example **/*.js.', maxLength: 300, default: '**/*' },
   query: { type: 'string', description: 'Non-empty text to search for; interpreted literally unless regex=true.', minLength: 1, maxLength: 500 },
+  operation: { type: 'string', description: 'Git worktree operation.', enum: ['list', 'add', 'remove'] },
+  force: { type: 'boolean', description: 'Force rebuilding every eligible file instead of reusing cached metadata.', default: false },
+  kind: { type: 'string', description: 'Project search scope.', enum: ['all', 'symbol', 'file'], default: 'all' },
+  symbol: { type: 'string', description: 'Declared symbol name for project_impact.', minLength: 1, maxLength: 200 },
+  createBranch: { type: 'boolean', description: 'For worktree add, create a new branch instead of checking out an existing branch.', default: false },
   to_agent_id: { type: 'string', description: 'Active reusable recipient seat ID, such as agent-003.', pattern: '^agent-[0-9]{3,}$' },
   to_session_id: { type: 'string', description: 'Exact active recipient session ID.', pattern: '^session-[a-f0-9]{32}$' },
   subject: { type: 'string', description: 'Optional short agent-message subject.', maxLength: 120 },
@@ -365,6 +390,8 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   git_push: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   git_clone: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   shell: { timeoutMs: { description: 'PowerShell timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
+  project_search: { query: { minLength: 1, maxLength: 300 }, maxResults: { minimum: 1, maximum: 100, default: 30 } },
+  git_worktree: { path: { description: 'Workspace-relative destination for add or registered worktree path for remove. Add defaults to .bridge-worktrees/<branch>.' }, branch: { description: 'Existing branch to check out, or a new branch when createBranch=true.', maxLength: 100 }, createBranch: { default: false } },
   run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
@@ -406,6 +433,12 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   file_info: 'Returns relative path, file type, byte size, timestamps, permissions, and SHA-256 for regular files.',
   git_log: 'Returns Git command metadata and commits with SHA, short SHA, author, ISO date, and subject.',
   git_show: 'Returns Git command, exitCode, stdout/stderr, and output-truncation flag.',
+  project_index_status: 'Returns local index status, indexed file and symbol counts, dependency edges, size, truncation, watcher state, and scan timing.',
+  project_index_refresh: 'Returns refreshed index status and scan counters. Source contents are not published.',
+  project_search: 'Returns ranked paths and matching declarations (name, kind, and line), without source text.',
+  project_overview: 'Returns language counts, likely entry-point and test candidates, directory counts, and graph/index status.',
+  project_impact: 'Returns direct/transitive dependent paths and likely test candidates with graph-confidence limitations.',
+  git_worktree: 'Returns registered worktrees or an approval-gated add/remove result. Removal is non-forced.',
   git_branches: 'Returns local branches with name, current-branch flag, short SHA, and upstream when configured.',
   git_changed_files: 'Returns change count, per-file index/worktree status and path, plus truncation and Git exit information.',
   discover_instructions: 'Returns applicable AGENTS.md paths and contents for the root and ancestor directories of supplied paths.',
@@ -496,9 +529,11 @@ function ttsOutputFailed(args = {}, output) {
 }
 
 function createToolBridge(deps) {
-  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService,
-    getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult } = deps;
+  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService, projectIntelligence,
+    getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult,
+    onSchedulerUpdate = () => {} } = deps;
   const COMPUTER_TOOLS = new Set(['computer']);
+  const executionScheduler = createExecutionScheduler({ maxActive: 16, onChange: onSchedulerUpdate });
 
   async function synthesizeConfiguredSpeech(args, id, sessionId = null) {
     if (args.play === false) return visionService.synthesizeSpeech(args, id);
@@ -538,6 +573,13 @@ function createToolBridge(deps) {
     if (!isPlainObject(args)) throw new Error('Tool args must be a JSON object.');
     if (tool === 'computer' && args.mode !== undefined && !['normal', 'fast'].includes(args.mode)) {
       throw new Error('computer.mode must be normal or fast.');
+    }
+    if (tool === 'project_impact' && !args.path && !args.symbol) throw new Error('project_impact requires path or symbol.');
+    if (tool === 'git_worktree') {
+      if (!['list', 'add', 'remove'].includes(args.operation)) throw new Error('git_worktree.operation must be list, add, or remove.');
+      if (args.operation === 'add' && (typeof args.branch !== 'string' || !args.branch.trim())) throw new Error('git_worktree add requires branch.');
+      if (args.operation === 'remove' && (typeof args.path !== 'string' || !args.path.trim())) throw new Error('git_worktree remove requires path.');
+      if (args.createBranch !== undefined && typeof args.createBranch !== 'boolean') throw new Error('git_worktree.createBranch must be boolean.');
     }
     const extra = Object.keys(args).filter(key => !allowed.includes(key));
     if (extra.length) throw new Error('Unsupported argument field(s) for ' + tool + ': ' + extra.join(', '));
@@ -641,7 +683,15 @@ function createToolBridge(deps) {
       case 'git_changed_files':
       case 'discover_instructions':
       case 'get_agent_context':
+      case 'project_index_status':
+      case 'project_index_refresh':
+      case 'project_search':
+      case 'project_overview':
+      case 'project_impact':
         reads.push('*');
+        break;
+      case 'git_worktree':
+        barrier = true;
         break;
       case 'computer':
       case 'tts':
@@ -836,6 +886,14 @@ function createToolBridge(deps) {
   }
 
   async function executeLocalTool(root, tool, args, requestId) {
+    if (tool.startsWith('project_')) {
+      if (!projectIntelligence) throw new Error('The local project intelligence service is unavailable.');
+      if (tool === 'project_index_status') return projectIntelligence.status(root);
+      if (tool === 'project_index_refresh') return projectIntelligence.refresh(root, args);
+      if (tool === 'project_search') return projectIntelligence.search(root, args);
+      if (tool === 'project_overview') return projectIntelligence.overview(root);
+      if (tool === 'project_impact') return projectIntelligence.impact(root, args);
+    }
     if (tool === 'upload_workspace_file') {
       if (typeof uploadWorkspaceFile !== 'function') throw new Error('Repository artifact upload is unavailable.');
       const target = localTools.safePath(root, args.path, false);
@@ -856,6 +914,11 @@ function createToolBridge(deps) {
       const output = await localTools.executeTool(root, tool, args);
       if (output && Array.isArray(output.tools)) {
         output.tools.push(
+          { name: 'project_index_status', mode: 'local-project-index-read' },
+          { name: 'project_index_refresh', mode: 'local-project-index-read' },
+          { name: 'project_search', mode: 'local-project-index-read' },
+          { name: 'project_overview', mode: 'local-project-index-read' },
+          { name: 'project_impact', mode: 'local-project-index-read' },
           { name: 'batch', mode: 'local-batch' },
           { name: 'get_agent_context', mode: 'read' },
           { name: 'upload_workspace_file', mode: 'approval-required' },
@@ -890,7 +953,7 @@ function createToolBridge(deps) {
         output.catalog_version = 3;
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
-          catalog_version: 3,
+          catalog_version: 4,
           rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts, shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. Whenever output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch referenced artifacts with GitHub MCP and concatenate numbered parts in order. For complete_result_part, reconstruct the JSON result before following its artifact manifest. If artifacts are missing or artifact_errors is non-empty, retry the read/search in bounded pages; truncation is not evidence of a safety block. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
@@ -1075,6 +1138,7 @@ function createToolBridge(deps) {
       } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
     }
     const suggestedCommands = inferProjectCommands(project, projectCommands);
+    const projectIndex = projectIntelligence ? await projectIntelligence.status(root) : null;
     return {
       protocol: 'chatgpt-local-agent-context/v1',
       generated_at: new Date().toISOString(),
@@ -1086,6 +1150,7 @@ function createToolBridge(deps) {
         : 'Use workspace-relative paths or absolute Windows paths that resolve inside the selected workspace.',
       environment,
       project,
+      project_index: projectIndex,
       project_commands: projectCommands,
       suggested_commands: suggestedCommands,
       execution_policy: {
@@ -1124,6 +1189,9 @@ function createToolBridge(deps) {
           'After session_start, start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, every agent seat’s current status, and the local tool catalog in one result.',
           'For unknown environment facts, run targeted discovery before asking the user: check installed application/game manifests, executable version metadata, likely install locations, frameworks and relevant project files.',
           'When agents collaborate, check agent_status for the current seat/session inventory, send focused assignments or findings with send_agent_message, poll your inbox with read_agent_messages, and reply using reply_to_agent_message so the original conversation receives the response. Messages are addressed to session IDs, not permanently to seat numbers.',
+          'Use project_overview and project_index_status to understand index coverage, then project_search for identifiers/declarations and project_impact before broad file reads or risky cross-module edits. The local index stores metadata only; read relevant source pages before editing, and treat unresolved dependency edges as incomplete.',
+          'For parallel implementation, use separate Git worktrees and non-overlapping file ownership. git_worktree add/remove are approval-gated; never remove a worktree that has uncommitted changes.',
+          'Use project_impact to identify likely dependent modules and tests, but verify the project-native test framework and run the correct test command. Do not claim an impacted-test list is complete when the import graph reports uncertainty.',
           'Batch independent read-only inspections. Use one small inspection request, one focused edit request, and one verification request rather than one request per file or command.',
           'Match every result to its request_id. Inspect status, nested ok, exitCode, timedOut, stdout/stderr and truncation. A request or claim alone is not completion.',
           'If the result is missing, inspect its claim and worker state and reread that result. Never replay an uncertain side-effecting request.',
@@ -1141,7 +1209,15 @@ function createToolBridge(deps) {
     };
   }
 
-  async function runTool(tool, inputArgs, callId = null, sessionId = null) {
+  async function runTool(tool, inputArgs, callId = null, sessionId = null, nested = false) {
+    if (!nested) {
+      const args = { ...(inputArgs || {}) };
+      const id = callId || randomUUID();
+      if (tool === 'batch') return runTool(tool, args, id, sessionId, true);
+      const priority = tool === 'computer' || tool === 'project_search' ? 0 : tool === 'project_index_refresh' ? 30 : 10;
+      return executionScheduler.run(getExecutionFootprint(tool, args),
+        () => runTool(tool, args, id, sessionId, true), { id, tool, priority });
+    }
     const root = getWorkspaceRoot(sessionId);
     const args = { ...(inputArgs || {}) };
     const id = callId || randomUUID();
@@ -1170,7 +1246,10 @@ function createToolBridge(deps) {
         }
         const inputActions = ['sequence', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'];
         const controlActive = isComputerTool && typeof visionService.isControlSessionActive === 'function' && visionService.isControlSessionActive();
-        const policy = tool === 'upload_workspace_file'
+        const projectReadTool = tool.startsWith('project_');
+        const policy = projectReadTool
+          ? { tool, requiresApproval: false, automatic: true }
+          : tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
           : isComputerTool
             ? {
@@ -1247,7 +1326,7 @@ function createToolBridge(deps) {
     });
   }
 
-  return { runTool };
+  return { runTool, getExecutionStats: () => executionScheduler.getState(), stop: () => executionScheduler.stop() };
 }
 
 module.exports = {

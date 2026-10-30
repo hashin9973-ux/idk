@@ -35,6 +35,7 @@ const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
+const { createProjectIntelligence } = require('./project-intelligence');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
 const { createCloudSync, safeShareUrl } = require('./cloud-sync');
 const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');
@@ -150,6 +151,7 @@ let observeService = null;
 let windowsInputController = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
+let projectIntelligence = null;
 let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
@@ -407,6 +409,12 @@ async function restartFilesystemIndexMonitor() {
     }
   });
   await filesystemIndexMonitor.start();
+  if (projectIntelligence) {
+    void projectIntelligence.start(getWorkspaceRoot()).catch(error => {
+      filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+      console.warn('Could not start project intelligence:', error);
+    });
+  }
 }
 
 function selectWorkspace() {
@@ -2070,7 +2078,9 @@ function getUiState() {
     workspace: {
       root: getWorkspaceRoot(),
       index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
-      syncError: workspaceInitializationError || filesystemIndexSyncError || ''
+      syncError: workspaceInitializationError || filesystemIndexSyncError || '',
+      projectIntelligence: projectIntelligence ? projectIntelligence.getState(getWorkspaceRoot()) : null,
+      taskScheduler: toolBridge && typeof toolBridge.getExecutionStats === 'function' ? toolBridge.getExecutionStats() : null
     },
     initialization: {
       error: appInitializationError || workspaceInitializationError || '',
@@ -2274,6 +2284,11 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     const result = await selectWorkspace();
     return { ...result, workspace: getUiState().workspace };
+  });
+  ipcMain.handle('app:project-index-refresh', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!projectIntelligence) throw new Error('Project intelligence is not initialized.');
+    return projectIntelligence.refresh(getWorkspaceRoot(), { force: true });
   });
   ipcMain.handle('app:agent-widget-add', event => {
     assertLocalUi(event, 'dashboard.html');
@@ -2775,6 +2790,10 @@ if (!hasInstanceLock) {
         void observeService.clearStaleContext().catch(error => {
           appendDiagnosticLog('observe-stale-context-clear-failed', error);
         });
+        projectIntelligence = createProjectIntelligence({
+          storageDirectory: path.join(app.getPath('userData'), 'project-intelligence'),
+          onUpdate: status => dashboardSend('app:project-intelligence-status', status)
+        });
         toolBridge = createToolBridge({
           dialog,
           getMainWindow: () => mainWindow,
@@ -2783,6 +2802,8 @@ if (!hasInstanceLock) {
           githubAuth,
           uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
           getAutoAcceptAll: () => settings.autoAcceptAll === true,
+          projectIntelligence,
+          onSchedulerUpdate: status => dashboardSend('app:execution-stats', status),
           getTtsSettings,
           getAgentLabelForSession: sessionId => {
             const rawState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
@@ -2878,9 +2899,11 @@ app.on('before-quit', event => {
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;
-    const stopIndex = filesystemIndexMonitor
-      ? filesystemIndexMonitor.stop().catch(() => {})
-      : Promise.resolve();
+    const stopIndex = Promise.all([
+      filesystemIndexMonitor ? filesystemIndexMonitor.stop().catch(() => {}) : Promise.resolve(),
+      projectIntelligence ? projectIntelligence.stop().catch(() => {}) : Promise.resolve(),
+      toolBridge && typeof toolBridge.stop === 'function' ? toolBridge.stop().catch(() => {}) : Promise.resolve()
+    ]);
     stopIndex.finally(() => {
       repositoryBridge.stop().catch(() => {}).finally(() => app.quit());
     });

@@ -86,6 +86,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
     return () => ipcRenderer.removeListener('app:browser-bounds-refresh', listener);
   },
   selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
+  refreshProjectIndex: () => ipcRenderer.invoke('app:project-index-refresh'),
   selectAgentWorkspace: (agentId, sessionId = null) => ipcRenderer.invoke('app:agent-select-workspace', { agentId, sessionId }),
   addAgentWidget: () => ipcRenderer.invoke('app:agent-widget-add'),
   getAgentWidgetSettings: agentId => ipcRenderer.invoke('app:agent-widget-settings', { agentId }),
