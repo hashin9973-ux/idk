@@ -12,6 +12,7 @@ const PIPER_VERSION='1.8.0';
 const VOICE_NAME='en_US-libritts-high';
 const SPEAKER_ID=0;
 const VOICE_MODEL_SHA256='9127a559e11603f10b366d1a20ac7426826081dbc521de4c2420c57728d73f0f';
+const PIPER_WHEEL_SHA256='5da9bfdb05dfe15da3536859d422e605483ffa6d2b3ec2c5b9593bae6b5aa6a4';
 const VOICE_BASE_URL='https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/libritts/high/';
 const MAX_VOICE_BYTES=200*1024*1024;
 const RESOURCE_SAMPLE_MS=250;
@@ -138,10 +139,10 @@ function createLocalPiperTts(options={}){
     state={...state,status:'installing_runtime',message:'Installing pinned Piper TTS 1.8.0 and its runtime dependencies.'};
     const metadata=JSON.parse((await getBuffer('https://pypi.org/pypi/piper-tts/'+PIPER_VERSION+'/json')).toString('utf8'));
     const wheel=(metadata.urls||[]).find(x=>x.filename==='piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl');
-    if(!wheel||!wheel.digests?.sha256||typeof wheel.url!=='string')throw new Error('PyPI did not provide the pinned Piper TTS Windows wheel.');
+    if(!wheel||wheel.digests?.sha256!==PIPER_WHEEL_SHA256||typeof wheel.url!=='string')throw new Error('PyPI did not provide the pinned, checksum-matched Piper TTS Windows wheel.');
     if(fs.existsSync(wheelPath)&&crypto.createHash('sha256').update(fs.readFileSync(wheelPath)).digest('hex')!==wheel.digests.sha256)fs.rmSync(wheelPath,{force:true});
-    if(fs.existsSync(wheelPath)&&await hashFile(wheelPath)!==wheel.digests.sha256)await fs.promises.rm(wheelPath,{force:true});
-    if(!fs.existsSync(wheelPath))await downloadVerified(wheel.url,wheelPath,wheel.digests.sha256,100*1024*1024);
+    if(fs.existsSync(wheelPath)&&await hashFile(wheelPath)!==PIPER_WHEEL_SHA256)await fs.promises.rm(wheelPath,{force:true});
+    if(!fs.existsSync(wheelPath))await downloadVerified(wheel.url,wheelPath,PIPER_WHEEL_SHA256,100*1024*1024);
     await runProcess(python.command,[...python.prefix,'-m','pip','install','--disable-pip-version-check','--no-input','--no-warn-script-location','--upgrade','--target',pythonTarget,wheelPath],{env,timeoutMs:15*60*1000});
     await runProcess(python.command,[...python.prefix,'-c','import piper'],{env,timeoutMs:20000});
   }
@@ -214,6 +215,6 @@ function createLocalPiperTts(options={}){
     const current=child;child=null;if(current&&!current.killed){try{current.stdin.end()}catch{}try{current.kill()}catch{}}
     for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('Local Piper is shutting down.'))}pending.clear();state={...state,ready:false,status:'stopped'};
   }
-  return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256}};
+  return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256,PIPER_WHEEL_SHA256}};
 }
 module.exports={createLocalPiperTts,normalizeLocalTtsSettings,measureResources,PYTHON_WORKER_SOURCE};

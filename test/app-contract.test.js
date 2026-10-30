@@ -861,6 +861,7 @@ test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate'
   assert.ok(local.includes('resourceGuardEnabled'));
   assert.ok(local.includes('LOCAL_TTS_RESOURCE_GUARD'));
   assert.ok(local.includes("piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl"));
+  assert.ok(local.includes("const PIPER_WHEEL_SHA256='5da9bfdb05dfe15da3536859d422e605483ffa6d2b3ec2c5b9593bae6b5aa6a4'"));
   assert.ok(pkg.scripts.check.includes('desktop/local-tts.js'));
   assert.ok(pkg.scripts.check.includes('test/local-tts.test.js'));
   assert.ok(pkg.build.files.includes('THIRD_PARTY_NOTICES.md'));
