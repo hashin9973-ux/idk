@@ -174,7 +174,9 @@ function createRepositoryBridge(deps) {
     cleanupIntervalMs = DEFAULT_MAILBOX_CLEANUP_INTERVAL_MS,
     cleanupScanLimit = MAX_MAILBOX_CLEANUP_SCAN,
     cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS,
-    requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS
+    requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
+    requestSessionAssignment = async () => ({ autoAssign: true, agent_id: null, workspace_root: null, message: '' }),
+    onSessionAssigned = async () => {}
   } = deps;
 
   const workerId = randomUUID();
@@ -1940,7 +1942,33 @@ function createRepositoryBridge(deps) {
       updateMailboxUiRecord(requestId, { status: 'executing', progress: 50 });
       announce();
       if (request.tool === 'session_start') {
-        report = { ok: true, result: await agentRegistry.startSession(request.args) };
+        const directory = await agentRegistry.statuses();
+        const assignment = await requestSessionAssignment({
+          label: request.args.label || 'ChatGPT session',
+          agents: directory.agents || [], count: directory.count || 0
+        });
+        if (!assignment || assignment.cancelled === true) {
+          throw new Error('SESSION_ASSIGNMENT_CANCELLED: No agent was assigned. The request timed out or was dismissed; no session_id was created.');
+        }
+        const selectedAgentId = assignment.autoAssign === true ? null : assignment.agent_id;
+        if (assignment.autoAssign !== true && selectedAgentId !== null &&
+            (typeof selectedAgentId !== 'string' || !/^agent-[0-9]{3,}$/.test(selectedAgentId))) {
+          throw new Error('SESSION_ASSIGNMENT_INVALID: Choose a valid agent ID or enable automatic assignment.');
+        }
+        const created = await agentRegistry.startSession({ ...request.args, ...(selectedAgentId ? { agent_id: selectedAgentId } : {}) });
+        const assignedWorkspace = typeof assignment.workspace_root === 'string' && assignment.workspace_root.trim()
+          ? assignment.workspace_root : null;
+        await onSessionAssigned({ session_id: created.session_id, agent_id: created.agent_id, workspace_root: assignedWorkspace });
+        let initialMessageStatus = null;
+        if (typeof assignment.message === 'string' && assignment.message.trim()) {
+          try { initialMessageStatus = await agentRegistry.sendUserMessage(created.session_id, { message: assignment.message.trim() }); }
+          catch (error) { initialMessageStatus = { status: 'failed', error: cleanError(error.message) }; }
+        }
+        report = { ok: true, result: {
+          ...created, ...(assignedWorkspace ? { workspace_root: assignedWorkspace } : {}),
+          assignment_mode: assignment.autoAssign === true ? 'automatic-confirmed' : 'manual',
+          ...(initialMessageStatus ? { initial_message: initialMessageStatus } : {})
+        } };
       } else if (request.tool === 'agent_status') {
         report = { ok: true, result: await agentRegistry.statuses(request.args.agent_id || null) };
       } else if (request.tool === 'send_agent_message') {

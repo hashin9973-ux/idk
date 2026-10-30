@@ -76,6 +76,20 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   },
   selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
   selectAgentWorkspace: (agentId, sessionId = null) => ipcRenderer.invoke('app:agent-select-workspace', { agentId, sessionId }),
+  chooseAgentAssignmentWorkspace: () => ipcRenderer.invoke('app:agent-assignment-workspace'),
+  respondAgentAssignment: payload => ipcRenderer.invoke('app:agent-assignment-response', payload),
+  onAgentAssignmentRequested(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload && typeof payload === 'object' ? payload : {});
+    ipcRenderer.on('app:agent-assignment-requested', listener);
+    return () => ipcRenderer.removeListener('app:agent-assignment-requested', listener);
+  },
+  onAgentAssignmentDismissed(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload && typeof payload === 'object' ? payload : {});
+    ipcRenderer.on('app:agent-assignment-dismissed', listener);
+    return () => ipcRenderer.removeListener('app:agent-assignment-dismissed', listener);
+  },
   sendAgentMessage: (sessionId, message) => ipcRenderer.invoke('app:agent-send-message', { sessionId, message }),
   readAgentReplies: (sessionId, messageIds) => ipcRenderer.invoke('app:agent-read-replies', { sessionId, messageIds }),
   setAutoAcceptAll: enabled => ipcRenderer.invoke('app:set-auto-accept-all', enabled),

@@ -125,6 +125,7 @@ let captionProgressTimer = null;
 let captionPlaybackInFlight = false;
 let trayUnloadPromise = null;
 const trayStateResolvers = new Map();
+const pendingSessionAssignments = new Map();
 const browserTabs = new Map();
 // Keep a complete inventory of native browser views, independent of tab state.
 const embeddedBrowserViews = new Set();
@@ -514,6 +515,77 @@ function dashboardSend(channel, value) {
     dashboardWindow.webContents.send(channel, value);
   }
 }
+
+function requestSessionAssignment({ label = 'ChatGPT session', agents = [] } = {}) {
+  const requestId = crypto.randomUUID();
+  showDashboardWindow();
+  const win = dashboardWindow;
+  if (!win || win.isDestroyed()) return Promise.resolve(null);
+  const workspaceDefaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
+    ? settings.agentWorkspaceDefaults : {};
+  const payload = {
+    requestId, label: String(label || 'ChatGPT session').slice(0, 80),
+    agents: Array.isArray(agents) ? agents.slice(0, 200) : [],
+    defaultWorkspace: getWorkspaceRoot(), workspaceDefaults, timeoutMs: 90000
+  };
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      pendingSessionAssignments.delete(requestId);
+      dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
+      resolve(null);
+    }, 90000);
+    pendingSessionAssignments.set(requestId, { resolve, timer, webContents: win.webContents });
+    const send = () => {
+      if (pendingSessionAssignments.has(requestId) && !win.isDestroyed()) {
+        dashboardSend('app:agent-assignment-requested', payload);
+      }
+    };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
+    else send();
+    win.show(); win.focus();
+  });
+}
+
+async function chooseAssignmentWorkspace() {
+  const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+    title: 'Choose workspace for this new agent session', defaultPath: getWorkspaceRoot(),
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) return { canceled: true, workspaceRoot: getWorkspaceRoot() };
+  const selected = resolveWorkspaceRoot(result.filePaths[0], getWorkspaceRoot());
+  ensureWorkspaceDirectory(selected, fs);
+  if (isFilesystemRoot(selected)) {
+    const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      type: 'warning', title: 'Use the entire drive for this agent session?',
+      message: 'The assigned agent will be able to read, create, edit, move, and delete files anywhere on ' + selected + '.',
+      detail: 'This is not an operating-system sandbox. PowerShell still runs with your Windows-user permissions.',
+      buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
+    });
+    if (warning.response !== 0) return { canceled: true, workspaceRoot: getWorkspaceRoot() };
+  }
+  return { canceled: false, workspaceRoot: selected };
+}
+
+function persistAssignedSessionWorkspace({ session_id, agent_id, workspace_root }) {
+  if (typeof session_id !== 'string' || !/^session-[a-f0-9]{32}$/.test(session_id) ||
+      typeof agent_id !== 'string' || !/^agent-[0-9]{3,}$/.test(agent_id)) {
+    throw new Error('The newly assigned session identity is invalid; its workspace was not saved.');
+  }
+  const seatDefaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
+    ? settings.agentWorkspaceDefaults : {};
+  const root = typeof workspace_root === 'string' && workspace_root.trim()
+    ? resolveWorkspaceRoot(workspace_root, getWorkspaceRoot())
+    : (seatDefaults[agent_id] || getWorkspaceRoot());
+  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+  if (root === getWorkspaceRoot()) delete overrides[session_id];
+  else overrides[session_id] = root;
+  settings.agentWorkspaces = overrides;
+  persistSettings();
+  if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
+  return root;
+}
+
 
 function browserTabSnapshot() {
   return [...browserTabs.values()].map(tab => ({
@@ -2080,6 +2152,31 @@ function registerIpc() {
     if (!payload || typeof payload !== 'object') throw new Error('Agent workspace selection details are required.');
     return selectAgentWorkspace(payload.agentId, payload.sessionId || null);
   });
+  ipcMain.handle('app:agent-assignment-workspace', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    return chooseAssignmentWorkspace();
+  });
+  ipcMain.handle('app:agent-assignment-response', (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!payload || typeof payload.requestId !== 'string') throw new Error('A session assignment request ID is required.');
+    const pending = pendingSessionAssignments.get(payload.requestId);
+    if (!pending || pending.webContents !== event.sender) throw new Error('No matching pending session assignment exists.');
+    if (payload.cancelled !== true && typeof payload.autoAssign !== 'boolean') throw new Error('Assignment mode must be explicitly selected.');
+    const agentId = payload.autoAssign === true ? null : (payload.agentId === '__next__' ? null : payload.agentId);
+    if (payload.cancelled !== true && payload.autoAssign !== true && agentId !== null &&
+        (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId))) {
+      throw new Error('Choose a valid agent ID or the next available seat.');
+    }
+    const workspaceRoot = typeof payload.workspaceRoot === 'string' && payload.workspaceRoot.trim()
+      ? resolveWorkspaceRoot(payload.workspaceRoot, getWorkspaceRoot()) : getWorkspaceRoot();
+    const message = typeof payload.message === 'string' ? payload.message.trim() : '';
+    if (message.length > 20000) throw new Error('The optional initial message is longer than 20,000 characters.');
+    clearTimeout(pending.timer); pendingSessionAssignments.delete(payload.requestId);
+    pending.resolve(payload.cancelled === true ? null : {
+      autoAssign: payload.autoAssign, agent_id: agentId, workspace_root: workspaceRoot, message
+    });
+    return { accepted: true, cancelled: payload.cancelled === true };
+  });
   ipcMain.handle('app:agent-send-message', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
     const sessionId = payload && payload.sessionId;
@@ -2528,6 +2625,8 @@ if (!hasInstanceLock) {
           getWorkspaceRoot,
           executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId),
           onState: broadcastBridgeState,
+          requestSessionAssignment,
+          onSessionAssigned: persistAssignedSessionWorkspace,
           publishContextOnStart: true
         });
       } catch (error) {
