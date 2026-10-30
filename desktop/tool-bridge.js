@@ -1215,7 +1215,7 @@ function createToolBridge(deps) {
           const output = isComputerTool
             ? await computerServiceCall(visionService, args, id)
             : isTtsTool
-              ? await synthesizeConfiguredSpeech(args, id)
+              ? await synthesizeConfiguredSpeech(args, id, sessionId)
               : await executeLocalTool(root, tool, args, id);
           if ((isComputerTool && computerOutputFailed(args.action, output)) ||
               (isTtsTool && ttsOutputFailed(args, output)) ||
