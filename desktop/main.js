@@ -530,9 +530,11 @@ function showNextSessionAssignment() {
       pending.resolve(null);
       continue;
     }
+    pending.webContents = win.webContents;
     activeSessionAssignmentId = requestId;
     const send = () => {
-      if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId) || win.isDestroyed()) return;
+      if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId)) return;
+      if (win.isDestroyed()) { finishSessionAssignment(requestId, null); return; }
       dashboardSend('app:agent-assignment-requested', pending.payload);
       pending.timer = setTimeout(() => {
         dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
@@ -553,7 +555,7 @@ function finishSessionAssignment(requestId, result) {
   pendingSessionAssignments.delete(requestId);
   if (activeSessionAssignmentId === requestId) activeSessionAssignmentId = null;
   pending.resolve(result);
-  showNextSessionAssignment();
+  setImmediate(showNextSessionAssignment);
   return true;
 }
 
@@ -1211,7 +1213,16 @@ function enrichedBridgeState(state) {
   const byId = new Map((Array.isArray(current.agentMailboxes) ? current.agentMailboxes : [])
     .filter(agent => agent && typeof agent.agent_id === 'string' && /^agent-[0-9]{3,}$/.test(agent.agent_id))
     .map(agent => [agent.agent_id, agent]));
-  for (const agentId of Object.keys(defaults)) {
+  const knownIds = new Set(Array.isArray(settings.agentKnownIds)
+    ? settings.agentKnownIds.filter(id => typeof id === 'string' && /^agent-[0-9]{3,}$/.test(id)) : []);
+  for (const agentId of byId.keys()) knownIds.add(agentId);
+  for (const agentId of Object.keys(defaults)) if (/^agent-[0-9]{3,}$/.test(agentId)) knownIds.add(agentId);
+  const knownList = [...knownIds].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+  if (JSON.stringify(settings.agentKnownIds || []) !== JSON.stringify(knownList)) {
+    settings.agentKnownIds = knownList;
+    persistSettings();
+  }
+  for (const agentId of knownList) {
     if (/^agent-[0-9]{3,}$/.test(agentId) && !byId.has(agentId)) {
       byId.set(agentId, { agent_id: agentId, label: agentId, status: 'inactive', busy: false, session_id: null,
         active_count: 0, queued_count: 0, request_count: 0, requests: [] });

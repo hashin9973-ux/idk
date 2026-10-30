@@ -837,3 +837,29 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.match(renderer, /isAgent&&!resize&&!e\.target\.closest\('\.agent-console-header'\)/);
   assert.doesNotMatch(renderer, /innerHTML\s*=/, 'console output must be rendered as text, not HTML');
 });
+
+
+test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate', () => {
+  const html = read('desktop', 'dashboard.html');
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const preload = read('desktop', 'preload.js');
+  const main = read('desktop', 'main.js');
+  const service = read('desktop', 'colab-direct-service.js');
+  const local = read('desktop', 'local-tts.js');
+  const pkg = JSON.parse(read('package.json'));
+  assert.ok(html.includes('id="local-tts-enabled"'));
+  assert.ok(html.includes('id="local-tts-resource-guard"'));
+  assert.ok(html.includes('id="local-tts-max-cpu"'));
+  assert.ok(html.includes('id="local-tts-min-ram"'));
+  assert.ok(renderer.includes('api.setLocalTtsSettings(readLocalTtsSettings())'));
+  assert.ok(preload.includes('prepareLocalTts:'));
+  assert.ok(main.includes('app:local-tts-settings'));
+  assert.ok(main.includes('createLocalPiperTts'));
+  assert.ok(service.includes("engine: useLocalTts ? 'local-piper' : 'colab-piper'"));
+  assert.ok(local.includes("const VOICE_NAME='en_US-libritts-high'"));
+  assert.ok(local.includes('const SPEAKER_ID=0'));
+  assert.ok(local.includes('resourceGuardEnabled'));
+  assert.ok(local.includes('LOCAL_TTS_RESOURCE_GUARD'));
+  assert.ok(pkg.scripts.check.includes('desktop/local-tts.js'));
+  assert.ok(pkg.scripts.check.includes('test/local-tts.test.js'));
+});
