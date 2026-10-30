@@ -25,6 +25,16 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   },
   saveNow: () => ipcRenderer.invoke('app:save-now'),
   getTtsSettings: () => ipcRenderer.invoke('app:tts-settings'),
+  getLocalTtsSettings: () => ipcRenderer.invoke('app:local-tts-settings'),
+  setLocalTtsSettings: value => ipcRenderer.invoke('app:local-tts-settings', value),
+  getLocalTtsStatus: () => ipcRenderer.invoke('app:local-tts-status'),
+  prepareLocalTts: () => ipcRenderer.invoke('app:local-tts-prepare'),
+  onLocalTtsStatus(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, status) => callback(status && typeof status === 'object' ? status : {});
+    ipcRenderer.on('app:local-tts-status', listener);
+    return () => ipcRenderer.removeListener('app:local-tts-status', listener);
+  },
   setTtsSettings: settings => ipcRenderer.invoke('app:tts-settings', settings),
   previewCaptions: () => ipcRenderer.invoke('app:caption-preview'),
   getCloudSyncStatus: () => ipcRenderer.invoke('app:cloud-sync-status'),

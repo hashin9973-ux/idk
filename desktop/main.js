@@ -29,6 +29,7 @@ const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
+const { createLocalPiperTts, normalizeLocalTtsSettings } = require('./local-tts');
 const { MAX_SPEECH_CHUNKS } = require('./speech-text');
 const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
@@ -141,6 +142,7 @@ let settings = {};
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
+let localTtsService = null;
 let colabHandoffServer = null;
 let observeService = null;
 let windowsInputController = null;
@@ -1477,6 +1479,10 @@ function assertLocalUi(event, filename) {
       (filename !== 'dashboard.html' && filename !== 'index.html')) throw new Error('Unexpected IPC sender.');
 }
 
+function getLocalTtsSettings() {
+  return normalizeLocalTtsSettings(settings.localTts);
+}
+
 function getTtsSettings() {
   const source = settings.ttsSettings && typeof settings.ttsSettings === 'object' ? settings.ttsSettings : {};
   return {
@@ -1984,6 +1990,7 @@ function getUiState() {
       dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
       ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
       ttsSettings: getTtsSettings(),
+      localTts: getLocalTtsSettings(),
       browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
@@ -2082,6 +2089,31 @@ function registerIpc() {
     if (activeCaptionPayload) updateCaptionWindowPayload();
     dashboardSend('app:preferences', getUiState().settings);
     return getTtsSettings();
+  });
+  ipcMain.handle('app:local-tts-settings', (event, value) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (value === undefined) return getLocalTtsSettings();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Local TTS settings must be an object.');
+    settings.localTts = normalizeLocalTtsSettings({ ...getLocalTtsSettings(), ...value });
+    persistSettings(); publishSharedState();
+    dashboardSend('app:preferences', getUiState().settings);
+    if (settings.localTts.enabled && visionService) {
+      void visionService.prepareLocalTts().then(status => dashboardSend('app:local-tts-status', status))
+        .catch(error => dashboardSend('app:local-tts-status', { ...visionService.localTtsStatus(), status: 'error', error: String(error && error.message || error).slice(0, 1200) }));
+    } else if (localTtsService) {
+      void localTtsService.dispose().then(() => dashboardSend('app:local-tts-status', localTtsService.getStatus()));
+    }
+    return getLocalTtsSettings();
+  });
+  ipcMain.handle('app:local-tts-status', event => {
+    assertLocalUi(event, 'dashboard.html');
+    return visionService ? visionService.localTtsStatus() : localTtsService ? localTtsService.getStatus() : { ready: false, status: 'unavailable' };
+  });
+  ipcMain.handle('app:local-tts-prepare', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!getLocalTtsSettings().enabled) throw new Error('Enable local TTS in Settings before preparing the Piper voice.');
+    if (!visionService) throw new Error('Local TTS service is not initialized yet.');
+    return visionService.prepareLocalTts();
   });
   ipcMain.handle('app:caption-preview', event => {
     assertLocalUi(event, 'index.html');
@@ -2569,7 +2601,12 @@ if (!hasInstanceLock) {
             };
           }
         });
+        localTtsService = createLocalPiperTts({
+          userDataPath: app.getPath('userData'),
+          getSettings: getLocalTtsSettings
+        });
         visionService = createVisionService({
+          localTts: localTtsService,
           githubAuth,
           getSettings: () => settings,
           getWorkspaceRoot,
