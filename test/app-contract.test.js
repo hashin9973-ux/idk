@@ -37,6 +37,8 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
   assert.ok(renderer.includes('Select an agent ID or choose'));
+  assert.ok(renderer.includes('const newAgentId=\'agent-\'+String(highestAgentNumber+1).padStart(3,\'0\')'));
+  assert.ok(renderer.includes("next.value=newAgentId"));
   assert.ok(html.includes('id="agent-assignment-id" required'));
   assert.ok(renderer.includes('No session was created.'));
   assert.ok(main.includes('playAssignmentNotificationSound'));
@@ -58,7 +60,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('const sessionAssignmentQueue = []'));
   assert.ok(main.includes('const sessionIsCurrent = Boolean(sessionId)'));
   assert.ok(bridge.includes('SESSION_ASSIGNMENT_CANCELLED'));
-  assert.ok(main.includes('Choose a valid agent ID or explicitly select the next available seat.'));
+  assert.ok(main.includes('Choose a valid existing or new agent ID.'));
   assert.ok(main.includes('onSessionAssigned: persistAssignedSessionWorkspace'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults'));
   assert.ok(main.includes('const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :'));

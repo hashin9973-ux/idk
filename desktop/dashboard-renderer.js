@@ -628,14 +628,16 @@ function showAgentAssignment(payload){
     const option=document.createElement('option');option.value=agent.agent_id;
     option.textContent=agent.agent_id+' · '+String(agent.status||'inactive');select.append(option);
   }
-  const next=document.createElement('option');next.value='__next__';next.textContent='Create next available agent';select.append(next);
+  const highestAgentNumber=agents.reduce((highest,agent)=>Math.max(highest,Number(String(agent&&agent.agent_id||'').slice(6))||0),0);
+  const newAgentId='agent-'+String(highestAgentNumber+1).padStart(3,'0');
+  const next=document.createElement('option');next.value=newAgentId;next.textContent=newAgentId+' · new agent';select.append(next);
   $('agent-assignment-auto').checked=false;
   $('agent-assignment-manual-fields').hidden=false;
   $('agent-assignment-message').value='';
   const updateWorkspace=()=>{
     const id=select.value;
     const defaults=payload.workspaceDefaults&&typeof payload.workspaceDefaults==='object'?payload.workspaceDefaults:{};
-    assignmentWorkspaceRoot=id!=='__next__'&&typeof defaults[id]==='string'&&defaults[id]?defaults[id]:String(payload.defaultWorkspace||'');
+    assignmentWorkspaceRoot=typeof defaults[id]==='string'&&defaults[id]?defaults[id]:String(payload.defaultWorkspace||'');
     $('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace';
   };
   updateWorkspace();select.onchange=updateWorkspace;
@@ -663,7 +665,7 @@ async function submitAgentAssignment(cancelled=false){
   const autoAssign=$('agent-assignment-auto').checked;
   const selectedAgentId=$('agent-assignment-id').value;
   if(!cancelled&&!autoAssign&&!selectedAgentId){
-    $('agent-assignment-status').textContent='Select an agent ID or choose “Create next available agent” before starting the session.';
+    $('agent-assignment-status').textContent='Select an agent ID or choose a new agent ID before starting the session.';
     $('agent-assignment-status').dataset.state='error';
     $('agent-assignment-id').focus();
     button.disabled=false;

@@ -296,8 +296,10 @@ test('manual session allocation permits only the next sequential seat for a new 
   const { registry } = mockMailbox();
   const created = await registry.startSession({ label: 'New seat', agent_id: 'agent-001' });
   assert.equal(created.agent_id, 'agent-001');
+  const second = await registry.startSession({ label: 'Next explicit ID', agent_id: 'agent-002' });
+  assert.equal(second.agent_id, 'agent-002');
   await assert.rejects(
-    registry.startSession({ label: 'Skip an ID', agent_id: 'agent-003' }),
+    registry.startSession({ label: 'Skip an ID', agent_id: 'agent-004' }),
     /not an existing reusable seat or the next available seat/
   );
 });
