@@ -17,7 +17,7 @@ async function main() {
   const storage = await fs.mkdtemp(path.join(os.tmpdir(), 'bridge-project-bench-cache-'));
   let first;
   let warm;
-  const scheduler = createExecutionScheduler({ maxActive: 16, maxQueued: 1000 });
+  const scheduler = createExecutionScheduler({ maxActive: 100, maxQueued: 1000 });
   try {
     const sourceRoot = path.join(root, 'src');
     await fs.mkdir(sourceRoot, { recursive: true });
@@ -69,6 +69,12 @@ async function main() {
         indexedFiles: indexed.filesIndexed,
         indexedSourceBytes: indexed.totalIndexedBytes
       },
+      warmCache: {
+        filesIndexed: restored.filesIndexed,
+        lastFullScanAt: restored.lastFullScanAt,
+        error: restored.error,
+        cacheWarning: restored.cacheWarning
+      },
       coldIndexMs: Number(coldIndexMs.toFixed(2)),
       warmCacheRestoreMs: Number(warmCacheRestoreMs.toFixed(2)),
       symbolSearch: { elapsedMs: Number(symbolSearchMs.toFixed(2)), resultCount: search.count, scanTruncated: search.scanTruncated },
@@ -85,7 +91,7 @@ async function main() {
     };
     console.log(JSON.stringify(report, null, 2));
     if (indexed.filesIndexed !== FIXTURE_FILES || restored.filesIndexed !== FIXTURE_FILES || search.count < 1 || impact.dependentCount !== FIXTURE_FILES - 1 || schedulerStats.completed !== SCHEDULER_TASKS) {
-      throw new Error('Benchmark fixture did not produce the expected indexed/search/impact/scheduler counts.');
+      throw new Error('Benchmark fixture invariant failed: ' + JSON.stringify({ indexedFiles: indexed.filesIndexed, restoredFiles: restored.filesIndexed, warmCacheError: restored.error, warmCacheWarning: restored.cacheWarning, searchCount: search.count, impactDependents: impact.dependentCount, schedulerCompleted: schedulerStats.completed, schedulerCapacity: schedulerStats.maxActive }));
     }
   } finally {
     await scheduler.stop();
