@@ -505,16 +505,7 @@ function createVisionService(deps) {
           endpointWatchPromise = null;
         }
       }
-      const state = useLocalTts
-      ? { runtime_compatible: true, runtime_fresh: true, enabled: true, tts_ready: true,
-          tts_sample_rate: 22050, local_tts: localTts && typeof localTts.getStatus === 'function' ? localTts.getStatus() : null }
-      : await queryRuntime();
-    if (useLocalTts && !localTts) {
-      job.status = 'failed'; job.error = 'Local Piper TTS is not initialized.';
-      job.finished_at = new Date(now()).toISOString();
-      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
-      return { status: 'tts_unavailable', request_id: jobId, error: job.error };
-    }
+      const state = await queryRuntime();
       if (state.runtime_fresh && state.status === 'incompatible_runtime') {
         return {
           ...state,
@@ -1625,7 +1616,16 @@ function createVisionService(deps) {
       speechJobs.delete(oldest);
     }
 
-    const state = await queryRuntime();
+    const state = useLocalTts
+      ? { runtime_compatible: true, runtime_fresh: true, enabled: true, tts_ready: true,
+          tts_sample_rate: 22050, local_tts: localTts && typeof localTts.getStatus === 'function' ? localTts.getStatus() : null }
+      : await queryRuntime();
+    if (useLocalTts && !localTts) {
+      job.status = 'failed'; job.error = 'Local Piper TTS is not initialized.';
+      job.finished_at = new Date(now()).toISOString();
+      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
+      return { status: 'tts_unavailable', request_id: jobId, error: job.error };
+    }
     if (state.runtime_compatible !== true) {
       job.status = 'failed';
       job.error = state.message || 'The connected Colab notebook is incompatible with the current TTS API.';

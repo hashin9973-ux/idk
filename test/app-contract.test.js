@@ -240,7 +240,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(renderer, /connectColab/);
   assert.match(renderer, /api\.setTheme/);
   assert.match(renderer, /api\.setLocalTtsSettings/);
-  assert.match(renderer, /Maximum CPU utilization/);
+  assert.match(html, /Maximum CPU utilization/);
   assert.match(renderer, /applyTheme/);
   assert.match(renderer, /themeGallery\.addEventListener/);
   assert.match(html, /preview-graph/);
