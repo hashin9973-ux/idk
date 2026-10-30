@@ -32,6 +32,12 @@ test('recognizes filesystem roots using the supplied path implementation', () =>
   assert.equal(isFilesystemRoot('D:\\Projects', path.win32), false);
 });
 
+test('normalizes a drive-relative-looking picker result to the full drive root', () => {
+  assert.equal(isFilesystemRoot('C:', path.win32), true);
+  assert.equal(resolveWorkspaceRoot('C:', 'C:\\Users\\Example', path.win32), 'C:\\');
+});
+
+
 
 test('does not call mkdir for an existing Windows drive root', () => {
   // Minimal test double: model Windows returning EPERM for mkdir on an existing drive root.

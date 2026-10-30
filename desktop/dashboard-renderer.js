@@ -220,9 +220,52 @@ function makeAgentWidget(agent,index){
   const status=document.createElement('span');status.className='agent-console-status';
   const busy=document.createElement('span');busy.className='agent-console-busy';
   const counts=document.createElement('span');counts.className='agent-console-counts';
-  header.append(identity,status,busy,counts);
+  const actions=document.createElement('div');actions.className='agent-console-actions';
+  const workspaceButton=document.createElement('button');workspaceButton.type='button';workspaceButton.className='agent-console-icon-button agent-workspace-button';
+  workspaceButton.title='Configure this agent workspace';workspaceButton.setAttribute('aria-label','Configure workspace for '+agent.agent_id);
+  workspaceButton.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.25 1.75h7l4.5 4.5v8h-11.5z"></path><path d="M9.25 1.75v4.5h4.5M4.5 9h7M4.5 11.5h7"></path></svg>';
+  const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
+  messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
+  messageButton.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z"></path><path d="M4.5 5.25h7M4.5 7.75h5"></path></svg>';
+  actions.append(workspaceButton,messageButton);
+  header.append(identity,status,busy,counts,actions);
+  const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';
+  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='Message this agent…';input.setAttribute('aria-label','Message for '+agent.agent_id);
+  const send=document.createElement('button');send.type='button';send.className='agent-message-send';send.textContent='Send';
+  const cancel=document.createElement('button');cancel.type='button';cancel.className='agent-message-cancel';cancel.textContent='×';cancel.title='Close message box';cancel.setAttribute('aria-label','Close message box');
+  composer.append(input,send,cancel);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
-  card.append(header,body);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  card.append(header,composer,body);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  workspaceButton.addEventListener('click',async event=>{
+    event.stopPropagation();const sessionId=card.dataset.sessionId||'';
+    if(!sessionId||workspaceButton.disabled)return;
+    workspaceButton.disabled=true;
+    try {
+      const result=await api.selectAgentWorkspace(sessionId);
+      if(!result.canceled)note('Workspace for '+agent.agent_id+' updated.','success');
+      await refresh();
+    } catch(error) { note('Could not configure '+agent.agent_id+' workspace: '+error.message,'error'); }
+    finally { workspaceButton.disabled=false; }
+  });
+  messageButton.addEventListener('click',event=>{
+    event.stopPropagation();composer.hidden=!composer.hidden;
+    if(!composer.hidden){input.focus();input.select();}
+  });
+  cancel.addEventListener('click',event=>{event.stopPropagation();composer.hidden=true;});
+  const sendMessage=async()=>{
+    const sessionId=card.dataset.sessionId||'',message=input.value.trim();
+    if(!sessionId||!message||send.disabled)return;
+    send.disabled=true;
+    try {
+      await api.sendAgentMessage(sessionId,message);
+      input.value='';composer.hidden=true;
+      note('Message sent to '+agent.agent_id+'.','success');
+      await refresh();
+    } catch(error) { note('Could not message '+agent.agent_id+': '+error.message,'error'); }
+    finally { send.disabled=false; }
+  };
+  send.addEventListener('click',event=>{event.stopPropagation();void sendMessage();});
+  input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();void sendMessage();}else if(event.key==='Escape'){composer.hidden=true;}});
   return card;
 }
 function renderAgentMailboxes(rawAgents){
@@ -243,11 +286,18 @@ function renderAgentMailboxes(rawAgents){
     const status=header.querySelector('.agent-console-status');
     const busy=header.querySelector('.agent-console-busy');
     const counts=header.querySelector('.agent-console-counts');
+    const workspaceButton=header.querySelector('.agent-workspace-button');
+    const messageButton=header.querySelector('.agent-message-button');
     // The panel belongs to the seat, not the task/session label. Individual
     // requests and their tool names remain listed in the console body below.
     name.textContent=String(agent.agent_id);
     sessionLine.textContent='SESSION '+String(agent.session_id||'none');
     sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
+    const hasSession=Boolean(agent.session_id);
+    workspaceButton.disabled=!hasSession;
+    messageButton.disabled=!hasSession;
+    workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
+    workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_custom?' · custom for this conversation':' · global default'));
     const active=agent.status==='active';
     status.className='agent-console-status '+(active?'is-active':'is-inactive');
     status.textContent=active?'ACTIVE':'INACTIVE';
@@ -310,6 +360,16 @@ function renderAgentMailboxes(rawAgents){
     }
     body.scrollTop=scrollTop;
   });
+  updateAgentCanvasHeight();
+}
+function updateAgentCanvasHeight(){
+  if(!agentWidgetHost)return;
+  let bottom=mainPage.clientHeight||window.innerHeight||800;
+  for(const card of agentWidgets.values()){
+    if(!card.isConnected)continue;
+    bottom=Math.max(bottom,(card.offsetTop||0)+(card.offsetHeight||0)+24);
+  }
+  agentWidgetHost.style.height=Math.max(mainPage.clientHeight||0,bottom)+'px';
 }
 function positionControls(){if(widgetMoved.controls)return;const width=mainPage.clientWidth||window.innerWidth||1200;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||150)+18)+'px';controls.style.width=Math.min(360,Math.max(270,Math.round(width*0.28)))+'px'}
 function renderWorker(v){bridge=v||{};const s=String(bridge.workerStatus||bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='reconnecting'?'Worker reconnecting · retrying mailbox':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderAgentMailboxes(bridge.agentMailboxes);renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
@@ -360,7 +420,7 @@ function updateBrowserBounds(){if(browserPage.hidden)return;const r=browserHost.
 const ro=new ResizeObserver(updateBrowserBounds);ro.observe(browserHost);api.onBrowserBoundsRefresh(updateBrowserBounds);
 function beginGesture(e,el){if(e.button!==0||e.target.closest('button,input,select,textarea,a,label,details,summary,pre'))return;const r=el.getBoundingClientRect(),edge=10,L=e.clientX-r.left<=edge,R=r.right-e.clientX<=edge,T=e.clientY-r.top<=edge,B=r.bottom-e.clientY<=edge;const resize=L||R||T||B;const isAgent=el.classList.contains('agent-console');if(isAgent&&!resize&&!e.target.closest('.agent-console-header'))return;if(!isAgent&&!resize&&e.target.closest('[data-no-widget-drag]'))return;gesture={el,mode:resize?'resize':'drag',sx:e.clientX,sy:e.clientY,x:el.offsetLeft,y:el.offsetTop,w:el.offsetWidth,h:el.offsetHeight,L,R,T,B};el.classList.add(gesture.mode==='drag'?'dragging':'resizing');el.setPointerCapture(e.pointerId);e.preventDefault()}
 function moveGesture(e){if(!gesture)return;const g=gesture,dx=e.clientX-g.sx,dy=e.clientY-g.sy;let x=g.x,y=g.y,w=g.w,h=g.h;if(g.mode==='drag'){x+=dx;y+=dy}else{if(g.R)w+=dx;if(g.B)h+=dy;if(g.L){x+=dx;w-=dx}if(g.T){y+=dy;h-=dy}if(w<minW){if(g.L)x-=minW-w;w=minW}if(h<minH){if(g.T)y-=minH-h;h=minH}}g.el.style.left=x+'px';g.el.style.top=y+'px';if(g.mode==='resize'){g.el.style.width=w+'px';g.el.style.height=h+'px'}}
-function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,Math.min(Math.max(0,r.height-h),y));Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls();scheduleSaveDashboardState()}
+function endGesture(){if(!gesture)return;const g=gesture,el=g.el;el.classList.remove('dragging','resizing');const r=mainPage.getBoundingClientRect();let x=snap(el.offsetLeft),y=snap(el.offsetTop),w=Math.max(minW,snap(el.offsetWidth)),h=Math.max(minH,snap(el.offsetHeight));x=Math.max(0,Math.min(Math.max(0,r.width-w),x));y=Math.max(0,y);Object.assign(el.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});widgetMoved[el.dataset.widget]=true;gesture=null;if(el===queue)positionControls();updateAgentCanvasHeight();scheduleSaveDashboardState()}
 for(const el of [queue,controls])attachWidgetGesture(el)
 obs.addEventListener('click',async()=>{if(busy.observe)return;busy.observe=true;obs.disabled=true;try{observe=await api.setObserveEnabled(!observe.enabled);renderObserve();note('Observe mode updated.','success')}catch(e){note(e.message,'error')}finally{busy.observe=false;obs.disabled=false}});
 acceptBtn.addEventListener('click',async()=>{if(busy.accept)return;busy.accept=true;acceptBtn.disabled=true;try{const r=await api.setAutoAcceptAll(!autoAccept);autoAccept=Boolean(r.autoAcceptAll);renderAccept();note(autoAccept?'Auto-accept enabled after confirmation.':'Auto-accept disabled.','success')}catch(e){note(e.message,'error')}finally{busy.accept=false;acceptBtn.disabled=false}});
