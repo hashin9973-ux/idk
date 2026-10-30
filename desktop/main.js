@@ -1937,8 +1937,11 @@ function updateCaptionPlaybackProgress(requestId, speechJobId) {
   if (!job) return;
   const chunks = activeCaptionPayload.chunks;
   const nextIndex = Math.max(0, Math.min(chunks.length - 1, Number(job.chunks_completed) || 0));
-  let changed = activeCaptionPayload.chunkIndex !== nextIndex;
-  if (!activeCaptionPayload.manualChunkNavigation) activeCaptionPayload.chunkIndex = nextIndex;
+  let changed = false;
+  if (!activeCaptionPayload.manualChunkNavigation) {
+    changed = activeCaptionPayload.chunkIndex !== nextIndex;
+    activeCaptionPayload.chunkIndex = nextIndex;
+  }
   if (job.status === 'completed') {
     activeCaptionPayload.chunkIndex = Math.max(0, chunks.length - 1);
     activeCaptionPayload.status = 'Finished';
