@@ -653,7 +653,12 @@ function showAgentAssignment(payload){
     $('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace';
   };
   updateWorkspace();select.onchange=updateWorkspace;
-  $('agent-assignment-auto').onchange=()=>{$('agent-assignment-manual-fields').hidden=$('agent-assignment-auto').checked};
+  $('agent-assignment-auto').onchange=()=>{
+    const automatic=$('agent-assignment-auto').checked;
+    $('agent-assignment-manual-fields').hidden=automatic;
+    if(automatic){assignmentWorkspaceRoot=String(payload.defaultWorkspace||'');$('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace'}
+    else updateWorkspace();
+  };
   $('agent-assignment-status').textContent='Choose an agent and workspace, then confirm. This request expires automatically if left unanswered.';
   $('agent-assignment-status').dataset.state='';
   $('agent-assignment-confirm').disabled=false;

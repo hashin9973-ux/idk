@@ -51,6 +51,9 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('settings.agentWorkspaces'));
   assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
   assert.ok(main.includes('function requestSessionAssignment'));
+  assert.ok(main.includes('function showNextSessionAssignment'));
+  assert.ok(main.includes('const sessionAssignmentQueue = []'));
+  assert.ok(main.includes('const sessionIsCurrent = Boolean(sessionId)'));
   assert.ok(main.includes('SESSION_ASSIGNMENT_CANCELLED'));
   assert.ok(main.includes('onSessionAssigned: persistAssignedSessionWorkspace'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults'));

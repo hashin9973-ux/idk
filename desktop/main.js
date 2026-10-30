@@ -127,6 +127,8 @@ let captionPlaybackInFlight = false;
 let trayUnloadPromise = null;
 const trayStateResolvers = new Map();
 const pendingSessionAssignments = new Map();
+const sessionAssignmentQueue = [];
+let activeSessionAssignmentId = null;
 const browserTabs = new Map();
 // Keep a complete inventory of native browser views, independent of tab state.
 const embeddedBrowserViews = new Set();
@@ -458,16 +460,14 @@ async function selectAgentWorkspace(agentId, sessionId = null) {
     !Array.isArray(settings.agentWorkspaceDefaults) ? { ...settings.agentWorkspaceDefaults } : {};
   const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
     !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
-  let sessionIsCurrent = false;
-  if (sessionId && repositoryBridge && typeof repositoryBridge.getAgentSession === 'function') {
-    try {
-      const current = await repositoryBridge.getAgentSession(sessionId);
-      sessionIsCurrent = current && current.agent_id === agentId;
-    } catch { /* Keep seat configuration available while the mailbox is disconnected or the session is stale. */ }
-  }
+  const sessionIsCurrent = Boolean(sessionId);
   const configuredDefault = typeof defaults[agentId] === 'string' && defaults[agentId].trim()
     ? resolveWorkspaceRoot(defaults[agentId], getWorkspaceRoot()) : '';
-  const currentRoot = sessionIsCurrent ? getWorkspaceRoot(sessionId) : configuredDefault || getWorkspaceRoot();
+  let currentRoot = configuredDefault || getWorkspaceRoot();
+  if (sessionId) {
+    try { currentRoot = getWorkspaceRoot(sessionId); }
+    catch { /* A stale/missing session override must not block editing the agent's saved default. */ }
+  }
   const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
     title: 'Choose default workspace for ' + agentId,
     defaultPath: fs.existsSync(currentRoot) ? currentRoot : getWorkspaceRoot(),
@@ -518,6 +518,45 @@ function dashboardSend(channel, value) {
   }
 }
 
+function showNextSessionAssignment() {
+  if (activeSessionAssignmentId) return;
+  while (sessionAssignmentQueue.length) {
+    const requestId = sessionAssignmentQueue.shift();
+    const pending = pendingSessionAssignments.get(requestId);
+    if (!pending) continue;
+    const win = dashboardWindow;
+    if (!win || win.isDestroyed()) {
+      pendingSessionAssignments.delete(requestId);
+      pending.resolve(null);
+      continue;
+    }
+    activeSessionAssignmentId = requestId;
+    const send = () => {
+      if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId) || win.isDestroyed()) return;
+      dashboardSend('app:agent-assignment-requested', pending.payload);
+      pending.timer = setTimeout(() => {
+        dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
+        finishSessionAssignment(requestId, null);
+      }, 90000);
+    };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
+    else send();
+    win.show(); win.focus();
+    return;
+  }
+}
+
+function finishSessionAssignment(requestId, result) {
+  const pending = pendingSessionAssignments.get(requestId);
+  if (!pending) return false;
+  if (pending.timer) clearTimeout(pending.timer);
+  pendingSessionAssignments.delete(requestId);
+  if (activeSessionAssignmentId === requestId) activeSessionAssignmentId = null;
+  pending.resolve(result);
+  showNextSessionAssignment();
+  return true;
+}
+
 function requestSessionAssignment({ label = 'ChatGPT session', agents = [] } = {}) {
   const requestId = crypto.randomUUID();
   showDashboardWindow();
@@ -531,20 +570,9 @@ function requestSessionAssignment({ label = 'ChatGPT session', agents = [] } = {
     defaultWorkspace: getWorkspaceRoot(), workspaceDefaults, timeoutMs: 90000
   };
   return new Promise(resolve => {
-    const timer = setTimeout(() => {
-      pendingSessionAssignments.delete(requestId);
-      dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
-      resolve(null);
-    }, 90000);
-    pendingSessionAssignments.set(requestId, { resolve, timer, webContents: win.webContents });
-    const send = () => {
-      if (pendingSessionAssignments.has(requestId) && !win.isDestroyed()) {
-        dashboardSend('app:agent-assignment-requested', payload);
-      }
-    };
-    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
-    else send();
-    win.show(); win.focus();
+    pendingSessionAssignments.set(requestId, { resolve, timer: null, webContents: win.webContents, payload });
+    sessionAssignmentQueue.push(requestId);
+    showNextSessionAssignment();
   });
 }
 
@@ -2192,7 +2220,9 @@ function registerIpc() {
     assertLocalUi(event, 'dashboard.html');
     if (!payload || typeof payload.requestId !== 'string') throw new Error('A session assignment request ID is required.');
     const pending = pendingSessionAssignments.get(payload.requestId);
-    if (!pending || pending.webContents !== event.sender) throw new Error('No matching pending session assignment exists.');
+    if (!pending || pending.webContents !== event.sender || activeSessionAssignmentId !== payload.requestId) {
+      throw new Error('No matching active session assignment exists.');
+    }
     if (payload.cancelled !== true && typeof payload.autoAssign !== 'boolean') throw new Error('Assignment mode must be explicitly selected.');
     const agentId = payload.autoAssign === true ? null : (payload.agentId === '__next__' ? null : payload.agentId);
     if (payload.cancelled !== true && payload.autoAssign !== true && agentId !== null &&
@@ -2203,8 +2233,7 @@ function registerIpc() {
       ? resolveWorkspaceRoot(payload.workspaceRoot, getWorkspaceRoot()) : getWorkspaceRoot();
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     if (message.length > 20000) throw new Error('The optional initial message is longer than 20,000 characters.');
-    clearTimeout(pending.timer); pendingSessionAssignments.delete(payload.requestId);
-    pending.resolve(payload.cancelled === true ? null : {
+    finishSessionAssignment(payload.requestId, payload.cancelled === true ? null : {
       autoAssign: payload.autoAssign, agent_id: agentId, workspace_root: workspaceRoot, message
     });
     return { accepted: true, cancelled: payload.cancelled === true };

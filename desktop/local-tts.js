@@ -107,6 +107,7 @@ function createLocalPiperTts(options={}){
     const metadata=JSON.parse((await getBuffer('https://pypi.org/pypi/piper-tts/'+PIPER_VERSION+'/json')).toString('utf8'));
     const wheel=(metadata.urls||[]).find(x=>x.filename==='piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl');
     if(!wheel||!wheel.digests?.sha256||typeof wheel.url!=='string')throw new Error('PyPI did not provide the pinned Piper TTS Windows wheel.');
+    if(fs.existsSync(wheelPath)&&crypto.createHash('sha256').update(fs.readFileSync(wheelPath)).digest('hex')!==wheel.digests.sha256)fs.rmSync(wheelPath,{force:true});
     if(!fs.existsSync(wheelPath))await downloadVerified(wheel.url,wheelPath,wheel.digests.sha256,100*1024*1024);
     await runProcess(python.command,[...python.prefix,'-m','pip','install','--disable-pip-version-check','--no-warn-script-location','--upgrade','--target',pythonTarget,wheelPath],{env,timeoutMs:15*60*1000});
     await runProcess(python.command,[...python.prefix,'-c','import piper'],{env,timeoutMs:20000});
