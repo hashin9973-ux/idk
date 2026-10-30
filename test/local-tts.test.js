@@ -1,7 +1,8 @@
 'use strict';
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {normalizeLocalTtsSettings,measureResources}=require('../desktop/local-tts');
+const {spawnSync}=require('node:child_process');
+const {normalizeLocalTtsSettings,measureResources,PYTHON_WORKER_SOURCE}=require('../desktop/local-tts');
 
 test('local Piper defaults to disabled with a conservative CPU and free-RAM guard',()=>{
   assert.deepEqual(normalizeLocalTtsSettings(),{enabled:false,resourceGuardEnabled:true,maxCpuPercent:75,minFreeRamGb:2});
@@ -19,4 +20,13 @@ test('resource sampling reports bounded CPU and memory values',async()=>{
   assert.ok(result.cpu_percent>=0&&result.cpu_percent<=100);
   assert.ok(result.free_ram_gb>=0);
   assert.ok(result.total_ram_gb>=result.free_ram_gb);
+});
+
+
+test('persistent Piper worker source is valid Python',t=>{
+  const result=spawnSync('python',['-c','import ast,sys; ast.parse(sys.stdin.read())'],{
+    input:PYTHON_WORKER_SOURCE,encoding:'utf8',windowsHide:true
+  });
+  if(result.error&&result.error.code==='ENOENT')return t.skip('Python is not installed in this test environment.');
+  assert.equal(result.status,0,result.stderr||result.error&&result.error.message||'Python worker source failed to compile.');
 });

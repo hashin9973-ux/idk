@@ -16,7 +16,7 @@ const VOICE_BASE_URL='https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0
 const MAX_VOICE_BYTES=200*1024*1024;
 const RESOURCE_SAMPLE_MS=250;
 const WORKER_START_TIMEOUT_MS=180000;
-const PYTHON_WORKER_SOURCE="import sys,json,time,wave,io\nfrom pathlib import Path\nfrom piper import PiperVoice\nfrom piper import SynthesisConfig\nmodel=Path(sys.argv[1]); config=Path(sys.argv[2]); speaker=0\nvoice=PiperVoice.load(str(model),config_path=str(config))\nrate=int(voice.config.sample_rate)\nwarm=io.BytesIO(); started=time.perf_counter()\nwith wave.open(warm,\"wb\") as out: voice.synthesize_wav(\"Ready.\",out,syn_config=SynthesisConfig(speaker_id=speaker))\nwith wave.open(io.BytesIO(warm.getvalue()),\"rb\") as wav:\n    if wav.getnframes()<=0 or wav.getframerate()!=rate: raise RuntimeError(\"Piper warm-up produced invalid WAV metadata.\")\nprint(json.dumps({\"type\":\"ready\",\"sample_rate\":rate,\"speaker_id\":speaker,\"warmup_ms\":round((time.perf_counter()-started)*1000,2)}),flush=True)\nfor line in sys.stdin:\n    request_id=\"\"\n    try:\n        req=json.loads(line); request_id=str(req.get(\"id\",\"\")); text=str(req.get(\"text\",\"\")); output_path=Path(str(req.get(\"output_path\",\"\")))\n        if not request_id or not text.strip() or not output_path.is_absolute(): raise ValueError(\"Malformed local Piper request.\")\n        started=time.perf_counter()\n        with wave.open(str(output_path),\"wb\") as out: voice.synthesize_wav(text,out,syn_config=SynthesisConfig(speaker_id=speaker))\n        with wave.open(str(output_path),\"rb\") as wav:\n            frames=wav.getnframes(); sample_rate=wav.getframerate()\n            if frames<=0 or sample_rate!=rate or wav.getnchannels()!=1 or wav.getsampwidth()!=2: raise RuntimeError(\"Piper returned invalid WAV metadata.\")\n        print(json.dumps({\"type\":\"result\",\"id\":request_id,\"ok\":True,\"synthesis_ms\":round((time.perf_counter()-started)*1000,2),\"duration_seconds\":round(frames/sample_rate,4),\"sample_rate\":sample_rate,\"channels\":1}),flush=True)\n    except Exception as error:\n        print(json.dumps({\"type\":\"result\",\"id\":request_id,\"ok\":False,\"error\":type(error).__name__+\": \"+str(error)[:1000]}),flush=True)\n";
+const PYTHON_WORKER_SOURCE="import sys,json,time,wave,io\nfrom pathlib import Path\nfrom piper import PiperVoice\nfrom piper import SynthesisConfig\nmodel=Path(sys.argv[1]); config=Path(sys.argv[2]); speaker=0\nvoice=PiperVoice.load(str(model),config_path=str(config),use_cuda=False)\nrate=int(voice.config.sample_rate); speaker_count=int(getattr(voice.config,'num_speakers',0) or 0)\nif speaker_count and not (0<=speaker<speaker_count): raise RuntimeError('Piper speaker ID 0 is invalid for the selected voice.')\nwarm=io.BytesIO(); started=time.perf_counter()\nwith wave.open(warm,\"wb\") as out: voice.synthesize_wav(\"Ready.\",out,syn_config=SynthesisConfig(speaker_id=speaker))\nwith wave.open(io.BytesIO(warm.getvalue()),\"rb\") as wav:\n    if wav.getnframes()<=0 or wav.getframerate()!=rate: raise RuntimeError(\"Piper warm-up produced invalid WAV metadata.\")\nprint(json.dumps({\"type\":\"ready\",\"sample_rate\":rate,\"speaker_id\":speaker,\"warmup_ms\":round((time.perf_counter()-started)*1000,2)}),flush=True)\nfor line in sys.stdin:\n    request_id=\"\"\n    try:\n        req=json.loads(line); request_id=str(req.get(\"id\",\"\")); text=str(req.get(\"text\",\"\")); output_path=Path(str(req.get(\"output_path\",\"\")))\n        if not request_id or not text.strip() or not output_path.is_absolute(): raise ValueError(\"Malformed local Piper request.\")\n        started=time.perf_counter()\n        with wave.open(str(output_path),\"wb\") as out: voice.synthesize_wav(text,out,syn_config=SynthesisConfig(speaker_id=speaker))\n        with wave.open(str(output_path),\"rb\") as wav:\n            frames=wav.getnframes(); sample_rate=wav.getframerate()\n            if frames<=0 or sample_rate!=rate or wav.getnchannels()!=1 or wav.getsampwidth()!=2: raise RuntimeError(\"Piper returned invalid WAV metadata.\")\n        print(json.dumps({\"type\":\"result\",\"id\":request_id,\"ok\":True,\"synthesis_ms\":round((time.perf_counter()-started)*1000,2),\"duration_seconds\":round(frames/sample_rate,4),\"sample_rate\":sample_rate,\"channels\":1}),flush=True)\n    except Exception as error:\n        print(json.dumps({\"type\":\"result\",\"id\":request_id,\"ok\":False,\"error\":type(error).__name__+\": \"+str(error)[:1000]}),flush=True)\n";
 
 function normalizeLocalTtsSettings(value){
   const s=value&&typeof value==='object'&&!Array.isArray(value)?value:{};
@@ -61,6 +61,14 @@ function downloadVerified(url,destination,sha,maxBytes,redirects=0){
     req.on('error',e=>{fs.rmSync(partial,{force:true});reject(e)});
   });
 }
+function hashFile(filePath){
+  return new Promise((resolve,reject)=>{
+    const hash=crypto.createHash('sha256'),stream=fs.createReadStream(filePath);
+    stream.on('data',chunk=>hash.update(chunk));
+    stream.on('error',reject);
+    stream.on('end',()=>resolve(hash.digest('hex')));
+  });
+}
 function runProcess(command,args,options={}){
   return new Promise((resolve,reject)=>{
     let child;try{child=spawn(command,args,{windowsHide:true,stdio:['ignore','pipe','pipe'],env:options.env||process.env})}catch(e){reject(e);return}
@@ -85,17 +93,26 @@ function createLocalPiperTts(options={}){
   }
   async function ensureAssets(){
     fs.mkdirSync(voiceDir,{recursive:true});
-    if(!fs.existsSync(modelPath)){
-      state={...state,status:'downloading_voice',message:'Downloading the verified 137 MB Piper LibriTTS High voice.'};
+    let modelValid=false;
+    if(fs.existsSync(modelPath))modelValid=await hashFile(modelPath)===VOICE_MODEL_SHA256;
+    if(!modelValid){
+      if(fs.existsSync(modelPath))await fs.promises.rm(modelPath,{force:true});
+      state={...state,status:'downloading_voice',message:'Downloading and verifying the 137 MB Piper LibriTTS High voice.'};
       await downloadVerified(VOICE_BASE_URL+VOICE_NAME+'.onnx',modelPath,VOICE_MODEL_SHA256,MAX_VOICE_BYTES);
-    }else if(crypto.createHash('sha256').update(fs.readFileSync(modelPath)).digest('hex')!==VOICE_MODEL_SHA256){
-      fs.rmSync(modelPath,{force:true});throw new Error('Cached Piper voice failed SHA-256 verification and was removed.');
     }
-    if(!fs.existsSync(configPath)){
+    const validConfig=config=>{
+      return config&&config.dataset==='libritts'&&config.audio?.quality==='high'&&config.audio?.sample_rate===22050;
+    };
+    let configValid=false;
+    if(fs.existsSync(configPath)){
+      try{configValid=validConfig(JSON.parse(await fs.promises.readFile(configPath,'utf8')))}catch{}
+    }
+    if(!configValid){
+      if(fs.existsSync(configPath))await fs.promises.rm(configPath,{force:true});
       const data=await getBuffer(VOICE_BASE_URL+VOICE_NAME+'.onnx.json',512*1024);let config;
       try{config=JSON.parse(data.toString('utf8'))}catch{throw new Error('Piper voice config was not valid JSON.')}
-      if(config.dataset!=='libritts'||config.audio?.quality!=='high'||config.audio?.sample_rate!==22050)throw new Error('Downloaded voice config is not LibriTTS High at 22.05 kHz.');
-      const tmp=configPath+'.partial';fs.writeFileSync(tmp,data);fs.renameSync(tmp,configPath);
+      if(!validConfig(config))throw new Error('Downloaded voice config is not LibriTTS High at 22.05 kHz.');
+      const tmp=configPath+'.partial';await fs.promises.writeFile(tmp,data);await fs.promises.rename(tmp,configPath);
     }
   }
   async function ensurePythonPackage(){
@@ -108,8 +125,9 @@ function createLocalPiperTts(options={}){
     const wheel=(metadata.urls||[]).find(x=>x.filename==='piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl');
     if(!wheel||!wheel.digests?.sha256||typeof wheel.url!=='string')throw new Error('PyPI did not provide the pinned Piper TTS Windows wheel.');
     if(fs.existsSync(wheelPath)&&crypto.createHash('sha256').update(fs.readFileSync(wheelPath)).digest('hex')!==wheel.digests.sha256)fs.rmSync(wheelPath,{force:true});
+    if(fs.existsSync(wheelPath)&&await hashFile(wheelPath)!==wheel.digests.sha256)await fs.promises.rm(wheelPath,{force:true});
     if(!fs.existsSync(wheelPath))await downloadVerified(wheel.url,wheelPath,wheel.digests.sha256,100*1024*1024);
-    await runProcess(python.command,[...python.prefix,'-m','pip','install','--disable-pip-version-check','--no-warn-script-location','--upgrade','--target',pythonTarget,wheelPath],{env,timeoutMs:15*60*1000});
+    await runProcess(python.command,[...python.prefix,'-m','pip','install','--disable-pip-version-check','--no-input','--no-warn-script-location','--upgrade','--target',pythonTarget,wheelPath],{env,timeoutMs:15*60*1000});
     await runProcess(python.command,[...python.prefix,'-c','import piper'],{env,timeoutMs:20000});
   }
   function handleLine(line){
@@ -166,4 +184,4 @@ function createLocalPiperTts(options={}){
   }
   return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256}};
 }
-module.exports={createLocalPiperTts,normalizeLocalTtsSettings,measureResources};
+module.exports={createLocalPiperTts,normalizeLocalTtsSettings,measureResources,PYTHON_WORKER_SOURCE};
