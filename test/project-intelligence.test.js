@@ -20,7 +20,7 @@ test('index reports configured file-count truncation',async()=>{
 
 test('cache restoration rejects unsafe paths and malformed document metadata',async()=>{
  const crypto=require('node:crypto'),root=await fixture(),storage=await fs.mkdtemp(path.join(os.tmpdir(),'project-index-cache-validation-'));
- const absolute=path.resolve(root).replace(/\\\\/g,'/'),key=crypto.createHash('sha256').update(process.platform==='win32'?absolute.toLowerCase():absolute).digest('hex');
+ const absolute=path.resolve(root).replace(/\\/g,'/'),key=crypto.createHash('sha256').update(process.platform==='win32'?absolute.toLowerCase():absolute).digest('hex');
  try{
   await fs.writeFile(path.join(storage,'project-index-'+key+'.json'),JSON.stringify({version:2,rootKey:key,documents:[{path:'../outside.js',extension:'.js',language:'javascript',size:10,mtimeMs:1,ctimeMs:1,terms:[],symbols:[],imports:[]}]}));
   const service=createProjectIntelligence({storageDirectory:storage,watch:false});
@@ -39,5 +39,29 @@ test('full refresh removes deleted paths and keeps a complete index after ordina
   const search=await service.search(root,{query:'helper',kind:'file'});
   assert.equal(search.count,0);const overview=await service.overview(root);
   assert.equal(overview.indexedFiles,2);assert.equal(overview.index.truncated,false);
+ }finally{await service.stop();await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
+});
+
+test('filesystem watcher incrementally applies edits and directory removal with exact byte accounting',async t=>{
+ const root=await fixture(),storage=await fs.mkdtemp(path.join(os.tmpdir(),'project-index-watcher-'));
+ const service=createProjectIntelligence({storageDirectory:storage,reconcileMs:60000});
+ try{
+  await service.start(root);const initial=await service.status(root);
+  if(!initial.watcherActive){t.skip('Recursive filesystem watcher unavailable on this runtime.');return;}
+  const helperPath=path.join(root,'src','helper.js'),testPath=path.join(root,'tests','service.test.js');
+  const previousHelper=(await fs.stat(helperPath)).size,previousTest=(await fs.stat(testPath)).size;
+  await fs.writeFile(helperPath,'export function helperChanged() { return 123456789; }\\n');
+  await fs.rm(path.join(root,'tests'),{recursive:true});
+  const currentSize=(await fs.stat(helperPath)).size;
+  const expectedBytes=initial.totalIndexedBytes-previousHelper-previousTest+currentSize;
+  const deadline=Date.now()+6000;let current=initial;
+  while(Date.now()<deadline){
+   await new Promise(resolve=>setTimeout(resolve,50));current=await service.status(root);
+   if(current.filesIndexed===2&&current.totalIndexedBytes===expectedBytes&&current.generatedAt!==initial.generatedAt)break;
+  }
+  assert.equal(current.filesIndexed,2);
+  assert.equal(current.totalIndexedBytes,expectedBytes);
+  const search=await service.search(root,{query:'helperChanged',kind:'symbol'});
+  assert.equal(search.count,1);
  }finally{await service.stop();await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
 });

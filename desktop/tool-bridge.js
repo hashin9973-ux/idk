@@ -79,7 +79,7 @@ function normalizeExecutionPath(value) {
 
 function projectIndexResource(workspaceRoot) {
   if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) return 'project-index:*';
-  return 'project-index:' + path.resolve(workspaceRoot).replace(/\\\\/g, '/').toLowerCase();
+  return 'project-index:' + path.resolve(workspaceRoot).replace(/\\/g, '/').toLowerCase();
 }
 
 function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {

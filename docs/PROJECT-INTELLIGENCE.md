@@ -11,7 +11,7 @@ The bridge keeps two complementary indexes.
 - Code-aware search across paths, identifiers, and declared symbols. This is local lexical/symbol ranking, not embedding-based semantic search.
 - Project overview: language mix, test/entry-point candidates, symbol count, and relative import-graph size.
 - Change impact through resolved relative imports. Package aliases, reflection, generated code, dynamic imports, and framework-specific dependency systems may be unresolved.
-- Results contain paths and symbol metadata, not source text.
+- Results contain paths and symbol metadata, not source text. Posting-list work is bounded at 250,000 examined postings per query; bounded results report `scanTruncated` rather than implying completeness.
 - Drive-root workspaces are intentionally shallow. Select the specific project folder for recursive indexing.
 
 Supported extensions and generated-directory exclusions are defined in desktop/project-intelligence.js. Secret-like paths, symlinks, binary files, and files larger than 1 MiB are excluded. Defaults cap indexing at 50,000 files, 250,000 directory entries, and 1 GiB of source bytes per full pass. A truncated index is explicitly incomplete: `incompleteReasons` and last-scan counters identify file-count, directory-entry, total-byte, per-file-size, and unreadable-path omissions. Directory traversal is sorted for repeatable capped results. Cache restoration validates every relative path and bounded metadata record before use.

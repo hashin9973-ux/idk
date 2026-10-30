@@ -64,3 +64,12 @@ test('active cancellation propagates AbortSignal and shutdown drains cooperative
  assert.deepEqual(seen,[]);
  assert.deepEqual(stopped,{stopped:true,drained:true,activeRemaining:0,queued:0});
 });
+
+test('an already-aborted signal rejects immediately without enqueuing',async()=>{
+ const scheduler=createExecutionScheduler({maxActive:1}),controller=new AbortController(),started=[];
+ controller.abort(new Error('cancelled before enqueue'));
+ try{
+  await assert.rejects(scheduler.run({reads:['*']},async()=>{started.push(true);},{id:'pre-aborted',signal:controller.signal}),error=>error.code==='ABORT_ERR');
+  assert.equal(scheduler.getState().queued,0);assert.deepEqual(started,[]);
+ }finally{await scheduler.stop();}
+});

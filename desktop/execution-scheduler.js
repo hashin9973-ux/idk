@@ -246,8 +246,8 @@ function createExecutionScheduler(options = {}) {
     if (item.externalSignal) {
       item.externalAbortListener = () => cancel(id, item.externalSignal.reason);
       if (item.externalSignal.aborted) {
-        finishQueued(item, item.externalSignal.reason);
-        return promise;
+        releaseExternalSignal(item);
+        return Promise.reject(abortError(item.externalSignal.reason));
       }
       item.externalSignal.addEventListener('abort', item.externalAbortListener, { once: true });
     }
