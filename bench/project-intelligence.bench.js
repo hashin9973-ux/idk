@@ -51,6 +51,11 @@ async function main() {
     // Mirror a real worker restart: flush the cache and close the first service
     // before a new process-local index instance restores its persisted metadata.
     await first.stop();
+    const persistedCacheFiles = await fs.readdir(storage);
+    const persistedCacheDetails = await Promise.all(persistedCacheFiles.map(async name => {
+      const stat = await fs.stat(path.join(storage, name));
+      return { name, bytes: stat.size, isFile: stat.isFile() };
+    }));
     warm = createProjectIntelligence({ storageDirectory: storage, watch: false });
     const warmStart = performance.now();
     const restored = await warm.status(root);
@@ -76,7 +81,10 @@ async function main() {
         filesIndexed: restored.filesIndexed,
         lastFullScanAt: restored.lastFullScanAt,
         error: restored.error,
-        cacheWarning: restored.cacheWarning
+        cacheWarning: restored.cacheWarning,
+        persistedFiles: persistedCacheDetails,
+        firstRunCacheWarning: indexed.cacheWarning || null,
+        firstRunError: indexed.error || null
       },
       coldIndexMs: Number(coldIndexMs.toFixed(2)),
       warmCacheRestoreMs: Number(warmCacheRestoreMs.toFixed(2)),
