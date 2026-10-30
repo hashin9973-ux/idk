@@ -1956,8 +1956,12 @@ function createRepositoryBridge(deps) {
           throw new Error('SESSION_ASSIGNMENT_INVALID: Choose a valid agent ID or enable automatic assignment.');
         }
         const created = await agentRegistry.startSession({ ...request.args, ...(selectedAgentId ? { agent_id: selectedAgentId } : {}) });
-        const assignedWorkspace = typeof assignment.workspace_root === 'string' && assignment.workspace_root.trim()
-          ? assignment.workspace_root : null;
+        // Auto-assignment chooses the seat only after the popup completes. Do not
+        // pass its global placeholder workspace as a session override: the main
+        // process must resolve the selected seat's default before the global one.
+        const assignedWorkspace = assignment.autoAssign === true ? null :
+          (typeof assignment.workspace_root === 'string' && assignment.workspace_root.trim()
+            ? assignment.workspace_root : null);
         await onSessionAssigned({ session_id: created.session_id, agent_id: created.agent_id, workspace_root: assignedWorkspace });
         let initialMessageStatus = null;
         if (typeof assignment.message === 'string' && assignment.message.trim()) {

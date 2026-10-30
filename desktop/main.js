@@ -23,7 +23,7 @@ const {
   desktopCapturer,
   nativeTheme
 } = require('electron');
-const { resolveWorkspaceRoot, resolveSessionWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
+const { resolveWorkspaceRoot, resolveAgentSessionWorkspaceRoot, resolveSessionWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -619,9 +619,10 @@ function persistAssignedSessionWorkspace({ session_id, agent_id, workspace_root 
   }
   const seatDefaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
     ? settings.agentWorkspaceDefaults : {};
-  const root = typeof workspace_root === 'string' && workspace_root.trim()
-    ? resolveWorkspaceRoot(workspace_root, getWorkspaceRoot())
-    : (seatDefaults[agent_id] || getWorkspaceRoot());
+  const root = resolveAgentSessionWorkspaceRoot(
+    typeof workspace_root === 'string' && workspace_root.trim() ? workspace_root : null,
+    seatDefaults[agent_id], getWorkspaceRoot(), getDefaultWorkspaceRoot()
+  );
   const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
     !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
   if (root === getWorkspaceRoot()) delete overrides[session_id];
