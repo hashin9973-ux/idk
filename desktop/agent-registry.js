@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 
 const AGENT_RECORD_PROTOCOL = 'chatgpt-local-agent-seat/v2';
 const SESSION_RECORD_PROTOCOL = 'chatgpt-local-agent-session/v1';
+// Local operator messages use a dedicated sender identity and do not borrow an agent session.
 const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
 const SESSION_ID_PATTERN = /^session-[a-f0-9]{32}$/;
 const MESSAGE_ID_PATTERN = /^msg-[0-9]{13}-[a-f0-9]{32}$/;
