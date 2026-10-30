@@ -250,10 +250,10 @@ function makeAgentWidget(agent,index){
   card.append(header,composer,body,messageThread);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
   workspaceButton.addEventListener('click',async event=>{
     event.stopPropagation();const sessionId=card.dataset.sessionId||'';
-    if(!sessionId||workspaceButton.disabled)return;
+    if(workspaceButton.disabled)return;
     workspaceButton.disabled=true;
     try {
-      const result=await api.selectAgentWorkspace(sessionId);
+      const result=await api.selectAgentWorkspace(agent.agent_id,sessionId||null);
       if(!result.canceled)note('Workspace for '+agent.agent_id+' updated.','success');
       await refresh();
     } catch(error) { note('Could not configure '+agent.agent_id+' workspace: '+error.message,'error'); }
@@ -314,10 +314,10 @@ function renderAgentMailboxes(rawAgents){
     sessionLine.textContent='SESSION '+String(agent.session_id||'none');
     sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
     const hasSession=Boolean(agent.session_id);
-    workspaceButton.disabled=!hasSession;
+    workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
-    workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_custom?' · custom for this conversation':' · global default'));
+    workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_scope==='agent-default'?' · saved agent default':agent.workspace_scope==='session'?' · current conversation override':agent.workspace_custom?' · custom':' · global default'));
     const active=agent.status==='active';
     status.className='agent-console-status '+(active?'is-active':'is-inactive');
     status.textContent=active?'ACTIVE':'INACTIVE';

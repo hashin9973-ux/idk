@@ -444,45 +444,60 @@ function selectWorkspace() {
   });
 }
 
-async function selectAgentWorkspace(sessionId) {
-  if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
-    throw new Error('A valid agent session ID is required to configure its workspace.');
+async function selectAgentWorkspace(agentId, sessionId = null) {
+  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
+    throw new Error('A valid agent ID is required to configure its workspace.');
   }
-  if (!repositoryBridge || typeof repositoryBridge.getAgentSession !== 'function') {
-    throw new Error('The repository worker is not available to validate this agent session.');
+  if (sessionId !== null && (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
+    throw new Error('The agent session ID is invalid.');
   }
-  const session = await repositoryBridge.getAgentSession(sessionId);
-  const currentRoot = getWorkspaceRoot(sessionId);
+  const defaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object' &&
+    !Array.isArray(settings.agentWorkspaceDefaults) ? { ...settings.agentWorkspaceDefaults } : {};
+  const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+  let sessionIsCurrent = false;
+  if (sessionId && repositoryBridge && typeof repositoryBridge.getAgentSession === 'function') {
+    try {
+      const current = await repositoryBridge.getAgentSession(sessionId);
+      sessionIsCurrent = current && current.agent_id === agentId;
+    } catch { /* Keep seat configuration available while the mailbox is disconnected or the session is stale. */ }
+  }
+  const configuredDefault = typeof defaults[agentId] === 'string' && defaults[agentId].trim()
+    ? resolveWorkspaceRoot(defaults[agentId], getWorkspaceRoot()) : '';
+  const currentRoot = sessionIsCurrent ? getWorkspaceRoot(sessionId) : configuredDefault || getWorkspaceRoot();
   const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
-    title: 'Choose workspace for ' + session.agent_id,
+    title: 'Choose default workspace for ' + agentId,
     defaultPath: fs.existsSync(currentRoot) ? currentRoot : getWorkspaceRoot(),
     properties: ['openDirectory', 'createDirectory']
   });
   if (result.canceled || !result.filePaths || !result.filePaths.length) {
-    return { canceled: true, workspaceRoot: currentRoot };
+    return { canceled: true, workspaceRoot: currentRoot, agent_id: agentId, session_id: sessionIsCurrent ? sessionId : null };
   }
-  const selected = resolveWorkspaceRoot(result.filePaths[0], getWorkspaceRoot());
+  const selected = resolveWorkspaceRoot(result.filePaths[0], currentRoot || getWorkspaceRoot());
   ensureWorkspaceDirectory(selected, fs);
   if (isFilesystemRoot(selected)) {
     const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
       type: 'warning',
-      title: 'Give ' + session.agent_id + ' access to the entire drive?',
+      title: 'Give ' + agentId + ' access to the entire drive?',
       message: 'This agent will be able to read, create, edit, move, and delete files anywhere on ' + selected + '.',
-      detail: 'This overrides only this conversation session. Other agents keep their own workspaces. It is not an operating-system sandbox; PowerShell still runs with your Windows-user permissions.',
+      detail: 'This becomes the default workspace for this agent and is also applied to its current conversation, if one is active. It is not an operating-system sandbox; PowerShell still runs with your Windows-user permissions.',
       buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
     });
-    if (warning.response !== 0) return { canceled: true, workspaceRoot: currentRoot };
+    if (warning.response !== 0) return { canceled: true, workspaceRoot: currentRoot, agent_id: agentId, session_id: sessionIsCurrent ? sessionId : null };
   }
-  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
-    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
-  if (selected === getWorkspaceRoot()) delete overrides[sessionId];
-  else overrides[sessionId] = selected;
-  settings.agentWorkspaces = overrides;
+  if (selected === getWorkspaceRoot()) delete defaults[agentId];
+  else defaults[agentId] = selected;
+  settings.agentWorkspaceDefaults = defaults;
+  if (sessionIsCurrent) {
+    if (selected === getWorkspaceRoot()) delete sessionOverrides[sessionId];
+    else sessionOverrides[sessionId] = selected;
+    settings.agentWorkspaces = sessionOverrides;
+  }
   persistSettings();
   if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
-  return { canceled: false, workspaceRoot: selected, agent_id: session.agent_id, session_id: sessionId };
+  return { canceled: false, workspaceRoot: selected, agent_id: agentId, session_id: sessionIsCurrent ? sessionId : null,
+    scope: sessionIsCurrent ? 'agent-default-and-current-session' : 'agent-default' };
 }
-
 function safeBrowserUrl(raw) {
   try {
     const url = new URL(String(raw || ''));
@@ -1089,17 +1104,34 @@ function resolveWorkerStatus(state) {
 function enrichedBridgeState(state) {
   const workerStatus = resolveWorkerStatus(state);
   const current = state || {};
-  const agentMailboxes = Array.isArray(current.agentMailboxes) ? current.agentMailboxes.map(agent => {
-    if (!agent || typeof agent.session_id !== 'string' || !/^session-[a-f0-9]{32}$/.test(agent.session_id)) return agent;
-    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
-      !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const defaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object' &&
+    !Array.isArray(settings.agentWorkspaceDefaults) ? settings.agentWorkspaceDefaults : {};
+  const byId = new Map((Array.isArray(current.agentMailboxes) ? current.agentMailboxes : [])
+    .filter(agent => agent && typeof agent.agent_id === 'string' && /^agent-[0-9]{3,}$/.test(agent.agent_id))
+    .map(agent => [agent.agent_id, agent]));
+  for (const agentId of Object.keys(defaults)) {
+    if (/^agent-[0-9]{3,}$/.test(agentId) && !byId.has(agentId)) {
+      byId.set(agentId, { agent_id: agentId, label: agentId, status: 'inactive', busy: false, session_id: null,
+        active_count: 0, queued_count: 0, request_count: 0, requests: [] });
+    }
+  }
+  const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const agentMailboxes = [...byId.values()].map(agent => {
+    const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
+      ? agent.session_id : null;
+    const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
+    const hasSeatDefault = typeof defaults[agent.agent_id] === 'string' && Boolean(defaults[agent.agent_id].trim());
     try {
-      return { ...agent, workspace_root: getWorkspaceRoot(agent.session_id), workspace_custom: typeof overrides[agent.session_id] === 'string' };
+      const root = sessionId ? getWorkspaceRoot(sessionId) :
+        hasSeatDefault ? resolveWorkspaceRoot(defaults[agent.agent_id], getWorkspaceRoot()) : getWorkspaceRoot();
+      return { ...agent, workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
+        workspace_scope: sessionId ? (hasSessionOverride ? 'session' : 'global-default') : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
-      return { ...agent, workspace_root: '', workspace_custom: typeof overrides[agent.session_id] === 'string',
+      return { ...agent, workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_error: String(error && error.message || error).slice(0, 300) };
     }
-  }) : current.agentMailboxes;
+  });
   // Keep transient mailbox transport failures visible while continuing retries.
   const connectionError = workerStatus === 'online' ? '' : (
     autoConnectionError ||
@@ -2043,9 +2075,10 @@ function registerIpc() {
     const result = await selectWorkspace();
     return { ...result, workspace: getUiState().workspace };
   });
-  ipcMain.handle('app:agent-select-workspace', async (event, sessionId) => {
+  ipcMain.handle('app:agent-select-workspace', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
-    return selectAgentWorkspace(sessionId);
+    if (!payload || typeof payload !== 'object') throw new Error('Agent workspace selection details are required.');
+    return selectAgentWorkspace(payload.agentId, payload.sessionId || null);
   });
   ipcMain.handle('app:agent-send-message', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
