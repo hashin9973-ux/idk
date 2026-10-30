@@ -175,7 +175,7 @@ function createRepositoryBridge(deps) {
     cleanupScanLimit = MAX_MAILBOX_CLEANUP_SCAN,
     cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS,
     requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
-    requestSessionAssignment = async () => ({ autoAssign: true, agent_id: null, workspace_root: null, message: '' }),
+    requestSessionAssignment = async () => null,
     onSessionAssigned = async () => {}
   } = deps;
 

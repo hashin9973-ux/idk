@@ -369,6 +369,7 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
   let localExecutions = 0;
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' }),
     executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
     intervalMs: 5000
   });
@@ -415,7 +416,7 @@ test('a dismissed or unanswered session assignment fails without creating or ret
   const fixture = settingsFixture();
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    requestSessionAssignment: async () => null,
+    // Omit requestSessionAssignment to prove the default is fail-closed.
     executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
     intervalMs: 5000
   });
