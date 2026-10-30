@@ -181,7 +181,7 @@ function createLocalPiperTts(options={}){
     if(!r.ok)p.reject(new Error(r.error||'Piper synthesis failed.'));else p.resolve(r);
   }
   async function startWorker(){
-    await ensurePythonPackage();await ensureAssets();fs.writeFileSync(workerPath,PYTHON_WORKER_SOURCE,'utf8');
+    await ensureAssets();await ensurePythonPackage();fs.writeFileSync(workerPath,PYTHON_WORKER_SOURCE,'utf8');
     const env={...process.env,PYTHONPATH:pythonTarget+(process.env.PYTHONPATH?path.delimiter+process.env.PYTHONPATH:'')};
     child=spawn(python.command,[...python.prefix,'-u',workerPath,modelPath,configPath],{windowsHide:true,stdio:['pipe','pipe','pipe'],env});
     let buffer='';stderrTail='';child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
