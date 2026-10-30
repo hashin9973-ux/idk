@@ -240,8 +240,8 @@ test('an idle session is rejected after its inactivity lease expires', async () 
 });
 
 test('recent legacy seats are protected until their activity expires', async () => {
-  const { registry, records, advance } = mockMailbox();
-  const lastSeen = new Date().toISOString();
+  const { registry, records, advance, now } = mockMailbox();
+  const lastSeen = new Date(now()).toISOString();
   records.set('bridge/agents/agent-001.json', {
     value: {
       protocol: 'chatgpt-local-agent-record/v1', agent_id: 'agent-001',
