@@ -367,9 +367,11 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
   ] });
   const fixture = settingsFixture();
   let localExecutions = 0;
+  const assignedWorkspaces = [];
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
     requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' }),
+    onSessionAssigned: async assignment => { assignedWorkspaces.push(assignment); },
     executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
     intervalMs: 5000
   });
@@ -403,6 +405,10 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
     const claimB = decode(fake.files.get('bridge/claims/' + second.request_id + '.json'));
     assert.equal(claimA.agent_id, sessionA.agent_id);
     assert.equal(claimB.agent_id, sessionB.agent_id);
+    assert.deepEqual(assignedWorkspaces.map(item => ({ agent_id: item.agent_id, workspace_root: item.workspace_root })).sort((a, b) => a.agent_id.localeCompare(b.agent_id)), [
+      { agent_id: 'agent-001', workspace_root: null },
+      { agent_id: 'agent-002', workspace_root: null }
+    ], 'auto-assignment leaves workspace resolution to the selected agent seat default');
     assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
   } finally { await bridge.stop(); }
 });
