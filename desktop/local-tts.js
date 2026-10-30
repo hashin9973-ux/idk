@@ -81,7 +81,7 @@ function createLocalPiperTts(options={}){
   const root=path.join(options.userDataPath||path.join(os.homedir(),'AppData','Local','WindowsRepositoryBridge'),'local-tts');
   const pythonTarget=path.join(root,'python'),voiceDir=path.join(root,'voices');
   const modelPath=path.join(voiceDir,VOICE_NAME+'.onnx'),configPath=path.join(voiceDir,VOICE_NAME+'.onnx.json');
-  const workerPath=path.join(root,'piper-worker.py'),wheelPath=path.join(root,'piper-tts-'+PIPER_VERSION+'-win_amd64.whl');
+  const workerPath=path.join(root,'piper-worker.py'),wheelPath=path.join(root,'piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl');
   const pending=new Map();let python=null,child=null,readyPromise=null,stderrTail='';
   let state={ready:false,status:'not_prepared',voice:VOICE_NAME,speaker_id:SPEAKER_ID};
   const getSettings=()=>normalizeLocalTtsSettings(typeof options.getSettings==='function'?options.getSettings():{});
