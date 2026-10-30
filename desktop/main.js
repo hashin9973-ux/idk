@@ -1817,6 +1817,7 @@ function currentCaptionPayload() {
     chunkCount: chunks.length,
     agentLabel: String(payload.agentLabel || payload.agentId || 'Windows Bridge').slice(0, 48),
     paused: payload.paused === true,
+    hasPlayback: Boolean(payload.speechJobId),
     theme: captionThemeId(),
     transparent: getTtsSettings().captionTransparent
   };
