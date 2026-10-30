@@ -485,6 +485,28 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     };
   }
 
+  async function sendUserMessage(sessionId, args = {}) {
+    const recipient = await currentSession(sessionId);
+    const message = cleanMessage(args.message, 20000, 'message');
+    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+    const record = {
+      protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+      sender_session_id: null, sender_agent_id: 'user',
+      recipient_session_id: sessionId, recipient_agent_id: recipient.session.agent_id,
+      sender_label: 'Windows Bridge User',
+      recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
+      subject: 'Message from Windows Bridge User',
+      message: '[Windows Bridge User] ' + message,
+      created_at: timestamp(), read_at: null, in_reply_to: null, sender_type: 'user'
+    };
+    await writeMessage(sessionId, record);
+    return {
+      message_id: id, thread_id: id, to_agent_id: recipient.session.agent_id,
+      to_session_id: sessionId, created_at: record.created_at, status: 'sent',
+      note: 'The message was published to this exact conversation session inbox. The agent can retrieve it with read_agent_messages.'
+    };
+  }
+
   async function markMessageRead(sessionId, messageId, knownRecord = null) {
     const path = messagePath(sessionId, messageId);
     let value = knownRecord;
@@ -603,7 +625,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
 
   return {
     startSession, authenticate, requestStarted, requestCompleted, statuses,
-    sendMessage, readMessages, replyToMessage, seatPath, sessionPath, messagePath,
+    sendMessage, sendUserMessage, readMessages, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }

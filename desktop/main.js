@@ -23,7 +23,7 @@ const {
   desktopCapturer,
   nativeTheme
 } = require('electron');
-const { resolveWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
+const { resolveWorkspaceRoot, resolveSessionWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
@@ -312,10 +312,21 @@ function getDefaultWorkspaceRoot() {
   return path.join(app.getPath('documents'), 'ChatGPTWorkspace');
 }
 
-function getWorkspaceRoot() {
-  // An explicitly selected drive root is a valid workspace. Path-based tools
-  // remain confined to this root and reject symlink escapes.
-  const root = resolveWorkspaceRoot(settings.workspaceRoot, getDefaultWorkspaceRoot());
+function getWorkspaceRoot(sessionId = null) {
+  // Overrides belong to a stable conversation session, not a reusable seat.
+  // If an override becomes unavailable, fail closed instead of using another root.
+  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const configured = typeof sessionId === 'string' && /^session-[a-f0-9]{32}$/.test(sessionId)
+    ? overrides[sessionId] : null;
+  const hasSessionOverride = typeof configured === 'string' && Boolean(configured.trim());
+  const root = resolveSessionWorkspaceRoot(sessionId, overrides, settings.workspaceRoot, getDefaultWorkspaceRoot());
+  if (hasSessionOverride) {
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      throw new Error('The workspace configured for this agent is unavailable: ' + root + '. Choose another folder from this agent widget.');
+    }
+    return root;
+  }
   if (settings.workspaceRoot !== root) {
     settings.workspaceRoot = root;
     persistSettings();
@@ -325,13 +336,28 @@ function getWorkspaceRoot() {
 
 function ensureWorkspaceRoot() {
   const fallbackRoot = path.join(app.getPath('userData'), 'ChatGPTWorkspace');
+  const configured = typeof settings.workspaceRoot === 'string' ? settings.workspaceRoot.trim() : '';
+  // A selected drive root is an explicit scope decision. Do not silently
+  // replace it with Documents/app-data if validation fails.
+  if (configured) {
+    const selectedRoot = resolveWorkspaceRoot(configured, getDefaultWorkspaceRoot());
+    if (isFilesystemRoot(selectedRoot)) {
+      try {
+        ensureWorkspaceDirectory(selectedRoot, fs);
+        settings.workspaceRoot = selectedRoot;
+        persistSettings();
+        return selectedRoot;
+      } catch (error) {
+        throw new Error('The explicitly selected drive workspace could not be opened: ' + selectedRoot + '. The app will not silently switch to Documents. ' + String(error && error.message || error));
+      }
+    }
+  }
   const candidates = [...new Set([
     getWorkspaceRoot(),
     getDefaultWorkspaceRoot(),
     fallbackRoot
   ].map(candidate => path.resolve(candidate)))];
   let lastError = null;
-
   for (const candidate of candidates) {
     try {
       const root = resolveWorkspaceRoot(candidate, fallbackRoot);
@@ -344,7 +370,6 @@ function ensureWorkspaceRoot() {
       console.warn('Could not use workspace folder "' + candidate + '":', error.message);
     }
   }
-
   throw new Error(
     'Could not create a writable workspace folder in Documents or app data. ' +
     String(lastError && lastError.message || 'No suitable fallback directory was available.')
@@ -388,7 +413,7 @@ function selectWorkspace() {
     if (result.canceled || !result.filePaths || !result.filePaths.length) {
       return { canceled: true, workspaceRoot: getWorkspaceRoot() };
     }
-    const selected = path.resolve(result.filePaths[0]);
+    const selected = resolveWorkspaceRoot(result.filePaths[0], getDefaultWorkspaceRoot());
     if (!fs.existsSync(selected) || !fs.statSync(selected).isDirectory()) {
       throw new Error('Selected workspace is not a directory.');
     }
@@ -417,6 +442,45 @@ function selectWorkspace() {
     }
     return { canceled: false, workspaceRoot: selected };
   });
+}
+
+async function selectAgentWorkspace(sessionId) {
+  if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
+    throw new Error('A valid agent session ID is required to configure its workspace.');
+  }
+  if (!repositoryBridge || typeof repositoryBridge.getAgentSession !== 'function') {
+    throw new Error('The repository worker is not available to validate this agent session.');
+  }
+  const session = await repositoryBridge.getAgentSession(sessionId);
+  const currentRoot = getWorkspaceRoot(sessionId);
+  const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+    title: 'Choose workspace for ' + session.agent_id,
+    defaultPath: fs.existsSync(currentRoot) ? currentRoot : getWorkspaceRoot(),
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths || !result.filePaths.length) {
+    return { canceled: true, workspaceRoot: currentRoot };
+  }
+  const selected = resolveWorkspaceRoot(result.filePaths[0], getWorkspaceRoot());
+  ensureWorkspaceDirectory(selected, fs);
+  if (isFilesystemRoot(selected)) {
+    const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      type: 'warning',
+      title: 'Give ' + session.agent_id + ' access to the entire drive?',
+      message: 'This agent will be able to read, create, edit, move, and delete files anywhere on ' + selected + '.',
+      detail: 'This overrides only this conversation session. Other agents keep their own workspaces. It is not an operating-system sandbox; PowerShell still runs with your Windows-user permissions.',
+      buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
+    });
+    if (warning.response !== 0) return { canceled: true, workspaceRoot: currentRoot };
+  }
+  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+  if (selected === getWorkspaceRoot()) delete overrides[sessionId];
+  else overrides[sessionId] = selected;
+  settings.agentWorkspaces = overrides;
+  persistSettings();
+  if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
+  return { canceled: false, workspaceRoot: selected, agent_id: session.agent_id, session_id: sessionId };
 }
 
 function safeBrowserUrl(raw) {
@@ -1025,6 +1089,17 @@ function resolveWorkerStatus(state) {
 function enrichedBridgeState(state) {
   const workerStatus = resolveWorkerStatus(state);
   const current = state || {};
+  const agentMailboxes = Array.isArray(current.agentMailboxes) ? current.agentMailboxes.map(agent => {
+    if (!agent || typeof agent.session_id !== 'string' || !/^session-[a-f0-9]{32}$/.test(agent.session_id)) return agent;
+    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+      !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+    try {
+      return { ...agent, workspace_root: getWorkspaceRoot(agent.session_id), workspace_custom: typeof overrides[agent.session_id] === 'string' };
+    } catch (error) {
+      return { ...agent, workspace_root: '', workspace_custom: typeof overrides[agent.session_id] === 'string',
+        workspace_error: String(error && error.message || error).slice(0, 300) };
+    }
+  }) : current.agentMailboxes;
   // Keep transient mailbox transport failures visible while continuing retries.
   const connectionError = workerStatus === 'online' ? '' : (
     autoConnectionError ||
@@ -1032,7 +1107,7 @@ function enrichedBridgeState(state) {
       ? (current.lastPollError || current.lastError || '')
       : '')
   );
-  return { ...current, workerStatus, connectionError, autoAcceptAll: settings.autoAcceptAll === true };
+  return { ...current, ...(agentMailboxes ? { agentMailboxes } : {}), workerStatus, connectionError, autoAcceptAll: settings.autoAcceptAll === true };
 }
 
 function broadcastBridgeState(state) {
@@ -1968,6 +2043,24 @@ function registerIpc() {
     const result = await selectWorkspace();
     return { ...result, workspace: getUiState().workspace };
   });
+  ipcMain.handle('app:agent-select-workspace', async (event, sessionId) => {
+    assertLocalUi(event, 'dashboard.html');
+    return selectAgentWorkspace(sessionId);
+  });
+  ipcMain.handle('app:agent-send-message', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const sessionId = payload && payload.sessionId;
+    const message = payload && payload.message;
+    if (typeof message !== 'string' || !message.trim() || message.length > 20000) {
+      throw new Error('Message must contain 1–20,000 characters.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.sendDashboardMessage !== 'function') {
+      throw new Error('The repository worker is not available to send an agent message.');
+    }
+    const result = await repositoryBridge.sendDashboardMessage(sessionId, message);
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
   ipcMain.handle('app:set-auto-accept-all', async (event, enabled) => {
     assertLocalUi(event, 'index.html');
     if (typeof enabled !== 'boolean') throw new Error('auto-accept setting must be a boolean.');
@@ -2385,7 +2478,7 @@ if (!hasInstanceLock) {
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
-          executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
+          executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId),
           onState: broadcastBridgeState,
           publishContextOnStart: true
         });
