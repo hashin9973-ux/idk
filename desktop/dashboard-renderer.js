@@ -206,6 +206,15 @@ function attachWidgetGesture(el){
   el.addEventListener('pointerup',endGesture);
   el.addEventListener('pointercancel',endGesture);
 }
+function createAgentIcon(kind){
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox','0 0 16 16');svg.setAttribute('aria-hidden','true');
+  const paths=kind==='workspace'
+    ? ['M2.25 1.75h7l4.5 4.5v8h-11.5z','M9.25 1.75v4.5h4.5M4.5 9h7M4.5 11.5h7']
+    : ['M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z','M4.5 5.25h7M4.5 7.75h5'];
+  for(const d of paths){const pathElement=document.createElementNS('http://www.w3.org/2000/svg','path');pathElement.setAttribute('d',d);svg.append(pathElement)}
+  return svg;
+}
 function makeAgentWidget(agent,index){
   const card=document.createElement('section');card.id='agent-widget-'+agent.agent_id;
   card.className='widget agent-console';card.dataset.widget=agent.agent_id;
@@ -223,10 +232,10 @@ function makeAgentWidget(agent,index){
   const actions=document.createElement('div');actions.className='agent-console-actions';
   const workspaceButton=document.createElement('button');workspaceButton.type='button';workspaceButton.className='agent-console-icon-button agent-workspace-button';
   workspaceButton.title='Configure this agent workspace';workspaceButton.setAttribute('aria-label','Configure workspace for '+agent.agent_id);
-  workspaceButton.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.25 1.75h7l4.5 4.5v8h-11.5z"></path><path d="M9.25 1.75v4.5h4.5M4.5 9h7M4.5 11.5h7"></path></svg>';
+  workspaceButton.append(createAgentIcon('workspace'));
   const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
   messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
-  messageButton.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z"></path><path d="M4.5 5.25h7M4.5 7.75h5"></path></svg>';
+  messageButton.append(createAgentIcon('message'));
   actions.append(workspaceButton,messageButton);
   header.append(identity,status,busy,counts,actions);
   const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';

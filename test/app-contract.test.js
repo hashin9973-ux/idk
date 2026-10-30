@@ -305,7 +305,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
   const main = read('desktop', 'main.js');
-  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null\)/);
+  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
   assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);
