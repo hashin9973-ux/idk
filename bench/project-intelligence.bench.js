@@ -48,6 +48,9 @@ async function main() {
     const impact = await first.impact(root, { path: 'src/module-00000.js' });
     const impactMs = performance.now() - impactStart;
 
+    // Mirror a real worker restart: flush the cache and close the first service
+    // before a new process-local index instance restores its persisted metadata.
+    await first.stop();
     warm = createProjectIntelligence({ storageDirectory: storage, watch: false });
     const warmStart = performance.now();
     const restored = await warm.status(root);
