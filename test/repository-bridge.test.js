@@ -33,6 +33,18 @@ async function waitFor(predicate, timeoutMs = 3000) {
 
 const DEFAULT_TEST_SESSION_ID = 'session-' + 'c'.repeat(32);
 
+test('result sanitization redacts the active session workspace rather than only the global root', () => {
+  const sessionRoot = 'D:\\AgentWorkspaces\\agent-017';
+  const report = sanitizeForRepository({
+    ok: false,
+    error: 'Access denied while opening D:\\AgentWorkspaces\\agent-017\\private\\file.txt'
+  }, sessionRoot);
+  assert.equal(JSON.stringify(report).includes(sessionRoot), false);
+  assert.match(report.error, /<workspace>/);
+});
+
+
+
 function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null,
   falseConflictCreatePaths = [], transientCreateConflictPaths = [], unscopedRequestIds = [] } = {}) {
   const files = new Map();

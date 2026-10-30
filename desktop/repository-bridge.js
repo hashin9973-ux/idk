@@ -1968,7 +1968,9 @@ function createRepositoryBridge(deps) {
     }
 
     toolFinishedAt = Date.now();
-    const sanitizedReport = sanitizeForRepository(report, getWorkspaceRoot ? getWorkspaceRoot() : '');
+    let workspaceRootForSanitization = '';
+    try { workspaceRootForSanitization = getWorkspaceRoot ? getWorkspaceRoot(request.session_id || null) : ''; } catch {}
+    const sanitizedReport = sanitizeForRepository(report, workspaceRootForSanitization);
     if (report && report.ok && request.tool === 'session_start' && report.result && report.result.agent_id) {
       requestAgents.set(requestId, report.result.agent_id);
       requestSessions.set(requestId, report.result.session_id);
