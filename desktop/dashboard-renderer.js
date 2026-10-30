@@ -716,6 +716,26 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&assignmentS
 api.onAgentAssignmentRequested(showAgentAssignment);
 api.onAgentAssignmentDismissed(payload=>{if(assignmentState&&payload.requestId===assignmentState.requestId){closeAgentAssignment();note('Agent assignment expired. No session was created.','error')}});
 
+$('add-agent-widget').addEventListener('click',async()=>{try{const r=await api.addAgentWidget();note('Added '+r.agentId+'.','success');await refresh()}catch(error){note('Could not add agent widget: '+error.message,'error')}});
+const contextMenu=$('widget-context-menu');
+mainPage.addEventListener('contextmenu',event=>{event.preventDefault();contextMenu.hidden=false;const rect=mainPage.getBoundingClientRect();contextMenu.style.left=Math.max(8,Math.min(rect.width-200,event.clientX-rect.left))+'px';contextMenu.style.top=Math.max(8,Math.min(rect.height-100,event.clientY-rect.top))+'px'});
+document.addEventListener('pointerdown',event=>{if(!contextMenu.hidden&&!contextMenu.contains(event.target))contextMenu.hidden=true});
+contextMenu.addEventListener('click',event=>{const action=event.target.closest('[data-widget-action]')?.dataset.widgetAction;contextMenu.hidden=true;if(action==='arrange')autoArrangeWidgets();if(action==='add-agent')void api.addAgentWidget().then(refresh).catch(error=>note(error.message,'error'))});
+function autoArrangeWidgets(){
+  const width=mainPage.clientWidth||window.innerWidth||1200,gap=16,margin=24,leftWidth=Math.min(360,Math.max(270,Math.round(width*.28)));
+  const cardWidth=Math.min(360,Math.max(200,width-leftWidth-margin*2-gap)),cardHeight=320;
+  Object.assign(queue.style,{left:margin+'px',top:'28px',width:leftWidth+'px'});widgetMoved.queues=true;
+  const queueBottom=queue.offsetTop+queue.offsetHeight;
+  Object.assign(controls.style,{left:margin+'px',top:(queueBottom+gap)+'px',width:leftWidth+'px'});widgetMoved.controls=true;
+  const startX=width>=leftWidth+cardWidth+margin*2+gap?margin+leftWidth+gap:margin;
+  let x=startX,y=24,col=0;const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
+  for(const [id,el] of [...agentWidgets.entries()].sort((a,b)=>Number(a[0].slice(6))-Number(b[0].slice(6)))){
+    Object.assign(el.style,{left:x+'px',top:y+'px',width:cardWidth+'px',height:cardHeight+'px'});
+    savedWidgetLayout[id]={x,y,width:cardWidth,height:cardHeight};widgetMoved[id]=true;
+    if(++col>=columns){col=0;x=startX;y+=cardHeight+gap}else{x+=cardWidth+gap}
+  }
+  updateAgentCanvasHeight();scheduleSaveDashboardState();note('Widgets arranged into a compact grid.','success');
+}
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
