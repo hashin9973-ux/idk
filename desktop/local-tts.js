@@ -33,7 +33,7 @@ function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
 function trimWindowsWorkingSet(pid){
   if(process.platform!=='win32'||!Number.isInteger(pid)||pid<=0)return Promise.resolve(false);
   const source='using System; using System.Runtime.InteropServices; public static class BridgeWorkingSet { [DllImport("kernel32.dll",SetLastError=true)] public static extern IntPtr OpenProcess(uint access,bool inherit,int pid); [DllImport("psapi.dll",SetLastError=true)] public static extern bool EmptyWorkingSet(IntPtr process); [DllImport("kernel32.dll",SetLastError=true)] public static extern bool CloseHandle(IntPtr handle); }';
-  const command="$src=@'\\n"+source+"\\n'@; Add-Type -TypeDefinition $src; $h=[BridgeWorkingSet]::OpenProcess(0x0500,$false,"+pid+"); if($h -eq [IntPtr]::Zero){exit 2}; try { if(-not [BridgeWorkingSet]::EmptyWorkingSet($h)){exit 3} } finally { [void][BridgeWorkingSet]::CloseHandle($h) }; exit 0";
+  const command="$src=@'\n"+source+"\n'@; Add-Type -TypeDefinition $src; $h=[BridgeWorkingSet]::OpenProcess(0x0500,$false,"+pid+"); if($h -eq [IntPtr]::Zero){exit 2}; try { if(-not [BridgeWorkingSet]::EmptyWorkingSet($h)){exit 3} } finally { [void][BridgeWorkingSet]::CloseHandle($h) }; exit 0";
   return new Promise(resolve=>{let p;try{p=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,stdio:'ignore'})}catch{return resolve(false)}p.once('error',()=>resolve(false));p.once('close',code=>resolve(code===0))});
 }
 async function measureResources(){
