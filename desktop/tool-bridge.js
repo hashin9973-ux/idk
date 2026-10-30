@@ -77,16 +77,23 @@ function normalizeExecutionPath(value) {
   return normalized && normalized !== '.' && !normalized.startsWith('../') ? normalized : null;
 }
 
-function getExecutionFootprint(tool, args = {}) {
+function projectIndexResource(workspaceRoot) {
+  if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) return 'project-index:*';
+  return 'project-index:' + path.resolve(workspaceRoot).replace(/\\\\/g, '/').toLowerCase();
+}
+
+function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
   if (tool === 'batch') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
-    if (!steps.length) return { reads: [], writes: [], resources: [], barrier: true };
-    const combined = { reads: [], writes: [], resources: [], barrier: false };
+    if (!steps.length) return { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: true };
+    const combined = { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: false };
     for (const step of steps) {
-      const footprint = getExecutionFootprint(step.tool, step.args || {});
+      const footprint = getExecutionFootprint(step.tool, step.args || {}, workspaceRoot);
       combined.reads.push(...footprint.reads);
       combined.writes.push(...footprint.writes);
       combined.resources.push(...(footprint.resources || []));
+      combined.resourceReads.push(...(footprint.resourceReads || []));
+      combined.resourceWrites.push(...(footprint.resourceWrites || []));
       if (footprint.barrier) combined.barrier = true;
     }
     return combined;
@@ -94,6 +101,8 @@ function getExecutionFootprint(tool, args = {}) {
   const reads = [];
   const writes = [];
   const resources = [];
+  const resourceReads = [];
+  const resourceWrites = [];
   let barrier = false;
   const add = (target, value) => {
     const normalized = normalizeExecutionPath(value);
@@ -135,12 +144,14 @@ function getExecutionFootprint(tool, args = {}) {
     case 'git_changed_files':
     case 'discover_instructions':
     case 'get_agent_context':
+      reads.push('*'); break;
     case 'project_index_status':
-    case 'project_index_refresh':
     case 'project_search':
     case 'project_overview':
     case 'project_impact':
-      reads.push('*'); break;
+      resourceReads.push(projectIndexResource(workspaceRoot)); break;
+    case 'project_index_refresh':
+      resourceWrites.push(projectIndexResource(workspaceRoot)); break;
     case 'git_worktree':
       barrier = true; break;
     case 'computer':
@@ -166,7 +177,7 @@ function getExecutionFootprint(tool, args = {}) {
     default:
       barrier = true; break;
   }
-  return { reads, writes, resources, barrier };
+  return { reads, writes, resources, resourceReads, resourceWrites, barrier };
 }
 
 function executionFootprintsConflict(left, right) {
@@ -174,8 +185,12 @@ function executionFootprintsConflict(left, right) {
   const rightResources = new Set(right.resources || []);
   if ((left.resources || []).some(resource => rightResources.has(resource))) return true;
   const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+  const resourceOverlaps = (a, b) => a === '*' || b === '*' || a === b;
   return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
-    right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+    right.writes.some(a => left.reads.some(b => overlaps(a, b))) ||
+    (left.resourceWrites || []).some(a => (right.resourceReads || []).some(b => resourceOverlaps(a, b)) ||
+      (right.resourceWrites || []).some(b => resourceOverlaps(a, b))) ||
+    (right.resourceWrites || []).some(a => (left.resourceReads || []).some(b => resourceOverlaps(a, b)));
 }
 
 const TOOL_DESCRIPTIONS = Object.freeze({
@@ -635,10 +650,12 @@ function createToolBridge(deps) {
     return String(value || '').replace(/\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
   }
 
-  function batchFootprint(step) {
+  function batchFootprint(step, workspaceRoot = null) {
     const args = step.args || {};
     const reads = [];
     const writes = [];
+    const resourceReads = [];
+    const resourceWrites = [];
     let barrier = false;
     const add = (set, value) => {
       const normalized = normalizeBatchPath(value);
@@ -683,12 +700,16 @@ function createToolBridge(deps) {
       case 'git_changed_files':
       case 'discover_instructions':
       case 'get_agent_context':
+        reads.push('*');
+        break;
       case 'project_index_status':
-      case 'project_index_refresh':
       case 'project_search':
       case 'project_overview':
       case 'project_impact':
-        reads.push('*');
+        resourceReads.push(projectIndexResource(workspaceRoot));
+        break;
+      case 'project_index_refresh':
+        resourceWrites.push(projectIndexResource(workspaceRoot));
         break;
       case 'git_worktree':
         barrier = true;
@@ -711,37 +732,43 @@ function createToolBridge(deps) {
         barrier = true;
         break;
     }
-    return { reads, writes, barrier };
+    return { reads, writes, resourceReads, resourceWrites, barrier };
   }
 
   function batchFootprintsConflict(left, right) {
     if (left.barrier || right.barrier) return true;
     const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+    const resourceOverlaps = (a, b) => a === '*' || b === '*' || a === b;
     return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
-      right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+      right.writes.some(a => left.reads.some(b => overlaps(a, b))) ||
+      (left.resourceWrites || []).some(a => (right.resourceReads || []).some(b => resourceOverlaps(a, b)) ||
+        (right.resourceWrites || []).some(b => resourceOverlaps(a, b))) ||
+      (right.resourceWrites || []).some(a => (left.resourceReads || []).some(b => resourceOverlaps(a, b)));
   }
 
-  function getExecutionFootprint(tool, args = {}) {
-    if (tool !== 'batch') return batchFootprint({ tool, args });
+  function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
+    if (tool !== 'batch') return batchFootprint({ tool, args }, workspaceRoot);
     const steps = Array.isArray(args.steps) ? args.steps : [];
-    if (!steps.length) return { reads: [], writes: [], barrier: true };
-    const combined = { reads: [], writes: [], barrier: false };
+    if (!steps.length) return { reads: [], writes: [], resourceReads: [], resourceWrites: [], barrier: true };
+    const combined = { reads: [], writes: [], resourceReads: [], resourceWrites: [], barrier: false };
     for (const step of steps) {
-      const footprint = batchFootprint(step);
+      const footprint = batchFootprint(step, workspaceRoot);
       combined.reads.push(...footprint.reads);
       combined.writes.push(...footprint.writes);
+      combined.resourceReads.push(...footprint.resourceReads);
+      combined.resourceWrites.push(...footprint.resourceWrites);
       if (footprint.barrier) combined.barrier = true;
     }
     return combined;
   }
 
-  function inferBatchDependencies(steps, index) {
+  function inferBatchDependencies(steps, index, workspaceRoot = null) {
     const current = steps[index];
     const dependencies = new Set(collectBatchRefIds(current.args));
-    const currentFootprint = batchFootprint(current);
+    const currentFootprint = batchFootprint(current, workspaceRoot);
     for (let priorIndex = 0; priorIndex < index; priorIndex++) {
       const prior = steps[priorIndex];
-      if (batchFootprintsConflict(batchFootprint(prior), currentFootprint)) dependencies.add(prior.id);
+      if (batchFootprintsConflict(batchFootprint(prior, workspaceRoot), currentFootprint)) dependencies.add(prior.id);
     }
     return [...dependencies];
   }
@@ -885,7 +912,7 @@ function createToolBridge(deps) {
     return value;
   }
 
-  async function executeLocalTool(root, tool, args, requestId) {
+  async function executeLocalTool(root, tool, args, requestId, signal = null) {
     if (tool.startsWith('project_')) {
       if (!projectIntelligence) throw new Error('The local project intelligence service is unavailable.');
       if (tool === 'project_index_status') return projectIntelligence.status(root);
@@ -983,11 +1010,12 @@ function createToolBridge(deps) {
   }
 
 
-  async function executeBatch(args, parentId, sessionId = null) {
+  async function executeBatch(args, parentId, sessionId = null, parentSignal = null) {
     const completed = new Map();
     const taskById = new Map();
     const outcomeById = new Map();
     const steps = args.steps;
+    const workspaceRoot = getWorkspaceRoot(sessionId);
     const concurrency = Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : DEFAULT_BATCH_CONCURRENCY;
     const stopOnError = args.stopOnError !== false;
     let active = 0;
@@ -1023,7 +1051,7 @@ function createToolBridge(deps) {
     }
 
     for (const [index, step] of steps.entries()) {
-      const dependencies = inferBatchDependencies(steps, index);
+      const dependencies = inferBatchDependencies(steps, index, workspaceRoot);
       const task = (async () => {
         await Promise.all(dependencies.map(id => taskById.get(id)));
         const failedDependency = dependencies.find(id => !outcomeById.get(id) || outcomeById.get(id).ok !== true);
@@ -1051,7 +1079,7 @@ function createToolBridge(deps) {
           try {
             const resolvedArgs = resolveBatchRefs(step.args, completed);
             const childId = (String(parentId).slice(0, 55) || 'batch') + '-' + step.id;
-            outcome = await runTool(step.tool, resolvedArgs, childId, sessionId);
+            outcome = await runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal);
           } catch (error) {
             outcome = { ok: false, error: String(error && error.message || error) };
           }
@@ -1209,15 +1237,16 @@ function createToolBridge(deps) {
     };
   }
 
-  async function runTool(tool, inputArgs, callId = null, sessionId = null, nested = false) {
+  async function runTool(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null) {
     if (!nested) {
       const args = { ...(inputArgs || {}) };
       const id = callId || randomUUID();
-      if (tool === 'batch') return runTool(tool, args, id, sessionId, true);
+      if (tool === 'batch') return runTool(tool, args, id, sessionId, true, executionSignal);
       const priority = tool === 'computer' || tool === 'project_search' ? 0 : tool === 'project_index_refresh' ? 30 : 10;
-      return executionScheduler.run(getExecutionFootprint(tool, args),
-        () => runTool(tool, args, id, sessionId, true), { id, tool, priority });
+      return executionScheduler.run(getExecutionFootprint(tool, args, getWorkspaceRoot(sessionId)),
+        ({ signal }) => runTool(tool, args, id, sessionId, true, signal), { id, tool, priority, signal: executionSignal });
     }
+    if (executionSignal && executionSignal.aborted) throw executionSignal.reason || new Error('Operation cancelled.');
     const root = getWorkspaceRoot(sessionId);
     const args = { ...(inputArgs || {}) };
     const id = callId || randomUUID();
@@ -1225,7 +1254,7 @@ function createToolBridge(deps) {
     try {
       validateArgs(tool, args);
       if (tool === 'batch') {
-        result = await executeBatch(args, id, sessionId);
+        result = await executeBatch(args, id, sessionId, executionSignal);
       } else if (tool === 'get_agent_context') {
         result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
@@ -1273,7 +1302,7 @@ function createToolBridge(deps) {
               ? await computerServiceCall(visionService, args, id)
               : isTtsTool
                 ? await synthesizeConfiguredSpeech(args, id, sessionId)
-                : await executeLocalTool(root, tool, args, id);
+                : await executeLocalTool(root, tool, args, id, executionSignal);
             if ((isComputerTool && computerOutputFailed(args.action, output)) ||
                 (isTtsTool && ttsOutputFailed(args, output)) ||
                 (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
@@ -1295,7 +1324,7 @@ function createToolBridge(deps) {
             ? await computerServiceCall(visionService, args, id)
             : isTtsTool
               ? await synthesizeConfiguredSpeech(args, id, sessionId)
-              : await executeLocalTool(root, tool, args, id);
+              : await executeLocalTool(root, tool, args, id, executionSignal);
           if ((isComputerTool && computerOutputFailed(args.action, output)) ||
               (isTtsTool && ttsOutputFailed(args, output)) ||
               (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
@@ -1326,7 +1355,12 @@ function createToolBridge(deps) {
     });
   }
 
-  return { runTool, getExecutionStats: () => executionScheduler.getState(), stop: () => executionScheduler.stop() };
+  return {
+    runTool,
+    getExecutionStats: () => executionScheduler.getState(),
+    cancelTool: (id, reason) => executionScheduler.cancel(id, reason),
+    stop: options => executionScheduler.stop(options)
+  };
 }
 
 module.exports = {
