@@ -352,6 +352,74 @@ test('repository API allows only the configured mailbox contents routes', async 
   assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/agents?ref=bridge-mailbox')));
   assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/agents/agent-test.json')));
 
+  // Session leasing has dedicated session records. Message and receipt paths
+  // are nested under the exact recipient session and remain tightly validated.
+  const sessionId = 'session-' + 'a'.repeat(32);
+  const wrongSessionId = 'session-' + 'd'.repeat(32);
+  const messageId = 'msg-1760000000000-' + 'b'.repeat(32);
+  const sessionRecord = {
+    protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: 'agent-001',
+    label: 'test', status: 'active', created_at: '2026-10-30T00:00:00.000Z',
+    updated_at: '2026-10-30T00:00:00.000Z', last_activity_at: '2026-10-30T00:00:00.000Z',
+    last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
+  };
+  const messageRecord = {
+    protocol: 'chatgpt-local-agent-message/v1', message_id: messageId, thread_id: messageId,
+    sender_session_id: 'session-' + 'c'.repeat(32), sender_agent_id: 'agent-002',
+    recipient_session_id: sessionId, recipient_agent_id: 'agent-001',
+    subject: 'test', message: 'hello', created_at: '2026-10-30T00:00:00.000Z',
+    in_reply_to: null, read_at: null
+  };
+  const receiptRecord = {
+    protocol: 'chatgpt-local-agent-message-receipt/v1', message_id: messageId,
+    recipient_session_id: sessionId, created_at: '2026-10-30T00:00:00.000Z',
+    read_at: '2026-10-30T00:00:00.000Z'
+  };
+  for (const folder of ['sessions', 'agent-messages', 'agent-message-receipts']) {
+    await auth.requestApi({
+      method: 'GET', path: '/repos/example/private-repo/contents/bridge/' + folder,
+      query: { ref: 'bridge-mailbox' }
+    });
+  }
+  await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/agent-messages/' + sessionId,
+    query: { ref: 'bridge-mailbox' }
+  });
+  await auth.requestApi({
+    method: 'GET',
+    path: '/repos/example/private-repo/contents/bridge/sessions/' + sessionId + '.json',
+    query: { ref: 'bridge-mailbox' }
+  });
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/sessions/' + sessionId + '.json',
+    body: { message: '[local bridge] create session', content: Buffer.from(JSON.stringify(sessionRecord)).toString('base64'), branch: 'bridge-mailbox' }
+  });
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/agent-messages/' + sessionId + '/' + messageId + '.json',
+    body: { message: '[local bridge] create agent message', content: Buffer.from(JSON.stringify(messageRecord)).toString('base64'), branch: 'bridge-mailbox' }
+  });
+  await auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json',
+    body: { message: '[local bridge] create agent message receipt', content: Buffer.from(JSON.stringify(receiptRecord)).toString('base64'), branch: 'bridge-mailbox' }
+  });
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/sessions/' + sessionId + '.json')));
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/agent-messages/' + sessionId + '/' + messageId + '.json')));
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json')));
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/agent-messages/session-invalid/' + messageId + '.json',
+    body: { message: '[local bridge] invalid session path', content: Buffer.from(JSON.stringify(messageRecord)).toString('base64'), branch: 'bridge-mailbox' }
+  }), /outside the supported repository mailbox folders/i);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT',
+    path: '/repos/example/private-repo/contents/bridge/agent-messages/' + sessionId + '/' + messageId + '.json',
+    body: { message: '[local bridge] wrong recipient', content: Buffer.from(JSON.stringify({ ...messageRecord, recipient_session_id: wrongSessionId })).toString('base64'), branch: 'bridge-mailbox' }
+  }), /exact recipient session/i);
+
   const legacyArtifactRead = await auth.requestApi({
     method: 'GET',
     path: '/repos/example/private-repo/contents/bridge/artifacts/req-test-batch-output-001.json',

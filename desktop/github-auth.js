@@ -143,7 +143,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
     }
     const base = '/repos/' + owner + '/' + repository;
-    const allowedFolders = new Set(['bridge', 'bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
+    const allowedFolders = new Set(['bridge', 'bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents', 'bridge/sessions', 'bridge/agent-messages', 'bridge/agent-message-receipts', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
     let relative = '';
     let kind = '';
 
@@ -264,6 +264,18 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       kind = 'documentation';
     } else if (allowedFolders.has(relative)) {
       kind = 'directory';
+    } else if (parts.length === 3 && parts[0] === 'bridge' &&
+        ['agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
+        /^session-[a-f0-9]{32}$/.test(parts[2])) {
+      kind = 'directory';
+    } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'sessions' &&
+        /^session-[a-f0-9]{32}\.json$/.test(parts[2])) {
+      kind = 'session-record';
+    } else if (parts.length === 4 && parts[0] === 'bridge' &&
+        ['agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
+        /^session-[a-f0-9]{32}$/.test(parts[2]) &&
+        /^msg-\d{13}-[a-f0-9]{32}\.json$/.test(parts[3])) {
+      kind = parts[1] === 'agent-messages' ? 'agent-message' : 'agent-message-receipt';
     } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'vision' &&
         ['control.json', 'runtime.json'].includes(parts[2])) {
       kind = parts[2] === 'control.json' ? 'vision-control' : 'vision-runtime';
@@ -300,7 +312,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       };
     }
 
-    if (!['file', 'state', 'artifact', 'vision-control', 'vision-runtime', 'vision-record', 'vision-report'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records, vision state/job paths and approved artifact paths.');
+    if (!['file', 'state', 'artifact', 'session-record', 'agent-message', 'agent-message-receipt', 'vision-control', 'vision-runtime', 'vision-record', 'vision-report'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records, vision state/job paths and approved artifact paths.');
     if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
     const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
     if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
@@ -322,6 +334,24 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Mailbox write content must be Base64-encoded JSON.');
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('Mailbox file content must be a JSON object.');
+    if (kind === 'session-record') {
+      const sessionId = parts[2].slice(0, -5);
+      if (payload.protocol !== 'chatgpt-local-agent-session/v1' ||
+          payload.session_id !== sessionId || !/^agent-[0-9]{3,}$/.test(String(payload.agent_id || ''))) {
+        throw new Error('Session records must match the session ID in their path and use the supported session protocol.');
+      }
+    }
+    if (kind === 'agent-message' || kind === 'agent-message-receipt') {
+      const messageId = parts[3].slice(0, -5);
+      const expectedProtocol = kind === 'agent-message'
+        ? 'chatgpt-local-agent-message/v1'
+        : 'chatgpt-local-agent-message-receipt/v1';
+      if (payload.protocol !== expectedProtocol ||
+          payload.message_id !== messageId ||
+          payload.recipient_session_id !== parts[2]) {
+        throw new Error('Agent message/receipt must match its message ID and exact recipient session in the path.');
+      }
+    }
     if (kind === 'vision-control' && payload.protocol !== 'chatgpt-colab-vision-control/v1') throw new Error('Vision control must use chatgpt-colab-vision-control/v1.');
     if (kind === 'vision-runtime' && payload.protocol !== 'chatgpt-colab-vision-runtime/v1') throw new Error('Vision runtime state must use chatgpt-colab-vision-runtime/v1.');
     if (kind === 'vision-record') {
