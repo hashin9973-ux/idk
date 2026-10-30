@@ -2275,7 +2275,9 @@ function registerIpc() {
   ipcMain.handle('app:agent-widget-add', event => {
     assertLocalUi(event, 'dashboard.html');
     const known = new Set(Array.isArray(settings.agentKnownIds) ? settings.agentKnownIds : []);
-    for (const id of Object.keys(settings.agentWorkspaceDefaults || {})) known.add(id);
+    const liveState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+    for (const agent of Array.isArray(liveState.agentMailboxes) ? liveState.agentMailboxes : []) if (agent && /^agent-[0-9]{3,}$/.test(agent.agent_id)) known.add(agent.agent_id);
+    for (const id of Object.keys(settings.agentWorkspaceDefaults || {})) if (/^agent-[0-9]{3,}$/.test(id)) known.add(id);
     const next = [...known].reduce((n, id) => Math.max(n, Number(String(id).slice(6)) || 0), 0) + 1;
     const agentId = 'agent-' + String(next).padStart(3, '0');
     known.add(agentId);
