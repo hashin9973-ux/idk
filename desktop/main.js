@@ -2777,6 +2777,13 @@ if (!hasInstanceLock) {
           uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
           getAutoAcceptAll: () => settings.autoAcceptAll === true,
           getTtsSettings,
+          getAgentLabelForSession: sessionId => {
+            const state = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+            const agent = Array.isArray(state.agentMailboxes) ? state.agentMailboxes.find(item => item && item.session_id === sessionId) : null;
+            if (!agent) return null;
+            const nickname = typeof agent.nickname === 'string' ? agent.nickname.trim() : '';
+            return { agentId: agent.agent_id, agentLabel: nickname ? nickname + ' · ' + agent.agent_id : agent.agent_id };
+          },
           onTtsRequest: showSpeechCaption,
           onTtsResult: finishSpeechCaption,
           visionService
