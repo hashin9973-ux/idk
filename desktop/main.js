@@ -1887,6 +1887,7 @@ function showSpeechCaption(request) {
   if (!Array.isArray(chunks) || !chunks.length) chunks = [text];
   const payload = {
     id: String(request.id || crypto.randomUUID()), fullText: text, chunks,
+    agentLabel: String(request.agentLabel || request.agentId || 'Windows Bridge').slice(0, 48),
     chunkIndex: 0, speechJobId: '', mode,
     showPlayButton: mode === 'notification',
     status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…',
