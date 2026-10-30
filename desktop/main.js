@@ -2163,6 +2163,8 @@ function registerIpc() {
     dashboardSend('app:preferences', getUiState().settings);
     if (!settings.localTts.enabled && localTtsService) {
       void localTtsService.dispose().then(() => dashboardSend('app:local-tts-status', localTtsService.getStatus()));
+    } else if (settings.localTts.enabled && localTtsService && typeof localTtsService.scheduleIdlePageOut === 'function') {
+      localTtsService.scheduleIdlePageOut();
     }
     return getLocalTtsSettings();
   });
