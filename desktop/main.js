@@ -463,9 +463,10 @@ async function selectAgentWorkspace(agentId, sessionId = null) {
   const sessionIsCurrent = Boolean(sessionId);
   const configuredDefault = typeof defaults[agentId] === 'string' && defaults[agentId].trim()
     ? resolveWorkspaceRoot(defaults[agentId], getWorkspaceRoot()) : '';
+  const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string' && sessionOverrides[sessionId].trim());
   let currentRoot = configuredDefault || getWorkspaceRoot();
-  if (sessionId) {
-    try { currentRoot = getWorkspaceRoot(sessionId); }
+  if (hasSessionOverride) {
+    try { currentRoot = resolveWorkspaceRoot(sessionOverrides[sessionId], configuredDefault || getWorkspaceRoot()); }
     catch { /* A stale/missing session override must not block editing the agent's saved default. */ }
   }
   const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
@@ -1249,10 +1250,10 @@ function enrichedBridgeState(state) {
     const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
     const hasSeatDefault = typeof defaults[agent.agent_id] === 'string' && Boolean(defaults[agent.agent_id].trim());
     try {
-      const root = sessionId ? getWorkspaceRoot(sessionId) :
+      const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :
         hasSeatDefault ? resolveWorkspaceRoot(defaults[agent.agent_id], getWorkspaceRoot()) : getWorkspaceRoot();
       return { ...agent, workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
-        workspace_scope: sessionId ? (hasSessionOverride ? 'session' : 'global-default') : (hasSeatDefault ? 'agent-default' : 'global-default') };
+        workspace_scope: hasSessionOverride ? 'session' : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
       return { ...agent, workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_error: String(error && error.message || error).slice(0, 300) };
