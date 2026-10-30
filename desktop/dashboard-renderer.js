@@ -308,7 +308,7 @@ function makeAgentWidget(agent,index){
     finally { workspaceButton.disabled=false; }
   });
   nicknameButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id);const value=window.prompt('Custom nickname for '+agent.agent_id+' (leave blank to reset):',current.nickname||'');if(value===null)return;await api.setAgentWidgetSettings(agent.agent_id,{...current.autoDump,nickname:value});await refresh();}catch(error){note('Could not save agent nickname: '+error.message,'error')}});
-  dumpButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id),cfg=current.autoDump||{};const count=window.prompt('Keep this many recent requests (0 disables count-based cleanup):',String(cfg.maxCount||0));if(count===null)return;const age=window.prompt('Dump requests older than this many minutes (0 disables age-based cleanup):',String(cfg.maxAgeMinutes||0));if(age===null)return;const excluded=window.prompt('Excluded tool names (comma-separated; exclusions are never dumped):',(cfg.exclusions||[]).join(', '));if(excluded===null)return;await api.setAgentWidgetSettings(agent.agent_id,{nickname:current.nickname,maxCount:Number(count),maxAgeMinutes:Number(age),exclusions:excluded.split(',')});await refresh();}catch(error){note('Could not save autodump settings: '+error.message,'error')}});
+  dumpButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id),cfg=current.autoDump||{};autoDumpEditingAgent=agent.agent_id;$('agent-autodump-title').textContent='Auto-dump · '+agent.agent_id;$('agent-autodump-count').value=String(cfg.maxCount||0);$('agent-autodump-age').value=String(cfg.maxAgeMinutes||0);$('agent-autodump-exclusions').value=(cfg.exclusions||[]).join(', ');$('agent-autodump-dialog').showModal()}catch(error){note('Could not open autodump settings: '+error.message,'error')}});
   messageButton.addEventListener('click',event=>{
     event.stopPropagation();composer.hidden=!composer.hidden;
     if(!composer.hidden){input.focus();input.select();}
@@ -737,6 +737,17 @@ function autoArrangeWidgets(){
   }
   updateAgentCanvasHeight();scheduleSaveDashboardState();note('Widgets arranged into a compact grid.','success');
 }
+let autoDumpEditingAgent='';
+$('agent-autodump-cancel').addEventListener('click',()=>$('agent-autodump-dialog').close());
+$('agent-autodump-save').addEventListener('click',async()=>{
+  const id=autoDumpEditingAgent;if(!id)return;
+  const count=$('agent-autodump-count'),age=$('agent-autodump-age');
+  if(!count.reportValidity()||!age.reportValidity())return;
+  const button=$('agent-autodump-save');button.disabled=true;
+  try{const current=await api.getAgentWidgetSettings(id);await api.setAgentWidgetSettings(id,{nickname:current.nickname,maxCount:Number(count.value),maxAgeMinutes:Number(age.value),exclusions:$('agent-autodump-exclusions').value.split(',')});$('agent-autodump-dialog').close();note('Auto-dump settings saved for '+id+'.','success');await refresh()}
+  catch(error){note('Could not save autodump settings: '+error.message,'error')}
+  finally{button.disabled=false;autoDumpEditingAgent=''}
+});
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
