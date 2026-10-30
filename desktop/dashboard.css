@@ -193,3 +193,6 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
   .agent-request{padding:7px 5px}
   .agent-console-counts{flex-basis:100%}
 }
+
+.agent-console-actions{display:flex;align-items:center;gap:4px;margin-left:auto;flex:0 0 auto}
+.agent-console-icon-button{width:24px;height:23px;padding:0;border:1px solid #555;border-radius:4px;background:#111;color:#ddd;font-size:13px;cursor:pointer}
