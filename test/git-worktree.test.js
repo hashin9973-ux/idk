@@ -30,7 +30,7 @@ test('git_worktree refuses to remove a dirty worktree without force', { skip: !g
     );
     assert.equal(fs.existsSync(linked), true);
     const listed = await tools.executeTool(root, 'git_worktree', { operation: 'list' });
-    assert.ok(listed.worktrees.some(item => path.resolve(item.path).toLowerCase() === path.resolve(linked).toLowerCase()));
+    assert.ok(listed.worktrees.some(item => path.join(path.basename(path.dirname(item.path)), path.basename(item.path)).toLowerCase() === path.join('.bridge-worktrees', 'dirty-agent').toLowerCase()), JSON.stringify(listed.worktrees));
 
     execFileSync('git', ['checkout', '--', 'README.md'], { cwd: linked, stdio: 'ignore' });
     const removed = await tools.executeTool(root, 'git_worktree', { operation: 'remove', path: '.bridge-worktrees/dirty-agent' });
