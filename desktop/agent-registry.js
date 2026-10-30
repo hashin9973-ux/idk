@@ -591,7 +591,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     };
   }
 
-
   async function readDashboardReplies(sessionId, args = {}) {
     await currentSession(sessionId);
     const suppliedIds = args.message_ids;

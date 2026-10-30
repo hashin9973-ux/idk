@@ -398,7 +398,6 @@ function updateAgentCanvasHeight(){
   }
   agentWidgetHost.style.height=Math.max(1,bottom)+'px';
 }
-
 function readPendingAgentMessageIds(card){
   try{
     const ids=JSON.parse(card.dataset.pendingMessageIds||'[]');

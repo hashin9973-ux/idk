@@ -48,8 +48,8 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('app:agent-select-workspace'));
   assert.ok(main.includes('app:agent-send-message'));
   assert.ok(main.includes('app:agent-read-replies'));
-  assert.ok(bridge.includes('readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)'));
   assert.ok(bridge.includes('executeTool(request.tool, request.args, requestId, request.session_id || null)'));
+  assert.ok(bridge.includes('readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)'));
   assert.ok(bridge.includes('getWorkspaceRoot(request.session_id || null)'));
   assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId)'));
   assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));

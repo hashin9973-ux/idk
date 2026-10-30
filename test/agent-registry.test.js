@@ -145,7 +145,6 @@ test('dashboard custom messages are written to the exact active session inbox', 
   assert.equal(inbox.messages[0].message, record.message);
 });
 
-
 test('agents can reply to dashboard messages and the dashboard reads replies in the same session mailbox', async () => {
   const { registry, records } = mockMailbox();
   const recipient = await registry.startSession({ label: 'Agent receiving a dashboard message' });
