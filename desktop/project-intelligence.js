@@ -23,7 +23,7 @@ function symbols(s,lang){
  ['function',/\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(/g],
  ['function',/\bfn\s+([A-Za-z_]\w*)\s*[<(]/g],
  ['type',/\b(?:struct|enum|trait)\s+([A-Za-z_]\w*)/g],
- ['method',/^\s*(?:(?:public|private|protected|static|async|override|readonly|get|set)\s+)*([A-Za-z_$][\w$]*)\s*\([^{};]*\)\s*\{/gm],
+ ['method',/(?:^|[{};\n])\s*(?:(?:public|private|protected|static|async|override|readonly|get|set)\s+)*([A-Za-z_$][\w$]*)\s*\([^{};]*\)\s*\{/gm],
  ['declaration',/\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?:=|:)/g]
  ];
  const chosen=lang==='python'?[p[5],p[6]]:lang==='go'?[p[7]]:lang==='rust'?[p[8],p[9]]:['javascript','typescript','vue','svelte'].includes(lang)?[p[0],p[1],p[2],p[3],p[4],p[10],p[11]]:[p[0],p[1],p[2],p[4]];

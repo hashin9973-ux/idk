@@ -22,7 +22,7 @@ test('cache restoration rejects unsafe paths and malformed document metadata',as
  const crypto=require('node:crypto'),root=await fixture(),storage=await fs.mkdtemp(path.join(os.tmpdir(),'project-index-cache-validation-'));
  const absolute=path.resolve(root).replace(/\\/g,'/'),key=crypto.createHash('sha256').update(process.platform==='win32'?absolute.toLowerCase():absolute).digest('hex');
  try{
-  await fs.writeFile(path.join(storage,'project-index-'+key+'.json'),JSON.stringify({version:2,rootKey:key,documents:[{path:'../outside.js',extension:'.js',language:'javascript',size:10,mtimeMs:1,ctimeMs:1,terms:[],symbols:[],imports:[]}]}));
+  await fs.writeFile(path.join(storage,'project-index-'+key+'.json'),JSON.stringify({version:3,rootKey:key,documents:[{path:'../outside.js',extension:'.js',language:'javascript',size:10,mtimeMs:1,ctimeMs:1,terms:[],symbols:[],imports:[]}]}));
   const service=createProjectIntelligence({storageDirectory:storage,watch:false});
   try{
    await service.start(root);const found=await service.search(root,{query:'ProjectService',kind:'symbol'});
@@ -64,4 +64,11 @@ test('filesystem watcher incrementally applies edits and directory removal with 
   const search=await service.search(root,{query:'helperChanged',kind:'symbol'});
   assert.equal(search.count,1);
  }finally{await service.stop();await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
+});
+
+test('indexes JavaScript and TypeScript class methods as searchable symbols',()=>{
+ const js=extractSymbols('export class ProjectService { runTask() { return 1; } }','javascript');
+ assert.ok(js.some(item=>item.name==='runTask'&&item.kind==='method'));
+ const ts=extractSymbols('export class Worker { public async refreshIndex(): Promise<void> { return; } }','typescript');
+ assert.ok(ts.some(item=>item.name==='refreshIndex'&&item.kind==='method'));
 });
