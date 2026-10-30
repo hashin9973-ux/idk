@@ -26,7 +26,7 @@ function symbols(s,lang){
  ['declaration',/\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?:=|:)/g]
  ];
  const chosen=lang==='python'?[p[5],p[6]]:lang==='go'?[p[7]]:lang==='rust'?[p[8],p[9]]:['javascript','typescript','vue','svelte'].includes(lang)?[p[0],p[1],p[2],p[3],p[4],p[10]]:[p[0],p[1],p[2],p[4]];
- const out=[],seen=new Set();for(const [kind,re] of chosen){re.lastIndex=0;let m;while((m=re.exec(s))&&out.length<160){const id=kind+':'+m[1];if(!seen.has(id)){seen.add(id);out.push({name:m[1],kind,line:lineAt(s,m.index)});}if(!m[0].length)re.lastIndex++;}}
+ const out=[],seen=new Set();for(const [kind,re] of chosen){re.lastIndex=0;let m;while((m=re.exec(s))&&out.length<160){if(m[1].length>200){if(!m[0].length)re.lastIndex++;continue;}const id=kind+':'+m[1];if(!seen.has(id)){seen.add(id);out.push({name:m[1],kind,line:lineAt(s,m.index)});}if(!m[0].length)re.lastIndex++;}}
  return out.sort((a,b)=>a.line-b.line||a.name.localeCompare(b.name));
 }
 function imports(s,lang){
@@ -94,12 +94,12 @@ function createProjectIntelligence(options={}){
    s.lastFullScanAt=typeof data.lastFullScanAt==='string'&&data.lastFullScanAt.length<=80&&Number.isFinite(Date.parse(data.lastFullScanAt))?data.lastFullScanAt:null;
    s.truncated=data.truncated===true;
    s.incompleteReasons=new Set(Array.isArray(data.incompleteReasons)?data.incompleteReasons.filter(x=>typeof x==='string'&&x.length<=80).slice(0,20):[]);
-   s.lastScan=data.lastScan&&typeof data.lastScan==='object'?data.lastScan:null;
+   s.lastScan=data.lastScan?{entriesVisited:data.lastScan.entriesVisited,eligibleFiles:data.lastScan.eligibleFiles,indexedFiles:data.lastScan.indexedFiles,bytesRead:data.lastScan.bytesRead,skippedForBudget:data.lastScan.skippedForBudget,skippedLargeFiles:data.lastScan.skippedLargeFiles,skippedNonTextFiles:data.lastScan.skippedNonTextFiles,unreadableFiles:data.lastScan.unreadableFiles,unreadableDirectories:data.lastScan.unreadableDirectories,truncated:data.lastScan.truncated,incompleteReasons:[...data.lastScan.incompleteReasons],durationMs:data.lastScan.durationMs}:null;
    s.durationMs=s.lastScan?s.lastScan.durationMs:null;
    rebuild(s);
   }catch(e){if(e.code!=='ENOENT')s.error='Index cache rejected: '+String(e.message||e).slice(0,250);}
  }
- async function readDoc(s,abs,p,st,old){ async function readDoc(s,abs,p,st,old){if(st.size>MAX_FILE||st.size<0||sensitive(p))return null;if(old&&old.size===st.size&&old.mtimeMs===st.mtimeMs&&old.ctimeMs===st.ctimeMs)return old;try{const b=await fsp.readFile(abs);return b.length<=MAX_FILE?makeDoc(p,st,b):null;}catch{return null;}}
+ async function readDoc(s,abs,p,st,old){if(st.size>MAX_FILE||st.size<0||sensitive(p))return null;if(old&&old.size===st.size&&old.mtimeMs===st.mtimeMs&&old.ctimeMs===st.ctimeMs)return old;try{const b=await fsp.readFile(abs);return b.length<=MAX_FILE?makeDoc(p,st,b):null;}catch{return null;}}
  async function walk(s,rootAbs,rootRel,output,c,budget={files:0,bytes:0},signal=null,oldDocuments=s.documents){
   const stack=[{abs:rootAbs,rel:rootRel}];let stopWalk=false;
   while(stack.length&&!stopWalk){

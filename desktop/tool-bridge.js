@@ -143,8 +143,11 @@ function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
     case 'git_branches':
     case 'git_changed_files':
     case 'discover_instructions':
-    case 'get_agent_context':
       reads.push('*'); break;
+    case 'get_agent_context':
+      reads.push('*');
+      resourceReads.push(projectIndexResource(workspaceRoot));
+      break;
     case 'project_index_status':
     case 'project_search':
     case 'project_overview':
@@ -699,8 +702,11 @@ function createToolBridge(deps) {
       case 'git_branches':
       case 'git_changed_files':
       case 'discover_instructions':
+        reads.push('*');
+        break;
       case 'get_agent_context':
         reads.push('*');
+        resourceReads.push(projectIndexResource(workspaceRoot));
         break;
       case 'project_index_status':
       case 'project_search':
