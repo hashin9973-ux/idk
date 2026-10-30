@@ -207,3 +207,19 @@ test('recent legacy seats are protected until their activity expires', async () 
   const replacement = await registry.startSession({ label: 'Replacement conversation' });
   assert.equal(replacement.agent_id, 'agent-001');
 });
+
+
+test('agent registry allocates more than twenty simultaneous active conversations', async () => {
+  const { registry } = mockMailbox();
+  const sessions = await Promise.all(Array.from({ length: 24 }, (_, index) =>
+    registry.startSession({ label: 'Concurrent conversation ' + (index + 1) })
+  ));
+  const ids = sessions.map(item => item.agent_id);
+  assert.equal(new Set(ids).size, 24);
+  assert.ok(ids.includes('agent-021'));
+  assert.ok(ids.includes('agent-024'));
+  const status = await registry.statuses();
+  assert.equal(status.count, 24);
+  assert.equal(status.counts.active, 24);
+  assert.equal(status.agents.filter(item => item.session_id).length, 24);
+});
