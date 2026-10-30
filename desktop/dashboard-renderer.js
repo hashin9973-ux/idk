@@ -130,6 +130,7 @@ function renderLocalTtsStatus(value){
     status==='downloading_voice'?'Downloading and verifying the LibriTTS High voice…':
     status==='installing_runtime'?'Installing the pinned Piper runtime…':
     status==='preparing'?'Preparing Piper and warming the voice…':
+    status==='resource_guard_blocked'?'Waiting for CPU/RAM limits: '+String(s.error||'resource guard is active'):
     status==='error'?'Local Piper error: '+String(s.error||s.message||'unknown error'):
     status==='stopped'?(s.enabled?'Stopped · prepare the local voice again.':'Local Piper is off.'):
     'Not prepared · enable local TTS to download the voice and runtime.';
@@ -557,7 +558,7 @@ $('local-tts-min-ram').addEventListener('input',()=>{$('local-tts-min-ram-value'
 $('local-tts-prepare').addEventListener('click',async()=>{
   const button=$('local-tts-prepare');button.disabled=true;
   try{renderLocalTtsStatus(await api.prepareLocalTts());note('Local Piper voice is ready.','success')}
-  catch(error){renderLocalTtsStatus({status:'error',error:error.message});note(error.message,'error')}
+  catch(error){renderLocalTtsStatus({status:error.code==='LOCAL_TTS_RESOURCE_GUARD'?'resource_guard_blocked':'error',error:error.message});note(error.message,'error')}
   finally{button.disabled=!$('local-tts-enabled').checked}
 });
 for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){

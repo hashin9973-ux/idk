@@ -85,6 +85,21 @@ function createLocalPiperTts(options={}){
   const pending=new Map();let python=null,child=null,readyPromise=null,stderrTail='';
   let state={ready:false,status:'not_prepared',voice:VOICE_NAME,speaker_id:SPEAKER_ID};
   const getSettings=()=>normalizeLocalTtsSettings(typeof options.getSettings==='function'?options.getSettings():{});
+  async function checkResourceGuard(config=getSettings()){
+    if(!config.resourceGuardEnabled){
+      if(state.ready&&state.status==='resource_guard_blocked')state={...state,status:'ready',error:''};
+      return null;
+    }
+    const resources=await measureResources();
+    if(resources.cpu_percent>config.maxCpuPercent||resources.free_ram_gb<config.minFreeRamGb){
+      const error=new Error('LOCAL_TTS_RESOURCE_GUARD: CPU '+resources.cpu_percent+'% (maximum '+config.maxCpuPercent+'%) and free RAM '+resources.free_ram_gb+' GB (minimum '+config.minFreeRamGb+' GB).');
+      error.code='LOCAL_TTS_RESOURCE_GUARD';error.resources=resources;
+      state={...state,status:'resource_guard_blocked',error:error.message};
+      throw error;
+    }
+    if(state.ready&&state.status==='resource_guard_blocked')state={...state,status:'ready',error:''};
+    return resources;
+  }
   async function findPython(){
     for(const c of [{command:'py',prefix:['-3']},{command:'python',prefix:[]},{command:'python3',prefix:[]}]){
       try{const r=await runProcess(c.command,[...c.prefix,'-c','import sys;print("%d.%d"%sys.version_info[:2])'],{timeoutMs:12000});const m=r.stdout.match(/(\d+)\.(\d+)/);if(m&&(Number(m[1])>3||(Number(m[1])===3&&Number(m[2])>=9)))return c}catch{}
@@ -154,16 +169,33 @@ function createLocalPiperTts(options={}){
     readyPromise=startWorker().then(()=>state).catch(e=>{state={...state,ready:false,status:'error',error:String(e&&e.message||e).slice(0,1600)};throw e}).finally(()=>{readyPromise=null});
     return readyPromise;
   }
-  async function prepare(){await ensureReady();return getStatus()}
+  async function prepare(){
+    const config=getSettings();
+    if(!config.enabled)throw new Error('Enable local Piper TTS in Settings before preparing the voice.');
+    await checkResourceGuard(config);
+    await ensureReady();
+    try{await checkResourceGuard(config)}
+    catch(error){
+      if(error.resources&&error.resources.free_ram_gb<config.minFreeRamGb){
+        await dispose();state={...state,status:'resource_guard_blocked',error:error.message};
+      }
+      throw error;
+    }
+    return getStatus();
+  }
   async function synthesize(text,requestId){
     const source=String(text||'').trim();if(!source||source.length>240)throw new Error('Local Piper chunks must contain 1–240 characters.');
     const config=getSettings();if(!config.enabled)throw new Error('Local Piper TTS is disabled in Settings.');
-    if(config.resourceGuardEnabled){
-      const resources=await measureResources();
-      if(resources.cpu_percent>config.maxCpuPercent||resources.free_ram_gb<config.minFreeRamGb)
-        throw new Error('LOCAL_TTS_RESOURCE_GUARD: CPU '+resources.cpu_percent+'% (limit '+config.maxCpuPercent+'%) and free RAM '+resources.free_ram_gb+' GB (minimum '+config.minFreeRamGb+' GB).');
+    await checkResourceGuard(config);
+    await ensureReady();
+    try{await checkResourceGuard(config)}
+    catch(error){
+      if(error.resources&&error.resources.free_ram_gb<config.minFreeRamGb){
+        await dispose();state={...state,status:'resource_guard_blocked',error:error.message};
+      }
+      throw error;
     }
-    await ensureReady();const id=String(requestId||crypto.randomUUID());
+    const id=String(requestId||crypto.randomUUID());
     const outputPath=path.join(os.tmpdir(),'WindowsRepositoryBridge-local-piper-'+crypto.randomUUID()+'.wav');
     const result=await new Promise((resolve,reject)=>{
       const timer=setTimeout(()=>{pending.delete(id);reject(new Error('Local Piper synthesis timed out.'))},120000);

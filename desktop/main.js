@@ -2150,7 +2150,7 @@ function registerIpc() {
     dashboardSend('app:preferences', getUiState().settings);
     if (settings.localTts.enabled && visionService) {
       void visionService.prepareLocalTts().then(status => dashboardSend('app:local-tts-status', status))
-        .catch(error => dashboardSend('app:local-tts-status', { ...visionService.localTtsStatus(), status: 'error', error: String(error && error.message || error).slice(0, 1200) }));
+        .catch(error => dashboardSend('app:local-tts-status', { ...visionService.localTtsStatus(), status: error && error.code === 'LOCAL_TTS_RESOURCE_GUARD' ? 'resource_guard_blocked' : 'error', error: String(error && error.message || error).slice(0, 1200) }));
     } else if (localTtsService) {
       void localTtsService.dispose().then(() => dashboardSend('app:local-tts-status', localTtsService.getStatus()));
     }
@@ -2718,6 +2718,17 @@ if (!hasInstanceLock) {
           onSessionAssigned: persistAssignedSessionWorkspace,
           publishContextOnStart: true
         });
+        if (getLocalTtsSettings().enabled) {
+          setImmediate(() => {
+            void visionService.prepareLocalTts()
+              .then(status => dashboardSend('app:local-tts-status', status))
+              .catch(error => dashboardSend('app:local-tts-status', {
+                ...localTtsService.getStatus(),
+                status: error && error.code === 'LOCAL_TTS_RESOURCE_GUARD' ? 'resource_guard_blocked' : 'error',
+                error: String(error && error.message || error).slice(0, 1200)
+              }));
+          });
+        }
       } catch (error) {
         appInitializationError = 'Local worker services could not initialize: ' + String(error && error.message || error);
         appendDiagnosticLog('worker-services-initialization-failed', error);
