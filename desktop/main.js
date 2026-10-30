@@ -2479,7 +2479,7 @@ if (!hasInstanceLock) {
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
-          executeTool: (tool, args, requestId) => toolBridge.runTool(tool, args, requestId),
+          executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId),
           onState: broadcastBridgeState,
           publishContextOnStart: true
         });
