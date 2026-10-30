@@ -16,7 +16,7 @@
 <section id="queues-widget" class="widget queue-widget" data-widget="queues" aria-label="Agent mailboxes and current queues">
 <h2>Mailbox Monitor</h2>
 <div id="queue-list" class="queue-list" aria-label="Aggregate queue summary"></div>
-<div class="agent-mailbox-heading"><h3>Agent Seats</h3><span id="agent-mailbox-count">0 seats</span></div>
+<div class="agent-mailbox-heading"><h3>Agent Seats</h3><div class="agent-mailbox-tools"><span id="agent-mailbox-count">0 seats</span><button id="add-agent-widget" class="small-icon-button" type="button" title="Add agent widget" aria-label="Add agent widget">＋</button></div></div>
 <p class="agent-seat-help">Each seat has its own movable terminal. Seats are reused after inactivity.</p>
 </section>
 <section id="controls-widget" class="widget controls-widget" data-widget="controls" aria-label="Bridge controls">
@@ -27,6 +27,7 @@
 <button id="workspace-button" class="action-button" type="button"><span class="action-symbol">⌂</span><span><strong>Default workspace</strong><small id="workspace-status">Choose a folder or drive</small></span></button>
 </div><p id="dashboard-message" class="inline-message" role="status" aria-live="polite"></p></section>
 <div id="agent-widget-host" class="agent-widget-host" aria-label="Independent agent terminals"></div>
+<div id="widget-context-menu" class="widget-context-menu" hidden><button type="button" data-widget-action="arrange">Auto arrange widgets</button><button type="button" data-widget-action="add-agent">Add agent widget</button></div>
 <div id="agent-assignment-overlay" class="agent-assignment-overlay" hidden>
   <section class="agent-assignment-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-assignment-title">
     <div class="agent-assignment-heading"><div><h2 id="agent-assignment-title">Assign new agent session</h2><p id="agent-assignment-label">A ChatGPT conversation is waiting for an agent.</p></div><span class="agent-assignment-pulse" aria-hidden="true"></span></div>

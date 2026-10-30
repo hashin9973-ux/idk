@@ -1245,6 +1245,8 @@ function enrichedBridgeState(state) {
   }
   const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
     !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const nicknames = settings.agentNicknames && typeof settings.agentNicknames === 'object' ? settings.agentNicknames : {};
+  const autoDump = settings.agentAutoDump && typeof settings.agentAutoDump === 'object' ? settings.agentAutoDump : {};
   const agentMailboxes = [...byId.values()].map(agent => {
     const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
       ? agent.session_id : null;
@@ -1253,10 +1255,14 @@ function enrichedBridgeState(state) {
     try {
       const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :
         hasSeatDefault ? resolveWorkspaceRoot(defaults[agent.agent_id], getWorkspaceRoot()) : getWorkspaceRoot();
-      return { ...agent, workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
+      return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
+        auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
+        workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_scope: hasSessionOverride ? 'session' : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
-      return { ...agent, workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
+      return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
+        auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
+        workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_error: String(error && error.message || error).slice(0, 300) };
     }
   });
@@ -2237,6 +2243,41 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     const result = await selectWorkspace();
     return { ...result, workspace: getUiState().workspace };
+  });
+  ipcMain.handle('app:agent-widget-add', event => {
+    assertLocalUi(event, 'dashboard.html');
+    const known = new Set(Array.isArray(settings.agentKnownIds) ? settings.agentKnownIds : []);
+    for (const id of Object.keys(settings.agentWorkspaceDefaults || {})) known.add(id);
+    const next = [...known].reduce((n, id) => Math.max(n, Number(String(id).slice(6)) || 0), 0) + 1;
+    const agentId = 'agent-' + String(next).padStart(3, '0');
+    known.add(agentId);
+    settings.agentKnownIds = [...known].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+    persistSettings(); publishSharedState();
+    return { agentId };
+  });
+  ipcMain.handle('app:agent-widget-settings', (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!payload || typeof payload !== 'object' || !/^agent-[0-9]{3,}$/.test(String(payload.agentId || ''))) {
+      throw new Error('A valid agent ID is required.');
+    }
+    const agentId = payload.agentId;
+    if (payload.value === undefined) {
+      const dump = settings.agentAutoDump && settings.agentAutoDump[agentId] || {};
+      return { agentId, nickname: String(settings.agentNicknames && settings.agentNicknames[agentId] || ''),
+        autoDump: { maxCount: Number(dump.maxCount) || 0, maxAgeMinutes: Number(dump.maxAgeMinutes) || 0,
+          exclusions: Array.isArray(dump.exclusions) ? dump.exclusions : [] } };
+    }
+    const value = payload.value && typeof payload.value === 'object' ? payload.value : {};
+    const nickname = String(value.nickname || '').replace(/[\\u0000-\\u001f\\u007f]/g, '').trim().slice(0, 32);
+    const maxCount = Number.isFinite(Number(value.maxCount)) ? Math.max(0, Math.min(500, Math.round(Number(value.maxCount)))) : 0;
+    const maxAgeMinutes = Number.isFinite(Number(value.maxAgeMinutes)) ? Math.max(0, Math.min(10080, Math.round(Number(value.maxAgeMinutes)))) : 0;
+    const exclusions = Array.isArray(value.exclusions) ? [...new Set(value.exclusions.map(x => String(x).trim().toLowerCase()).filter(x => /^[a-z0-9_.-]{1,80}$/.test(x)))].slice(0, 50) : [];
+    settings.agentNicknames = { ...(settings.agentNicknames || {}) };
+    settings.agentAutoDump = { ...(settings.agentAutoDump || {}) };
+    if (nickname) settings.agentNicknames[agentId] = nickname; else delete settings.agentNicknames[agentId];
+    settings.agentAutoDump[agentId] = { maxCount, maxAgeMinutes, exclusions };
+    persistSettings(); publishSharedState();
+    return { agentId, nickname, autoDump: settings.agentAutoDump[agentId] };
   });
   ipcMain.handle('app:agent-select-workspace', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');

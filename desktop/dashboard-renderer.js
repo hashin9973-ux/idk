@@ -256,6 +256,8 @@ function createAgentIcon(kind){
   svg.setAttribute('viewBox','0 0 16 16');svg.setAttribute('aria-hidden','true');
   const paths=kind==='workspace'
     ? ['M2.25 1.75h7l4.5 4.5v8h-11.5z','M9.25 1.75v4.5h4.5M4.5 9h7M4.5 11.5h7']
+    : kind==='trash' ? ['M2.5 4h11M6 4V2.5h4V4M4 4.5l.7 9h6.6l.7-9M6.5 6.5v4.5M9.5 6.5v4.5']
+    : kind==='edit' ? ['M2 11.5l-.5 3 3-.5L13 5.5 10.5 3z','M9.5 4l2.5 2.5']
     : ['M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z','M4.5 5.25h7M4.5 7.75h5'];
   for(const d of paths){const pathElement=document.createElementNS('http://www.w3.org/2000/svg','path');pathElement.setAttribute('d',d);svg.append(pathElement)}
   return svg;
@@ -278,10 +280,12 @@ function makeAgentWidget(agent,index){
   const workspaceButton=document.createElement('button');workspaceButton.type='button';workspaceButton.className='agent-console-icon-button agent-workspace-button';
   workspaceButton.title='Configure this agent workspace';workspaceButton.setAttribute('aria-label','Configure workspace for '+agent.agent_id);
   workspaceButton.append(createAgentIcon('workspace'));
+  const nicknameButton=document.createElement('button');nicknameButton.type='button';nicknameButton.className='agent-console-icon-button agent-nickname-button';nicknameButton.title='Set agent nickname';nicknameButton.setAttribute('aria-label','Set nickname for '+agent.agent_id);nicknameButton.append(createAgentIcon('edit'));
+  const dumpButton=document.createElement('button');dumpButton.type='button';dumpButton.className='agent-console-icon-button agent-dump-button';dumpButton.title='Configure automatic widget-history cleanup';dumpButton.setAttribute('aria-label','Configure autodump for '+agent.agent_id);dumpButton.append(createAgentIcon('trash'));
   const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
   messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
   messageButton.append(createAgentIcon('message'));
-  actions.append(workspaceButton,messageButton);
+  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton);
   header.append(identity,status,busy,counts,actions);
   const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';
   const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='Message this agent…';input.setAttribute('aria-label','Message for '+agent.agent_id);
@@ -303,6 +307,8 @@ function makeAgentWidget(agent,index){
     } catch(error) { note('Could not configure '+agent.agent_id+' workspace: '+error.message,'error'); }
     finally { workspaceButton.disabled=false; }
   });
+  nicknameButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id);const value=window.prompt('Custom nickname for '+agent.agent_id+' (leave blank to reset):',current.nickname||'');if(value===null)return;await api.setAgentWidgetSettings(agent.agent_id,{...current.autoDump,nickname:value});await refresh();}catch(error){note('Could not save agent nickname: '+error.message,'error')}});
+  dumpButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id),cfg=current.autoDump||{};const count=window.prompt('Keep this many recent requests (0 disables count-based cleanup):',String(cfg.maxCount||0));if(count===null)return;const age=window.prompt('Dump requests older than this many minutes (0 disables age-based cleanup):',String(cfg.maxAgeMinutes||0));if(age===null)return;const excluded=window.prompt('Excluded tool names (comma-separated; exclusions are never dumped):',(cfg.exclusions||[]).join(', '));if(excluded===null)return;await api.setAgentWidgetSettings(agent.agent_id,{nickname:current.nickname,maxCount:Number(count),maxAgeMinutes:Number(age),exclusions:excluded.split(',')});await refresh();}catch(error){note('Could not save autodump settings: '+error.message,'error')}});
   messageButton.addEventListener('click',event=>{
     event.stopPropagation();composer.hidden=!composer.hidden;
     if(!composer.hidden){input.focus();input.select();}
@@ -352,9 +358,13 @@ function renderAgentMailboxes(rawAgents){
     const counts=header.querySelector('.agent-console-counts');
     const workspaceButton=header.querySelector('.agent-workspace-button');
     const messageButton=header.querySelector('.agent-message-button');
+    const nicknameButton=header.querySelector('.agent-nickname-button');
+    const dumpButton=header.querySelector('.agent-dump-button');
     // The panel belongs to the seat, not the task/session label. Individual
     // requests and their tool names remain listed in the console body below.
-    name.textContent=String(agent.agent_id);
+    name.textContent=String(agent.nickname||agent.agent_id);name.title=String(agent.agent_id)+(agent.nickname?' · '+agent.nickname:'');
+    nicknameButton.title='Set nickname for '+agent.agent_id;
+    dumpButton.title='Auto-dump: '+String((agent.auto_dump&&agent.auto_dump.maxCount)||0)+' retained requests; '+String((agent.auto_dump&&agent.auto_dump.maxAgeMinutes)||0)+' minute age limit';
     sessionLine.textContent='SESSION '+String(agent.session_id||'none');
     sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
     const hasSession=Boolean(agent.session_id);
@@ -388,7 +398,15 @@ function renderAgentMailboxes(rawAgents){
       handoff.textContent='Seat reassigned from '+previousSessionId+'; previous session history is hidden.';
       body.append(handoff);
     }
-    const requests=Array.isArray(agent.requests)?agent.requests:[];
+    let requests=Array.isArray(agent.requests)?agent.requests:[];
+    const dump=agent.auto_dump&&typeof agent.auto_dump==='object'?agent.auto_dump:{};
+    const excluded=new Set((Array.isArray(dump.exclusions)?dump.exclusions:[]).map(x=>String(x).toLowerCase()));
+    const cutoff=Number(dump.maxAgeMinutes)>0?Date.now()-Number(dump.maxAgeMinutes)*60000:0;
+    requests=requests.filter(request=>{
+      const tool=String(request.tool||'').toLowerCase();if(excluded.has(tool))return true;
+      const time=Date.parse(request.created_at||request.started_at||'');if(cutoff&&Number.isFinite(time)&&time<cutoff)return false;return true;
+    });
+    if(Number(dump.maxCount)>0){const keep=Number(dump.maxCount);let remaining=0;requests=requests.filter(request=>excluded.has(String(request.tool||'').toLowerCase())||++remaining<=keep)}
     if(!requests.length){
       const idle=document.createElement('div');idle.className='agent-console-empty';
       const last=agent.last_activity_at||agent.last_seen_at;

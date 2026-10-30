@@ -887,3 +887,8 @@ test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate'
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('issue #340'));
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('does not assert a definitive license'));
 });
+
+test('dashboard exposes agent widget addition, nickname and auto-dump controls',()=>{
+  const fs=require('node:fs');const html=fs.readFileSync(require.resolve('../desktop/dashboard.html'),'utf8');const renderer=fs.readFileSync(require.resolve('../desktop/dashboard-renderer.js'),'utf8');const main=fs.readFileSync(require.resolve('../desktop/main.js'),'utf8');
+  assert.match(html,/add-agent-widget/);assert.match(html,/widget-context-menu/);assert.match(renderer,/autoArrangeWidgets/);assert.match(renderer,/agent-dump-button/);assert.match(main,/app:agent-widget-settings/);assert.match(main,/app:agent-widget-add/);
+});
