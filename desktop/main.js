@@ -518,6 +518,17 @@ function dashboardSend(channel, value) {
   }
 }
 
+function playAssignmentNotificationSound() {
+  if (process.platform !== 'win32') return;
+  try {
+    const sound = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-Command', '[System.Media.SystemSounds]::Asterisk.Play()'
+    ], { windowsHide: true, stdio: 'ignore' });
+    sound.unref();
+  } catch {}
+}
+
 function showNextSessionAssignment() {
   if (activeSessionAssignmentId) return;
   while (sessionAssignmentQueue.length) {
@@ -536,6 +547,7 @@ function showNextSessionAssignment() {
       if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId)) return;
       if (win.isDestroyed()) { finishSessionAssignment(requestId, null); return; }
       dashboardSend('app:agent-assignment-requested', pending.payload);
+      playAssignmentNotificationSound();
       pending.timer = setTimeout(() => {
         dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
         finishSessionAssignment(requestId, null);

@@ -36,7 +36,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
   assert.ok(renderer.includes('No session was created.'));
-  assert.ok(renderer.includes('playAssignmentAlert'));
+  assert.ok(main.includes('playAssignmentNotificationSound'));
   assert.ok(renderer.includes('api.sendAgentMessage(sessionId,message)'));
   assert.ok(renderer.includes("send.textContent='Sending…'"));
   assert.ok(renderer.includes('api.readAgentReplies(sessionId,ids)'));

@@ -612,23 +612,7 @@ browserEnabled.addEventListener('change',()=>void changeBrowserMode());
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
 
 let assignmentState=null,assignmentWorkspaceRoot='';
-function playAssignmentAlert(){
-  try{
-    const Ctx=window.AudioContext||window.webkitAudioContext;
-    if(Ctx){
-      const ctx=new Ctx(),osc=ctx.createOscillator(),gain=ctx.createGain();
-      osc.type='sine';osc.frequency.setValueAtTime(880,ctx.currentTime);
-      osc.frequency.setValueAtTime(660,ctx.currentTime+0.13);
-      gain.gain.setValueAtTime(0.0001,ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.12,ctx.currentTime+0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.32);
-      osc.connect(gain);gain.connect(ctx.destination);osc.start();osc.stop(ctx.currentTime+0.34);
-      osc.onended=()=>void ctx.close();
-      void ctx.resume().catch(()=>{});
-    }
-  }catch{}
-  try{if('Notification'in window&&Notification.permission==='granted')new Notification('Agent assignment required',{body:'Choose an agent and workspace for the new session.'})}catch{}
-}
+
 function closeAgentAssignment(){ $('agent-assignment-overlay').hidden=true;assignmentState=null; }
 function showAgentAssignment(payload){
   if(!payload||typeof payload.requestId!=='string')return;
@@ -662,7 +646,7 @@ function showAgentAssignment(payload){
   $('agent-assignment-status').textContent='Choose an agent and workspace, then confirm. This request expires automatically if left unanswered.';
   $('agent-assignment-status').dataset.state='';
   $('agent-assignment-confirm').disabled=false;
-  overlay.hidden=false;playAssignmentAlert();select.focus();
+  overlay.hidden=false;select.focus();
 }
 async function chooseAssignmentWorkspace(){
   const button=$('agent-assignment-choose-workspace');button.disabled=true;
