@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   setLocalTtsSettings: value => ipcRenderer.invoke('app:local-tts-settings', value),
   getLocalTtsStatus: () => ipcRenderer.invoke('app:local-tts-status'),
   prepareLocalTts: () => ipcRenderer.invoke('app:local-tts-prepare'),
+  testLocalTts: () => ipcRenderer.invoke('app:local-tts-test'),
   onLocalTtsStatus(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, status) => callback(status && typeof status === 'object' ? status : {});

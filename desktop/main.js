@@ -2151,10 +2151,7 @@ function registerIpc() {
     settings.localTts = normalizeLocalTtsSettings({ ...getLocalTtsSettings(), ...value });
     persistSettings(); publishSharedState();
     dashboardSend('app:preferences', getUiState().settings);
-    if (settings.localTts.enabled && visionService) {
-      void visionService.prepareLocalTts().then(status => dashboardSend('app:local-tts-status', status))
-        .catch(error => dashboardSend('app:local-tts-status', { ...visionService.localTtsStatus(), status: error && error.code === 'LOCAL_TTS_RESOURCE_GUARD' ? 'resource_guard_blocked' : 'error', error: String(error && error.message || error).slice(0, 1200) }));
-    } else if (localTtsService) {
+    if (!settings.localTts.enabled && localTtsService) {
       void localTtsService.dispose().then(() => dashboardSend('app:local-tts-status', localTtsService.getStatus()));
     }
     return getLocalTtsSettings();
@@ -2168,6 +2165,14 @@ function registerIpc() {
     if (!getLocalTtsSettings().enabled) throw new Error('Enable local TTS in Settings before preparing the Piper voice.');
     if (!visionService) throw new Error('Local TTS service is not initialized yet.');
     return visionService.prepareLocalTts();
+  });
+  ipcMain.handle('app:local-tts-test', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!getLocalTtsSettings().enabled) throw new Error('Enable local Piper TTS before running the test.');
+    if (!visionService || typeof visionService.synthesizeSpeech !== 'function') throw new Error('Local Piper TTS service is not initialized yet.');
+    const result = await visionService.synthesizeSpeech({ text: 'This is a test of the local Piper voice.', play: true }, crypto.randomUUID());
+    if (!result || result.status !== 'tts_started') throw new Error(String(result && (result.error || result.message) || 'Local Piper test playback did not start.'));
+    return result;
   });
   ipcMain.handle('app:caption-preview', event => {
     assertLocalUi(event, 'index.html');

@@ -110,10 +110,15 @@ function renderCloudStatus(value){
   $('cloud-sync-status').textContent=detail;$('cloud-sync-status').dataset.state=s.error?'error':s.enabled&&s.state==='ready'?'success':'';
 }
 function readLocalTtsSettings(){return {enabled:$('local-tts-enabled').checked,resourceGuardEnabled:$('local-tts-resource-guard').checked,
+  allowModelDownload:$('local-tts-download').checked,pageIdleEnabled:$('local-tts-page-idle').checked,pageIdleDelaySeconds:Number($('local-tts-page-delay').value),
   maxCpuPercent:Number($('local-tts-max-cpu').value),minFreeRamGb:Number($('local-tts-min-ram').value)};}
 function applyLocalTtsSettings(value){
   const s=value&&typeof value==='object'?value:{};
   $('local-tts-enabled').checked=s.enabled===true;
+  $('local-tts-download').checked=s.allowModelDownload===true;
+  $('local-tts-page-idle').checked=s.pageIdleEnabled===true;
+  $('local-tts-page-delay').value=String(Number.isFinite(s.pageIdleDelaySeconds)?s.pageIdleDelaySeconds:60);
+  $('local-tts-page-delay-value').textContent=$('local-tts-page-delay').value+' seconds';
   $('local-tts-resource-guard').checked=s.resourceGuardEnabled!==false;
   $('local-tts-max-cpu').value=String(Number.isFinite(s.maxCpuPercent)?s.maxCpuPercent:75);
   $('local-tts-min-ram').value=String(Number.isFinite(s.minFreeRamGb)?s.minFreeRamGb:2);
@@ -121,8 +126,11 @@ function applyLocalTtsSettings(value){
   $('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB';
   const guard=$('local-tts-resource-guard').checked,enabled=$('local-tts-enabled').checked;
   $('local-tts-resource-guard').disabled=!enabled;
+  $('local-tts-download').disabled=!enabled;
+  $('local-tts-page-idle').disabled=!enabled;
+  $('local-tts-page-delay').disabled=!enabled||!$('local-tts-page-idle').checked;
   $('local-tts-max-cpu').disabled=!enabled||!guard;$('local-tts-min-ram').disabled=!enabled||!guard;
-  $('local-tts-prepare').disabled=!enabled;
+  $('local-tts-prepare').disabled=!enabled;$('local-tts-test').disabled=!enabled;
 }
 function renderLocalTtsStatus(value){
   const s=value&&typeof value==='object'?value:{},status=String(s.status||'not_prepared');
@@ -133,7 +141,7 @@ function renderLocalTtsStatus(value){
     status==='resource_guard_blocked'?'Waiting for CPU/RAM limits: '+String(s.error||'resource guard is active'):
     status==='error'?'Local Piper error: '+String(s.error||s.message||'unknown error'):
     status==='stopped'?(s.enabled?'Stopped · prepare the local voice again.':'Local Piper is off.'):
-    'Not prepared · enable local TTS to download the voice and runtime.';
+    'Not prepared · enable local TTS; permit model download only if the voice is not already installed.';
   $('local-tts-status').textContent=text;
   $('local-tts-status').dataset.state=status==='ready'?'success':status==='error'?'error':'';
 }
@@ -141,7 +149,7 @@ async function saveLocalTtsSettings(){
   try{
     const saved=await api.setLocalTtsSettings(readLocalTtsSettings());applyLocalTtsSettings(saved);
     renderLocalTtsStatus(await api.getLocalTtsStatus());
-    note(saved.enabled?'Local Piper TTS enabled. Preparing the voice if needed.':'Local Piper TTS disabled.','success');
+    note(saved.enabled?'Local Piper TTS enabled. Voice preparation remains manual.':'Local Piper TTS disabled.','success');
   }catch(error){note('Could not save local TTS settings: '+error.message,'error')}
 }
 async function applyInitialSettings(settings){
@@ -550,17 +558,19 @@ repoForm.addEventListener('submit',async e=>{e.preventDefault();if(busy.repo)ret
 themeSelect.addEventListener('change',()=>void chooseTheme(themeSelect.value));themeGallery.addEventListener('click',e=>{const card=e.target.closest('[data-theme-id]');if(card&&themeIds.includes(card.dataset.themeId))void chooseTheme(card.dataset.themeId)});
 volume.addEventListener('input',()=>volumeValue.textContent=volume.value+'%');volume.addEventListener('change',async()=>{if(busy.volume)return;busy.volume=true;try{const v=await api.setTtsVolume(Number(volume.value));volumeValue.textContent=v.volume+'%';note('TTS volume saved.','success')}catch(e){note(e.message,'error')}finally{busy.volume=false}});
 
-for(const id of ['local-tts-enabled','local-tts-resource-guard','local-tts-max-cpu','local-tts-min-ram']){
+for(const id of ['local-tts-enabled','local-tts-download','local-tts-page-idle','local-tts-page-delay','local-tts-resource-guard','local-tts-max-cpu','local-tts-min-ram']){
   $(id).addEventListener('change',()=>void saveLocalTtsSettings());
 }
 $('local-tts-max-cpu').addEventListener('input',()=>{$('local-tts-max-cpu-value').textContent=$('local-tts-max-cpu').value+'%'});
 $('local-tts-min-ram').addEventListener('input',()=>{$('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB'});
+$('local-tts-page-delay').addEventListener('input',()=>{$('local-tts-page-delay-value').textContent=$('local-tts-page-delay').value+' seconds'});
 $('local-tts-prepare').addEventListener('click',async()=>{
   const button=$('local-tts-prepare');button.disabled=true;
   try{renderLocalTtsStatus(await api.prepareLocalTts());note('Local Piper voice is ready.','success')}
   catch(error){renderLocalTtsStatus({status:error.code==='LOCAL_TTS_RESOURCE_GUARD'?'resource_guard_blocked':'error',error:error.message});note(error.message,'error')}
   finally{button.disabled=!$('local-tts-enabled').checked}
 });
+$('local-tts-test').addEventListener('click',async()=>{const button=$('local-tts-test');button.disabled=true;try{const result=await api.testLocalTts();note('Local Piper test playback started ('+String(result.engine||'local')+').','success')}catch(error){note('Local Piper test failed: '+error.message,'error')}finally{button.disabled=!$('local-tts-enabled').checked}});
 for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){
   $(id).addEventListener('change',()=>{applyTtsSettings(readTtsSettings());void saveTtsSettings()});
 }
