@@ -27,6 +27,19 @@
 <button id="workspace-button" class="action-button" type="button"><span class="action-symbol">⌂</span><span><strong>Default workspace</strong><small id="workspace-status">Choose a folder or drive</small></span></button>
 </div><p id="dashboard-message" class="inline-message" role="status" aria-live="polite"></p></section>
 <div id="agent-widget-host" class="agent-widget-host" aria-label="Independent agent terminals"></div>
+<div id="agent-assignment-overlay" class="agent-assignment-overlay" hidden>
+  <section class="agent-assignment-dialog" role="dialog" aria-modal="true" aria-labelledby="agent-assignment-title">
+    <div class="agent-assignment-heading"><div><h2 id="agent-assignment-title">Assign new agent session</h2><p id="agent-assignment-label">A ChatGPT conversation is waiting for an agent.</p></div><span class="agent-assignment-pulse" aria-hidden="true"></span></div>
+    <label class="checkbox-row agent-assignment-toggle"><input id="agent-assignment-auto" type="checkbox"> Automatically assign the next available agent</label>
+    <div id="agent-assignment-manual-fields">
+      <label class="field-label" for="agent-assignment-id">Agent ID<select id="agent-assignment-id"></select></label>
+    </div>
+    <div class="agent-assignment-workspace"><div><strong>Workspace</strong><small id="agent-assignment-workspace-path">Default workspace</small></div><button id="agent-assignment-choose-workspace" class="action-button compact" type="button">Choose folder</button></div>
+    <label class="field-label" for="agent-assignment-message">Optional initial message<textarea id="agent-assignment-message" rows="3" maxlength="20000" placeholder="Send an initial instruction to the assigned agent…"></textarea></label>
+    <p id="agent-assignment-status" class="inline-message" role="status" aria-live="polite">Choose an agent and workspace, then confirm.</p>
+    <div class="agent-assignment-actions"><button id="agent-assignment-cancel" class="quiet-button" type="button">Cancel session</button><button id="agent-assignment-confirm" class="action-button compact" type="button">Start session</button></div>
+  </section>
+</div>
 </section>
 <section id="settings-page" class="page settings-page" aria-label="Settings" hidden><div class="settings-scroll">
 <section class="settings-panel appearance-panel"><div class="section-heading"><h2>Appearance</h2><p>Pick a visual design. Each preset changes the palette, surface treatment, and accent details.</p></div>

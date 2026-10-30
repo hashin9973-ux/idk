@@ -563,6 +563,82 @@ $('vision-setup-check').addEventListener('click',async()=>{
 async function changeBrowserMode(){browserEnabled.disabled=true;try{const v=await api.setBrowserSettings({enabled:browserEnabled.checked,keepActive:keep.checked,lowMemory:low.checked});browserEnabled.checked=v.enabled===true;keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode();note(v.enabled?'In-app browser enabled.':'In-app browser disabled; web links will open in your normal browser.','success')}catch(e){note(e.message,'error');await refresh()}finally{browserEnabled.disabled=false;updateBrowserMode()}}
 browserEnabled.addEventListener('change',()=>void changeBrowserMode());
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
+
+let assignmentState=null,assignmentWorkspaceRoot='';
+function playAssignmentAlert(){
+  try{
+    const Ctx=window.AudioContext||window.webkitAudioContext;
+    if(Ctx){
+      const ctx=new Ctx(),osc=ctx.createOscillator(),gain=ctx.createGain();
+      osc.type='sine';osc.frequency.setValueAtTime(880,ctx.currentTime);
+      osc.frequency.setValueAtTime(660,ctx.currentTime+0.13);
+      gain.gain.setValueAtTime(0.0001,ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.12,ctx.currentTime+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.32);
+      osc.connect(gain);gain.connect(ctx.destination);osc.start();osc.stop(ctx.currentTime+0.34);
+      osc.onended=()=>void ctx.close();
+      void ctx.resume().catch(()=>{});
+    }
+  }catch{}
+  try{if('Notification'in window&&Notification.permission==='granted')new Notification('Agent assignment required',{body:'Choose an agent and workspace for the new session.'})}catch{}
+}
+function closeAgentAssignment(){ $('agent-assignment-overlay').hidden=true;assignmentState=null; }
+function showAgentAssignment(payload){
+  if(!payload||typeof payload.requestId!=='string')return;
+  assignmentState=payload;
+  const overlay=$('agent-assignment-overlay'),select=$('agent-assignment-id');
+  $('agent-assignment-label').textContent='Session label: '+String(payload.label||'ChatGPT session');
+  select.replaceChildren();
+  const agents=Array.isArray(payload.agents)?payload.agents:[];
+  const available=agents.filter(agent=>agent&&typeof agent.agent_id==='string'&&agent.busy!==true&&agent.reusable!==false);
+  for(const agent of available){
+    const option=document.createElement('option');option.value=agent.agent_id;
+    option.textContent=agent.agent_id+' · '+String(agent.status||'inactive');select.append(option);
+  }
+  const next=document.createElement('option');next.value='__next__';next.textContent='Create next available agent';select.append(next);
+  $('agent-assignment-auto').checked=false;
+  $('agent-assignment-manual-fields').hidden=false;
+  $('agent-assignment-message').value='';
+  const updateWorkspace=()=>{
+    const id=select.value;
+    const defaults=payload.workspaceDefaults&&typeof payload.workspaceDefaults==='object'?payload.workspaceDefaults:{};
+    assignmentWorkspaceRoot=id!=='__next__'&&typeof defaults[id]==='string'&&defaults[id]?defaults[id]:String(payload.defaultWorkspace||'');
+    $('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace';
+  };
+  updateWorkspace();select.onchange=updateWorkspace;
+  $('agent-assignment-auto').onchange=()=>{$('agent-assignment-manual-fields').hidden=$('agent-assignment-auto').checked};
+  $('agent-assignment-status').textContent='Choose an agent and workspace, then confirm. This request expires automatically if left unanswered.';
+  $('agent-assignment-status').dataset.state='';
+  $('agent-assignment-confirm').disabled=false;
+  overlay.hidden=false;playAssignmentAlert();select.focus();
+}
+async function chooseAssignmentWorkspace(){
+  const button=$('agent-assignment-choose-workspace');button.disabled=true;
+  try{
+    const result=await api.chooseAgentAssignmentWorkspace();
+    if(!result.canceled){assignmentWorkspaceRoot=String(result.workspaceRoot||'');$('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace'}
+  }catch(error){$('agent-assignment-status').textContent='Could not choose workspace: '+error.message;$('agent-assignment-status').dataset.state='error'}
+  finally{button.disabled=false}
+}
+async function submitAgentAssignment(cancelled=false){
+  if(!assignmentState)return;
+  const button=$('agent-assignment-confirm');button.disabled=true;
+  const payload={requestId:assignmentState.requestId,cancelled,autoAssign:$('agent-assignment-auto').checked,
+    agentId:$('agent-assignment-id').value||'__next__',workspaceRoot:assignmentWorkspaceRoot,
+    message:$('agent-assignment-message').value.trim()};
+  try{
+    await api.respondAgentAssignment(payload);closeAgentAssignment();
+    note(cancelled?'Session start cancelled.':'Agent assignment confirmed. Creating session…',cancelled?'':'success');
+  }catch(error){$('agent-assignment-status').textContent=error.message;$('agent-assignment-status').dataset.state='error';button.disabled=false}
+}
+$('agent-assignment-choose-workspace').addEventListener('click',()=>void chooseAssignmentWorkspace());
+$('agent-assignment-confirm').addEventListener('click',()=>void submitAgentAssignment(false));
+$('agent-assignment-cancel').addEventListener('click',()=>void submitAgentAssignment(true));
+$('agent-assignment-auto').addEventListener('change',()=>{$('agent-assignment-manual-fields').hidden=$('agent-assignment-auto').checked});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&assignmentState){event.preventDefault();void submitAgentAssignment(true)}});
+api.onAgentAssignmentRequested(showAgentAssignment);
+api.onAgentAssignmentDismissed(payload=>{if(assignmentState&&payload.requestId===assignmentState.requestId){closeAgentAssignment();note('Agent assignment expired. No session was created.','error')}});
+
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
