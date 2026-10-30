@@ -551,7 +551,7 @@ function createToolBridge(deps) {
     getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult,
     onSchedulerUpdate = () => {} } = deps;
   const COMPUTER_TOOLS = new Set(['computer']);
-  const executionScheduler = createExecutionScheduler({ maxActive: 16, onChange: onSchedulerUpdate });
+  const executionScheduler = createExecutionScheduler({ maxActive: 100, onChange: onSchedulerUpdate });
 
   async function synthesizeConfiguredSpeech(args, id, sessionId = null) {
     if (args.play === false) return visionService.synthesizeSpeech(args, id);
@@ -919,7 +919,7 @@ function createToolBridge(deps) {
   }
 
   async function executeLocalTool(root, tool, args, requestId, signal = null) {
-    if (tool.startsWith('project_')) {
+    if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact'].includes(tool)) {
       if (!projectIntelligence) throw new Error('The local project intelligence service is unavailable.');
       if (tool === 'project_index_status') return projectIntelligence.status(root, { signal });
       if (tool === 'project_index_refresh') return projectIntelligence.refresh(root, args, { signal });
@@ -1141,7 +1141,7 @@ function createToolBridge(deps) {
     const seen = new Set();
     return commands.filter(item => { const key = item.command.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
   }
-  async function executeAgentContext(root, requestId) {
+  async function executeAgentContext(root, requestId, signal = null) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
       localTools.executeTool(root, 'environment_info', {}),
       localTools.executeTool(root, 'project_status', {}),
@@ -1172,7 +1172,7 @@ function createToolBridge(deps) {
       } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
     }
     const suggestedCommands = inferProjectCommands(project, projectCommands);
-    const projectIndex = projectIntelligence ? await projectIntelligence.status(root) : null;
+    const projectIndex = projectIntelligence ? await projectIntelligence.status(root, { signal }) : null;
     return {
       protocol: 'chatgpt-local-agent-context/v1',
       generated_at: new Date().toISOString(),
@@ -1262,7 +1262,7 @@ function createToolBridge(deps) {
       if (tool === 'batch') {
         result = await executeBatch(args, id, sessionId, executionSignal);
       } else if (tool === 'get_agent_context') {
-        result = { ok: true, result: await executeAgentContext(root, id) };
+        result = { ok: true, result: await executeAgentContext(root, id, executionSignal) };
       } else {
         const isComputerTool = COMPUTER_TOOLS.has(tool);
         const isTtsTool = tool === 'tts';

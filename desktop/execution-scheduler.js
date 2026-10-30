@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULT_MAX_ACTIVE = 16;
+const DEFAULT_MAX_ACTIVE = 100;
 const DEFAULT_MAX_BYPASS = 24;
 const DEFAULT_MAX_QUEUED = 10000;
 const DEFAULT_AGING_INTERVAL_MS = 1000;
@@ -39,7 +39,7 @@ function abortError(reason) {
 
 function createExecutionScheduler(options = {}) {
   const maxActive = Number.isInteger(options.maxActive)
-    ? Math.max(1, Math.min(options.maxActive, 64)) : DEFAULT_MAX_ACTIVE;
+    ? Math.max(1, Math.min(options.maxActive, 100)) : DEFAULT_MAX_ACTIVE;
   const maxBypass = Number.isInteger(options.maxBypass)
     ? Math.max(1, Math.min(options.maxBypass, 128)) : DEFAULT_MAX_BYPASS;
   const maxQueued = Number.isInteger(options.maxQueued)
