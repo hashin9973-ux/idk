@@ -138,7 +138,7 @@ test('dashboard custom messages are written to the exact active session inbox', 
   assert.equal(record.sender_session_id, null);
   assert.equal(record.sender_agent_id, 'user');
   assert.equal(record.recipient_session_id, recipient.session_id);
-  assert.match(record.message, /^\\[Windows Bridge User\\] Inspect the selected project/);
+  assert.match(record.message, /^\[Windows Bridge User\] Inspect the selected project/);
   const inbox = await registry.readMessages(recipient.session_id, { unread_only: true });
   assert.equal(inbox.count, 1);
   assert.equal(inbox.messages[0].sender_label, 'Windows Bridge User');
