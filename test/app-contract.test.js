@@ -825,7 +825,7 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.doesNotMatch(html, /id="agent-mailbox-list"/, 'seat consoles must not be nested in the aggregate queue widget');
   assert.match(renderer, /function renderAgentMailboxes\(rawAgents\)/);
   assert.match(renderer, /function makeAgentWidget\(/);
-  assert.match(renderer, /name\.textContent=String\(agent\.agent_id\);/);
+  assert.match(renderer, /name\.textContent=String\(agent\.nickname\|\|agent\.agent_id\);/);
   assert.doesNotMatch(renderer, /name\.textContent=String\(agent\.label\|\|agent\.agent_id\)/, 'widget title must be the seat ID, not its task label');
   assert.doesNotMatch(renderer, /identityLine|agent-console-id['"]/, 'the header must not create or look up a duplicate ID row');
   assert.match(renderer, /tool\.textContent=String\(request\.tool\|\|'unknown tool'\)/, 'request tool names stay inside the console body');
