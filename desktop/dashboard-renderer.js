@@ -8,6 +8,7 @@ function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
 let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
 let refreshInFlight=false,refreshRequested=false,lastBrowserActivation=Symbol('unset');
+let agentReplyRefreshInFlight=false;
 function dashboardSnapshot(){
   const records=new Map(browserTabData.map(item=>[item.id,item]));
   const dim=(el,property,fallback,min,max)=>{
@@ -244,7 +245,9 @@ function makeAgentWidget(agent,index){
   const cancel=document.createElement('button');cancel.type='button';cancel.className='agent-message-cancel';cancel.textContent='×';cancel.title='Close message box';cancel.setAttribute('aria-label','Close message box');
   composer.append(input,send,cancel);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
-  card.append(header,composer,body);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  const messageThread=document.createElement('div');messageThread.className='agent-message-thread';
+  messageThread.hidden=true;messageThread.setAttribute('aria-live','polite');messageThread.dataset.noWidgetDrag='true';
+  card.append(header,composer,body,messageThread);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
   workspaceButton.addEventListener('click',async event=>{
     event.stopPropagation();const sessionId=card.dataset.sessionId||'';
     if(!sessionId||workspaceButton.disabled)return;
@@ -268,9 +271,15 @@ function makeAgentWidget(agent,index){
     send.textContent='Sending…';
     send.setAttribute('aria-busy','true');
     try {
-      await api.sendAgentMessage(sessionId,message);
+      const sent=await api.sendAgentMessage(sessionId,message);
+      if(sent&&typeof sent.message_id==='string'){
+        const ids=readPendingAgentMessageIds(card);
+        if(!ids.includes(sent.message_id))ids.push(sent.message_id);
+        card.dataset.pendingMessageIds=JSON.stringify(ids.slice(-100));
+      }
       input.value='';composer.hidden=true;
       note('Message sent to '+agent.agent_id+'.','success');
+      void refreshAgentReplies();
       await refresh();
     } catch(error) { note('Could not message '+agent.agent_id+': '+error.message,'error'); }
     finally { send.disabled=false;send.textContent='Send';send.removeAttribute('aria-busy'); }
@@ -321,6 +330,9 @@ function renderAgentMailboxes(rawAgents){
     const sessionChanged=Boolean(previousSessionId&&previousSessionId!==currentSessionId);
     const scrollTop=sessionChanged?0:body.scrollTop;
     if(sessionChanged){
+      card.dataset.pendingMessageIds='[]';
+      const messageThread=card.querySelector('.agent-message-thread');
+      if(messageThread){messageThread.replaceChildren();messageThread.hidden=true;}
       const prefix=agent.agent_id+'|';
       for(const key of openAgentDetails)if(key.startsWith(prefix))openAgentDetails.delete(key);
     }
@@ -386,6 +398,57 @@ function updateAgentCanvasHeight(){
   }
   agentWidgetHost.style.height=Math.max(1,bottom)+'px';
 }
+
+function readPendingAgentMessageIds(card){
+  try{
+    const ids=JSON.parse(card.dataset.pendingMessageIds||'[]');
+    return Array.isArray(ids)?[...new Set(ids.filter(id=>typeof id==='string'&&/^msg-[0-9]{13}-[a-f0-9]{32}$/.test(id)))]:[];
+  }catch{return []}
+}
+function renderAgentMessageReplies(card,pendingIds,replies){
+  const host=card.querySelector('.agent-message-thread');if(!host)return;
+  host.replaceChildren();
+  if(pendingIds.length){
+    const waiting=document.createElement('div');waiting.className='agent-message-thread-status';
+    waiting.textContent='Waiting for '+pendingIds.length+' agent repl'+(pendingIds.length===1?'y':'ies')+'…';
+    host.append(waiting);
+  }
+  for(const reply of replies){
+    const item=document.createElement('article');item.className='agent-message-reply';
+    const label=document.createElement('strong');label.className='agent-message-reply-label';
+    label.textContent='REPLY · '+String(reply.created_at||'');
+    const content=document.createElement('div');content.className='agent-message-reply-body';
+    content.textContent=String(reply.message||'');
+    item.append(label,content);host.append(item);
+  }
+  host.hidden=host.childElementCount===0;
+}
+async function refreshAgentReplies(){
+  if(agentReplyRefreshInFlight)return;
+  const cards=[...agentWidgets.values()].filter(card=>card.isConnected&&card.dataset.sessionId&&readPendingAgentMessageIds(card).length);
+  if(!cards.length)return;
+  agentReplyRefreshInFlight=true;
+  try{
+    for(let start=0;start<cards.length;start+=8){
+      await Promise.all(cards.slice(start,start+8).map(async card=>{
+        const sessionId=card.dataset.sessionId,ids=readPendingAgentMessageIds(card);
+        if(!ids.length)return;
+        try{
+          const result=await api.readAgentReplies(sessionId,ids);
+          if(card.dataset.sessionId!==sessionId)return;
+          const replies=Array.isArray(result&&result.messages)?result.messages:[];
+          const answered=new Set(replies.map(reply=>reply.in_reply_to).filter(Boolean));
+          const remaining=ids.filter(messageId=>!answered.has(messageId));
+          card.dataset.pendingMessageIds=JSON.stringify(remaining);
+          renderAgentMessageReplies(card,remaining,replies);
+        }catch(error){
+          const host=card.querySelector('.agent-message-thread');
+          if(host){host.replaceChildren();const status=document.createElement('div');status.className='agent-message-thread-status';status.textContent='Reply check failed: '+String(error&&error.message||error);host.append(status);host.hidden=false;}
+        }
+      }));
+    }
+  }finally{agentReplyRefreshInFlight=false;}
+}
 function positionControls(){if(widgetMoved.controls)return;const width=mainPage.clientWidth||window.innerWidth||1200;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||150)+18)+'px';controls.style.width=Math.min(360,Math.max(270,Math.round(width*0.28)))+'px'}
 function renderWorker(v){bridge=v||{};const s=String(bridge.workerStatus||bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='reconnecting'?'Worker reconnecting · retrying mailbox':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderAgentMailboxes(bridge.agentMailboxes);renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
 function renderGitHub(v){github=v||{};githubStatus.textContent=github.authenticated?'GitHub connected':github.verificationPending?'GitHub verifying…':'GitHub not connected';$('github-detail').textContent=github.authenticated?'Signed in as '+(github.login||'GitHub user'):'GitHub not connected';$('github-connect').textContent=github.authenticated?'Reconnect':'Sign in'}
@@ -400,6 +463,7 @@ async function refresh(){
     try{
       const s=await api.getState();
       renderWorker(s.bridge||{});
+      void refreshAgentReplies();
       renderWorkspace(s.workspace||{});
       if(!dashboardStateLoaded){
         await applyInitialSettings(s.settings||{});

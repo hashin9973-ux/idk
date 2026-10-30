@@ -2061,6 +2061,21 @@ function registerIpc() {
     broadcastBridgeState(repositoryBridge.getState());
     return result;
   });
+  ipcMain.handle('app:agent-read-replies', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const sessionId = payload && payload.sessionId;
+    const messageIds = payload && payload.messageIds;
+    if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
+      throw new Error('A valid agent session ID is required to read dashboard replies.');
+    }
+    if (!Array.isArray(messageIds) || messageIds.length < 1 || messageIds.length > 100) {
+      throw new Error('Reply lookup requires 1–100 message IDs.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.readDashboardReplies !== 'function') {
+      throw new Error('The repository worker is not available to read agent replies.');
+    }
+    return repositoryBridge.readDashboardReplies(sessionId, { message_ids: messageIds });
+  });
   ipcMain.handle('app:set-auto-accept-all', async (event, enabled) => {
     assertLocalUi(event, 'index.html');
     if (typeof enabled !== 'boolean') throw new Error('auto-accept setting must be a boolean.');

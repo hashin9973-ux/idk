@@ -580,14 +580,55 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
       .map(name => name.slice(0, -5)));
-    const selected = found.filter(record => !unreadOnly ||
-      (!receiptIds.has(record.message_id) && !record.read_at)).slice(-limit);
+    const selected = found.filter(record => record.recipient_agent_id !== 'user' && (!unreadOnly ||
+      (!receiptIds.has(record.message_id) && !record.read_at))).slice(-limit);
     const read = [];
     for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
     return {
       session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
       scanned_recent_limit: 200, messages: read.filter(Boolean),
       note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
+    };
+  }
+
+
+  async function readDashboardReplies(sessionId, args = {}) {
+    await currentSession(sessionId);
+    const suppliedIds = args.message_ids;
+    if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
+        suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
+      throw new Error('message_ids must contain 1–100 valid message IDs.');
+    }
+    const wanted = new Set(suppliedIds);
+    if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
+    let entries;
+    try { entries = await listFolder(inboxPath(sessionId)); }
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
+      .sort().slice(-200);
+    const replies = [];
+    for (let start = 0; start < names.length; start += 16) {
+      const group = names.slice(start, start + 16);
+      const rows = await Promise.all(group.map(async name => {
+        const messageId = name.slice(0, -5);
+        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        if (!remote) return null;
+        const record = remote.value;
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+        }
+        if (record.sender_session_id === sessionId && record.recipient_agent_id === 'user' &&
+            wanted.has(record.in_reply_to)) return record;
+        return null;
+      }));
+      replies.push(...rows.filter(Boolean));
+    }
+    replies.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    return {
+      session_id: sessionId, count: replies.length, messages: replies,
+      note: 'Replies are read from the same session-scoped agent-message mailbox; no other session inbox is accessed.'
     };
   }
 
@@ -601,18 +642,32 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
         original.message_id !== originalId || original.recipient_session_id !== sessionId) {
       throw new Error('Only a message addressed to this session can be replied to.');
     }
-    const recipientSessionId = original.sender_session_id;
-    const recipient = await currentSession(recipientSessionId);
+    const isDashboardUser = original.sender_type === 'user' && original.sender_agent_id === 'user' &&
+      original.sender_session_id === null;
+    let recipientSessionId;
+    let recipientAgentId;
+    let recipientLabel;
+    if (isDashboardUser) {
+      recipientSessionId = sessionId;
+      recipientAgentId = 'user';
+      recipientLabel = 'Windows Bridge User';
+    } else {
+      recipientSessionId = original.sender_session_id;
+      const recipient = await currentSession(recipientSessionId);
+      recipientAgentId = recipient.session.agent_id;
+      recipientLabel = recipient.seat.label || recipient.session.label || recipientAgentId;
+    }
     const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
     const record = {
       protocol: 'chatgpt-local-agent-message/v1', message_id: id,
       thread_id: original.thread_id || original.message_id,
       sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
-      recipient_session_id: recipientSessionId, recipient_agent_id: recipient.session.agent_id,
+      recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
       sender_label: sender.session.label || sender.session.agent_id,
-      recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
+      recipient_label: recipientLabel,
       subject: original.subject || '', message: formatAgentMessage(sender.session, args.message),
-      created_at: timestamp(), read_at: null, in_reply_to: original.message_id
+      created_at: timestamp(), read_at: null, in_reply_to: original.message_id,
+      ...(isDashboardUser ? { sender_type: 'agent', recipient_type: 'user' } : {})
     };
     await writeMessage(recipientSessionId, record);
     await markMessageRead(sessionId, original.message_id, original);
@@ -625,7 +680,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
 
   return {
     startSession, authenticate, requestStarted, requestCompleted, statuses,
-    sendMessage, sendUserMessage, readMessages, replyToMessage, seatPath, sessionPath, messagePath,
+    sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }
