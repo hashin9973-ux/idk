@@ -2780,7 +2780,8 @@ if (!hasInstanceLock) {
           getAutoAcceptAll: () => settings.autoAcceptAll === true,
           getTtsSettings,
           getAgentLabelForSession: sessionId => {
-            const state = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+            const rawState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+            const state = enrichedBridgeState(rawState);
             const agent = Array.isArray(state.agentMailboxes) ? state.agentMailboxes.find(item => item && item.session_id === sessionId) : null;
             if (!agent) return null;
             const nickname = typeof agent.nickname === 'string' ? agent.nickname.trim() : '';
