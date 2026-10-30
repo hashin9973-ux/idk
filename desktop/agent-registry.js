@@ -205,23 +205,26 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
 
   async function startSession(args = {}) {
     const label = safeLabel(args.label, 'ChatGPT session');
+    const requestedAgentId = args.agent_id === undefined || args.agent_id === null || args.agent_id === ''
+      ? null : String(args.agent_id);
+    if (requestedAgentId && !AGENT_ID_PATTERN.test(requestedAgentId)) throw new Error('The selected agent ID is invalid.');
     return withLock('seat-allocation', async () => {
       for (let attempt = 0; attempt < 64; attempt++) {
         const ids = await listSeatIds();
         const rows = await Promise.all(ids.map(readSeatAndSession));
-        const candidate = rows.find(row => !row.remote || !row.seat || isInactive(row.seat, row.session));
-
-        let agentId;
-        let priorSessionId = null;
-        if (candidate) {
-          agentId = candidate.agent_id;
-          priorSessionId = candidate.seat && candidate.seat.protocol === AGENT_RECORD_PROTOCOL
-            ? candidate.seat.current_session_id || null : null;
-        } else {
-          const highest = ids.reduce((max, id) => Math.max(max, Number(id.slice(6)) || 0), 0);
-          agentId = 'agent-' + String(highest + 1).padStart(3, '0');
+        const highest = ids.reduce((max, id) => Math.max(max, Number(id.slice(6)) || 0), 0);
+        const candidate = requestedAgentId
+          ? rows.find(row => row.agent_id === requestedAgentId) || null
+          : rows.find(row => !row.remote || !row.seat || isInactive(row.seat, row.session));
+        if (requestedAgentId && candidate && candidate.remote && candidate.seat && !isInactive(candidate.seat, candidate.session)) {
+          throw new Error('The selected agent seat is currently active or busy. Choose another available agent ID.');
         }
-
+        if (requestedAgentId && !candidate && Number(requestedAgentId.slice(6)) !== highest + 1) {
+          throw new Error('The selected agent ID is not an existing reusable seat or the next available seat.');
+        }
+        const agentId = requestedAgentId || candidate && candidate.agent_id || ('agent-' + String(highest + 1).padStart(3, '0'));
+        const priorSessionId = candidate && candidate.seat && candidate.seat.protocol === AGENT_RECORD_PROTOCOL
+          ? candidate.seat.current_session_id || null : null;
         const sessionId = 'session-' + randomBytes(16).toString('hex');
         const now = timestamp();
         const session = {
@@ -230,20 +233,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
           last_request_id: null, last_completed_at: null, recent_request_ids: [], active_request_ids: []
         };
         try { await writeNewJson(sessionPath(sessionId), session); }
-        catch (error) {
-          if (isConflictError(error)) continue;
-          throw error;
-        }
-
+        catch (error) { if (isConflictError(error)) continue; throw error; }
         try {
           const allocated = await withLock('seat:' + agentId, async () => {
             const current = await readSeat(agentId);
             const seat = current && current.value;
             const currentSession = seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id
               ? (await readSession(seat.current_session_id))?.value || null : null;
-            if (seat && !isInactive(seat, currentSession)) {
-              return null;
-            }
+            if (seat && !isInactive(seat, currentSession)) return null;
             const nextSeat = {
               protocol: AGENT_RECORD_PROTOCOL, agent_id: agentId, current_session_id: sessionId,
               label, status: 'active', created_at: seat && seat.created_at || now,
@@ -256,17 +253,21 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
             return {
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
               last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
-              note: 'Session created. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
+              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
             };
           });
           if (!allocated) {
             await expireSession(sessionId);
+            if (requestedAgentId) throw new Error('The selected agent seat was claimed by another session before assignment completed. Retry session_start and choose an available seat.');
             continue;
           }
           return allocated;
         } catch (error) {
           await expireSession(sessionId);
-          if (isConflictError(error)) continue;
+          if (isConflictError(error)) {
+            if (requestedAgentId) throw new Error('The selected agent seat changed during allocation. Retry session_start and choose an available seat.');
+            continue;
+          }
           throw error;
         }
       }

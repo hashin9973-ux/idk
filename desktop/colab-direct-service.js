@@ -228,6 +228,7 @@ function createVisionService(deps) {
     clipboardPollIntervalMs = 3000,
     clipboardWatchTimeoutMs = 20 * 60 * 1000,
     getTtsVolume = null,
+    localTts = null,
     fetchImpl = globalThis.fetch
   } = deps || {};
 
@@ -1196,7 +1197,7 @@ function createVisionService(deps) {
     return {
       active_job_id: activeSpeechJobId,
       jobs: Array.from(speechJobs.values()).slice(-8).map(job => ({
-        job_id: job.job_id, status: job.status, chunks_total: job.chunks_total,
+        job_id: job.job_id, status: job.status, engine: job.engine || 'colab-piper', chunks_total: job.chunks_total,
         chunks_started: job.chunks_started, chunks_queued: job.chunks_queued, chunks_completed: job.chunks_completed,
         initial_chunk_ready_ms: job.initial_chunk_ready_ms,
         playback_start_ms: job.playback_start_ms,
@@ -1230,6 +1231,17 @@ function createVisionService(deps) {
     const actualHash = crypto.createHash('sha256').update(audio).digest('hex');
     if (remote.audio_sha256 !== actualHash) throw new Error('Piper WAV SHA-256 did not match the returned audio.');
     return { audio, remote, audioHash: actualHash, requestId };
+  }
+
+  async function requestLocalTtsAudio(text, requestId) {
+    if (!localTts || typeof localTts.synthesize !== 'function') {
+      throw new Error('Local Piper TTS is not initialized in this app build.');
+    }
+    const generated = await localTts.synthesize(text, requestId);
+    if (!generated || !Buffer.isBuffer(generated.audio) || !generated.remote) {
+      throw new Error('Local Piper returned an invalid synthesis result.');
+    }
+    return { ...generated, audioHash: crypto.createHash('sha256').update(generated.audio).digest('hex'), requestId };
   }
 
   async function requestTtsAudio(text, requestId, timeoutMs = 45000) {
@@ -1437,7 +1449,9 @@ function createVisionService(deps) {
   }
   async function saveSpeechChunk(job, text, index, requestId = newTtsRequestId()) {
     const requestStartedAt = now();
-    const remoteGenerated = await requestTtsAudio(text, requestId, 45000);
+    const remoteGenerated = job.engine === 'local'
+      ? await requestLocalTtsAudio(text, requestId)
+      : await requestTtsAudio(text, requestId, 45000);
     const generated = { ...remoteGenerated, audio: scaleWavVolume(remoteGenerated.audio, currentTtsVolume()) };
     const receivedAt = now();
     const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + job.job_id + '-chunk-' + String(index + 1).padStart(2, '0') + '.wav');
@@ -1464,9 +1478,35 @@ function createVisionService(deps) {
     try { await fsImpl.promises.unlink(filePath); } catch {}
   }
 
+  async function queueRemainingLocalSpeech(job, playback) {
+    for (let index = 1; index < job.chunks.length; index++) {
+      if (job.cancelRequested) break;
+      const generated = await saveSpeechChunk(job, job.chunks[index], index, newTtsRequestId());
+      try {
+        const queueStartedAt = now();
+        await playback.queue(generated.filePath, index);
+        const queuedAt = now();
+        job.chunks_queued += 1;
+        job.chunks_started = Math.min(job.chunks_queued, job.chunks_completed + 1);
+        job.max_queue_depth = Math.max(job.max_queue_depth, job.chunks_queued - job.chunks_completed);
+        const metric = job.chunk_metrics.find(item => item.index === index);
+        if (metric) {
+          metric.record_to_queue_ms = Math.max(0, queuedAt - queueStartedAt);
+          metric.queue_ack_ms = Math.max(0, queuedAt - queueStartedAt);
+        }
+      } finally {
+        await removeSpeechFile(generated.filePath);
+      }
+    }
+    if (!job.cancelRequested && job.chunks_queued !== job.chunks_total) {
+      throw new Error('Local Piper synthesis ended before every chunk was queued.');
+    }
+  }
+
   async function queueRemainingSpeech(job, playback) {
-    await streamRemainingSpeech(job, playback);
-    if (job.chunks_queued !== job.chunks_total) {
+    if (job.engine === 'local') await queueRemainingLocalSpeech(job, playback);
+    else await streamRemainingSpeech(job, playback);
+    if (!job.cancelRequested && job.chunks_queued !== job.chunks_total) {
       throw new Error('TTS streaming ended before every chunk was queued.');
     }
   }
@@ -1560,7 +1600,9 @@ function createVisionService(deps) {
     if (chunks.length > MAX_SPEECH_CHUNKS) return { status: 'tts_failed', error: 'Speech exceeded the bounded ' + MAX_SPEECH_CHUNKS + '-chunk limit.' };
 
     const jobId = newTtsRequestId();
-    const job = { job_id: jobId, status: 'preparing', chunks, chunks_total: chunks.length,
+    const localSettings = typeof getSettings === 'function' ? getSettings() || {} : {};
+    const useLocalTts = Boolean(localSettings.localTts && localSettings.localTts.enabled === true);
+    const job = { job_id: jobId, engine: useLocalTts ? 'local' : 'remote', status: 'preparing', chunks, chunks_total: chunks.length,
       chunks_started: 0, chunks_queued: 0, chunks_completed: 0, completedChunkIndexes: new Set(),
       started_at: new Date(now()).toISOString(), started_at_ms: now(), finished_at: null, error: null,
       initial_chunk_ready_ms: null, playback_start_ms: null, stream_start_latency_ms: null,
@@ -1574,7 +1616,16 @@ function createVisionService(deps) {
       speechJobs.delete(oldest);
     }
 
-    const state = await queryRuntime();
+    const state = useLocalTts
+      ? { runtime_compatible: true, runtime_fresh: true, enabled: true, tts_ready: true,
+          tts_sample_rate: 22050, local_tts: localTts && typeof localTts.getStatus === 'function' ? localTts.getStatus() : null }
+      : await queryRuntime();
+    if (useLocalTts && !localTts) {
+      job.status = 'failed'; job.error = 'Local Piper TTS is not initialized.';
+      job.finished_at = new Date(now()).toISOString();
+      if (activeSpeechJobId === jobId) activeSpeechJobId = null;
+      return { status: 'tts_unavailable', request_id: jobId, error: job.error };
+    }
     if (state.runtime_compatible !== true) {
       job.status = 'failed';
       job.error = state.message || 'The connected Colab notebook is incompatible with the current TTS API.';
@@ -1604,7 +1655,9 @@ function createVisionService(deps) {
             const index = nextIndex++;
             if (index >= chunks.length) return;
             try {
-              const result = await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
+              const result = useLocalTts
+                ? await requestLocalTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId())
+                : await requestTtsAudio(chunks[index], index === 0 ? jobId : newTtsRequestId(), 60000);
               generated[index] = result.audio;
               duration += Number(result.remote.duration_seconds) || 0;
               job.chunks_started += 1;
@@ -1625,7 +1678,7 @@ function createVisionService(deps) {
         const filePath = path.join(os.tmpdir(), 'WindowsRepositoryBridge-' + jobId + '.wav');
         await fsImpl.promises.writeFile(filePath, audio, { flag: 'wx' });
         job.status = 'completed'; job.finished_at = new Date(now()).toISOString();
-        return { status: 'tts_completed', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE,
+        return { status: 'tts_completed', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE, engine: useLocalTts ? 'local-piper' : 'colab-piper',
           speaker_id: TTS_SPEAKER_ID, sample_rate: state.tts_sample_rate || 22050, channels: 1,
           duration_seconds: duration, audio_bytes: audio.length, audio_sha256: hash,
           local_file: filePath, played: false, playback_error: null, chunks_total: chunks.length,
@@ -1697,7 +1750,8 @@ function createVisionService(deps) {
       return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
     }
     void continueSpeechJob(job, first.playback, prefetchPromise);
-    return { status: 'tts_started', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE, speaker_id: TTS_SPEAKER_ID,
+    return { status: 'tts_started', request_id: jobId, speech_job_id: jobId, voice: TTS_VOICE,
+      engine: useLocalTts ? 'local-piper' : 'colab-piper', speaker_id: TTS_SPEAKER_ID,
       sample_rate: Number.isFinite(first.remote.sample_rate) ? first.remote.sample_rate : state.tts_sample_rate,
       channels: Number.isFinite(first.remote.channels) ? first.remote.channels : 1,
       duration_seconds: Number.isFinite(first.remote.duration_seconds) ? first.remote.duration_seconds : null,
@@ -1707,7 +1761,9 @@ function createVisionService(deps) {
       stream_start_latency_ms: job.stream_start_latency_ms,
       chunks_total: chunks.length, chunks_started: job.chunks_started, chunks_queued: job.chunks_queued, chunks_completed: job.chunks_completed,
       played: true, playback_status: 'playing',
-      audio_transport: 'The first chunk is queued on one persistent Windows WASAPI stream. The remaining chunks are generated by the persistent Colab Piper voice and streamed into that queue in order while playback continues. computer(action=status) reports time to first audio, playback startup, stream latency, queue depth, per-chunk timings, and measured WASAPI buffer-starvation gaps.' };
+      audio_transport: useLocalTts
+        ? 'The first chunk is queued on one persistent Windows WASAPI stream. Remaining chunks are generated by the warmed local Piper worker and queued in order while playback continues. computer(action=status) reports time to first audio, queue depth, per-chunk timings, and measured WASAPI buffer-starvation gaps.'
+        : 'The first chunk is queued on one persistent Windows WASAPI stream. Remaining chunks are generated by the persistent Colab Piper voice and streamed into that queue in order while playback continues. computer(action=status) reports time to first audio, playback startup, stream latency, queue depth, per-chunk timings, and measured WASAPI buffer-starvation gaps.' };
   }
 
     async function waitForRemoteResult(jobId, expectedHash, expectedFrameId, expectedModelRole) {
@@ -2050,10 +2106,15 @@ function createVisionService(deps) {
     if (inputControl && typeof inputControl.dispose === 'function') {
       try { await inputControl.dispose(); } catch {}
     }
+    if (localTts && typeof localTts.dispose === 'function') {
+      try { await localTts.dispose(); } catch {}
+    }
   }
 
   return {
     activate, deactivate, status, setupCheck, connectColab, connectPublicEndpoint, analyzeScreenshot, analyzeFrame, wait, inputAction, synthesizeSpeech,
+    localTtsStatus: () => localTts && typeof localTts.getStatus === 'function' ? localTts.getStatus() : { ready: false, status: 'unavailable' },
+    prepareLocalTts: () => localTts && typeof localTts.prepare === 'function' ? localTts.prepare() : Promise.reject(new Error('Local Piper TTS is unavailable.')),
     isControlSessionActive: () => controlSessionActive,
     speechPlaybackStatus,
     dispose,

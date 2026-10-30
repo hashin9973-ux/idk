@@ -240,8 +240,8 @@ test('an idle session is rejected after its inactivity lease expires', async () 
 });
 
 test('recent legacy seats are protected until their activity expires', async () => {
-  const { registry, records, advance } = mockMailbox();
-  const lastSeen = new Date().toISOString();
+  const { registry, records, advance, now } = mockMailbox();
+  const lastSeen = new Date(now()).toISOString();
   records.set('bridge/agents/agent-001.json', {
     value: {
       protocol: 'chatgpt-local-agent-record/v1', agent_id: 'agent-001',
@@ -274,4 +274,32 @@ test('agent registry allocates one hundred simultaneous active conversations', a
   assert.equal(status.count, 100);
   assert.equal(status.counts.active, 100);
   assert.equal(status.agents.filter(item => item.session_id).length, 100);
+});
+
+
+test('manual session allocation honors an explicitly selected inactive seat and rejects a busy seat', async () => {
+  const { registry, advance } = mockMailbox();
+  const first = await registry.startSession({ label: 'Existing seat' });
+  const second = await registry.startSession({ label: 'Second seat' });
+  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  const third = await registry.startSession({ label: 'Selected seat', agent_id: second.agent_id });
+  assert.equal(third.agent_id, second.agent_id);
+  assert.notEqual(third.session_id, second.session_id);
+  await assert.rejects(
+    registry.startSession({ label: 'Busy seat should fail', agent_id: third.agent_id }),
+    /currently active or busy/
+  );
+  assert.equal(first.agent_id, 'agent-001');
+});
+
+test('manual session allocation permits only the next sequential seat for a new agent ID', async () => {
+  const { registry } = mockMailbox();
+  const created = await registry.startSession({ label: 'New seat', agent_id: 'agent-001' });
+  assert.equal(created.agent_id, 'agent-001');
+  const second = await registry.startSession({ label: 'Next explicit ID', agent_id: 'agent-002' });
+  assert.equal(second.agent_id, 'agent-002');
+  await assert.rejects(
+    registry.startSession({ label: 'Skip an ID', agent_id: 'agent-004' }),
+    /not an existing reusable seat or the next available seat/
+  );
 });

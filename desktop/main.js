@@ -29,6 +29,7 @@ const { createGitHubAuth } = require('./github-auth');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
+const { createLocalPiperTts, normalizeLocalTtsSettings } = require('./local-tts');
 const { MAX_SPEECH_CHUNKS } = require('./speech-text');
 const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
@@ -125,6 +126,9 @@ let captionProgressTimer = null;
 let captionPlaybackInFlight = false;
 let trayUnloadPromise = null;
 const trayStateResolvers = new Map();
+const pendingSessionAssignments = new Map();
+const sessionAssignmentQueue = [];
+let activeSessionAssignmentId = null;
 const browserTabs = new Map();
 // Keep a complete inventory of native browser views, independent of tab state.
 const embeddedBrowserViews = new Set();
@@ -140,6 +144,7 @@ let settings = {};
 let githubAuth = null;
 let toolBridge = null;
 let visionService = null;
+let localTtsService = null;
 let colabHandoffServer = null;
 let observeService = null;
 let windowsInputController = null;
@@ -444,45 +449,59 @@ function selectWorkspace() {
   });
 }
 
-async function selectAgentWorkspace(sessionId) {
-  if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
-    throw new Error('A valid agent session ID is required to configure its workspace.');
+async function selectAgentWorkspace(agentId, sessionId = null) {
+  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
+    throw new Error('A valid agent ID is required to configure its workspace.');
   }
-  if (!repositoryBridge || typeof repositoryBridge.getAgentSession !== 'function') {
-    throw new Error('The repository worker is not available to validate this agent session.');
+  if (sessionId !== null && (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
+    throw new Error('The agent session ID is invalid.');
   }
-  const session = await repositoryBridge.getAgentSession(sessionId);
-  const currentRoot = getWorkspaceRoot(sessionId);
+  const defaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object' &&
+    !Array.isArray(settings.agentWorkspaceDefaults) ? { ...settings.agentWorkspaceDefaults } : {};
+  const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+  const sessionIsCurrent = Boolean(sessionId);
+  const configuredDefault = typeof defaults[agentId] === 'string' && defaults[agentId].trim()
+    ? resolveWorkspaceRoot(defaults[agentId], getWorkspaceRoot()) : '';
+  const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string' && sessionOverrides[sessionId].trim());
+  let currentRoot = configuredDefault || getWorkspaceRoot();
+  if (hasSessionOverride) {
+    try { currentRoot = resolveWorkspaceRoot(sessionOverrides[sessionId], configuredDefault || getWorkspaceRoot()); }
+    catch { /* A stale/missing session override must not block editing the agent's saved default. */ }
+  }
   const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
-    title: 'Choose workspace for ' + session.agent_id,
+    title: 'Choose default workspace for ' + agentId,
     defaultPath: fs.existsSync(currentRoot) ? currentRoot : getWorkspaceRoot(),
     properties: ['openDirectory', 'createDirectory']
   });
   if (result.canceled || !result.filePaths || !result.filePaths.length) {
-    return { canceled: true, workspaceRoot: currentRoot };
+    return { canceled: true, workspaceRoot: currentRoot, agent_id: agentId, session_id: sessionIsCurrent ? sessionId : null };
   }
-  const selected = resolveWorkspaceRoot(result.filePaths[0], getWorkspaceRoot());
+  const selected = resolveWorkspaceRoot(result.filePaths[0], currentRoot || getWorkspaceRoot());
   ensureWorkspaceDirectory(selected, fs);
   if (isFilesystemRoot(selected)) {
     const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
       type: 'warning',
-      title: 'Give ' + session.agent_id + ' access to the entire drive?',
+      title: 'Give ' + agentId + ' access to the entire drive?',
       message: 'This agent will be able to read, create, edit, move, and delete files anywhere on ' + selected + '.',
-      detail: 'This overrides only this conversation session. Other agents keep their own workspaces. It is not an operating-system sandbox; PowerShell still runs with your Windows-user permissions.',
+      detail: 'This becomes the default workspace for this agent and is also applied to its current conversation, if one is active. It is not an operating-system sandbox; PowerShell still runs with your Windows-user permissions.',
       buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
     });
-    if (warning.response !== 0) return { canceled: true, workspaceRoot: currentRoot };
+    if (warning.response !== 0) return { canceled: true, workspaceRoot: currentRoot, agent_id: agentId, session_id: sessionIsCurrent ? sessionId : null };
   }
-  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
-    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
-  if (selected === getWorkspaceRoot()) delete overrides[sessionId];
-  else overrides[sessionId] = selected;
-  settings.agentWorkspaces = overrides;
+  if (selected === getWorkspaceRoot()) delete defaults[agentId];
+  else defaults[agentId] = selected;
+  settings.agentWorkspaceDefaults = defaults;
+  if (sessionIsCurrent) {
+    if (selected === getWorkspaceRoot()) delete sessionOverrides[sessionId];
+    else sessionOverrides[sessionId] = selected;
+    settings.agentWorkspaces = sessionOverrides;
+  }
   persistSettings();
   if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
-  return { canceled: false, workspaceRoot: selected, agent_id: session.agent_id, session_id: sessionId };
+  return { canceled: false, workspaceRoot: selected, agent_id: agentId, session_id: sessionIsCurrent ? sessionId : null,
+    scope: sessionIsCurrent ? 'agent-default-and-current-session' : 'agent-default' };
 }
-
 function safeBrowserUrl(raw) {
   try {
     const url = new URL(String(raw || ''));
@@ -499,6 +518,120 @@ function dashboardSend(channel, value) {
     dashboardWindow.webContents.send(channel, value);
   }
 }
+
+function playAssignmentNotificationSound() {
+  if (process.platform !== 'win32') return;
+  try {
+    const sound = spawn('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+      '-Command', '[System.Media.SystemSounds]::Asterisk.Play()'
+    ], { windowsHide: true, stdio: 'ignore' });
+    sound.on('error', () => {});
+    sound.unref();
+  } catch {}
+}
+
+function showNextSessionAssignment() {
+  if (activeSessionAssignmentId) return;
+  while (sessionAssignmentQueue.length) {
+    const requestId = sessionAssignmentQueue.shift();
+    const pending = pendingSessionAssignments.get(requestId);
+    if (!pending) continue;
+    const win = dashboardWindow;
+    if (!win || win.isDestroyed()) {
+      pendingSessionAssignments.delete(requestId);
+      pending.resolve(null);
+      continue;
+    }
+    pending.webContents = win.webContents;
+    activeSessionAssignmentId = requestId;
+    const send = () => {
+      if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId)) return;
+      if (win.isDestroyed()) { finishSessionAssignment(requestId, null); return; }
+      dashboardSend('app:agent-assignment-requested', pending.payload);
+      playAssignmentNotificationSound();
+      pending.timer = setTimeout(() => {
+        dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
+        finishSessionAssignment(requestId, null);
+      }, 90000);
+    };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
+    else send();
+    win.show(); win.focus();
+    return;
+  }
+}
+
+function finishSessionAssignment(requestId, result) {
+  const pending = pendingSessionAssignments.get(requestId);
+  if (!pending) return false;
+  if (pending.timer) clearTimeout(pending.timer);
+  pendingSessionAssignments.delete(requestId);
+  if (activeSessionAssignmentId === requestId) activeSessionAssignmentId = null;
+  pending.resolve(result);
+  setImmediate(showNextSessionAssignment);
+  return true;
+}
+
+function requestSessionAssignment({ label = 'ChatGPT session', agents = [] } = {}) {
+  const requestId = crypto.randomUUID();
+  showDashboardWindow();
+  const win = dashboardWindow;
+  if (!win || win.isDestroyed()) return Promise.resolve(null);
+  const workspaceDefaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
+    ? settings.agentWorkspaceDefaults : {};
+  const payload = {
+    requestId, label: String(label || 'ChatGPT session').slice(0, 80),
+    agents: Array.isArray(agents) ? agents.slice(0, 200) : [],
+    defaultWorkspace: getWorkspaceRoot(), workspaceDefaults, timeoutMs: 90000
+  };
+  return new Promise(resolve => {
+    pendingSessionAssignments.set(requestId, { resolve, timer: null, webContents: win.webContents, payload });
+    sessionAssignmentQueue.push(requestId);
+    showNextSessionAssignment();
+  });
+}
+
+async function chooseAssignmentWorkspace() {
+  const result = await dialog.showOpenDialog(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+    title: 'Choose workspace for this new agent session', defaultPath: getWorkspaceRoot(),
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) return { canceled: true, workspaceRoot: getWorkspaceRoot() };
+  const selected = resolveWorkspaceRoot(result.filePaths[0], getWorkspaceRoot());
+  ensureWorkspaceDirectory(selected, fs);
+  if (isFilesystemRoot(selected)) {
+    const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      type: 'warning', title: 'Use the entire drive for this agent session?',
+      message: 'The assigned agent will be able to read, create, edit, move, and delete files anywhere on ' + selected + '.',
+      detail: 'This is not an operating-system sandbox. PowerShell still runs with your Windows-user permissions.',
+      buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
+    });
+    if (warning.response !== 0) return { canceled: true, workspaceRoot: getWorkspaceRoot() };
+  }
+  return { canceled: false, workspaceRoot: selected };
+}
+
+function persistAssignedSessionWorkspace({ session_id, agent_id, workspace_root }) {
+  if (typeof session_id !== 'string' || !/^session-[a-f0-9]{32}$/.test(session_id) ||
+      typeof agent_id !== 'string' || !/^agent-[0-9]{3,}$/.test(agent_id)) {
+    throw new Error('The newly assigned session identity is invalid; its workspace was not saved.');
+  }
+  const seatDefaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
+    ? settings.agentWorkspaceDefaults : {};
+  const root = typeof workspace_root === 'string' && workspace_root.trim()
+    ? resolveWorkspaceRoot(workspace_root, getWorkspaceRoot())
+    : (seatDefaults[agent_id] || getWorkspaceRoot());
+  const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+  if (root === getWorkspaceRoot()) delete overrides[session_id];
+  else overrides[session_id] = root;
+  settings.agentWorkspaces = overrides;
+  persistSettings();
+  if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
+  return root;
+}
+
 
 function browserTabSnapshot() {
   return [...browserTabs.values()].map(tab => ({
@@ -1089,17 +1222,43 @@ function resolveWorkerStatus(state) {
 function enrichedBridgeState(state) {
   const workerStatus = resolveWorkerStatus(state);
   const current = state || {};
-  const agentMailboxes = Array.isArray(current.agentMailboxes) ? current.agentMailboxes.map(agent => {
-    if (!agent || typeof agent.session_id !== 'string' || !/^session-[a-f0-9]{32}$/.test(agent.session_id)) return agent;
-    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
-      !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const defaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object' &&
+    !Array.isArray(settings.agentWorkspaceDefaults) ? settings.agentWorkspaceDefaults : {};
+  const byId = new Map((Array.isArray(current.agentMailboxes) ? current.agentMailboxes : [])
+    .filter(agent => agent && typeof agent.agent_id === 'string' && /^agent-[0-9]{3,}$/.test(agent.agent_id))
+    .map(agent => [agent.agent_id, agent]));
+  const knownIds = new Set(Array.isArray(settings.agentKnownIds)
+    ? settings.agentKnownIds.filter(id => typeof id === 'string' && /^agent-[0-9]{3,}$/.test(id)) : []);
+  for (const agentId of byId.keys()) knownIds.add(agentId);
+  for (const agentId of Object.keys(defaults)) if (/^agent-[0-9]{3,}$/.test(agentId)) knownIds.add(agentId);
+  const knownList = [...knownIds].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+  if (JSON.stringify(settings.agentKnownIds || []) !== JSON.stringify(knownList)) {
+    settings.agentKnownIds = knownList;
+    persistSettings();
+  }
+  for (const agentId of knownList) {
+    if (/^agent-[0-9]{3,}$/.test(agentId) && !byId.has(agentId)) {
+      byId.set(agentId, { agent_id: agentId, label: agentId, status: 'inactive', busy: false, session_id: null,
+        active_count: 0, queued_count: 0, request_count: 0, requests: [] });
+    }
+  }
+  const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const agentMailboxes = [...byId.values()].map(agent => {
+    const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
+      ? agent.session_id : null;
+    const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
+    const hasSeatDefault = typeof defaults[agent.agent_id] === 'string' && Boolean(defaults[agent.agent_id].trim());
     try {
-      return { ...agent, workspace_root: getWorkspaceRoot(agent.session_id), workspace_custom: typeof overrides[agent.session_id] === 'string' };
+      const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :
+        hasSeatDefault ? resolveWorkspaceRoot(defaults[agent.agent_id], getWorkspaceRoot()) : getWorkspaceRoot();
+      return { ...agent, workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
+        workspace_scope: hasSessionOverride ? 'session' : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
-      return { ...agent, workspace_root: '', workspace_custom: typeof overrides[agent.session_id] === 'string',
+      return { ...agent, workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_error: String(error && error.message || error).slice(0, 300) };
     }
-  }) : current.agentMailboxes;
+  });
   // Keep transient mailbox transport failures visible while continuing retries.
   const connectionError = workerStatus === 'online' ? '' : (
     autoConnectionError ||
@@ -1371,6 +1530,10 @@ function assertLocalUi(event, filename) {
   const url = event.senderFrame && event.senderFrame.url || '';
   if (!url.startsWith('file://') || !url.endsWith('/desktop/dashboard.html') ||
       (filename !== 'dashboard.html' && filename !== 'index.html')) throw new Error('Unexpected IPC sender.');
+}
+
+function getLocalTtsSettings() {
+  return normalizeLocalTtsSettings(settings.localTts);
 }
 
 function getTtsSettings() {
@@ -1880,6 +2043,7 @@ function getUiState() {
       dashboardTheme: DASHBOARD_THEME_IDS.includes(settings.dashboardTheme) ? settings.dashboardTheme : 'midnight',
       ttsVolume: Number.isFinite(settings.ttsVolume) ? settings.ttsVolume : 100,
       ttsSettings: getTtsSettings(),
+      localTts: getLocalTtsSettings(),
       browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
@@ -1979,6 +2143,31 @@ function registerIpc() {
     dashboardSend('app:preferences', getUiState().settings);
     return getTtsSettings();
   });
+  ipcMain.handle('app:local-tts-settings', (event, value) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (value === undefined) return getLocalTtsSettings();
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Local TTS settings must be an object.');
+    settings.localTts = normalizeLocalTtsSettings({ ...getLocalTtsSettings(), ...value });
+    persistSettings(); publishSharedState();
+    dashboardSend('app:preferences', getUiState().settings);
+    if (settings.localTts.enabled && visionService) {
+      void visionService.prepareLocalTts().then(status => dashboardSend('app:local-tts-status', status))
+        .catch(error => dashboardSend('app:local-tts-status', { ...visionService.localTtsStatus(), status: error && error.code === 'LOCAL_TTS_RESOURCE_GUARD' ? 'resource_guard_blocked' : 'error', error: String(error && error.message || error).slice(0, 1200) }));
+    } else if (localTtsService) {
+      void localTtsService.dispose().then(() => dashboardSend('app:local-tts-status', localTtsService.getStatus()));
+    }
+    return getLocalTtsSettings();
+  });
+  ipcMain.handle('app:local-tts-status', event => {
+    assertLocalUi(event, 'dashboard.html');
+    return visionService ? visionService.localTtsStatus() : localTtsService ? localTtsService.getStatus() : { ready: false, status: 'unavailable' };
+  });
+  ipcMain.handle('app:local-tts-prepare', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!getLocalTtsSettings().enabled) throw new Error('Enable local TTS in Settings before preparing the Piper voice.');
+    if (!visionService) throw new Error('Local TTS service is not initialized yet.');
+    return visionService.prepareLocalTts();
+  });
   ipcMain.handle('app:caption-preview', event => {
     assertLocalUi(event, 'index.html');
     showSpeechCaption({ id: crypto.randomUUID(), mode: getTtsSettings().mode, text: 'This is a preview of your speech captions.' });
@@ -2043,9 +2232,36 @@ function registerIpc() {
     const result = await selectWorkspace();
     return { ...result, workspace: getUiState().workspace };
   });
-  ipcMain.handle('app:agent-select-workspace', async (event, sessionId) => {
+  ipcMain.handle('app:agent-select-workspace', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
-    return selectAgentWorkspace(sessionId);
+    if (!payload || typeof payload !== 'object') throw new Error('Agent workspace selection details are required.');
+    return selectAgentWorkspace(payload.agentId, payload.sessionId || null);
+  });
+  ipcMain.handle('app:agent-assignment-workspace', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    return chooseAssignmentWorkspace();
+  });
+  ipcMain.handle('app:agent-assignment-response', (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!payload || typeof payload.requestId !== 'string') throw new Error('A session assignment request ID is required.');
+    const pending = pendingSessionAssignments.get(payload.requestId);
+    if (!pending || pending.webContents !== event.sender || activeSessionAssignmentId !== payload.requestId) {
+      throw new Error('No matching active session assignment exists.');
+    }
+    if (payload.cancelled !== true && typeof payload.autoAssign !== 'boolean') throw new Error('Assignment mode must be explicitly selected.');
+    const agentId = payload.autoAssign === true ? null : payload.agentId;
+    if (payload.cancelled !== true && payload.autoAssign !== true &&
+        (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId))) {
+      throw new Error('Choose a valid existing or new agent ID.');
+    }
+    const workspaceRoot = typeof payload.workspaceRoot === 'string' && payload.workspaceRoot.trim()
+      ? resolveWorkspaceRoot(payload.workspaceRoot, getWorkspaceRoot()) : getWorkspaceRoot();
+    const message = typeof payload.message === 'string' ? payload.message.trim() : '';
+    if (message.length > 20000) throw new Error('The optional initial message is longer than 20,000 characters.');
+    finishSessionAssignment(payload.requestId, payload.cancelled === true ? null : {
+      autoAssign: payload.autoAssign, agent_id: agentId, workspace_root: workspaceRoot, message
+    });
+    return { accepted: true, cancelled: payload.cancelled === true };
   });
   ipcMain.handle('app:agent-send-message', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
@@ -2439,7 +2655,12 @@ if (!hasInstanceLock) {
             };
           }
         });
+        localTtsService = createLocalPiperTts({
+          userDataPath: app.getPath('userData'),
+          getSettings: getLocalTtsSettings
+        });
         visionService = createVisionService({
+          localTts: localTtsService,
           githubAuth,
           getSettings: () => settings,
           getWorkspaceRoot,
@@ -2495,8 +2716,21 @@ if (!hasInstanceLock) {
           getWorkspaceRoot,
           executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId),
           onState: broadcastBridgeState,
+          requestSessionAssignment,
+          onSessionAssigned: persistAssignedSessionWorkspace,
           publishContextOnStart: true
         });
+        if (getLocalTtsSettings().enabled) {
+          setImmediate(() => {
+            void visionService.prepareLocalTts()
+              .then(status => dashboardSend('app:local-tts-status', status))
+              .catch(error => dashboardSend('app:local-tts-status', {
+                ...localTtsService.getStatus(),
+                status: error && error.code === 'LOCAL_TTS_RESOURCE_GUARD' ? 'resource_guard_blocked' : 'error',
+                error: String(error && error.message || error).slice(0, 1200)
+              }));
+          });
+        }
       } catch (error) {
         appInitializationError = 'Local worker services could not initialize: ' + String(error && error.message || error);
         appendDiagnosticLog('worker-services-initialization-failed', error);

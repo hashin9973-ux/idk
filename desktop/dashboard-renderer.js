@@ -109,8 +109,44 @@ function renderCloudStatus(value){
   let detail=s.state||(s.enabled?'connecting':'disabled');if(s.lastSyncedAt)detail+=' · last sync '+new Date(s.lastSyncedAt).toLocaleString();if(s.error)detail+=' · '+s.error;
   $('cloud-sync-status').textContent=detail;$('cloud-sync-status').dataset.state=s.error?'error':s.enabled&&s.state==='ready'?'success':'';
 }
+function readLocalTtsSettings(){return {enabled:$('local-tts-enabled').checked,resourceGuardEnabled:$('local-tts-resource-guard').checked,
+  maxCpuPercent:Number($('local-tts-max-cpu').value),minFreeRamGb:Number($('local-tts-min-ram').value)};}
+function applyLocalTtsSettings(value){
+  const s=value&&typeof value==='object'?value:{};
+  $('local-tts-enabled').checked=s.enabled===true;
+  $('local-tts-resource-guard').checked=s.resourceGuardEnabled!==false;
+  $('local-tts-max-cpu').value=String(Number.isFinite(s.maxCpuPercent)?s.maxCpuPercent:75);
+  $('local-tts-min-ram').value=String(Number.isFinite(s.minFreeRamGb)?s.minFreeRamGb:2);
+  $('local-tts-max-cpu-value').textContent=$('local-tts-max-cpu').value+'%';
+  $('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB';
+  const guard=$('local-tts-resource-guard').checked,enabled=$('local-tts-enabled').checked;
+  $('local-tts-resource-guard').disabled=!enabled;
+  $('local-tts-max-cpu').disabled=!enabled||!guard;$('local-tts-min-ram').disabled=!enabled||!guard;
+  $('local-tts-prepare').disabled=!enabled;
+}
+function renderLocalTtsStatus(value){
+  const s=value&&typeof value==='object'?value:{},status=String(s.status||'not_prepared');
+  const text=status==='ready'?'Ready · Piper '+String(s.voice||'en_US-libritts-high')+' · speaker 0 · '+Number(s.sample_rate||22050)+' Hz':
+    status==='downloading_voice'?'Downloading and verifying the LibriTTS High voice…':
+    status==='installing_runtime'?'Installing the pinned Piper runtime…':
+    status==='preparing'?'Preparing Piper and warming the voice…':
+    status==='resource_guard_blocked'?'Waiting for CPU/RAM limits: '+String(s.error||'resource guard is active'):
+    status==='error'?'Local Piper error: '+String(s.error||s.message||'unknown error'):
+    status==='stopped'?(s.enabled?'Stopped · prepare the local voice again.':'Local Piper is off.'):
+    'Not prepared · enable local TTS to download the voice and runtime.';
+  $('local-tts-status').textContent=text;
+  $('local-tts-status').dataset.state=status==='ready'?'success':status==='error'?'error':'';
+}
+async function saveLocalTtsSettings(){
+  try{
+    const saved=await api.setLocalTtsSettings(readLocalTtsSettings());applyLocalTtsSettings(saved);
+    renderLocalTtsStatus(await api.getLocalTtsStatus());
+    note(saved.enabled?'Local Piper TTS enabled. Preparing the voice if needed.':'Local Piper TTS disabled.','success');
+  }catch(error){note('Could not save local TTS settings: '+error.message,'error')}
+}
 async function applyInitialSettings(settings){
   const s=settings&&typeof settings==='object'?settings:{};if(themeIds.includes(s.dashboardTheme))applyTheme(s.dashboardTheme);
+  if(s.localTts)applyLocalTtsSettings(s.localTts);
   if(Number.isFinite(s.ttsVolume)){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}
   if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.observeFps))fps.value=String(s.observeFps);
   browserEnabled.checked=s.browserEnabled===true;
@@ -250,10 +286,10 @@ function makeAgentWidget(agent,index){
   card.append(header,composer,body,messageThread);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
   workspaceButton.addEventListener('click',async event=>{
     event.stopPropagation();const sessionId=card.dataset.sessionId||'';
-    if(!sessionId||workspaceButton.disabled)return;
+    if(workspaceButton.disabled)return;
     workspaceButton.disabled=true;
     try {
-      const result=await api.selectAgentWorkspace(sessionId);
+      const result=await api.selectAgentWorkspace(agent.agent_id,sessionId||null);
       if(!result.canceled)note('Workspace for '+agent.agent_id+' updated.','success');
       await refresh();
     } catch(error) { note('Could not configure '+agent.agent_id+' workspace: '+error.message,'error'); }
@@ -314,10 +350,10 @@ function renderAgentMailboxes(rawAgents){
     sessionLine.textContent='SESSION '+String(agent.session_id||'none');
     sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
     const hasSession=Boolean(agent.session_id);
-    workspaceButton.disabled=!hasSession;
+    workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
-    workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_custom?' · custom for this conversation':' · global default'));
+    workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_scope==='agent-default'?' · saved agent default':agent.workspace_scope==='session'?' · current conversation override':agent.workspace_custom?' · custom':' · global default'));
     const active=agent.status==='active';
     status.className='agent-console-status '+(active?'is-active':'is-inactive');
     status.textContent=active?'ACTIVE':'INACTIVE';
@@ -462,6 +498,7 @@ async function refresh(){
     try{
       const s=await api.getState();
       renderWorker(s.bridge||{});
+      void api.getLocalTtsStatus().then(renderLocalTtsStatus).catch(()=>{});
       void refreshAgentReplies();
       renderWorkspace(s.workspace||{});
       if(!dashboardStateLoaded){
@@ -513,6 +550,17 @@ repoForm.addEventListener('submit',async e=>{e.preventDefault();if(busy.repo)ret
 themeSelect.addEventListener('change',()=>void chooseTheme(themeSelect.value));themeGallery.addEventListener('click',e=>{const card=e.target.closest('[data-theme-id]');if(card&&themeIds.includes(card.dataset.themeId))void chooseTheme(card.dataset.themeId)});
 volume.addEventListener('input',()=>volumeValue.textContent=volume.value+'%');volume.addEventListener('change',async()=>{if(busy.volume)return;busy.volume=true;try{const v=await api.setTtsVolume(Number(volume.value));volumeValue.textContent=v.volume+'%';note('TTS volume saved.','success')}catch(e){note(e.message,'error')}finally{busy.volume=false}});
 
+for(const id of ['local-tts-enabled','local-tts-resource-guard','local-tts-max-cpu','local-tts-min-ram']){
+  $(id).addEventListener('change',()=>void saveLocalTtsSettings());
+}
+$('local-tts-max-cpu').addEventListener('input',()=>{$('local-tts-max-cpu-value').textContent=$('local-tts-max-cpu').value+'%'});
+$('local-tts-min-ram').addEventListener('input',()=>{$('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB'});
+$('local-tts-prepare').addEventListener('click',async()=>{
+  const button=$('local-tts-prepare');button.disabled=true;
+  try{renderLocalTtsStatus(await api.prepareLocalTts());note('Local Piper voice is ready.','success')}
+  catch(error){renderLocalTtsStatus({status:error.code==='LOCAL_TTS_RESOURCE_GUARD'?'resource_guard_blocked':'error',error:error.message});note(error.message,'error')}
+  finally{button.disabled=!$('local-tts-enabled').checked}
+});
 for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){
   $(id).addEventListener('change',()=>{applyTtsSettings(readTtsSettings());void saveTtsSettings()});
 }
@@ -563,6 +611,83 @@ $('vision-setup-check').addEventListener('click',async()=>{
 async function changeBrowserMode(){browserEnabled.disabled=true;try{const v=await api.setBrowserSettings({enabled:browserEnabled.checked,keepActive:keep.checked,lowMemory:low.checked});browserEnabled.checked=v.enabled===true;keep.checked=v.keepActive;low.checked=v.lowMemory;updateBrowserMode();note(v.enabled?'In-app browser enabled.':'In-app browser disabled; web links will open in your normal browser.','success')}catch(e){note(e.message,'error');await refresh()}finally{browserEnabled.disabled=false;updateBrowserMode()}}
 browserEnabled.addEventListener('change',()=>void changeBrowserMode());
 keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListener('change',()=>void changeBrowserMode());
+
+let assignmentState=null,assignmentWorkspaceRoot='';
+
+function closeAgentAssignment(){ $('agent-assignment-overlay').hidden=true;assignmentState=null; }
+function showAgentAssignment(payload){
+  if(!payload||typeof payload.requestId!=='string')return;
+  assignmentState=payload;
+  const overlay=$('agent-assignment-overlay'),select=$('agent-assignment-id');
+  $('agent-assignment-label').textContent='Session label: '+String(payload.label||'ChatGPT session');
+  select.replaceChildren();
+  const agents=Array.isArray(payload.agents)?payload.agents:[];
+  const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='Choose an available agent ID…';placeholder.disabled=true;placeholder.selected=true;select.append(placeholder);
+  const available=agents.filter(agent=>agent&&typeof agent.agent_id==='string'&&agent.status==='inactive'&&agent.busy!==true&&agent.reusable!==false);
+  for(const agent of available){
+    const option=document.createElement('option');option.value=agent.agent_id;
+    option.textContent=agent.agent_id+' · '+String(agent.status||'inactive');select.append(option);
+  }
+  const highestAgentNumber=agents.reduce((highest,agent)=>Math.max(highest,Number(String(agent&&agent.agent_id||'').slice(6))||0),0);
+  const newAgentId='agent-'+String(highestAgentNumber+1).padStart(3,'0');
+  const next=document.createElement('option');next.value=newAgentId;next.textContent=newAgentId+' · new agent';select.append(next);
+  $('agent-assignment-auto').checked=false;
+  $('agent-assignment-manual-fields').hidden=false;
+  $('agent-assignment-message').value='';
+  const updateWorkspace=()=>{
+    const id=select.value;
+    const defaults=payload.workspaceDefaults&&typeof payload.workspaceDefaults==='object'?payload.workspaceDefaults:{};
+    assignmentWorkspaceRoot=typeof defaults[id]==='string'&&defaults[id]?defaults[id]:String(payload.defaultWorkspace||'');
+    $('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace';
+  };
+  updateWorkspace();select.onchange=updateWorkspace;
+  $('agent-assignment-auto').onchange=()=>{
+    const automatic=$('agent-assignment-auto').checked;
+    $('agent-assignment-manual-fields').hidden=automatic;
+    if(!automatic)updateWorkspace();
+  };
+  $('agent-assignment-status').textContent='Choose an agent and workspace, then confirm. This request expires automatically if left unanswered.';
+  $('agent-assignment-status').dataset.state='';
+  $('agent-assignment-confirm').disabled=false;
+  overlay.hidden=false;select.focus();
+}
+async function chooseAssignmentWorkspace(){
+  const button=$('agent-assignment-choose-workspace');button.disabled=true;
+  try{
+    const result=await api.chooseAgentAssignmentWorkspace();
+    if(!result.canceled){assignmentWorkspaceRoot=String(result.workspaceRoot||'');$('agent-assignment-workspace-path').textContent=assignmentWorkspaceRoot||'Global default workspace'}
+  }catch(error){$('agent-assignment-status').textContent='Could not choose workspace: '+error.message;$('agent-assignment-status').dataset.state='error'}
+  finally{button.disabled=false}
+}
+async function submitAgentAssignment(cancelled=false){
+  if(!assignmentState)return;
+  const button=$('agent-assignment-confirm');
+  const autoAssign=$('agent-assignment-auto').checked;
+  const selectedAgentId=$('agent-assignment-id').value;
+  if(!cancelled&&!autoAssign&&!selectedAgentId){
+    $('agent-assignment-status').textContent='Select an agent ID or choose a new agent ID before starting the session.';
+    $('agent-assignment-status').dataset.state='error';
+    $('agent-assignment-id').focus();
+    button.disabled=false;
+    return;
+  }
+  button.disabled=true;
+  const payload={requestId:assignmentState.requestId,cancelled,autoAssign,
+    agentId:selectedAgentId,workspaceRoot:assignmentWorkspaceRoot,
+    message:$('agent-assignment-message').value.trim()};
+  try{
+    await api.respondAgentAssignment(payload);closeAgentAssignment();
+    note(cancelled?'Session start cancelled.':'Agent assignment confirmed. Creating session…',cancelled?'':'success');
+  }catch(error){$('agent-assignment-status').textContent=error.message;$('agent-assignment-status').dataset.state='error';button.disabled=false}
+}
+$('agent-assignment-choose-workspace').addEventListener('click',()=>void chooseAssignmentWorkspace());
+$('agent-assignment-confirm').addEventListener('click',()=>void submitAgentAssignment(false));
+$('agent-assignment-cancel').addEventListener('click',()=>void submitAgentAssignment(true));
+$('agent-assignment-auto').addEventListener('change',()=>{$('agent-assignment-manual-fields').hidden=$('agent-assignment-auto').checked});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&assignmentState){event.preventDefault();void submitAgentAssignment(true)}});
+api.onAgentAssignmentRequested(showAgentAssignment);
+api.onAgentAssignmentDismissed(payload=>{if(assignmentState&&payload.requestId===assignmentState.requestId){closeAgentAssignment();note('Agent assignment expired. No session was created.','error')}});
+
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
@@ -570,7 +695,7 @@ api.onPrepareForTray(async payload=>{
   try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
-api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
+api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
 window.addEventListener('resize',()=>{
   if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
   positionControls();

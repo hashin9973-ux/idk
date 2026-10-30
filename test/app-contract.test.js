@@ -23,6 +23,7 @@ test('packaging includes the native Windows worker and mailbox implementation', 
 });
 
 test('agent dashboard supports a scrollable multi-seat canvas and per-session controls', () => {
+  const html = read('desktop', 'dashboard.html');
   const renderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'dashboard.css');
   const preload = read('desktop', 'preload.js');
@@ -33,23 +34,46 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(styles.includes('.agent-widget-host{position:relative'));
   assert.ok(renderer.includes('agent-workspace-button'));
   assert.ok(renderer.includes('agent-message-button'));
-  assert.ok(renderer.includes('api.selectAgentWorkspace(sessionId)'));
+  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,sessionId||null)'));
+  assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
+  assert.ok(renderer.includes('Select an agent ID or choose'));
+  assert.ok(renderer.includes('const newAgentId=\'agent-\'+String(highestAgentNumber+1).padStart(3,\'0\')'));
+  assert.ok(renderer.includes("next.value=newAgentId"));
+  assert.ok(html.includes('id="agent-assignment-id" required'));
+  assert.ok(renderer.includes('No session was created.'));
+  assert.ok(main.includes('playAssignmentNotificationSound'));
   assert.ok(renderer.includes('api.sendAgentMessage(sessionId,message)'));
   assert.ok(renderer.includes("send.textContent='Sending…'"));
   assert.ok(renderer.includes('api.readAgentReplies(sessionId,ids)'));
   assert.ok(renderer.includes('agent-message-thread'));
   assert.ok(renderer.includes('updateAgentCanvasHeight'));
-  assert.ok(preload.includes('selectAgentWorkspace: sessionId'));
+  assert.ok(preload.includes('selectAgentWorkspace: (agentId, sessionId = null)'));
+  assert.ok(preload.includes('respondAgentAssignment: payload'));
+  assert.ok(preload.includes('onAgentAssignmentRequested(callback)'));
   assert.ok(preload.includes('sendAgentMessage: (sessionId, message)'));
   assert.ok(preload.includes('readAgentReplies: (sessionId, messageIds)'));
   assert.ok(main.includes('function getWorkspaceRoot(sessionId = null)'));
   assert.ok(main.includes('settings.agentWorkspaces'));
-  assert.ok(main.includes('function selectAgentWorkspace(sessionId)'));
+  assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
+  assert.ok(main.includes('function requestSessionAssignment'));
+  assert.ok(main.includes('function showNextSessionAssignment'));
+  assert.ok(main.includes('const sessionAssignmentQueue = []'));
+  assert.ok(main.includes('const sessionIsCurrent = Boolean(sessionId)'));
+  assert.ok(bridge.includes('SESSION_ASSIGNMENT_CANCELLED'));
+  assert.ok(main.includes('Choose a valid existing or new agent ID.'));
+  assert.ok(main.includes('onSessionAssigned: persistAssignedSessionWorkspace'));
+  assert.ok(main.includes('settings.agentWorkspaceDefaults'));
+  assert.ok(main.includes('const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :'));
+  assert.ok(main.includes('hasSessionOverride ? \'session\' : (hasSeatDefault ? \'agent-default\' : \'global-default\')'));
+  assert.ok(renderer.includes('workspaceButton.disabled=false'));
   assert.ok(main.includes('app:agent-select-workspace'));
   assert.ok(main.includes('app:agent-send-message'));
   assert.ok(main.includes('app:agent-read-replies'));
   assert.ok(bridge.includes('executeTool(request.tool, request.args, requestId, request.session_id || null)'));
   assert.ok(bridge.includes('readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)'));
+  assert.ok(bridge.includes('requestSessionAssignment({'));
+  assert.ok(bridge.includes('requestSessionAssignment = async () => null'));
+  assert.ok(bridge.includes('assignment_mode: assignment.autoAssign === true ? \'automatic-confirmed\' : \'manual\''));
   assert.ok(bridge.includes('getWorkspaceRoot(request.session_id || null)'));
   assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId)'));
   assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));
@@ -204,6 +228,8 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:browser-settings'/);
   assert.match(main, /'app:repository-bridge-config'/);
   assert.match(main, /'app:set-theme'/);
+  assert.match(main, /'app:local-tts-settings'/);
+  assert.match(main, /createLocalPiperTts/);
 });
 
 test('the separate dashboard implements tabbed widgets, settings, and embedded-browser controls', () => {
@@ -214,7 +240,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   for (const id of ['tab-list', 'add-tab', 'main-page', 'settings-page', 'queues-widget', 'controls-widget',
     'queue-list', 'observe-toggle', 'auto-accept-toggle', 'quick-colab-connect', 'workspace-button',
     'github-connect', 'repo-owner', 'repo-name', 'repo-branch', 'allow-public-mailbox',
-    'tts-volume', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
+    'tts-volume', 'local-tts-enabled', 'local-tts-resource-guard', 'local-tts-max-cpu', 'local-tts-min-ram', 'local-tts-prepare', 'local-tts-status', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
   }
   assert.match(renderer, /snap\(/);
@@ -222,6 +248,8 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(renderer, /setBrowserBounds/);
   assert.match(renderer, /connectColab/);
   assert.match(renderer, /api\.setTheme/);
+  assert.match(renderer, /api\.setLocalTtsSettings/);
+  assert.match(html, /Maximum CPU utilization/);
   assert.match(renderer, /applyTheme/);
   assert.match(renderer, /themeGallery\.addEventListener/);
   assert.match(html, /preview-graph/);
@@ -817,4 +845,44 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.match(styles, /#main-page\{overflow:auto/);
   assert.match(renderer, /isAgent&&!resize&&!e\.target\.closest\('\.agent-console-header'\)/);
   assert.doesNotMatch(renderer, /innerHTML\s*=/, 'console output must be rendered as text, not HTML');
+});
+
+
+test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate', () => {
+  const html = read('desktop', 'dashboard.html');
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const preload = read('desktop', 'preload.js');
+  const main = read('desktop', 'main.js');
+  const service = read('desktop', 'colab-direct-service.js');
+  const local = read('desktop', 'local-tts.js');
+  const pkg = JSON.parse(read('package.json'));
+  assert.ok(html.includes('id="local-tts-enabled"'));
+  assert.ok(html.includes('id="local-tts-resource-guard"'));
+  assert.ok(html.includes('id="local-tts-max-cpu"'));
+  assert.ok(html.includes('id="local-tts-min-ram"'));
+  assert.ok(renderer.includes('api.setLocalTtsSettings(readLocalTtsSettings())'));
+  assert.ok(preload.includes('prepareLocalTts:'));
+  assert.ok(main.includes('app:local-tts-settings'));
+  assert.ok(main.includes('createLocalPiperTts'));
+  assert.ok(service.includes("engine: useLocalTts ? 'local-piper' : 'colab-piper'"));
+  assert.ok(local.includes("const VOICE_NAME='en_US-libritts-high'"));
+  assert.ok(local.includes('const SPEAKER_ID=0'));
+  assert.ok(local.includes('resourceGuardEnabled'));
+  assert.ok(local.includes('LOCAL_TTS_RESOURCE_GUARD'));
+  assert.ok(local.includes('from piper.config import SynthesisConfig'));
+  assert.ok(local.includes('except ImportError'));
+  assert.ok(local.includes('await checkResourceGuard(config)'));
+  assert.ok(local.includes('await verifyResourcesAfterLoad(config)'));
+  assert.ok(local.includes('importlib.metadata'));
+  assert.ok(local.includes('lastResourceCheckAt'));
+  assert.ok(local.includes("piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl"));
+  assert.ok(local.includes("const PIPER_WHEEL_SHA256='5da9bfdb05dfe15da3536859d422e605483ffa6d2b3ec2c5b9593bae6b5aa6a4'"));
+  assert.ok(pkg.scripts.check.includes('desktop/local-tts.js'));
+  assert.ok(pkg.scripts.check.includes('test/local-tts.test.js'));
+  assert.ok(pkg.build.files.includes('THIRD_PARTY_NOTICES.md'));
+  assert.ok(read('THIRD_PARTY_NOTICES.md').includes('LibriTTS'));
+  assert.ok(read('THIRD_PARTY_NOTICES.md').includes('CC BY 4.0'));
+  assert.ok(read('THIRD_PARTY_NOTICES.md').includes('GPL-3.0'));
+  assert.ok(read('THIRD_PARTY_NOTICES.md').includes('issue #340'));
+  assert.ok(read('THIRD_PARTY_NOTICES.md').includes('does not assert a definitive license'));
 });

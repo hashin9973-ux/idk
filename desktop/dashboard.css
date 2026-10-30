@@ -212,3 +212,21 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
   .agent-request{padding:7px 5px}
   .agent-console-counts{flex-basis:100%}
 }
+
+.agent-assignment-overlay{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:22px;background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
+.agent-assignment-overlay[hidden]{display:none}
+.agent-assignment-dialog{width:min(560px,100%);max-height:min(90vh,760px);overflow:auto;padding:18px;border:1px solid var(--border);border-radius:10px;background:var(--panel);box-shadow:0 22px 80px rgba(0,0,0,.5);color:var(--text)}
+.agent-assignment-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+.agent-assignment-heading h2{margin:0 0 5px;font-size:17px}
+.agent-assignment-heading p{margin:0;color:var(--muted);font-size:12px;line-height:1.5}
+.agent-assignment-pulse{width:10px;height:10px;flex:0 0 10px;margin-top:5px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 5px color-mix(in srgb,var(--accent) 18%,transparent);animation:agent-assignment-pulse 1.5s ease-in-out infinite}
+@keyframes agent-assignment-pulse{50%{opacity:.45;box-shadow:0 0 0 9px transparent}}
+.agent-assignment-toggle{margin:10px 0 14px}
+.agent-assignment-dialog .field-label{display:flex;flex-direction:column;gap:6px;margin:12px 0;color:var(--text);font-size:12px}
+.agent-assignment-dialog select,.agent-assignment-dialog textarea{width:100%;min-width:0;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font:inherit;font-size:12px;line-height:1.45}
+.agent-assignment-dialog textarea{resize:vertical}
+.agent-assignment-workspace{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--surface)}
+.agent-assignment-workspace>div{display:flex;flex-direction:column;gap:4px;min-width:0}
+.agent-assignment-workspace small{max-width:360px;overflow-wrap:anywhere;color:var(--muted);font-size:10px}
+.agent-assignment-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+@media(max-width:600px){.agent-assignment-dialog{padding:13px}.agent-assignment-workspace{align-items:flex-start;flex-direction:column}}

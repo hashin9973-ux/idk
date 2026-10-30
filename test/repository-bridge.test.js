@@ -369,6 +369,7 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
   let localExecutions = 0;
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' }),
     executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
     intervalMs: 5000
   });
@@ -403,6 +404,31 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
     assert.equal(claimA.agent_id, sessionA.agent_id);
     assert.equal(claimB.agent_id, sessionB.agent_id);
     assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
+  } finally { await bridge.stop(); }
+});
+
+test('a dismissed or unanswered session assignment fails without creating or returning a session ID', async () => {
+  const request = {
+    protocol: PROTOCOL, request_id: 'session-start-no-assignment',
+    created_at: new Date().toISOString(), tool: 'session_start', args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + request.request_id + '.json', request]] });
+  const fixture = settingsFixture();
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    // Omit requestSessionAssignment to prove the default is fail-closed.
+    executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(result.result.ok, false);
+    assert.match(result.result.error, /SESSION_ASSIGNMENT_CANCELLED/);
+    assert.match(result.result.error, /no session_id was created/i);
+    assert.equal(result.result.result, undefined);
+    assert.equal([...fake.files.keys()].some(file => file.startsWith('bridge/sessions/')), false);
   } finally { await bridge.stop(); }
 });
 
