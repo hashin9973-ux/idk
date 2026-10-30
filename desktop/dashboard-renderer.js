@@ -727,8 +727,9 @@ function autoArrangeWidgets(){
   Object.assign(queue.style,{left:margin+'px',top:'28px',width:leftWidth+'px'});widgetMoved.queues=true;
   const queueBottom=queue.offsetTop+queue.offsetHeight;
   Object.assign(controls.style,{left:margin+'px',top:(queueBottom+gap)+'px',width:leftWidth+'px'});widgetMoved.controls=true;
-  const startX=width>=leftWidth+cardWidth+margin*2+gap?margin+leftWidth+gap:margin;
-  let x=startX,y=24,col=0;const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
+  const hasRightColumn=width>=leftWidth+cardWidth+margin*2+gap;
+  const startX=hasRightColumn?margin+leftWidth+gap:margin;
+  let x=startX,y=hasRightColumn?24:controls.offsetTop+controls.offsetHeight+gap,col=0;const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
   for(const [id,el] of [...agentWidgets.entries()].sort((a,b)=>Number(a[0].slice(6))-Number(b[0].slice(6)))){
     Object.assign(el.style,{left:x+'px',top:y+'px',width:cardWidth+'px',height:cardHeight+'px'});
     savedWidgetLayout[id]={x,y,width:cardWidth,height:cardHeight};widgetMoved[id]=true;
