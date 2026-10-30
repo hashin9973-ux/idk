@@ -621,7 +621,8 @@ function showAgentAssignment(payload){
   $('agent-assignment-label').textContent='Session label: '+String(payload.label||'ChatGPT session');
   select.replaceChildren();
   const agents=Array.isArray(payload.agents)?payload.agents:[];
-  const available=agents.filter(agent=>agent&&typeof agent.agent_id==='string'&&agent.busy!==true&&agent.reusable!==false);
+  const placeholder=document.createElement('option');placeholder.value='';placeholder.textContent='Choose an available agent ID…';placeholder.disabled=true;placeholder.selected=true;select.append(placeholder);
+  const available=agents.filter(agent=>agent&&typeof agent.agent_id==='string'&&agent.status==='inactive'&&agent.busy!==true&&agent.reusable!==false);
   for(const agent of available){
     const option=document.createElement('option');option.value=agent.agent_id;
     option.textContent=agent.agent_id+' · '+String(agent.status||'inactive');select.append(option);

@@ -30,7 +30,8 @@
     "files": [
       "desktop/**/*",
       "package.json",
-      "LICENSE"
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "extraResources": [
       {
