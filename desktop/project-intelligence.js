@@ -1,6 +1,6 @@
 'use strict';
 const fs=require('node:fs'),fsp=fs.promises,path=require('node:path'),crypto=require('node:crypto');
-const VERSION=2,MAX_FILES=50000,MAX_ENTRIES=250000,MAX_BYTES=1024*1024*1024,MAX_FILE=1024*1024,MAX_CACHE_BYTES=256*1024*1024,MAX_SEARCH_POSTINGS=250000;
+const VERSION=3,MAX_FILES=50000,MAX_ENTRIES=250000,MAX_BYTES=1024*1024*1024,MAX_FILE=1024*1024,MAX_CACHE_BYTES=256*1024*1024,MAX_SEARCH_POSTINGS=250000;
 const IGNORED=new Set(['.git','.hg','.svn','.idea','.vscode','.bridge-worktrees','node_modules','bower_components','.venv','venv','env','dist','build','out','coverage','.next','.nuxt','.cache','.turbo','target','bin','obj','__pycache__','.pytest_cache','.mypy_cache','.gradle','.terraform','vendor','pods','.angular']);
 const LANG=Object.freeze({'.js':'javascript','.jsx':'javascript','.mjs':'javascript','.cjs':'javascript','.ts':'typescript','.tsx':'typescript','.mts':'typescript','.cts':'typescript','.py':'python','.pyi':'python','.go':'go','.rs':'rust','.java':'java','.kt':'kotlin','.kts':'kotlin','.cs':'csharp','.cpp':'cpp','.cc':'cpp','.cxx':'cpp','.c':'c','.h':'c','.hpp':'cpp','.hh':'cpp','.php':'php','.rb':'ruby','.swift':'swift','.vue':'vue','.svelte':'svelte','.md':'markdown','.mdx':'markdown','.json':'json','.yaml':'yaml','.yml':'yaml','.toml':'toml','.sql':'sql','.sh':'shell','.ps1':'powershell'});
 function rel(v){return String(v||'').replace(/\\/g,'/').replace(/^\.\/+/, '').replace(/\/+$/,'');}
@@ -23,17 +23,18 @@ function symbols(s,lang){
  ['function',/\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(/g],
  ['function',/\bfn\s+([A-Za-z_]\w*)\s*[<(]/g],
  ['type',/\b(?:struct|enum|trait)\s+([A-Za-z_]\w*)/g],
+ ['method',/^\s*(?:(?:public|private|protected|static|async|override|readonly|get|set)\s+)*([A-Za-z_$][\w$]*)\s*\([^{};]*\)\s*\{/gm],
  ['declaration',/\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?:=|:)/g]
  ];
- const chosen=lang==='python'?[p[5],p[6]]:lang==='go'?[p[7]]:lang==='rust'?[p[8],p[9]]:['javascript','typescript','vue','svelte'].includes(lang)?[p[0],p[1],p[2],p[3],p[4],p[10]]:[p[0],p[1],p[2],p[4]];
- const out=[],seen=new Set();for(const [kind,re] of chosen){re.lastIndex=0;let m;while((m=re.exec(s))&&out.length<160){if(m[1].length>200){if(!m[0].length)re.lastIndex++;continue;}const id=kind+':'+m[1];if(!seen.has(id)){seen.add(id);out.push({name:m[1],kind,line:lineAt(s,m.index)});}if(!m[0].length)re.lastIndex++;}}
+ const chosen=lang==='python'?[p[5],p[6]]:lang==='go'?[p[7]]:lang==='rust'?[p[8],p[9]]:['javascript','typescript','vue','svelte'].includes(lang)?[p[0],p[1],p[2],p[3],p[4],p[10],p[11]]:[p[0],p[1],p[2],p[4]];
+ const out=[],seen=new Set(),reserved=new Set(['if','for','while','switch','catch','return','throw','with','do','try','else','super','function']);for(const [kind,re] of chosen){re.lastIndex=0;let m;while((m=re.exec(s))&&out.length<160){if(m[1].length>200||(kind==='method'&&reserved.has(m[1]))){if(!m[0].length)re.lastIndex++;continue;}const id=kind+':'+m[1];if(!seen.has(id)){seen.add(id);out.push({name:m[1],kind,line:lineAt(s,m.index)});}if(!m[0].length)re.lastIndex++;}}
  return out.sort((a,b)=>a.line-b.line||a.name.localeCompare(b.name));
 }
 function imports(s,lang){
  const patterns=lang==='python'?[/^\s*(?:from|import)\s+([.\w]+)/gm]:lang==='rust'?[/^\s*use\s+([\w:]+)/gm,/\bmod\s+([A-Za-z_]\w*)/g]:[/\bfrom\s+['"]([^'"]+)['"]/g,/\bimport\s+['"]([^'"]+)['"]/g,/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g];
  const out=[],seen=new Set();for(const re of patterns){re.lastIndex=0;let m;while((m=re.exec(s))&&out.length<80){const v=String(m[1]||'').trim();if(v&&v.length<=2048&&!seen.has(v)){seen.add(v);out.push(v);}if(!m[0].length)re.lastIndex++;}}return out;
 }
-function makeDoc(p,st,b){const ext=path.posix.extname(p).toLowerCase(),language=LANG[ext];if(!language||b.includes(0))return null;let source;try{source=new TextDecoder('utf-8',{fatal:true}).decode(b);}catch{return null;}const syms=symbols(source,language),imps=imports(source,language),ids=(source.match(/[A-Za-z_$][A-Za-z0-9_$]{1,}/g)||[]).slice(0,5000);return{path:p,extension:ext,language,size:st.size,mtimeMs:st.mtimeMs,ctimeMs:st.ctimeMs,terms:unique([...tokenize(path.posix.basename(p)),...tokenize(p),...syms.flatMap(x=>tokenize(x.name)),...imps.flatMap(tokenize),...ids.flatMap(tokenize)],220),symbols:syms,imports:imps};}
+function makeDoc(p,st,b){const ext=path.posix.extname(p).toLowerCase(),language=LANG[ext];if(!language||b.includes(0))return null;let source;try{source=new TextDecoder('utf-8',{fatal:true}).decode(b);}catch{return null;}const syms=symbols(source,language),imps=imports(source,language),ids=(source.match(/[A-Za-z_$][A-Za-z0-9_$]{1,}/g)||[]).slice(0,5000);const pathTerms=unique(tokenize(p),80);return{path:p,extension:ext,language,size:st.size,mtimeMs:st.mtimeMs,ctimeMs:st.ctimeMs,pathTerms,terms:unique([...pathTerms,...syms.flatMap(x=>tokenize(x.name)),...imps.flatMap(tokenize),...ids.flatMap(tokenize)],220),symbols:syms,imports:imps};}
 function resolveImport(from,spec,map){if(!spec.startsWith('.'))return null;const base=path.posix.normalize(path.posix.join(path.posix.dirname(from),spec)),ext=path.posix.extname(base),extensions=Object.keys(LANG);const tries=ext?[base,base+'/index']:[base,...extensions.map(x=>base+x),...extensions.map(x=>base+'/index'+x)];for(const p of tries){const hit=map.get(p.toLowerCase());if(hit)return hit;}return null;}
 function graph(docs){const paths=new Map();for(const d of docs.values())paths.set(d.path.toLowerCase(),d.path);const reverse=new Map();let edges=0;for(const d of docs.values())for(const spec of d.imports){const to=resolveImport(d.path,spec,paths);if(!to||to===d.path)continue;const k=to.toLowerCase();if(!reverse.has(k))reverse.set(k,new Set());reverse.get(k).add(d.path);edges++;}return{reverse,edges};}
 function createProjectIntelligence(options={}){
@@ -53,6 +54,7 @@ function createProjectIntelligence(options={}){
   const extension=path.posix.extname(p).toLowerCase();
   if(extension!==d.extension||LANG[extension]!==d.language)return false;
   if(!Number.isSafeInteger(d.size)||d.size<0||d.size>MAX_FILE||!Number.isFinite(d.mtimeMs)||!Number.isFinite(d.ctimeMs))return false;
+  if(!Array.isArray(d.pathTerms)||d.pathTerms.length>80||d.pathTerms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return false;
   if(!Array.isArray(d.terms)||d.terms.length>220||d.terms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return false;
   if(!Array.isArray(d.symbols)||d.symbols.length>160||d.symbols.some(symbol=>!symbol||typeof symbol!=='object'||typeof symbol.name!=='string'||symbol.name.length<1||symbol.name.length>200||typeof symbol.kind!=='string'||symbol.kind.length>40||!Number.isSafeInteger(symbol.line)||symbol.line<1))return false;
   if(!Array.isArray(d.imports)||d.imports.length>80||d.imports.some(item=>typeof item!=='string'||!item.length||item.length>2048||/[\\x00-\\x1f]/.test(item)))return false;
@@ -210,7 +212,55 @@ function createProjectIntelligence(options={}){
  async function start(root){const s=await ready(root,true);const previous=primary&&states.get(primary);if(previous&&previous!==s){clearTimeout(previous.debounce);clearInterval(previous.reconcile);if(previous.watcher)try{previous.watcher.close();}catch{}previous.watcher=null;previous.reconcile=null;}primary=s.key;if(!s.reconcile&&!s.drive)s.reconcile=setInterval(()=>void refreshState(s),reconcileMs);if(s.lastFullScanAt){void refreshState(s,false);}else if(s.refreshPromise)await s.refreshPromise;return view(s);}
  async function status(root,options={}){throwIfAborted(options.signal);const s=await ready(root);throwIfAborted(options.signal);return{...view(s),lastScan:s.lastScan||null};}
  async function refresh(root,args={},options={}){throwIfAborted(options.signal);const s=await ready(root,keyFor(root)===primary);if(s.refreshPromise)await s.refreshPromise;throwIfAborted(options.signal);return refreshState(s,args.force===true,options.signal);}
- async function search(root,args={},options={}){throwIfAborted(options.signal);const query=String(args.query||'').trim();if(!query||query.length>300)throw Error('project_search.query must contain 1–300 characters.');const s=await ready(root,keyFor(root)===primary);if(!s.documents.size&&s.refreshPromise)await s.refreshPromise;const rawIdentifier=query.replace(/[^A-Za-z0-9_$]/g,'').toLowerCase(),terms=unique([...tokenize(query),...(rawIdentifier?[rawIdentifier]:[])],20);if(!terms.length)throw Error('Query contains no searchable identifiers.');const kind=['all','symbol','file'].includes(args.kind)?args.kind:'all',limit=Number.isInteger(args.maxResults)?Math.min(Math.max(args.maxResults,1),100):30,filter=args.path?rel(args.path).toLowerCase():'';if(args.path&&!inside(s.root,path.resolve(s.root,args.path)))throw Error('Search path must remain inside the workspace.');const hits=new Map();let postingsScanned=0,scanTruncated=false;function add(d,score,type,sym){if(filter&&d.path.toLowerCase()!==filter&&!d.path.toLowerCase().startsWith(filter.replace(/\/+$/,'')+'/'))return;let h=hits.get(d.path);if(!h){h={path:d.path,language:d.language,size:d.size,score:0,matchTypes:new Set(),symbols:[]};hits.set(d.path,h);}h.score+=score;h.matchTypes.add(type);if(sym&&h.symbols.length<20)h.symbols.push({name:sym.name,kind:sym.kind,line:sym.line});}for(const t of terms){throwIfAborted(options.signal);for(const p of s.terms.get(t)||[]){if(++postingsScanned>MAX_SEARCH_POSTINGS){scanTruncated=true;break;}const d=s.documents.get(p.toLowerCase());if(d)add(d,2,'identifier-or-path');}if(scanTruncated)break;/* Exact postings avoid scanning the whole vocabulary for each token. */for(const hit of s.symbolMap.get(t)||[]){if(++postingsScanned>MAX_SEARCH_POSTINGS){scanTruncated=true;break;}const d=s.documents.get(hit.path.toLowerCase());if(d)add(d,8,'symbol',hit);}if(scanTruncated)break;}let matches=[...hits.values()].filter(h=>kind!=='symbol'||h.matchTypes.has('symbol')).map(h=>({...h,matchTypes:[...h.matchTypes]})).sort((a,b)=>b.score-a.score||a.path.localeCompare(b.path)).slice(0,limit);return{query,kind,count:matches.length,matches,truncated:hits.size>limit||scanTruncated,scanTruncated,postingsScanned,index:view(s),searchMode:'local lexical, path, and symbol ranking; no source text is transmitted'};}
+ async function search(root,args={},options={}){
+  throwIfAborted(options.signal);
+  const query=String(args.query||'').trim();
+  if(!query||query.length>300)throw Error('project_search.query must contain 1–300 characters.');
+  const s=await ready(root,keyFor(root)===primary);
+  if(!s.documents.size&&s.refreshPromise)await s.refreshPromise;
+  const rawIdentifier=query.replace(/[^A-Za-z0-9_$]/g,'').toLowerCase();
+  const terms=unique([...tokenize(query),...(rawIdentifier?[rawIdentifier]:[])],20);
+  if(!terms.length)throw Error('Query contains no searchable identifiers.');
+  const kind=['all','symbol','file'].includes(args.kind)?args.kind:'all';
+  const limit=Number.isInteger(args.maxResults)?Math.min(Math.max(args.maxResults,1),100):30;
+  const filter=args.path?rel(args.path).toLowerCase():'';
+  if(args.path&&!inside(s.root,path.resolve(s.root,args.path)))throw Error('Search path must remain inside the workspace.');
+  const hits=new Map();let postingsScanned=0,scanTruncated=false;
+  function add(d,score,type,sym){
+   if(filter&&d.path.toLowerCase()!==filter&&!d.path.toLowerCase().startsWith(filter.replace(/\/+$/,'')+'/'))return;
+   let h=hits.get(d.path);
+   if(!h){h={path:d.path,language:d.language,size:d.size,score:0,matchTypes:new Set(),symbols:[]};hits.set(d.path,h);}
+   h.score+=score;h.matchTypes.add(type);
+   if(sym&&h.symbols.length<20)h.symbols.push({name:sym.name,kind:sym.kind,line:sym.line});
+  }
+  for(const term of terms){
+   throwIfAborted(options.signal);
+   if(kind!=='symbol'){
+    for(const p of s.terms.get(term)||[]){
+     if(++postingsScanned>MAX_SEARCH_POSTINGS){scanTruncated=true;break;}
+     const d=s.documents.get(p.toLowerCase());
+     if(!d)continue;
+     const pathMatch=d.pathTerms.includes(term);
+     if(kind!=='file'||pathMatch)add(d,pathMatch?5:2,pathMatch?'file':'identifier');
+    }
+   }
+   if(scanTruncated||kind==='file')break;
+   if(kind!=='file'){
+    for(const hit of s.symbolMap.get(term)||[]){
+     if(++postingsScanned>MAX_SEARCH_POSTINGS){scanTruncated=true;break;}
+     const d=s.documents.get(hit.path.toLowerCase());
+     if(d)add(d,8,'symbol',hit);
+    }
+   }
+   if(scanTruncated)break;
+  }
+  const matches=[...hits.values()]
+   .filter(hit=>kind!=='symbol'||hit.matchTypes.has('symbol'))
+   .map(hit=>({...hit,matchTypes:[...hit.matchTypes]}))
+   .sort((a,b)=>b.score-a.score||a.path.localeCompare(b.path))
+   .slice(0,limit);
+  return{query,kind,count:matches.length,matches,truncated:hits.size>limit||scanTruncated,scanTruncated,postingsScanned,index:view(s),searchMode:'local lexical, path, and symbol ranking; no source text is transmitted'};
+ }
  async function overview(root,options={}){throwIfAborted(options.signal);const s=await ready(root,keyFor(root)===primary);if(!s.documents.size&&s.refreshPromise)await s.refreshPromise;const languages={},dirs={};let tests=0,entries=0;for(const d of s.documents.values()){throwIfAborted(options.signal);languages[d.language]=(languages[d.language]||0)+1;const first=d.path.split('/')[0];if(d.path.includes('/'))dirs[first]=(dirs[first]||0)+1;if(/(^|[/._-])(test|tests|spec|specs)([/._-]|$)/i.test(d.path))tests++;if(/(^|\/)(index|main|app|server|entry|bootstrap)\.[^.]+$/i.test(d.path))entries++;}return{index:view(s),indexedFiles:s.documents.size,indexedBytes:s.indexedBytes,symbolCount:s.symbolCount,dependencyEdges:s.edgeCount,testFiles:tests,likelyEntryPoints:entries,languages:Object.entries(languages).sort((a,b)=>b[1]-a[1]).map(([language,files])=>({language,files})),topDirectories:Object.entries(dirs).sort((a,b)=>b[1]-a[1]).slice(0,30).map(([directory,files])=>({directory,files})),driveRootNote:s.drive?'Drive-root indexing is intentionally shallow. Select a project folder for full indexing.':null};}
  async function impact(root,args={},options={}){throwIfAborted(options.signal);const s=await ready(root,keyFor(root)===primary);if(!s.documents.size&&s.refreshPromise)await s.refreshPromise;let targets=[];if(args.path){const d=s.documents.get(rel(args.path).toLowerCase());if(!d)throw Error('Path is not present in the project index: '+args.path);targets=[d.path];}else if(args.symbol){targets=(s.symbolMap.get(String(args.symbol).toLowerCase())||[]).map(x=>x.path);if(!targets.length)throw Error('Symbol not found in the project index: '+args.symbol);}else throw Error('project_impact requires either path or symbol.');const found=new Set(),pending=targets.map(x=>x.toLowerCase());while(pending.length){throwIfAborted(options.signal);const p=pending.shift();for(const dependent of s.reverse.get(p)||[]){const k=dependent.toLowerCase();if(found.has(k)||targets.some(t=>t.toLowerCase()===k))continue;found.add(k);pending.push(k);}}const docs=[...found].map(k=>s.documents.get(k)).filter(Boolean);return{targets,directAndTransitiveDependents:docs.map(d=>d.path).sort(),affectedTestCandidates:docs.filter(d=>/(test|spec)/i.test(d.path)).map(d=>d.path).sort(),dependentCount:docs.length,dependencyEdges:s.edgeCount,confidence:'Relative import graph only; package aliases, reflection, generated code, and dynamic imports may be unresolved.',index:view(s)};}
  async function stop(){stopped=true;for(const s of states.values()){clearTimeout(s.debounce);clearInterval(s.reconcile);if(s.watcher)try{s.watcher.close();}catch{}if(s.refreshPromise)try{await s.refreshPromise;}catch{}await persist(s).catch(()=>{});}states.clear();primary=null;}

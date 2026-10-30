@@ -78,7 +78,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(bridge.includes('getWorkspaceRoot(request.session_id || null)'));
   assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId)'));
   assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));
-  assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId)'));
+  assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal)'));
 });
 
 test('dashboard is a minimal GitHub and worker status window', () => {
@@ -341,7 +341,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
   const main = read('desktop', 'main.js');
-  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null\)/);
+  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
   assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);
