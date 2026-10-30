@@ -918,7 +918,7 @@ function createToolBridge(deps) {
   }
 
 
-  async function executeBatch(args, parentId) {
+  async function executeBatch(args, parentId, sessionId = null) {
     const completed = new Map();
     const taskById = new Map();
     const outcomeById = new Map();
@@ -986,7 +986,7 @@ function createToolBridge(deps) {
           try {
             const resolvedArgs = resolveBatchRefs(step.args, completed);
             const childId = (String(parentId).slice(0, 55) || 'batch') + '-' + step.id;
-            outcome = await runTool(step.tool, resolvedArgs, childId);
+            outcome = await runTool(step.tool, resolvedArgs, childId, sessionId);
           } catch (error) {
             outcome = { ok: false, error: String(error && error.message || error) };
           }
@@ -1139,15 +1139,15 @@ function createToolBridge(deps) {
     };
   }
 
-  async function runTool(tool, inputArgs, callId = null) {
-    const root = getWorkspaceRoot();
+  async function runTool(tool, inputArgs, callId = null, sessionId = null) {
+    const root = getWorkspaceRoot(sessionId);
     const args = { ...(inputArgs || {}) };
     const id = callId || randomUUID();
     let result;
     try {
       validateArgs(tool, args);
       if (tool === 'batch') {
-        result = await executeBatch(args, id);
+        result = await executeBatch(args, id, sessionId);
       } else if (tool === 'get_agent_context') {
         result = { ok: true, result: await executeAgentContext(root, id) };
       } else {
