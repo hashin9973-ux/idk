@@ -109,8 +109,43 @@ function renderCloudStatus(value){
   let detail=s.state||(s.enabled?'connecting':'disabled');if(s.lastSyncedAt)detail+=' · last sync '+new Date(s.lastSyncedAt).toLocaleString();if(s.error)detail+=' · '+s.error;
   $('cloud-sync-status').textContent=detail;$('cloud-sync-status').dataset.state=s.error?'error':s.enabled&&s.state==='ready'?'success':'';
 }
+function readLocalTtsSettings(){return {enabled:$('local-tts-enabled').checked,resourceGuardEnabled:$('local-tts-resource-guard').checked,
+  maxCpuPercent:Number($('local-tts-max-cpu').value),minFreeRamGb:Number($('local-tts-min-ram').value)};}
+function applyLocalTtsSettings(value){
+  const s=value&&typeof value==='object'?value:{};
+  $('local-tts-enabled').checked=s.enabled===true;
+  $('local-tts-resource-guard').checked=s.resourceGuardEnabled!==false;
+  $('local-tts-max-cpu').value=String(Number.isFinite(s.maxCpuPercent)?s.maxCpuPercent:75);
+  $('local-tts-min-ram').value=String(Number.isFinite(s.minFreeRamGb)?s.minFreeRamGb:2);
+  $('local-tts-max-cpu-value').textContent=$('local-tts-max-cpu').value+'%';
+  $('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB';
+  const guard=$('local-tts-resource-guard').checked,enabled=$('local-tts-enabled').checked;
+  $('local-tts-resource-guard').disabled=!enabled;
+  $('local-tts-max-cpu').disabled=!enabled||!guard;$('local-tts-min-ram').disabled=!enabled||!guard;
+  $('local-tts-prepare').disabled=!enabled;
+}
+function renderLocalTtsStatus(value){
+  const s=value&&typeof value==='object'?value:{},status=String(s.status||'not_prepared');
+  const text=status==='ready'?'Ready · Piper '+String(s.voice||'en_US-libritts-high')+' · speaker 0 · '+Number(s.sample_rate||22050)+' Hz':
+    status==='downloading_voice'?'Downloading and verifying the LibriTTS High voice…':
+    status==='installing_runtime'?'Installing the pinned Piper runtime…':
+    status==='preparing'?'Preparing Piper and warming the voice…':
+    status==='error'?'Local Piper error: '+String(s.error||s.message||'unknown error'):
+    status==='stopped'?(s.enabled?'Stopped · prepare the local voice again.':'Local Piper is off.'):
+    'Not prepared · enable local TTS to download the voice and runtime.';
+  $('local-tts-status').textContent=text;
+  $('local-tts-status').dataset.state=status==='ready'?'success':status==='error'?'error':'';
+}
+async function saveLocalTtsSettings(){
+  try{
+    const saved=await api.setLocalTtsSettings(readLocalTtsSettings());applyLocalTtsSettings(saved);
+    renderLocalTtsStatus(await api.getLocalTtsStatus());
+    note(saved.enabled?'Local Piper TTS enabled. Preparing the voice if needed.':'Local Piper TTS disabled.','success');
+  }catch(error){note('Could not save local TTS settings: '+error.message,'error')}
+}
 async function applyInitialSettings(settings){
   const s=settings&&typeof settings==='object'?settings:{};if(themeIds.includes(s.dashboardTheme))applyTheme(s.dashboardTheme);
+  if(s.localTts)applyLocalTtsSettings(s.localTts);
   if(Number.isFinite(s.ttsVolume)){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}
   if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.observeFps))fps.value=String(s.observeFps);
   browserEnabled.checked=s.browserEnabled===true;
@@ -462,6 +497,7 @@ async function refresh(){
     try{
       const s=await api.getState();
       renderWorker(s.bridge||{});
+      void api.getLocalTtsStatus().then(renderLocalTtsStatus).catch(()=>{});
       void refreshAgentReplies();
       renderWorkspace(s.workspace||{});
       if(!dashboardStateLoaded){
@@ -513,6 +549,17 @@ repoForm.addEventListener('submit',async e=>{e.preventDefault();if(busy.repo)ret
 themeSelect.addEventListener('change',()=>void chooseTheme(themeSelect.value));themeGallery.addEventListener('click',e=>{const card=e.target.closest('[data-theme-id]');if(card&&themeIds.includes(card.dataset.themeId))void chooseTheme(card.dataset.themeId)});
 volume.addEventListener('input',()=>volumeValue.textContent=volume.value+'%');volume.addEventListener('change',async()=>{if(busy.volume)return;busy.volume=true;try{const v=await api.setTtsVolume(Number(volume.value));volumeValue.textContent=v.volume+'%';note('TTS volume saved.','success')}catch(e){note(e.message,'error')}finally{busy.volume=false}});
 
+for(const id of ['local-tts-enabled','local-tts-resource-guard','local-tts-max-cpu','local-tts-min-ram']){
+  $(id).addEventListener('change',()=>void saveLocalTtsSettings());
+}
+$('local-tts-max-cpu').addEventListener('input',()=>{$('local-tts-max-cpu-value').textContent=$('local-tts-max-cpu').value+'%'});
+$('local-tts-min-ram').addEventListener('input',()=>{$('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB'});
+$('local-tts-prepare').addEventListener('click',async()=>{
+  const button=$('local-tts-prepare');button.disabled=true;
+  try{renderLocalTtsStatus(await api.prepareLocalTts());note('Local Piper voice is ready.','success')}
+  catch(error){renderLocalTtsStatus({status:'error',error:error.message});note(error.message,'error')}
+  finally{button.disabled=!$('local-tts-enabled').checked}
+});
 for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){
   $(id).addEventListener('change',()=>{applyTtsSettings(readTtsSettings());void saveTtsSettings()});
 }
@@ -646,7 +693,7 @@ api.onPrepareForTray(async payload=>{
   try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
-api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});
+api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
 window.addEventListener('resize',()=>{
   if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
   positionControls();

@@ -216,6 +216,8 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:browser-settings'/);
   assert.match(main, /'app:repository-bridge-config'/);
   assert.match(main, /'app:set-theme'/);
+  assert.match(main, /'app:local-tts-settings'/);
+  assert.match(main, /createLocalPiperTts/);
 });
 
 test('the separate dashboard implements tabbed widgets, settings, and embedded-browser controls', () => {
@@ -226,7 +228,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   for (const id of ['tab-list', 'add-tab', 'main-page', 'settings-page', 'queues-widget', 'controls-widget',
     'queue-list', 'observe-toggle', 'auto-accept-toggle', 'quick-colab-connect', 'workspace-button',
     'github-connect', 'repo-owner', 'repo-name', 'repo-branch', 'allow-public-mailbox',
-    'tts-volume', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
+    'tts-volume', 'local-tts-enabled', 'local-tts-resource-guard', 'local-tts-max-cpu', 'local-tts-min-ram', 'local-tts-prepare', 'local-tts-status', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
   }
   assert.match(renderer, /snap\(/);
@@ -234,6 +236,8 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   assert.match(renderer, /setBrowserBounds/);
   assert.match(renderer, /connectColab/);
   assert.match(renderer, /api\.setTheme/);
+  assert.match(renderer, /api\.setLocalTtsSettings/);
+  assert.match(renderer, /Maximum CPU utilization/);
   assert.match(renderer, /applyTheme/);
   assert.match(renderer, /themeGallery\.addEventListener/);
   assert.match(html, /preview-graph/);
