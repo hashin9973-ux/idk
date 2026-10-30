@@ -497,14 +497,16 @@ function ttsOutputFailed(args = {}, output) {
 
 function createToolBridge(deps) {
   const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService,
-    getTtsSettings = () => ({ mode: 'autoplay' }), onTtsRequest, onTtsResult } = deps;
+    getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult } = deps;
   const COMPUTER_TOOLS = new Set(['computer']);
 
-  async function synthesizeConfiguredSpeech(args, id) {
+  async function synthesizeConfiguredSpeech(args, id, sessionId = null) {
     if (args.play === false) return visionService.synthesizeSpeech(args, id);
     const config = typeof getTtsSettings === 'function' ? getTtsSettings() || {} : {};
     const mode = config.mode === 'notification' ? 'notification' : 'autoplay';
-    const request = { id: 'speech-' + randomUUID(), text: String(args.text || '').trim(), mode };
+    const agent = typeof getAgentLabelForSession === 'function' ? getAgentLabelForSession(sessionId) : null;
+    const request = { id: 'speech-' + randomUUID(), text: String(args.text || '').trim(), mode,
+      agentId: agent && agent.agentId || '', agentLabel: agent && agent.agentLabel || 'Windows Bridge' };
     if (typeof onTtsRequest === 'function') { try { onTtsRequest(request); } catch {} }
     if (mode === 'notification') {
       const output = {
@@ -1191,7 +1193,7 @@ function createToolBridge(deps) {
             const output = isComputerTool
               ? await computerServiceCall(visionService, args, id)
               : isTtsTool
-                ? await synthesizeConfiguredSpeech(args, id)
+                ? await synthesizeConfiguredSpeech(args, id, sessionId)
                 : await executeLocalTool(root, tool, args, id);
             if ((isComputerTool && computerOutputFailed(args.action, output)) ||
                 (isTtsTool && ttsOutputFailed(args, output)) ||
