@@ -30,6 +30,12 @@ function resolveWorkspaceRoot(configuredPath, fallbackPath, pathApi = path) {
 }
 
 /** Resolve an optional conversation override without ever keying it by a reusable agent seat. */
+function resolveAgentSessionWorkspaceRoot(sessionWorkspacePath, agentDefaultPath, globalWorkspacePath, fallbackPath, pathApi = path) {
+  const selected = [sessionWorkspacePath, agentDefaultPath, globalWorkspacePath]
+    .find(candidate => typeof candidate === 'string' && candidate.trim());
+  return resolveWorkspaceRoot(selected, fallbackPath, pathApi);
+}
+
 function resolveSessionWorkspaceRoot(sessionId, overrides, globalWorkspacePath, fallbackPath, pathApi = path) {
   const isSessionId = typeof sessionId === 'string' && /^session-[a-f0-9]{32}$/.test(sessionId);
   const mapping = overrides && typeof overrides === 'object' && !Array.isArray(overrides) ? overrides : {};
@@ -53,4 +59,4 @@ function ensureWorkspaceDirectory(workspacePath, fsApi = fs) {
   return workspacePath;
 }
 
-module.exports = { isFilesystemRoot, resolveWorkspaceRoot, resolveSessionWorkspaceRoot, ensureWorkspaceDirectory };
+module.exports = { isFilesystemRoot, resolveWorkspaceRoot, resolveAgentSessionWorkspaceRoot, resolveSessionWorkspaceRoot, ensureWorkspaceDirectory };
