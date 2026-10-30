@@ -23,6 +23,7 @@ test('packaging includes the native Windows worker and mailbox implementation', 
 });
 
 test('agent dashboard supports a scrollable multi-seat canvas and per-session controls', () => {
+  const html = read('desktop', 'dashboard.html');
   const renderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'dashboard.css');
   const preload = read('desktop', 'preload.js');
