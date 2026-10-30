@@ -12,7 +12,7 @@ test('local Piper settings clamp thresholds and reject non-finite values',()=>{
     enabled:true,resourceGuardEnabled:false,allowModelDownload:false,pageIdleEnabled:false,pageIdleDelaySeconds:60,maxCpuPercent:100,minFreeRamGb:0.5
   });
   assert.deepEqual(normalizeLocalTtsSettings({maxCpuPercent:'bad',minFreeRamGb:NaN}),{
-    enabled:false,resourceGuardEnabled:true,maxCpuPercent:75,minFreeRamGb:2
+    enabled:false,resourceGuardEnabled:true,allowModelDownload:false,pageIdleEnabled:false,pageIdleDelaySeconds:60,maxCpuPercent:75,minFreeRamGb:2
   });
 });
 test('resource sampling reports bounded CPU and memory values',async()=>{
