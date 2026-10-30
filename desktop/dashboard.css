@@ -196,3 +196,10 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 
 .agent-console-actions{display:flex;align-items:center;gap:4px;margin-left:auto;flex:0 0 auto}
 .agent-console-icon-button{width:24px;height:23px;padding:0;border:1px solid #555;border-radius:4px;background:#111;color:#ddd;font-size:13px;cursor:pointer}
+
+.agent-message-composer{display:flex;flex-direction:column;gap:5px;padding:7px;border:1px solid #555;background:#111}
+.agent-message-composer[hidden]{display:none}
+.agent-message-composer textarea{width:100%;min-height:42px;resize:vertical;padding:6px;border:1px solid #444;background:#080808;color:#eee;font:11px/1.4 Consolas,monospace;user-select:text}
+.agent-message-composer-footer{display:flex;align-items:center;gap:5px}
+.agent-console-action-status{flex:1;min-width:0;color:#999;font-size:9px;overflow-wrap:anywhere}
+.agent-message-cancel,.agent-message-send{padding:3px 7px;border:1px solid #555;background:#1c1c1c;color:#ddd;font-size:10px}
