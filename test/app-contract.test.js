@@ -905,3 +905,31 @@ test('dashboard exposes agent widget addition, nickname and auto-dump controls',
   const fs=require('node:fs');const html=fs.readFileSync(require.resolve('../desktop/dashboard.html'),'utf8');const renderer=fs.readFileSync(require.resolve('../desktop/dashboard-renderer.js'),'utf8');const main=fs.readFileSync(require.resolve('../desktop/main.js'),'utf8');
   assert.match(html,/add-agent-widget/);assert.match(html,/widget-context-menu/);assert.match(renderer,/autoArrangeWidgets/);assert.match(renderer,/agent-dump-button/);assert.match(main,/app:agent-widget-settings/);assert.match(main,/app:agent-widget-add/);
 });
+
+test('session lifecycle, bounded retention, shared task coordination and game metadata are exposed',()=>{
+  const html=read('desktop','dashboard.html');
+  const renderer=read('desktop','dashboard-renderer.js');
+  const preload=read('desktop','preload.js');
+  const main=read('desktop','main.js');
+  const registry=read('desktop','agent-registry.js');
+  const bridge=read('desktop','repository-bridge.js');
+  const tools=read('desktop','tool-bridge.js');
+  assert.match(html,/id="session-auto-expire"/);
+  assert.match(html,/id="task-board-project"/);
+  assert.match(renderer,/agent-pause-button/);
+  assert.match(renderer,/agent-disconnect-button/);
+  assert.match(renderer,/createAgentIcon\('scissors'\)/);
+  assert.match(preload,/pauseAgentSession:/);
+  assert.match(preload,/disconnectAgentSession:/);
+  assert.match(main,/app:agent-session-pause/);
+  assert.match(main,/app:agent-session-disconnect/);
+  assert.match(main,/app:session-auto-expire/);
+  assert.match(main,/showSpeechCaption\(\{ id: 'assignment-'/);
+  assert.match(registry,/context_message:/);
+  assert.match(registry,/maxSessions = 10000/);
+  assert.match(registry,/SESSION_LIMIT_REACHED/);
+  assert.match(bridge,/taskOrchestrator\.dashboard/);
+  assert.match(tools,/task_project_init/);
+  assert.match(tools,/task_review/);
+  assert.match(tools,/game_project_intelligence/);
+});

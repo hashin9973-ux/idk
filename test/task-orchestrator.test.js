@@ -84,3 +84,38 @@ test('task submission cannot claim changes outside the reserved path scope', asy
   await tasks.claimTask(a, { task_id: task.task_id });
   await assert.rejects(tasks.submitTask(a, { task_id: task.task_id, commit_sha: 'c'.repeat(40), changed_paths: ['Source/Net/Socket.cpp'], evidence: [{ kind: 'implementation', summary: 'Done' }] }), /SUBMISSION_OUT_OF_SCOPE/);
 });
+
+test('dashboard summary is read-only and aggregates projects, task states and ownership leases', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000 });
+  const project = await tasks.initProject(a, { name: 'Dashboard game board' });
+  await tasks.createTask(a, { project_id: project.project_id, title: 'Ready task', objective: 'Ready', acceptance_criteria: ['exists'], scope_paths: ['Source/Ready'] });
+  const summary = await tasks.dashboard();
+  assert.equal(summary.project_count, 1);
+  assert.equal(summary.projects.length, 1);
+  assert.equal(summary.projects[0].project_id, project.project_id);
+  assert.equal(summary.projects[0].task_counts.ready, 1);
+  assert.equal(summary.projects[0].tasks[0].title, 'Ready task');
+});
+
+test('ordinary task claim cannot bypass an independent review gate', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000 });
+  const project = await tasks.initProject(a, { name: 'Review gate' });
+  const task = await tasks.createTask(a, { project_id: project.project_id, title: 'Gate', objective: 'Prove gates', acceptance_criteria: ['reviewed'], scope_paths: ['Source/Gate'] });
+  await tasks.claimTask(a, { task_id: task.task_id });
+  await tasks.updateTask(a, { task_id: task.task_id, status: 'in_progress' });
+  await tasks.submitTask(a, { task_id: task.task_id, commit_sha: 'd'.repeat(40), changed_paths: ['Source/Gate/Gate.cpp'], evidence: [{ kind: 'implementation', summary: 'Submitted' }] });
+  await assert.rejects(tasks.claimTask(b, { task_id: task.task_id }), /TASK_STAGE_LOCKED/);
+});
+
+test('ready transition releases the previous task ownership lease', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000 });
+  const project = await tasks.initProject(a, { name: 'Release gate' });
+  const task = await tasks.createTask(a, { project_id: project.project_id, title: 'Release', objective: 'Release scope', acceptance_criteria: ['released'], scope_paths: ['Source/Release'] });
+  await tasks.claimTask(a, { task_id: task.task_id });
+  await tasks.updateTask(a, { task_id: task.task_id, status: 'ready' });
+  const board = await tasks.getProject(project.project_id);
+  assert.equal(board.active_lease_count, 0);
+});

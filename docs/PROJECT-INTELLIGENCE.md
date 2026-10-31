@@ -23,3 +23,9 @@ A process-wide scheduler protects overlapping read/write paths and serializes ba
 The approval-gated git_worktree tool lists, creates, and removes non-forced worktrees. Worktrees are not created or deleted automatically; callers must choose their paths and branch strategy.
 
 Run `npm run check` and `npm test`. `npm run bench:project-intelligence` exercises a synthetic 2,000-file project and reports cold indexing, warm-cache restoration, symbol search, relative-import impact, and scheduler throughput. CI validates correctness and safety on a Windows runner; synthetic timings are not measurements of the user's actual workspace.
+
+## Resource-class backpressure
+
+The process-wide 100-operation ceiling is complemented by resource pools: filesystem (64), source analysis (8), compilation (2), editor (1), cook (1), packaging (1), GPU (1), binary asset tools (2), mailbox network (32), desktop control (1), audio (1), shell (4), and Git (2). Each independent scheduled request is assigned a pool using its registered tool and, for shell, a conservative command-text classification. Conflicting paths, workspace index locks, and exclusive barriers remain separate constraints. `batch` applies the same pool ceilings to its child operations as well as its per-batch `maxConcurrency`.
+
+`game_project_intelligence` is a bounded metadata adapter: Unreal project/plugin/module/target metadata and C++ reflection markers, Unity package/assembly/GUID metadata, and Godot autoload configuration. This is not semantic code analysis or engine-runtime integration. Binary Unreal assets and Blueprint graph dependencies require engine-native Asset Registry/editor tooling; the scanner does not guess their contents.
