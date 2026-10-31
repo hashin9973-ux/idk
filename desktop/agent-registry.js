@@ -490,7 +490,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const legacyBatchArtifactPrefix = 'bridge/artifacts/' + record.requestId + '-batch-output-';
       const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
         typeof value === 'string' && (value.startsWith(requestArtifactPrefix) ||
-          value.startsWith(legacyBatchArtifactPrefix)));
+          value.startsWith(legacyBatchArtifactPrefix))));
       const nested = await listFolder('bridge/artifacts/' + record.requestId);
       for (const item of [...flatArtifacts, ...nested]) {
         const itemPath = String(item && (item.path || item.name) || '');
