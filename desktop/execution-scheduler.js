@@ -1,11 +1,12 @@
 'use strict';
 
+const os = require('node:os');
 const DEFAULT_MAX_ACTIVE = 100;
 const DEFAULT_MAX_BYPASS = 24;
 const DEFAULT_MAX_QUEUED = 10000;
 const DEFAULT_AGING_INTERVAL_MS = 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
-const DEFAULT_RESOURCE_LIMITS = Object.freeze({ filesystem: 64, 'source-analysis': 8, compilation: 2, editor: 1, cook: 1, packaging: 1, gpu: 1, 'binary-assets': 2, 'mailbox-network': 32, 'desktop-control': 1, audio: 1, shell: 4, git: 2 });
+const DEFAULT_RESOURCE_LIMITS = Object.freeze({ filesystem: 64, 'disk-io': 16, 'source-analysis': 8, compilation: 2, editor: 1, cook: 1, packaging: 1, gpu: 1, 'binary-assets': 2, 'mailbox-network': 32, 'desktop-control': 1, audio: 1, shell: 4, git: 2 });
 
 function overlaps(a, b) {
   return a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
@@ -50,7 +51,26 @@ function createExecutionScheduler(options = {}) {
   const shutdownTimeoutMs = Number.isInteger(options.shutdownTimeoutMs)
     ? Math.max(0, Math.min(options.shutdownTimeoutMs, 120000)) : DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
-  const resourceLimits = { ...DEFAULT_RESOURCE_LIMITS, ...(options.resourceLimits && typeof options.resourceLimits === 'object' ? options.resourceLimits : {}) };
+  const cpuCores = Math.max(1, os.cpus().length || 1);
+  const totalMemoryBytes = Math.max(1, os.totalmem());
+  const adaptiveLimits = {
+    ...DEFAULT_RESOURCE_LIMITS,
+    'source-analysis': Math.max(2, Math.min(DEFAULT_RESOURCE_LIMITS['source-analysis'], cpuCores)),
+    compilation: Math.max(1, Math.min(DEFAULT_RESOURCE_LIMITS.compilation, Math.floor(cpuCores / 4) || 1, Math.floor(totalMemoryBytes / (8 * 1024 ** 3)) || 1))
+  };
+  const resourceLimits = { ...adaptiveLimits, ...(options.resourceLimits && typeof options.resourceLimits === 'object' ? options.resourceLimits : {}) };
+  const memoryPressureReserveBytes = Math.max(1024 ** 3, Math.round(totalMemoryBytes * 0.08));
+  const heavyPools = new Set(['compilation', 'editor', 'cook', 'packaging', 'gpu', 'binary-assets']);
+  function resourceMetrics() {
+    const freeMemoryBytes = os.freemem();
+    return { cpu_cores: cpuCores, total_memory_bytes: totalMemoryBytes, free_memory_bytes: freeMemoryBytes,
+      process_rss_bytes: process.memoryUsage().rss, memory_pressure: freeMemoryBytes < memoryPressureReserveBytes,
+      memory_pressure_reserve_bytes: memoryPressureReserveBytes };
+  }
+  function poolLimit(name, metrics = resourceMetrics()) {
+    const configured = Number.isInteger(resourceLimits[name]) ? resourceLimits[name] : maxActive;
+    return metrics.memory_pressure && heavyPools.has(name) ? Math.min(configured, 1) : configured;
+  }
   for (const [name, limit] of Object.entries(resourceLimits)) resourceLimits[name] = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 100)) : DEFAULT_RESOURCE_LIMITS[name] || maxActive;
   const queue = [];
   const active = new Map();
@@ -66,8 +86,9 @@ function createExecutionScheduler(options = {}) {
 
   function state() {
     const now = Date.now();
+    const metrics = resourceMetrics();
     const poolUsage = {};
-    for (const [name, limit] of Object.entries(resourceLimits)) poolUsage[name] = { active: 0, limit };
+    for (const name of Object.keys(resourceLimits)) poolUsage[name] = { active: 0, limit: poolLimit(name, metrics) };
     for (const item of active.values()) for (const name of item.footprint.resourcePools || []) {
       if (!poolUsage[name]) poolUsage[name] = { active: 0, limit: maxActive };
       poolUsage[name].active++;
@@ -78,6 +99,7 @@ function createExecutionScheduler(options = {}) {
       maxActive,
       maxQueued,
       resourcePools: poolUsage,
+      resourceMetrics: metrics,
       completed,
       failed,
       cancelled,
@@ -130,8 +152,9 @@ function createExecutionScheduler(options = {}) {
 
   function canStart(item) {
     if (stopped || active.size >= maxActive) return false;
+    const metrics = resourceMetrics();
     for (const pool of item.footprint.resourcePools || []) {
-      const limit = Number.isInteger(resourceLimits[pool]) ? resourceLimits[pool] : maxActive;
+      const limit = poolLimit(pool, metrics);
       let used = 0;
       for (const running of active.values()) if ((running.footprint.resourcePools || []).includes(pool)) used++;
       if (used >= limit) return false;
