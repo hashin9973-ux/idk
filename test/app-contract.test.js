@@ -497,7 +497,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
   assert.ok(vision.includes('activate immediately'));
-  assert.ok(vision.includes('async function inputAction(args = {}, callId = null)'));
+  assert.ok(vision.includes('async function inputAction(args = {}, callId = null, signal = null)'));
   assert.ok(vision.includes('latestScreenFrame'));
   assert.ok(vision.includes('Screenshot frame: '));
   assert.ok(main.includes("require('./windows-uia')"));
