@@ -9,8 +9,6 @@ const {
   AGENT_ACTIVITY_RECENCY_WINDOW_MS
 } = require('../desktop/agent-registry');
 
-function advanceAndGet(advance, delta) { advance(delta); return Date.now() + delta; }
-
 function mockMailbox(startTime = Date.now(), options = {}) {
   const records = new Map();
   let nextSha = 1;
@@ -240,6 +238,9 @@ test('an idle session remains authenticated and keeps its agent seat indefinitel
   assert.equal(status.agents[0].status, 'inactive');
   assert.equal(status.agents[0].reusable, false);
   assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id);
+  const idleRequest = { request_id: 'req-agent001-idle001', session_id: first.session_id, agent_id: first.agent_id };
+  assert.equal(await registry.requestStarted(idleRequest), true, 'a stable ID remains executable after a long idle interval');
+  await registry.requestCompleted(idleRequest);
   const replacement = await registry.startSession({ label: 'Another conversation' });
   assert.equal(replacement.agent_id, 'agent-002');
   assert.notEqual(replacement.session_id, first.session_id);
@@ -602,14 +603,14 @@ test('failed SHA-checked eviction leaves the oldest session registered and usabl
 });
 
 test('the cap removes enough oldest records to return below its hard limit', async () => {
-  const { registry, records, advance } = mockMailbox(Date.now(), { maxSessions: 2 });
+  const { registry, records, advance, now } = mockMailbox(Date.now(), { maxSessions: 2 });
   const first = await registry.startSession({ label: 'First' });
   advance(1000);
   const second = await registry.startSession({ label: 'Second' });
   // Model a pre-existing over-cap mailbox produced by an older build or concurrent writer.
   for (let index = 0; index < 2; index++) {
     const sessionId = 'session-' + String(index + 1).padStart(32, 'a');
-    const at = new Date(advanceAndGet(advance, index + 1)).toISOString();
+    const at = new Date(now() + (index + 1) * 1000).toISOString();
     records.set('bridge/sessions/' + sessionId + '.json', {
       value: {
         protocol: SESSION_RECORD_PROTOCOL, session_id: sessionId, agent_id: 'agent-900',
