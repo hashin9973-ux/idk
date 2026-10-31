@@ -176,12 +176,19 @@ function createProjectIntelligence(options={}){
    if(error.code==='ENOENT')st=null;
    else{markIncomplete(s,'unreadable_paths');s.error='Filesystem metadata read failed: '+String(error.message||error).slice(0,250);return;}
   }
-  const k=p.toLowerCase(),old=s.documents.get(k),oldSize=old?old.size:0;
+  const k=p.toLowerCase(),old=s.documents.get(k);
+  const removeIndexedPath=()=>{
+   let removedBytes=0;
+   for(const [key,doc]of s.documents)if(key===k||key.startsWith(k+'/')){removedBytes+=doc.size;s.documents.delete(key);}
+   return removedBytes;
+  };
   let byteDelta=0;
   if(!st){
-   for(const [key,doc] of [...s.documents])if(key===k||key.startsWith(k+'/')){byteDelta-=doc.size;s.documents.delete(key);}
+   byteDelta-=removeIndexedPath();
   }else if(st.isSymbolicLink()){
-   s.documents.delete(k);byteDelta-=oldSize;
+   // A path may have replaced an indexed directory. Remove all former descendants,
+   // not only a document whose path exactly matches the new symlink path.
+   byteDelta-=removeIndexedPath();
   }else if(st.isDirectory()){
    const prior=new Set([...s.documents.keys()].filter(key=>key===k||key.startsWith(k+'/')));
    const priorBytes=[...prior].reduce((sum,key)=>sum+(s.documents.get(key)?.size||0),0);
@@ -193,16 +200,20 @@ function createProjectIntelligence(options={}){
    const nextBytes=[...next.values()].reduce((sum,value)=>sum+value.size,0);
    byteDelta=nextBytes-priorBytes;
   }else if(st.isFile()){
-   if(!LANG[path.posix.extname(p).toLowerCase()]){s.documents.delete(k);byteDelta-=oldSize;}
+   const priorBytes=removeIndexedPath();
+   if(!LANG[path.posix.extname(p).toLowerCase()])byteDelta-=priorBytes;
    else{
     const d=await readDoc(s,abs,p,st,old);
     if(d){
-     const nextBytes=s.indexedBytes-oldSize+d.size;
+     const nextBytes=s.indexedBytes-priorBytes+d.size;
      if(!old&&s.documents.size>=maxFiles)markIncomplete(s,'file_count_limit');
-     else if(nextBytes>maxBytes){s.documents.delete(k);byteDelta-=oldSize;markIncomplete(s,'source_byte_limit');}
-     else{s.documents.set(k,d);byteDelta=d.size-oldSize;}
-    }else{s.documents.delete(k);byteDelta-=oldSize;markIncomplete(s,st.size>MAX_FILE?'file_size_limit':'unreadable_or_non_text_file');}
+     else if(nextBytes>maxBytes){byteDelta-=priorBytes;markIncomplete(s,'source_byte_limit');}
+     else{s.documents.set(k,d);byteDelta=d.size-priorBytes;}
+    }else{byteDelta-=priorBytes;markIncomplete(s,st.size>MAX_FILE?'file_size_limit':'unreadable_or_non_text_file');}
    }
+  }else{
+   // Drop stale children if an indexed directory is replaced by a special file.
+   byteDelta-=removeIndexedPath();
   }
   if(options.rebuild!==false)rebuild(s);
   else s.indexedBytes=Math.max(0,s.indexedBytes+byteDelta);
