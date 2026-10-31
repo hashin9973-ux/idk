@@ -167,6 +167,7 @@ function createRepositoryBridge(deps) {
     persistSettings,
     getWorkspaceRoot,
     executeTool,
+    cancelTool = () => false,
     onState = () => {},
     intervalMs = DEFAULT_INTERVAL_MS,
     contextRefreshIntervalMs = DEFAULT_CONTEXT_REFRESH_MS,
@@ -191,6 +192,7 @@ function createRepositoryBridge(deps) {
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
+  const requestAbortControllers = new Map();
   const mailboxUiRecords = new Map();
   const mailboxRequestCache = new Map();
   const mailboxRequestReadPromises = new Map();
@@ -638,7 +640,8 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict });
+  const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson,
+    deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict });
 
   async function publishState(force = false) {
     const now = Date.now();
@@ -1700,6 +1703,25 @@ function createRepositoryBridge(deps) {
 
     // A completed claim now stores its result as a recovery journal. If result
     // publication was interrupted, republish that exact result, never rerun work.
+    if (prior.value.session_id && await agentRegistry.isRevoked(prior.value.session_id)) {
+      const revokedResult = {
+        protocol: RESULT_PROTOCOL, request_id: requestId, session_id: prior.value.session_id,
+        ...(prior.value.agent_id ? { agent_id: prior.value.agent_id } : {}),
+        status: 'cancelled', completed_at: new Date().toISOString(),
+        error: 'SESSION_REVOKED: The owning agent session was revoked before this mailbox result could be accepted.'
+      };
+      const completed = {
+        protocol: 'chatgpt-local-repo-claim/v1', request_id: requestId,
+        ...(prior.value.agent_id ? { agent_id: prior.value.agent_id } : {}),
+        session_id: prior.value.session_id, worker_id: workerId, tool: prior.value.tool || null,
+        status: 'completed', claimed_at: prior.value.claimed_at || new Date().toISOString(),
+        completed_at: new Date().toISOString(), result: revokedResult
+      };
+      await writeRemoteJson(claimPath, completed, prior.sha, false);
+      const published = await publishResult(requestId, revokedResult);
+      return { acquired: false, recovered: published.published, terminal: true };
+    }
+
     if (prior.value.status === 'completed' && prior.value.result) {
       const published = await publishResult(requestId, prior.value.result);
       return { acquired: false, recovered: published.published, terminal: published.published };
@@ -1802,6 +1824,15 @@ function createRepositoryBridge(deps) {
   }
 
   async function publishResult(requestId, result) {
+    const sessionId = result && result.session_id || requestSessions.get(requestId) || null;
+    if (sessionId && await agentRegistry.isRevoked(sessionId)) {
+      result = {
+        protocol: RESULT_PROTOCOL, request_id: requestId, session_id: sessionId,
+        ...(result && result.agent_id ? { agent_id: result.agent_id } : {}),
+        status: 'cancelled', completed_at: new Date().toISOString(),
+        error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+      };
+    }
     const resultPath = 'bridge/results/' + requestId + '.json';
     const agentId = result && result.agent_id || requestAgents.get(requestId) || null;
     const record = agentId && result && !result.agent_id ? { ...result, agent_id: agentId } : result;
@@ -1815,9 +1846,9 @@ function createRepositoryBridge(deps) {
     return { published: false, conflict: false };
   }
 
-  async function processRequest(filename) {
+  async function processRequest(filename, signal = null) {
     const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0 };
-    return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry));
+    return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry, signal));
   }
 
   function drainExecutionWaitQueue() {
@@ -1832,6 +1863,7 @@ function createRepositoryBridge(deps) {
         continue;
       }
       executionWaitQueue.splice(index, 1);
+      if (waiting.signal && waiting.onAbort) waiting.signal.removeEventListener('abort', waiting.onAbort);
       activeExecutionFootprints.set(waiting.requestId, waiting.footprint);
       waiting.resolve(() => {
         activeExecutionFootprints.delete(waiting.requestId);
@@ -1840,15 +1872,30 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  function acquireExecutionSlot(requestId, tool, args) {
+  function acquireExecutionSlot(requestId, tool, args, signal = null) {
     const footprint = getExecutionFootprint(tool, args);
-    return new Promise(resolve => {
-      executionWaitQueue.push({ requestId, footprint, resolve });
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) {
+        reject(signal.reason || new Error('Operation cancelled.'));
+        return;
+      }
+      const waiting = { requestId, footprint, resolve, reject, signal, onAbort: null };
+      if (signal) {
+        waiting.onAbort = () => {
+          const index = executionWaitQueue.indexOf(waiting);
+          if (index >= 0) executionWaitQueue.splice(index, 1);
+          signal.removeEventListener('abort', waiting.onAbort);
+          reject(signal.reason || new Error('Operation cancelled.'));
+          drainExecutionWaitQueue();
+        };
+        signal.addEventListener('abort', waiting.onAbort, { once: true });
+      }
+      executionWaitQueue.push(waiting);
       drainExecutionWaitQueue();
     });
   }
 
-  async function processRequestInner(filename, telemetry) {
+  async function processRequestInner(filename, telemetry, signal = null) {
     const workerStartedAt = telemetry.startedAt;
     let requestLoadedAt = workerStartedAt;
     let claimStartedAt = workerStartedAt;
@@ -1935,9 +1982,10 @@ function createRepositoryBridge(deps) {
     let executionQueueWaitMs = 0;
     let agentActivityStarted = false;
     try {
+      if (signal && signal.aborted) throw signal.reason || new Error('Operation cancelled.');
       if (request.session_id) agentActivityStarted = await agentRegistry.requestStarted(request);
       const waitStartedAt = Date.now();
-      releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args);
+      releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args, signal);
       executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
       updateMailboxUiRecord(requestId, { status: 'executing', progress: 50 });
       announce();
@@ -1984,7 +2032,7 @@ function createRepositoryBridge(deps) {
       } else if (request.tool === CONTEXT_REQUEST_TOOL) {
         report = { ok: true, result: await publishEnvironmentContext() };
       } else {
-        report = await executeTool(request.tool, request.args, requestId, request.session_id || null);
+        report = await executeTool(request.tool, request.args, requestId, request.session_id || null, signal);
         if (request.tool === 'get_agent_context' && report && report.ok && report.result && typeof report.result === 'object') {
           report.result.agent_status = await agentRegistry.statuses();
           report.result.current_session = {
@@ -2000,6 +2048,9 @@ function createRepositoryBridge(deps) {
     }
 
     toolFinishedAt = Date.now();
+    if (request.session_id && await agentRegistry.isRevoked(request.session_id)) {
+      report = { ok: false, cancelled: true, error: 'SESSION_REVOKED: The operation was cancelled or its result suppressed after this agent session was revoked.', tool: request.tool, call_id: requestId };
+    }
     let workspaceRootForSanitization = '';
     try { workspaceRootForSanitization = getWorkspaceRoot ? getWorkspaceRoot(request.session_id || null) : ''; } catch {}
     const sanitizedReport = sanitizeForRepository(report, workspaceRootForSanitization);
@@ -2129,6 +2180,16 @@ function createRepositoryBridge(deps) {
       }
     }
 
+    // Recheck immediately before committing the recovery journal. Revocation can
+    // happen while large output is being externalized or archived.
+    if (request.session_id && await agentRegistry.isRevoked(request.session_id)) {
+      resultRecord = {
+        protocol: RESULT_PROTOCOL, request_id: requestId, tool: request.tool,
+        session_id: request.session_id, ...(request.agent_id ? { agent_id: request.agent_id } : {}),
+        status: 'cancelled', completed_at: new Date().toISOString(),
+        error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+      };
+    }
     // Store the completed result in the claim journal before publishing the
     // result file. This preserves crash recovery while eliminating the old
     // result-pending PUT + claim reread + final claim PUT sequence.
@@ -2223,6 +2284,34 @@ function createRepositoryBridge(deps) {
     }
   }
 
+  async function revokeAgentSession(sessionId, options = {}) {
+    const revoked = await agentRegistry.revokeSession(sessionId);
+    const requestIds = new Set(revoked.cancelled_request_ids || []);
+    for (const [requestId, ownerSessionId] of requestSessions) {
+      if (ownerSessionId === sessionId) requestIds.add(requestId);
+    }
+    const cancellation = [];
+    for (const requestId of requestIds) {
+      const controller = requestAbortControllers.get(requestId);
+      if (controller && !controller.signal.aborted) {
+        controller.abort(new Error('SESSION_REVOKED: The owning agent session was revoked.'));
+      }
+      let schedulerCancelled = false;
+      try { schedulerCancelled = cancelTool(requestId, 'SESSION_REVOKED: The owning agent session was revoked.') === true; }
+      catch {}
+      cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
+    }
+    let mailboxCleanup = { status: 'not_requested', deleted_records: 0, deleted_files: 0 };
+    if (options && options.wipeMailbox === true) {
+      try { mailboxCleanup = await agentRegistry.wipeMailbox(sessionId); }
+      catch (error) {
+        mailboxCleanup = { status: 'failed', deleted_records: 0, deleted_files: 0, error: cleanError(error.message), retryable: true };
+      }
+    }
+    announce();
+    return { ...revoked, cancellation, mailbox_cleanup: mailboxCleanup };
+  }
+
   function dispatchPendingRequests() {
     if (!running) return;
     while (running && requestTasks.size < MAX_CONCURRENT_REQUESTS && pendingRequestQueue.length) {
@@ -2235,7 +2324,9 @@ function createRepositoryBridge(deps) {
       // Reserve the ID before the first await so overlapping poll cycles cannot
       // start two executions of the same request.
       inFlightRequestIds.add(requestId);
-      const task = processRequest(filename)
+      const controller = new AbortController();
+      requestAbortControllers.set(requestId, controller);
+      const task = processRequest(filename, controller.signal)
         .catch(error => {
           lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
           updateMailboxUiRecord(requestId, { status: 'failed', progress: 100, error: cleanError(error.message) });
@@ -2244,6 +2335,7 @@ function createRepositoryBridge(deps) {
         .finally(() => {
           inFlightRequestIds.delete(requestId);
           requestTasks.delete(requestId);
+          requestAbortControllers.delete(requestId);
           const queued = pendingRequestQueue.filter(name => !(knownResultFiles && knownResultFiles.has(name))).length;
           const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id + '.json'))).length;
           pendingCount = queued + active;
@@ -2519,7 +2611,8 @@ function createRepositoryBridge(deps) {
     publishWorkspaceFile, publishFilesystemIndex,
     getAgentSession: sessionId => agentRegistry.authenticate({ session_id: sessionId }),
     sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message }),
-    readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)
+    readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args),
+    revokeAgentSession
   };
 }
 
