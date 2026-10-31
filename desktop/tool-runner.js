@@ -2,6 +2,7 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync,spawn}=require('node:child_process');
 const { inspectGameProject } = require('./game-project-intelligence');
+const { discoverWorkspaceProjects } = require('./project-support');
 // Keep complete tool output available for repository artifact externalization; only mark it partial at this per-stream hard ceiling.
 const MAX_FILE=1024*1024,MAX_READ_FILE_BYTES=32*1024*1024,MAX_READ_PAGE_BYTES=12*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=8*1024*1024,MAX_RESULTS=150,MAX_MS=120000;
 const IGNORED=new Set(['.git','.bridge-worktrees','node_modules','.venv','venv','dist','build','coverage','.next','.cache','target','bin','obj','__pycache__']);
@@ -94,6 +95,7 @@ function searchFiles(root,args={}){
 }
 function git(root,args){const r=spawnSync('git',args,{cwd:root,encoding:'utf8',timeout:15000,maxBuffer:MAX_OUTPUT,windowsHide:true,shell:false});if(r.error)throw new Error(r.error.code==='ENOENT'?'Git was not found on PATH.':'Git failed: '+r.error.message);return{exitCode:r.status===null?1:r.status,stdout:r.stdout||'',stderr:r.stderr||'',command:['git',...args]};}
 function projectStatus(root){const names=fs.readdirSync(root),isGit=fs.existsSync(path.join(root,'.git')),tech=[];if(names.includes('package.json'))tech.push('Node.js');if(names.includes('pyproject.toml')||names.includes('requirements.txt'))tech.push('Python');if(names.includes('Cargo.toml'))tech.push('Rust');if(names.includes('go.mod'))tech.push('Go');if(names.some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))tech.push('.NET');if(names.includes('pom.xml')||names.includes('build.gradle'))tech.push('Java');return{workspace:root,isGitRepository:isGit,git:isGit?git(root,['status','--short','--branch']):null,detectedTechnologies:tech,topLevelEntries:names.slice(0,100)};}
+async function projectSupportStatus(root){const base=projectStatus(root);const profile=await discoverWorkspaceProjects(root);return{...base,detectedTechnologies:profile.projectTypes,project_support:profile};}
 function readFile(root,args){
  const target=safePath(root,args.path,false);
  if(!fs.existsSync(target))throw new Error('file not found.');
@@ -435,7 +437,7 @@ async function executeTool(rootInput,tool,args={},signal=null){
  const root=path.resolve(rootInput);if(!fs.existsSync(root)||!fs.statSync(root).isDirectory())throw new Error('workspace directory is unavailable.');getToolPolicy(tool,args);
  switch(tool){
  case'get_capabilities':return getCapabilities(root);
- case'project_status':return projectStatus(root);
+ case'project_status':return await projectSupportStatus(root);
  case'environment_info':return environmentInfo(root);
  case'list_dir':return listDir(root,args);
  case'directory_tree':return directoryTree(root,args);

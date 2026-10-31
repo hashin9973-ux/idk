@@ -38,6 +38,19 @@ test('list_dir, read_file and search return actual workspace contents', async ()
   } finally { cleanup(root); }
 });
 
+test('project_status enriches the selected workspace with detected source languages and bounded project profiles', async () => {
+  const root = fixture();
+  try {
+    const result = await tools.executeTool(root, 'project_status', {});
+    assert.equal(result.isGitRepository, false);
+    assert.ok(result.detectedTechnologies.some(value => value.startsWith('JavaScript')));
+    assert.ok(result.project_support);
+    assert.equal(result.project_support.scan.truncated, false);
+    assert.ok(result.project_support.projects.some(project => project.root === '.'));
+    assert.ok(result.project_support.projects[0].languages.some(language => language.language === 'javascript'));
+  } finally { cleanup(root); }
+});
+
 test('glob search handles recursive JavaScript patterns', async () => {
   const root = fixture();
   try {

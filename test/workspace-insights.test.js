@@ -24,6 +24,7 @@ test('workspace inspection identifies a single nested project without walking re
     fs.mkdirSync(path.join(root, 'notes'), { recursive: true });
     const calls = [];
     const profile = await inspectWorkspace(root, {
+      skipToolchainDiscovery: true,
       execFileAsync: async (_command, args) => {
         calls.push(args);
         throw new Error('not a git repository');
@@ -33,6 +34,8 @@ test('workspace inspection identifies a single nested project without walking re
     assert.equal(profile.detectedProjectRoot, project);
     assert.deepEqual(profile.projectTypes, ['Unity']);
     assert.equal(profile.nestedProjectCandidates.length, 1);
+    assert.ok(profile.projectSupport.projects.some(item => item.root === 'Game' && item.projectTypes.includes('Unity')));
+    assert.ok(profile.projectSupport.scan.entriesVisited > 0);
     assert.equal(profile.git.repository, false);
     assert.equal(calls.length, 1, 'only the bounded git-root probe is attempted for a non-repository');
   } finally {
@@ -54,6 +57,7 @@ test('workspace inspection reports git root, branch, and tracked working-tree di
       }
     });
     assert.deepEqual(profile.git, { repository: true, root, branch: 'feature/test', dirty: true });
+    assert.ok(Array.isArray(profile.projectSupport.projects));
     assert.equal(calls.length, 3);
     assert.ok(calls.every(args => args[0] === '-C' && args[1] === root));
   } finally {
