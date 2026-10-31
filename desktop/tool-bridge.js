@@ -251,7 +251,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   task_decision: 'Record an architecture/interface decision in the shared project board so other sessions can read the rationale and affected modules.',
   task_cancel: 'Cancel a task and release its project-wide ownership lease. Only its creator or current owner may cancel.',
   git_worktree: 'List, create, remove, or integrate linked Git worktrees. Add/remove/integrate need local approval; task integration requires the exact submitted SHA, clean primary/source worktrees, actual Git-diff scope verification, submitted-path matching, and a verified two-parent merge commit.',
-  project_status: 'Summarize detected project technologies, whether the selected workspace is a Git repository, current branch/status, and top-level entries.',
+  project_status: 'Summarize detected languages and nested project roots from bounded project manifests, build systems, package managers, verified Windows toolchain paths/versions, support readiness, missing prerequisites, manifest errors, and grounded build/test command plans, alongside Git and top-level workspace status.',
   environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
   list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
   directory_tree: 'Return a bounded workspace-relative tree. Use format=paths for a compact listing that minimizes transfer size; common generated/dependency directories and symlinks are skipped.',
@@ -537,7 +537,7 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   read_agent_messages: 'Returns messages in the current session inbox, including sender, recipient, thread, timestamps and reply linkage.',
   reply_to_agent_message: 'Returns the new reply message ID, thread ID, original message ID, and recipient session/seat.',
   get_capabilities: 'Returns catalog_version, tool protocol, callable tools with schemas/permission notes/result summaries, and the batch/reference contract.',
-  project_status: 'Returns isGitRepository, detectedTechnologies, topLevelEntries, and Git status when applicable.',
+  project_status: 'Returns isGitRepository, detectedTechnologies, topLevelEntries, Git status and a bounded project_support profile: languages, project roots, manifests, ecosystems, relationships, toolchain executable paths/versions/usability, missing prerequisites, support level, truncation state and build/test command plans. Commands are suggestions only and are never executed by discovery.',
   environment_info: 'Returns platform, architecture, OS/runtime version, CPU and memory metadata. Identity-sensitive fields are redacted before repository publication.',
   list_dir: 'Returns the relative directory path, sorted entries (name/type/size), and a truncated flag.',
   directory_tree: 'Returns relative start path, applied maxDepth, entry count, truncation flag, and relative path/type/size entries.',
@@ -1297,22 +1297,20 @@ function createToolBridge(deps) {
   }
 
 
-  function inferProjectCommands(project, projectCommands) {
-    const entries = new Set((project && project.topLevelEntries || []).map(String));
-    const scripts = projectCommands && projectCommands.scripts && typeof projectCommands.scripts === 'object' ? projectCommands.scripts : {};
-    const commands = [];
-    if (typeof scripts.test === 'string') commands.push({ name: 'test', command: 'npm test', source: 'package.json scripts.test' });
-    if (typeof scripts.check === 'string') commands.push({ name: 'check', command: 'npm run check', source: 'package.json scripts.check' });
-    if (typeof scripts.lint === 'string') commands.push({ name: 'lint', command: 'npm run lint', source: 'package.json scripts.lint' });
-    if (entries.has('pyproject.toml') || entries.has('pytest.ini') || entries.has('tests')) commands.push({ name: 'test', command: 'python -m pytest', source: 'Python project marker; verify dependencies first' });
-    if (entries.has('Cargo.toml')) commands.push({ name: 'test', command: 'cargo test', source: 'Cargo.toml' });
-    if (entries.has('go.mod')) commands.push({ name: 'test', command: 'go test ./...', source: 'go.mod' });
-    if (entries.has('pom.xml')) commands.push({ name: 'test', command: 'mvn test', source: 'pom.xml' });
-    if (entries.has('gradlew.bat')) commands.push({ name: 'test', command: '.\\gradlew.bat test', source: 'gradlew.bat' });
-    else if (entries.has('build.gradle') || entries.has('build.gradle.kts')) commands.push({ name: 'test', command: 'gradle test', source: 'Gradle build file' });
-    if (entries.has('global.json') || [...entries].some(name => name.endsWith('.sln') || name.endsWith('.csproj'))) commands.push({ name: 'test', command: 'dotnet test', source: '.NET project marker' });
-    const seen = new Set();
-    return commands.filter(item => { const key = item.command.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
+  function inferProjectCommands(project) {
+    const profile = project && project.project_support && typeof project.project_support === 'object' ? project.project_support : null;
+    const plans = profile && Array.isArray(profile.suggestedCommands) ? profile.suggestedCommands : [];
+    return plans.filter(item => item && item.available === true && item.executed === false && typeof item.command === 'string')
+      .slice(0, 100).map(item => ({
+        name: item.kind,
+        command: item.command,
+        projectRoot: item.projectRoot,
+        source: item.source,
+        executable: item.executable,
+        toolchainPath: item.toolchainPath || null,
+        toolchainVersion: item.toolchainVersion || null,
+        toolchainVerified: item.toolchainVerified === true
+      }));
   }
   async function executeAgentContext(root, requestId, signal = null) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
@@ -1344,7 +1342,7 @@ function createToolBridge(deps) {
         };
       } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
     }
-    const suggestedCommands = inferProjectCommands(project, projectCommands);
+    const suggestedCommands = inferProjectCommands(project);
     const projectIndex = projectIntelligence ? await projectIntelligence.status(root, { signal }) : null;
     return {
       protocol: 'chatgpt-local-agent-context/v1',
@@ -1357,6 +1355,7 @@ function createToolBridge(deps) {
         : 'Use workspace-relative paths or absolute Windows paths that resolve inside the selected workspace.',
       environment,
       project,
+      project_support: project && project.project_support || null,
       project_index: projectIndex,
       project_commands: projectCommands,
       suggested_commands: suggestedCommands,
