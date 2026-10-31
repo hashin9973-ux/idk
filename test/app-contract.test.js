@@ -37,6 +37,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('agent-delete-button'));
   assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox)'));
   assert.ok(renderer.includes("cleanup.status!=='completed'"));
+  assert.ok(bridge.includes("status: mailboxCleanup.status === 'completed' ? 'completed_with_preserved_records' : mailboxCleanup.status"));
   assert.ok(renderer.includes("button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke'"));
   assert.ok(html.includes('agent-delete-dialog'));
   assert.ok(html.includes('agent-delete-wipe-mailbox'));
