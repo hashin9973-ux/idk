@@ -119,3 +119,43 @@ test('ready transition releases the previous task ownership lease', async () => 
   const board = await tasks.getProject(project.project_id);
   assert.equal(board.active_lease_count, 0);
 });
+
+
+test('one session cannot claim overlapping scopes through two different tasks', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator(deps);
+  const project = await tasks.initProject(a, { name: 'Same-session isolation' });
+  const first = await tasks.createTask(a, { project_id: project.project_id, title: 'Core', objective: 'Edit core', acceptance_criteria: ['Done'], scope_paths: ['Source/Core'] });
+  const second = await tasks.createTask(a, { project_id: project.project_id, title: 'Core child', objective: 'Edit same core', acceptance_criteria: ['Done'], scope_paths: ['Source/Core/Player'] });
+  await tasks.claimTask(a, { task_id: first.task_id });
+  await assert.rejects(tasks.claimTask(a, { task_id: second.task_id }), /TASK_SCOPE_CONFLICT/);
+});
+
+test('same dedupe key under concurrent calls creates one durable task', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator(deps);
+  const project = await tasks.initProject(a, { name: 'Dedupe' });
+  const args = { project_id: project.project_id, title: 'Unique feature', objective: 'Implement once', acceptance_criteria: ['One task'], dedupe_key: 'feature:unique' };
+  const [first, second] = await Promise.all([tasks.createTask(a, args), tasks.createTask(b, args)]);
+  assert.equal(first.task_id, second.task_id);
+  assert.equal(Number(first.deduplicated === true) + Number(second.deduplicated === true), 1);
+  const list = await tasks.listTasks(a, { project_id: project.project_id, limit: 100 });
+  assert.equal(list.count, 1);
+});
+
+test('task list cursor advances by scanned mailbox records without repeating rows', async () => {
+  const deps = mailbox();
+  let now = 1800000000000;
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => ++now });
+  const project = await tasks.initProject(a, { name: 'Pagination' });
+  for (let i = 0; i < 45; i++) await tasks.createTask(a, {
+    project_id: project.project_id, title: 'Task ' + i, objective: 'Pagination test', acceptance_criteria: ['Exists']
+  });
+  const first = await tasks.listTasks(a, { project_id: project.project_id, limit: 30 });
+  assert.equal(first.count, 30);
+  assert.equal(first.next_offset, 40);
+  const second = await tasks.listTasks(a, { project_id: project.project_id, limit: 30, offset: first.next_offset });
+  assert.equal(second.count, 5);
+  const ids = [...first.tasks, ...second.tasks].map(item => item.task_id);
+  assert.equal(new Set(ids).size, 35);
+});

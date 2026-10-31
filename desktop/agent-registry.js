@@ -288,11 +288,20 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       if (remaining < maxSessions) break;
       try {
         const evicted = await withSessionLock(candidate.sessionId, () => withLock('seat:' + candidate.session.agent_id, async () => {
-          const latest = await readSession(candidate.sessionId);
+          let latest = await readSession(candidate.sessionId);
           if (!latest || latest.sha !== candidate.remote.sha || latest.value.status === 'paused' || isBusy(null, latest.value)) return false;
           const seat = await readSeat(latest.value.agent_id);
           const ownsSeat = Boolean(seat && seat.value.protocol === AGENT_RECORD_PROTOCOL && seat.value.current_session_id === candidate.sessionId);
           if (ownsSeat && !isInactive(seat.value, latest.value)) return false;
+          if (!['expired', 'revoked', 'disconnected'].includes(latest.value.status)) {
+            await mutateSession(candidate.sessionId, value => ({
+              ...value, status: 'expired', expired_at: timestamp(), ended_at: timestamp(), active_request_ids: []
+            }));
+            latest = await readSession(candidate.sessionId);
+            if (!latest || !['expired', 'revoked', 'disconnected'].includes(latest.value.status)) {
+              throw new Error('Could not persist terminal session state before retention deletion.');
+            }
+          }
           if (ownsSeat) await mutateJson(seatPath(latest.value.agent_id),
             value => validateSeatRecord(value, latest.value.agent_id),
             value => ({ ...value, current_session_id: null, status: 'inactive', active_request_ids: [],

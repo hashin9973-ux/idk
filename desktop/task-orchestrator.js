@@ -250,23 +250,28 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       }]
     };
     if (dedupeKey) {
-      const reserved = await mutateProject(projectId, project => {
-        const keys = project.dedupe_keys && typeof project.dedupe_keys === 'object' ? project.dedupe_keys : {};
-        if (keys[dedupeKey]) return project;
-        if (Object.keys(keys).length >= 500) throw new Error('The project deduplication-key limit has been reached. Use a shorter active-task set.');
-        return { ...project, dedupe_keys: { ...keys, [dedupeKey]: taskId } };
-      });
-      const existingId = reserved.dedupe_keys && reserved.dedupe_keys[dedupeKey];
-      if (existingId && existingId !== taskId) {
-        const existing = await readTask(existingId);
-        if (existing && ACTIVE_TASK_STATES.has(existing.value.status)) return { ...taskSummary(existing.value), deduplicated: true };
-        await mutateProject(projectId, project => {
-          const keys = { ...(project.dedupe_keys || {}) };
-          if (keys[dedupeKey] === existingId) delete keys[dedupeKey];
-          return { ...project, dedupe_keys: keys };
+      return withLock('dedupe:' + projectId + ':' + dedupeKey, async () => {
+        const reserved = await mutateProject(projectId, project => {
+          const keys = project.dedupe_keys && typeof project.dedupe_keys === 'object' ? project.dedupe_keys : {};
+          if (keys[dedupeKey]) return project;
+          if (Object.keys(keys).length >= 500) throw new Error('The project deduplication-key limit has been reached. Use a shorter active-task set.');
+          return { ...project, dedupe_keys: { ...keys, [dedupeKey]: taskId } };
         });
-        return createTask(identity, { ...args, dedupe_key: '' });
-      }
+        const existingId = reserved.dedupe_keys && reserved.dedupe_keys[dedupeKey];
+        if (existingId && existingId !== taskId) {
+          const existing = await readTask(existingId);
+          if (existing && ACTIVE_TASK_STATES.has(existing.value.status)) return { ...taskSummary(existing.value), deduplicated: true };
+          await mutateProject(projectId, project => {
+            const keys = { ...(project.dedupe_keys || {}) };
+            if (keys[dedupeKey] === existingId) delete keys[dedupeKey];
+            if (Object.keys(keys).length >= 500) throw new Error('The project deduplication-key limit has been reached.');
+            keys[dedupeKey] = taskId;
+            return { ...project, dedupe_keys: keys };
+          });
+        }
+        await createOnly(taskPath(taskId), record);
+        return taskSummary(record);
+      });
     }
     await createOnly(taskPath(taskId), record);
     return taskSummary(record);
@@ -357,7 +362,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       if (sameTask && sameTask.session_id !== identity.session_id) {
         throw new Error('TASK_ALREADY_CLAIMED: Another session currently owns this task.');
       }
-      const conflict = live.find(item => item.task_id !== taskId && item.session_id !== identity.session_id &&
+      const conflict = live.find(item => item.task_id !== taskId &&
         item.scope_paths.some(a => scope.some(b => pathsOverlap(a, b))));
       if (conflict) {
         throw new Error('TASK_SCOPE_CONFLICT: ' + conflict.task_id + ' currently owns an overlapping file/module scope (' +

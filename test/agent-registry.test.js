@@ -40,6 +40,7 @@ function mockMailbox(startTime = Date.now(), options = {}) {
       return { ok: true, sha };
     },
     async deleteRemoteFiles(files) {
+      if (options.failDelete === true) throw new Error('simulated temporary transport failure');
       for (const item of files) {
         const current = records.get(item.path);
         if (!current || current.sha !== item.sha) throw new Error('sha conflict during test mailbox cleanup');
@@ -596,4 +597,22 @@ test('session auto-expire evicts enough oldest records when a legacy mailbox is 
   assert.equal(records.has('bridge/sessions/'+created[1].session_id+'.json'),false);
   assert.ok(records.has('bridge/sessions/'+newSession.session_id+'.json'));
   assert.equal([...records.keys()].filter(path=>path.startsWith('bridge/sessions/')).length,2);
+});
+
+
+test('failed retention deletion leaves an expired retryable record and releases its seat', async () => {
+  const options = { maxSessions: 1, autoExpire: true, failDelete: true };
+  const backing = mockMailbox(Date.now(), options);
+  const session = await backing.registry.startSession({ label: 'Retention failure' });
+  backing.advance(11 * 60 * 1000);
+  await assert.rejects(backing.registry.startSession(), /simulated temporary transport failure/);
+  const path = 'bridge/sessions/' + session.session_id + '.json';
+  assert.equal(backing.records.get(path).value.status, 'expired');
+  assert.equal(backing.records.get('bridge/agents/' + session.agent_id + '.json').value.current_session_id, null);
+  await assert.rejects(backing.registry.authenticate({ session_id: session.session_id }), /SESSION_EXPIRED/);
+  options.failDelete = false;
+  const replacement = await backing.registry.startSession({ label: 'Retry after retention failure' });
+  assert.equal(replacement.agent_id, session.agent_id);
+  assert.notEqual(replacement.session_id, session.session_id);
+  assert.equal(backing.records.has(path), false);
 });
