@@ -439,3 +439,61 @@ test('the per-session publication lock orders result commits before or after rev
   assert.equal(result.revoked, true);
   assert.equal(await registry.isRevoked(session.session_id), true);
 });
+
+
+test('revocation is ordered before later dashboard messages to that session', async () => {
+  const { registry, records } = mockMailbox();
+  const session = await registry.startSession({ label: 'Message race target' });
+  let enteredLock;
+  let releaseLock;
+  const entered = new Promise(resolve => { enteredLock = resolve; });
+  const held = new Promise(resolve => { releaseLock = resolve; });
+  const blocker = registry.withSessionLock(session.session_id, async () => {
+    enteredLock();
+    await held;
+  });
+  await entered;
+
+  const revocation = registry.revokeSession(session.session_id);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const sending = registry.sendUserMessage(session.session_id, { message: 'must not arrive after deletion' });
+  releaseLock();
+  await blocker;
+  await revocation;
+  await assert.rejects(sending, /SESSION_REVOKED/);
+  assert.deepEqual(
+    [...records.keys()].filter(path => path.startsWith('bridge/agent-messages/' + session.session_id + '/')),
+    [],
+    'no new inbox message may be written after the revocation tombstone'
+  );
+});
+
+test('agent-to-agent sends serialize against recipient revocation', async () => {
+  const { registry, records } = mockMailbox();
+  const sender = await registry.startSession({ label: 'Message sender' });
+  const recipient = await registry.startSession({ label: 'Message recipient' });
+  let enteredLock;
+  let releaseLock;
+  const entered = new Promise(resolve => { enteredLock = resolve; });
+  const held = new Promise(resolve => { releaseLock = resolve; });
+  const blocker = registry.withSessionLock(recipient.session_id, async () => {
+    enteredLock();
+    await held;
+  });
+  await entered;
+
+  const revocation = registry.revokeSession(recipient.session_id);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const sending = registry.sendMessage(sender.session_id, {
+    to_session_id: recipient.session_id, subject: 'Race test', message: 'must not arrive after deletion'
+  });
+  releaseLock();
+  await blocker;
+  await revocation;
+  await assert.rejects(sending, /SESSION_REVOKED/);
+  assert.deepEqual(
+    [...records.keys()].filter(path => path.startsWith('bridge/agent-messages/' + recipient.session_id + '/')),
+    [],
+    'no agent-to-agent inbox message may be written after recipient revocation'
+  );
+});
