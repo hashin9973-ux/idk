@@ -282,7 +282,7 @@ function runPowerShell(root,args,signal=null){
   });
   if(signal){
    abortListener=()=>{
-    if(finished||cancelled)return;
+    if(finished||cancelled||timedOut)return;
     cancelled=true;
     void terminateProcessTree().then(()=>{
      if(finished)return;
