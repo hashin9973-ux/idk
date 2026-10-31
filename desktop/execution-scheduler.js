@@ -337,7 +337,7 @@ function createExecutionScheduler(options = {}) {
     return stopPromise;
   }
 
-  return { run, cancel, getState: state, stop };
+  return { run, cancel, getState: state, getResourceLimit: name => poolLimit(String(name || '')), stop };
 }
 
 module.exports = {
