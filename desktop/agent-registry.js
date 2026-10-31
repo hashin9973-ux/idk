@@ -492,7 +492,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             return {
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
               last_activity_at: now, created_at: now,
-              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. This session ID and its agent seat remain valid while idle; the seat is released only by an explicit disconnect or revoke/delete action.',
+              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. This session ID and its agent seat remain valid while idle; at the hard 10,000-ID cap, the oldest last-activity ID may be evicted. Explicit disconnect or revoke/delete also releases the seat.',
               context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Inactivity never expires this session or releases its agent seat. At the hard 10,000-ID cap, the ID with the oldest last_activity_at is evicted. Pause temporarily blocks this session; disconnect explicitly releases its seat; delete/revoke permanently disables it.'
             };
           });
