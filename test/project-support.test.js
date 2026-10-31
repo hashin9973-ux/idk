@@ -77,8 +77,9 @@ test('CMake C++ project reports verified compiler/build tool and a configure pla
     const project = projectAt(profile, '.');
     assert.deepEqual(project.projectTypes, ['C/C++ (CMake)']);
     assert.equal(project.supportLevel, 'toolchain_ready');
-    assert.ok(project.toolchains.some(tool => tool.name === 'cmake' && tool.usable && tool.path === '/test-tool-bin/cmake'));
-    assert.ok(project.toolchains.some(tool => tool.name === 'g++' && tool.usable));
+    assert.ok(profile.toolchains.some(tool => tool.name === 'cmake' && tool.usable && tool.path === '/test-tool-bin/cmake'));
+    assert.ok(profile.toolchains.some(tool => tool.name === 'g++' && tool.usable));
+    assert.ok(project.toolchains.includes('g++'));
     assert.ok(project.commandPlans.some(plan => plan.kind === 'configure' && plan.command === 'cmake -S . -B build' && plan.executed === false));
     assert.equal(Object.hasOwn(project, 'files'), false, 'file inventories must not be copied into agent context');
   } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
@@ -228,8 +229,11 @@ test('Gradle Java/Kotlin wrapper is recognized and wrapper commands include actu
     const project = projectAt(profile, '.');
     assert.ok(project.projectTypes.includes('Gradle'));
     assert.ok(project.projectTypes.includes('Kotlin (Gradle)'));
-    assert.ok(project.commandPlans.some(plan => plan.command === './gradlew.bat build' && plan.toolchainVerified));
-    assert.ok(project.commandPlans.some(plan => plan.command === './gradlew.bat test'));
+    const gradleBuild = project.commandPlans.find(plan => plan.kind === 'build');
+    assert.ok(gradleBuild);
+    assert.match(gradleBuild.command, /^\.[\\/]gradlew\.bat build$/);
+    assert.equal(gradleBuild.toolchainVerified, true);
+    assert.ok(project.commandPlans.some(plan => plan.kind === 'test' && /gradlew\.bat test$/.test(plan.command)));
   } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
 });
 
@@ -365,6 +369,38 @@ test('reaching the exact scan-entry limit does not falsely mark a complete scan 
     assert.equal(profile.scan.entriesVisited, 100);
     assert.equal(profile.scan.truncated, false);
   } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
+});
+
+test('Windows command-shim package managers are version-probed with fixed arguments and shell disabled', async () => {
+  const calls = [];
+  const tools = await discoverToolchains(['javascript'], {
+    platform: 'win32',
+    noCache: true,
+    environment: { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    toolExecFileAsync: async (command, args, options) => {
+      calls.push({ command, args, shell: options.shell });
+      if (command === 'where.exe') {
+        if (args[0] === 'npm') return { stdout: 'C:\\Program Files\\nodejs\\npm.cmd\r\n' };
+        const error = new Error('not found');
+        error.code = 'ENOENT';
+        throw error;
+      }
+      if (command === 'C:\\Windows\\System32\\cmd.exe') {
+        assert.deepEqual(args.slice(0, 3), ['/d', '/s', '/c']);
+        assert.match(args[3], /^""C:\\Program Files\\nodejs\\npm\.cmd" "--version""$/);
+        assert.equal(options.shell, false);
+        return { stdout: '10.8.2\r\n', stderr: '' };
+      }
+      const error = new Error('not found');
+      error.code = 'ENOENT';
+      throw error;
+    }
+  });
+  const npm = tools.find(tool => tool.name === 'npm');
+  assert.ok(npm && npm.usable);
+  assert.equal(npm.path, 'C:\\Program Files\\nodejs\\npm.cmd');
+  assert.equal(npm.version, '10.8.2');
+  assert.ok(calls.some(call => call.command === 'C:\\Windows\\System32\\cmd.exe' && call.shell === false));
 });
 
 test('toolchain discovery reports unavailable executables and does not claim mocked paths are real', async () => {
