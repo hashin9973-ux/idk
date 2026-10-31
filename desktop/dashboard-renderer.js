@@ -651,11 +651,11 @@ async function refresh(){
       renderWorker(s.bridge||{});
       void api.getLocalTtsStatus().then(renderLocalTtsStatus).catch(()=>{});
       void refreshAgentReplies();
-      void loadTaskDashboard();
       renderWorkspace(s.workspace||{});
       applySessionAutoExpire(s.settings&&s.settings.sessionAutoExpire===true);
       if(!dashboardStateLoaded){
         await applyInitialSettings(s.settings||{});
+        void loadTaskDashboard();
         if(Array.isArray(s.browserTabs))syncBrowserTabs(s.browserTabs);
         if(s.dashboardState)applyDashboardState(s.dashboardState);
         if(s.cloudSync)renderCloudStatus(s.cloudSync);

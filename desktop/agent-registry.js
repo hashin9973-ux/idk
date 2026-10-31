@@ -282,7 +282,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       candidates.push(...rows.filter(Boolean));
     }
     candidates.sort((a, b) => a.lastActivity - b.lastActivity);
+    const evictedSessions = [];
+    let remaining = names.length;
     for (const candidate of candidates) {
+      if (remaining < maxSessions) break;
       try {
         const evicted = await withSessionLock(candidate.sessionId, () => withLock('seat:' + candidate.session.agent_id, async () => {
           const latest = await readSession(candidate.sessionId);
@@ -298,15 +301,18 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
           if (!result || result.ok === false) throw new Error('SHA-checked session deletion did not complete.');
           return true;
         }));
-        if (evicted) return { count: names.length - 1, evicted: {
-          session_id: candidate.sessionId, agent_id: candidate.session.agent_id,
-          last_activity_at: candidate.session.last_activity_at || candidate.session.created_at || null
-        } };
+        if (evicted) {
+          remaining--;
+          evictedSessions.push({ session_id: candidate.sessionId, agent_id: candidate.session.agent_id,
+            last_activity_at: candidate.session.last_activity_at || candidate.session.created_at || null });
+        }
       } catch (error) {
         if (/conflict|sha|409|changed/i.test(String(error && error.message || error))) continue;
         throw error;
       }
     }
+    if (remaining < maxSessions) return { count: remaining, evicted: evictedSessions };
+
     throw new Error('SESSION_LIMIT_REACHED: All ' + maxSessions +
       ' sessions are active, busy, paused, or otherwise unsafe to expire. No session was removed.');
   }
@@ -502,10 +508,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         throw new Error('Only a paused session can be resumed. Current status: ' + current.status);
       }
       const at = timestamp();
-      await mutateSession(sessionId, value => ({ ...value, status: 'active', last_activity_at: at, resumed_at: at }));
       await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({
         ...value, status: 'active', last_activity_at: at, resumed_at: at, paused_session_id: null, paused_at: null
       }));
+      await mutateSession(sessionId, value => ({ ...value, status: 'active', last_activity_at: at, resumed_at: at }));
       return { paused: false, session_id: sessionId, agent_id: agentId, resumed_at: at };
     }));
   }

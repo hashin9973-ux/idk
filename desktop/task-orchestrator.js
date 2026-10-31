@@ -191,8 +191,9 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   async function listProjects(identity, args = {}) {
     if (identity) validateIdentity(identity);
     const entries = await listFolder('bridge/projects');
+    const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(args.limit, 200)) : 200;
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^project-[a-f0-9]{24}\.json$/.test(name)))].slice(0, 200);
+      .filter(name => /^project-[a-f0-9]{24}\.json$/.test(name)))].slice(0, limit);
     const projects = [];
     for (let start = 0; start < names.length; start += 20) {
       const rows = await Promise.all(names.slice(start, start + 20).map(async name => {
@@ -282,8 +283,10 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const cursor = Number.isInteger(args.offset) ? Math.max(0, Math.min(names.length, args.offset)) : 0;
     const limit = Number.isInteger(args.limit) ? Math.min(Math.max(args.limit, 1), 100) : 30;
     const matching = [];
+    let scanned = cursor;
     for (let start = cursor; start < names.length && matching.length < limit; start += 20) {
       const batch = names.slice(start, Math.min(names.length, start + 20));
+      scanned = start + batch.length;
       const rows = await Promise.all(batch.map(async name => {
         const remote = await readTask(name.slice(0, -5));
         return remote && remote.value.project_id === projectId ? remote.value : null;
@@ -296,24 +299,23 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
         if (matching.length >= limit) break;
       }
     }
-    const scanned = Math.min(names.length, cursor + Math.max(limit, 20));
     return { project_id: projectId, tasks: matching, count: matching.length, offset: cursor, next_offset: scanned < names.length ? scanned : null, scanned };
   }
 
   async function dashboard() {
-    const listing = await listProjects(null, {});
+    const listing = await listProjects(null, { limit: 10 });
     const projects = [];
-    for (let start = 0; start < Math.min(listing.projects.length, 20); start += 5) {
+    for (let start = 0; start < listing.projects.length; start += 5) {
       const group = listing.projects.slice(start, start + 5);
       const boards = await Promise.all(group.map(async project => {
-        const result = await listTasks(null, { project_id: project.project_id, limit: 30 });
+        const result = await listTasks(null, { project_id: project.project_id, limit: 10 });
         const counts = {};
         for (const item of result.tasks) counts[item.status] = (counts[item.status] || 0) + 1;
         return {
           ...project,
           task_count: result.count,
           task_counts: counts,
-          tasks: result.tasks.slice(0, 20),
+          tasks: result.tasks.slice(0, 10),
           task_list_truncated: result.next_offset !== null
         };
       }));
@@ -506,7 +508,6 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       history: [...current.history, { at: timestamp, by_session_id: identity.session_id, by_agent_id: identity.agent_id,
         action: 'review_' + verdict, status: verdict === 'approve' ? 'integration' : 'needs_rework' }].slice(-100)
     }));
-    if (verdict === 'reject') await heartbeat({ ...identity, session_id: task.value.assignee_session_id, agent_id: task.value.assignee_agent_id }, { task_id: taskId }).catch(() => {});
     return taskSummary(updated);
   }
 
