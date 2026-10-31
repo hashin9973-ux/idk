@@ -982,7 +982,9 @@ test('worktree integration schema and task dashboard polling remain bounded', ()
   const tasks=read('desktop','task-orchestrator.js');
   assert.match(tools,/operation: \{ type: 'string',[^}]*'integrate'/);
   assert.match(tools,/targetBranch/);
-  assert.match(tools,/session_start: 'Create a cryptographically random stable session_id[^']*context_message/);
+  assert.match(tools,/session_start: 'Create a cryptographically random stable session_id[^']*no TTL or inactivity expiration[^']*10,000[^']*oldest last_activity_at/);
+  assert.match(tools,/any IDs evicted to maintain the 10,000-ID hard cap/);
+  assert.match(tools,/automatic eviction of this exact session ID at the 10,000-ID hard cap/);
   assert.match(renderer,/api\.getTaskDashboard\(\)/);
   assert.match(read('desktop','preload.js'),/app:task-dashboard/);
   assert.match(read('desktop','main.js'),/app:task-dashboard/);
