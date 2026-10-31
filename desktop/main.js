@@ -2313,27 +2313,57 @@ function registerIpc() {
   });
   ipcMain.handle('app:agent-widget-delete', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
     const sessionId = payload && payload.sessionId;
-    if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
-      throw new Error('A valid agent session ID is required to delete this widget.');
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
+      throw new Error('A valid agent ID is required to delete this widget.');
+    }
+    if (sessionId !== null && sessionId !== undefined &&
+        (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
+      throw new Error('The selected session ID is invalid.');
     }
     if (payload && payload.wipeMailbox !== undefined && typeof payload.wipeMailbox !== 'boolean') {
       throw new Error('The mailbox wipe option must be a boolean.');
     }
+    if (payload && payload.wipeMailbox === true && !sessionId) {
+      throw new Error('Mailbox wiping requires a conversation session. This widget has no current session.');
+    }
     if (!repositoryBridge || typeof repositoryBridge.revokeAgentSession !== 'function') {
-      throw new Error('The repository worker is unavailable; no session was deleted.');
+      throw new Error('The repository worker is unavailable; no widget was deleted.');
     }
-    const result = await repositoryBridge.revokeAgentSession(sessionId, { wipeMailbox: payload.wipeMailbox === true });
-    if (!result || result.revoked !== true || !/^agent-[0-9]{3,}$/.test(String(result.agent_id || ''))) {
-      throw new Error('The worker did not confirm session revocation; the widget was not hidden.');
+
+    const bridgeState = repositoryBridge.getState();
+    const currentAgent = Array.isArray(bridgeState.agentMailboxes)
+      ? bridgeState.agentMailboxes.find(item => item && item.agent_id === agentId) : null;
+    const currentSessionId = currentAgent && typeof currentAgent.session_id === 'string' &&
+      /^session-[a-f0-9]{32}$/.test(currentAgent.session_id) ? currentAgent.session_id : null;
+    if (currentSessionId && currentSessionId !== (sessionId || null)) {
+      throw new Error('This agent seat now belongs to a different ChatGPT session. Refresh the dashboard before deleting it.');
     }
+
+    let result;
+    if (sessionId) {
+      result = await repositoryBridge.revokeAgentSession(sessionId, { wipeMailbox: payload.wipeMailbox === true });
+      if (!result || result.revoked !== true || result.agent_id !== agentId) {
+        throw new Error('The worker did not confirm revocation of the selected agent session; the widget was not hidden.');
+      }
+    } else {
+      if (currentSessionId) throw new Error('A current session exists but was not included in the delete request.');
+      result = {
+        revoked: false, agent_id: agentId, session_id: null,
+        mailbox_cleanup: { status: 'not_requested', deleted_records: 0, deleted_files: 0 }
+      };
+    }
+
     const hidden = new Set(Array.isArray(settings.agentHiddenIds) ? settings.agentHiddenIds : []);
-    hidden.add(result.agent_id);
+    hidden.add(agentId);
     settings.agentHiddenIds = [...hidden];
-    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
-      !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
-    delete overrides[sessionId];
-    settings.agentWorkspaces = overrides;
+    if (sessionId) {
+      const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+        !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+      delete overrides[sessionId];
+      settings.agentWorkspaces = overrides;
+    }
     persistSettings();
     broadcastBridgeState(repositoryBridge.getState());
     return result;
