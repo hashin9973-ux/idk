@@ -80,6 +80,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     }
   }
 
+  function withSessionLock(sessionId, operation) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required.');
+    if (typeof operation !== 'function') throw new TypeError('A session lock operation is required.');
+    return withLock('session:' + sessionId, operation);
+  }
+
   function isConflictError(error) {
     try { return Boolean(isConflict(error)); }
     catch { return /conflict|sha was not supplied|does not match|409|422/i.test(String(error && error.message || error)); }
@@ -394,7 +400,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     if (!initial && !existingRevocation) throw new Error('The selected session was not found; no agent seat was changed.');
     const agentId = initial ? initial.value.agent_id : existingRevocation.value.agent_id;
     if (existingRevocation && existingRevocation.value.agent_id !== agentId) throw new Error('The revocation record does not match the session owner.');
-    return withLock('seat:' + agentId, async () => {
+    return withSessionLock(sessionId, () => withLock('seat:' + agentId, async () => {
       const sessionRemote = await readSession(sessionId);
       const currentSession = sessionRemote && sessionRemote.value;
       if (currentSession && currentSession.agent_id !== agentId) throw new Error('The session owner changed; refusing to revoke a different seat.');
@@ -435,7 +441,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         revoked_at: tombstone.revoked_at || now, cancelled_request_ids: activeIds,
         seat_released: ownsSeat || Boolean(seat && seat.current_session_id !== sessionId),
         mailbox_cleanup: { status: 'not_requested', deleted_records: 0, deleted_files: 0 } };
-    });
+    }));
   }
 
   async function wipeMailbox(sessionId) {
@@ -865,7 +871,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   return {
-    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked,
+    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked, withSessionLock,
     sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
