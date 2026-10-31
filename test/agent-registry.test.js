@@ -6,8 +6,10 @@ const {
   createAgentRegistry,
   AGENT_RECORD_PROTOCOL,
   SESSION_RECORD_PROTOCOL,
-  SESSION_INACTIVE_AFTER_MS
+  AGENT_ACTIVITY_RECENCY_WINDOW_MS
 } = require('../desktop/agent-registry');
+
+function advanceAndGet(advance, delta) { advance(delta); return Date.now() + delta; }
 
 function mockMailbox(startTime = Date.now(), options = {}) {
   const records = new Map();
@@ -99,7 +101,7 @@ test('session identity remains valid after inactivity and its agent seat is neve
   assert.equal(state.agents[0].status, 'active');
   assert.equal(state.agents[0].busy, true);
   assert.deepEqual(state.agents[0].active_request_ids, [request.request_id]);
-  advance(SESSION_INACTIVE_AFTER_MS + 1000);
+  advance(AGENT_ACTIVITY_RECENCY_WINDOW_MS + 1000);
   state = await registry.statuses(first.agent_id);
   assert.equal(state.agents[0].status, 'inactive', 'activity freshness is separate from session validity');
   assert.equal(state.agents[0].busy, true);
@@ -111,7 +113,7 @@ test('session identity remains valid after inactivity and its agent seat is neve
   assert.equal(state.agents[0].status, 'active', 'completion refreshes activity');
   assert.equal(state.agents[0].busy, false);
   assert.ok(state.agents[0].recent_request_ids.includes(request.request_id));
-  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  advance(AGENT_ACTIVITY_RECENCY_WINDOW_MS + 1);
   state = await registry.statuses();
   assert.equal(state.counts.inactive, 2);
   assert.equal(state.agents[0].reusable, false, 'an idle session still owns its seat');
@@ -171,7 +173,7 @@ test('agents can reply to dashboard messages and the dashboard reads replies in 
   assert.equal(dashboardReplies.count, 1);
   assert.equal(dashboardReplies.messages[0].message_id, reply.message_id);
   assert.match(dashboardReplies.messages[0].message, /Completed: the local tests passed/);
-  await assert.rejects(registry.readDashboardReplies('session-' + 'f'.repeat(32), { message_ids: [sent.message_id] }), /SESSION_EXPIRED/);
+  await assert.rejects(registry.readDashboardReplies('session-' + 'f'.repeat(32), { message_ids: [sent.message_id] }), /SESSION_ID_NOT_FOUND/);
 });
 
 test('agent-to-agent messages and replies use exact session inboxes even when seats are reusable', async () => {
@@ -219,7 +221,7 @@ test('agent-to-agent messages and replies use exact session inboxes even when se
   assert.equal(status.counts.active, 2);
   assert.equal(status.status_legend.busy.includes('executing'), true);
 
-  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  advance(AGENT_ACTIVITY_RECENCY_WINDOW_MS + 1);
   const delivered = await registry.sendMessage(sender.session_id, {
     to_agent_id: recipient.agent_id, message: 'Are you there?'
   });
@@ -259,7 +261,7 @@ test('recent legacy seats are protected until their activity expires', async () 
   assert.equal(status.agents[0].legacy_record, true);
   const newSession = await registry.startSession({ label: 'New conversation' });
   assert.equal(newSession.agent_id, 'agent-002');
-  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  advance(AGENT_ACTIVITY_RECENCY_WINDOW_MS + 1);
   const replacement = await registry.startSession({ label: 'Replacement conversation' });
   assert.equal(replacement.agent_id, 'agent-001');
 });
@@ -285,7 +287,7 @@ test('manual allocation cannot steal an idle session seat until explicit disconn
   const { registry, advance } = mockMailbox();
   const first = await registry.startSession({ label: 'Existing seat' });
   const second = await registry.startSession({ label: 'Second seat' });
-  advance(SESSION_INACTIVE_AFTER_MS + 1);
+  advance(AGENT_ACTIVITY_RECENCY_WINDOW_MS + 1);
   await assert.rejects(registry.startSession({ label: 'Should not steal seat', agent_id: second.agent_id }), /currently active or busy/);
   assert.equal((await registry.authenticate({ session_id: second.session_id })).agent_id, second.agent_id);
   const disconnected = await registry.disconnectSession(second.session_id);
@@ -530,31 +532,99 @@ test('disconnect releases the reusable seat while preserving a permanently detac
   assert.ok(records.has('bridge/sessions/' + session.session_id + '.json'));
 });
 
-test('the session hard cap never expires or deletes sessions automatically', async () => {
+test('the 10,000-ID hard cap evicts the oldest last-activity session automatically', async () => {
   const { registry, records, advance } = mockMailbox(Date.now(), { maxSessions: 2 });
-  const first = await registry.startSession({ label: 'First retained session' });
-  const second = await registry.startSession({ label: 'Second retained session' });
-  advance(365 * 24 * 60 * 60 * 1000);
-  assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id);
+  const first = await registry.startSession({ label: 'Oldest registered session' });
+  advance(1000);
+  const second = await registry.startSession({ label: 'Newer registered session' });
+  advance(1000);
+  const third = await registry.startSession({ label: 'Session created at the hard cap' });
+
+  assert.equal(records.has('bridge/sessions/' + first.session_id + '.json'), false);
+  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), true);
+  assert.equal(records.get('bridge/evicted-sessions/' + first.session_id + '.json').value.reason, 'hard_registration_cap');
+  assert.deepEqual(third.evicted_sessions.map(item => item.session_id), [first.session_id]);
+  assert.equal([...records.keys()].filter(path => path.startsWith('bridge/sessions/')).length, 2);
+  await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_EVICTED/);
   assert.equal((await registry.authenticate({ session_id: second.session_id })).session_id, second.session_id);
-  await assert.rejects(registry.startSession({ label: 'Beyond hard cap' }), /SESSION_LIMIT_REACHED/);
-  const sessionPaths = [...records.keys()].filter(path => path.startsWith('bridge/sessions/'));
-  assert.deepEqual(sessionPaths.sort(), [
-    'bridge/sessions/' + first.session_id + '.json',
-    'bridge/sessions/' + second.session_id + '.json'
-  ].sort());
-  assert.equal(records.get('bridge/sessions/' + first.session_id + '.json').value.status, 'active');
-  assert.equal(records.get('bridge/sessions/' + second.session_id + '.json').value.status, 'active');
+  assert.equal((await registry.authenticate({ session_id: third.session_id })).session_id, third.session_id);
 });
 
-test('the hard cap counts terminal session records and never prunes them', async () => {
-  const { registry, records } = mockMailbox(Date.now(), { maxSessions: 1 });
-  const session = await registry.startSession({ label: 'Retained terminal record' });
-  await registry.disconnectSession(session.session_id);
-  await assert.rejects(registry.startSession({ label: 'No automatic cleanup' }), /SESSION_LIMIT_REACHED/);
-  assert.equal(records.get('bridge/sessions/' + session.session_id + '.json').value.status, 'disconnected');
-  assert.equal(records.has('bridge/sessions/' + session.session_id + '.json'), true);
-  assert.equal([...records.keys()].filter(path => path.startsWith('bridge/sessions/')).length, 1);
+test('the hard cap evicts the oldest paused or busy session and returns active requests for cancellation', async () => {
+  const { registry, advance, records } = mockMailbox(Date.now(), { maxSessions: 2 });
+  const paused = await registry.startSession({ label: 'Oldest paused session' });
+  await registry.setSessionPaused(paused.session_id, true);
+  advance(1000);
+  const busy = await registry.startSession({ label: 'Busy session' });
+  const request = { request_id: 'req-agent002-busy001', session_id: busy.session_id, agent_id: busy.agent_id };
+  await registry.requestStarted(request);
+  advance(1000);
+
+  const third = await registry.startSession({ label: 'Replacement after eviction' });
+  assert.deepEqual(third.evicted_sessions.map(item => item.session_id), [paused.session_id]);
+  assert.equal(records.has('bridge/evicted-sessions/' + paused.session_id + '.json'), true);
+  assert.equal(records.get('bridge/sessions/' + busy.session_id + '.json').value.active_request_ids.includes(request.request_id), true,
+    'the newer busy session remains registered and its operation is not selected as the oldest');
+  assert.equal((await registry.authenticate({ session_id: busy.session_id })).session_id, busy.session_id);
+});
+
+test('a busy session is eligible for oldest-activity eviction and its active request IDs are preserved', async () => {
+  const { registry, advance, records } = mockMailbox(Date.now(), { maxSessions: 2 });
+  const busy = await registry.startSession({ label: 'Oldest busy session' });
+  const request = { request_id: 'req-agent001-running001', session_id: busy.session_id, agent_id: busy.agent_id };
+  await registry.requestStarted(request);
+  advance(1000);
+  const newer = await registry.startSession({ label: 'Newer session' });
+  advance(1000);
+  const replacement = await registry.startSession({ label: 'Third session' });
+
+  assert.deepEqual(replacement.evicted_sessions.map(item => item.session_id), [busy.session_id]);
+  assert.deepEqual(replacement.evicted_sessions[0].cancelled_request_ids, [request.request_id]);
+  assert.equal(records.has('bridge/sessions/' + busy.session_id + '.json'), false);
+  assert.equal(records.has('bridge/evicted-sessions/' + busy.session_id + '.json'), true);
+  assert.equal((await registry.authenticate({ session_id: newer.session_id })).session_id, newer.session_id);
+});
+
+test('failed SHA-checked eviction leaves the oldest session registered and usable', async () => {
+  const options = { maxSessions: 1, failDelete: true };
+  const { registry, records, advance } = mockMailbox(Date.now(), options);
+  const first = await registry.startSession({ label: 'Must survive failed eviction' });
+  advance(1000);
+  await assert.rejects(registry.startSession({ label: 'Retry after transport failure' }), /simulated temporary transport failure/);
+  assert.equal(records.has('bridge/sessions/' + first.session_id + '.json'), true);
+  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), false);
+  assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id);
+
+  options.failDelete = false;
+  const next = await registry.startSession({ label: 'Retry succeeds' });
+  assert.deepEqual(next.evicted_sessions.map(item => item.session_id), [first.session_id]);
+  await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_EVICTED/);
+});
+
+test('the cap removes enough oldest records to return below its hard limit', async () => {
+  const { registry, records, advance } = mockMailbox(Date.now(), { maxSessions: 2 });
+  const first = await registry.startSession({ label: 'First' });
+  advance(1000);
+  const second = await registry.startSession({ label: 'Second' });
+  // Model a pre-existing over-cap mailbox produced by an older build or concurrent writer.
+  for (let index = 0; index < 2; index++) {
+    const sessionId = 'session-' + String(index + 1).padStart(32, 'a');
+    const at = new Date(advanceAndGet(advance, index + 1)).toISOString();
+    records.set('bridge/sessions/' + sessionId + '.json', {
+      value: {
+        protocol: SESSION_RECORD_PROTOCOL, session_id: sessionId, agent_id: 'agent-900',
+        label: 'Imported over-cap session ' + index, status: 'active',
+        created_at: at, updated_at: at, last_activity_at: at,
+        active_request_ids: [], recent_request_ids: []
+      }, sha: 'seed-sha-' + index
+    });
+  }
+  advance(1000);
+  const third = await registry.startSession({ label: 'Trim over-cap inventory' });
+  assert.equal([...records.keys()].filter(path => path.startsWith('bridge/sessions/')).length, 2);
+  assert.ok(third.evicted_sessions.length >= 2);
+  assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id);
+  assert.equal((await registry.authenticate({ session_id: second.session_id })).session_id, second.session_id);
 });
 test('dashboard unread message counts are read-only and use exact session receipts', async () => {
   const { registry, records } = mockMailbox();
