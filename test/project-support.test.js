@@ -100,6 +100,29 @@ test('CMake test commands require CTest registration and a verified CTest execut
   } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
 });
 
+test('Meson waits for Ninja and detects an existing configured build despite ignoring generated directories', async () => {
+  const root = await fixture();
+  try {
+    put(root, 'meson.build', "project('sample', 'cpp')\ntest('smoke', find_program('echo'))\n");
+    put(root, 'src/main.cpp', 'int main() { return 0; }\n');
+    const withoutNinja = await inspect(root, ['meson', 'g++']);
+    const missingNinjaProject = projectAt(withoutNinja, '.');
+    assert.ok(missingNinjaProject.missingPrerequisites.some(item => item.reason === 'Ninja build backend for Meson'));
+    assert.equal(missingNinjaProject.commandPlans.some(plan => /meson setup|meson compile|meson test/.test(plan.command)), false);
+
+    const unconfigured = await inspect(root, ['meson', 'ninja', 'g++']);
+    assert.ok(projectAt(unconfigured, '.').commandPlans.some(plan => plan.kind === 'configure' && plan.command === 'meson setup build'));
+
+    // The production scanner intentionally skips generated build/ folders.
+    // A targeted existence check must still discover Meson's private build marker.
+    put(root, 'build/meson-private/coredata.dat', 'test fixture');
+    const configured = await inspect(root, ['meson', 'ninja', 'g++']);
+    const plans = projectAt(configured, '.').commandPlans;
+    assert.ok(plans.some(plan => plan.kind === 'build' && plan.command === 'meson compile -C build'));
+    assert.ok(plans.some(plan => plan.kind === 'test' && plan.command === 'meson test -C build'));
+  } finally { await fs.promises.rm(root, { recursive: true, force: true }); }
+});
+
 test('MSBuild C++ solution and project use the resolved executable path', async () => {
   const root = await fixture();
   try {
@@ -208,6 +231,7 @@ test('Maven Java project produces commands only with verified JDK and Maven', as
   const root = await fixture();
   try {
     put(root, 'pom.xml', '<project><modules><module>module-a</module></modules></project>\n');
+    put(root, 'mvnw', '#!/bin/sh\n');
     put(root, 'src/main/java/Main.java', 'class Main {}\n');
     const profile = await inspect(root, ['java', 'javac', 'mvn']);
     const project = projectAt(profile, '.');
