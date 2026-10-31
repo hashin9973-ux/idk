@@ -309,6 +309,7 @@ function projectRequiredTools(project) {
   }
   if (kinds.has('C/C++ (Meson)')) {
     add(['meson'], 'Meson build system');
+    add(['ninja'], 'Ninja build backend for Meson');
     if (!languages.has('cpp') && !languages.has('c')) add(['cl', 'clang', 'g++', 'gcc'], 'C/C++ compiler');
   }
   if (kinds.has('C/C++ (Make)')) {
@@ -395,7 +396,9 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
     add('test', 'go test ./...', 'go', 'go.mod');
   }
   if (project.projectTypes.includes('Java (Maven)')) {
-    const wrapper = hasRootFile('mvnw.cmd') ? (process.platform === 'win32' ? '.\\mvnw.cmd' : './mvnw.cmd') : hasRootFile('mvnw') ? './mvnw' : null;
+    const wrapper = process.platform === 'win32'
+      ? (hasRootFile('mvnw.cmd') ? '.\\mvnw.cmd' : null)
+      : (hasRootFile('mvnw') ? './mvnw' : null);
     if (available.has('java') && available.has('javac') && (wrapper || available.has('mvn'))) {
       const command = wrapper || 'mvn';
       add('build', command + ' -DskipTests package', 'mvn', 'pom.xml' + (wrapper ? ' and Maven wrapper' : ''), !wrapper);
@@ -403,7 +406,9 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
     }
   }
   if (project.projectTypes.includes('Gradle')) {
-    const wrapper = hasRootFile('gradlew.bat') ? (process.platform === 'win32' ? '.\\gradlew.bat' : './gradlew.bat') : hasRootFile('gradlew') ? './gradlew' : null;
+    const wrapper = process.platform === 'win32'
+      ? (hasRootFile('gradlew.bat') ? '.\\gradlew.bat' : null)
+      : (hasRootFile('gradlew') ? './gradlew' : null);
     if (available.has('java') && (wrapper || available.has('gradle'))) {
       const command = wrapper || 'gradle';
       add('build', command + ' build', 'gradle', 'Gradle build file' + (wrapper ? ' and Gradle wrapper' : ''), !wrapper);
@@ -443,8 +448,9 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
     else plans.push({ kind: 'configure', command: 'cmake -S . -B build', executable: 'cmake', source: 'CMakeLists.txt', available: true, executed: false, note: 'Configure before building; inspect the selected generator and project options first.' });
     if (configuredBuild && project.metadata.cmakeHasTests && available.has('ctest')) add('test', 'ctest --test-dir ' + JSON.stringify(configuredBuild) + ' --output-on-failure', 'ctest', 'CMakeCache.txt and CMake test registration');
   }
-  if (project.projectTypes.includes('C/C++ (Meson)') && available.has('meson') && hasCppCompiler) {
-    const configured = project.paths.some(item => item.isFile && item.path.replace(/\\/g, '/').toLowerCase() === (projectDirectory === '.' ? 'build/meson-private/coredata.dat' : projectDirectory + '/build/meson-private/coredata.dat').toLowerCase());
+  if (project.projectTypes.includes('C/C++ (Meson)') && available.has('meson') && available.has('ninja') && hasCppCompiler) {
+    const absoluteProjectRoot = path.join(workspaceRoot, ...(root === '.' ? [] : root.split('/')));
+    const configured = fsApi.existsSync(path.join(absoluteProjectRoot, 'build', 'meson-private', 'coredata.dat'));
     if (configured) {
       add('build', 'meson compile -C build', 'meson', 'Meson build directory');
       if (project.metadata.mesonHasTests) add('test', 'meson test -C build', 'meson', 'Meson test() declarations');
