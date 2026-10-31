@@ -2490,9 +2490,9 @@ function createRepositoryBridge(deps) {
     const cancellation = [];
     for (const requestId of requestIds) {
       const controller = requestAbortControllers.get(requestId);
-      if (controller && !controller.signal.aborted) controller.abort(new Error(reasonCode + ': The owning agent session was invalidated (${reasonCode}).'));
+      if (controller && !controller.signal.aborted) controller.abort(new Error(reasonCode + ': The owning agent session was invalidated.'));
       let schedulerCancelled = false;
-      try { schedulerCancelled = cancelTool(requestId, reasonCode + ': The owning agent session was paused or disconnected.') === true; } catch {}
+      try { schedulerCancelled = cancelTool(requestId, reasonCode + ': The owning agent session was invalidated.') === true; } catch {}
       cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
     }
     if (tasksToDrain.length) {
