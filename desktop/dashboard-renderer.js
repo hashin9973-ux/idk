@@ -314,12 +314,13 @@ function makeAgentWidget(agent,index){
   dumpButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id),cfg=current.autoDump||{};autoDumpEditingAgent=agent.agent_id;$('agent-autodump-title').textContent='Auto-dump · '+agent.agent_id;$('agent-autodump-count').value=String(cfg.maxCount||0);$('agent-autodump-age').value=String(cfg.maxAgeMinutes||0);$('agent-autodump-exclusions').value=(cfg.exclusions||[]).join(', ');$('agent-autodump-dialog').showModal()}catch(error){note('Could not open autodump settings: '+error.message,'error')}});
   deleteButton.addEventListener('click',event=>{
     event.stopPropagation();
-    const sessionId=card.dataset.sessionId||'';
-    if(!sessionId||deleteButton.disabled)return;
+    const sessionId=card.dataset.sessionId||null;
+    if(deleteButton.disabled)return;
     pendingAgentDelete={agentId:agent.agent_id,sessionId};
     $('agent-delete-agent-id').textContent=agent.agent_id;
-    $('agent-delete-session-id').textContent=sessionId;
+    $('agent-delete-session-id').textContent=sessionId||'No current conversation session';
     $('agent-delete-wipe-mailbox').checked=false;
+    $('agent-delete-wipe-mailbox').disabled=!sessionId;
     $('agent-delete-error').textContent='';
     $('agent-delete-confirm').disabled=false;
     $('agent-delete-dialog').showModal();
@@ -388,8 +389,8 @@ function renderAgentMailboxes(rawAgents){
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
-    deleteButton.disabled=!hasSession;
-    deleteButton.title=hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'No active session to revoke';
+    deleteButton.disabled=false;
+    deleteButton.title=hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'Remove this empty agent widget';
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
     workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_scope==='agent-default'?' · saved agent default':agent.workspace_scope==='session'?' · current conversation override':agent.workspace_custom?' · custom':' · global default'));
     const active=agent.status==='active';
@@ -772,16 +773,20 @@ $('agent-delete-confirm').addEventListener('click',async()=>{
   $('agent-delete-error').textContent='';
   const wipeMailbox=$('agent-delete-wipe-mailbox').checked===true;
   try{
-    const result=await api.deleteAgentWidget(sessionId,wipeMailbox);
+    const result=await api.deleteAgentWidget(agentId,sessionId,wipeMailbox);
     pendingAgentDelete=null;
     $('agent-delete-dialog').close();
     const cleanup=result&&result.mailbox_cleanup||{};
-    if(wipeMailbox&&cleanup.status!=='completed'){
+    if(wipeMailbox&&cleanup.status==='failed'){
       note('Session revoked and widget removed; mailbox cleanup failed and remains retryable: '+String(cleanup.error||cleanup.status||'unknown error'),'error');
+    }else if(wipeMailbox&&cleanup.status==='completed_with_preserved_records'){
+      note('Session revoked and widget removed. Cleaned '+Number(cleanup.deleted_files||0)+' mailbox files; preserved '+Number(cleanup.preserved_request_records||0)+' non-terminal or incomplete requests. '+String(cleanup.preservation_note||''),'error');
     }else if(wipeMailbox){
       note('Session revoked, widget removed, and '+Number(cleanup.deleted_files||0)+' attributable mailbox files cleaned.','success');
-    }else{
+    }else if(sessionId){
       note('Session revoked and widget removed. The agent ID remains available for reassignment.','success');
+    }else{
+      note('Empty agent widget removed. No conversation session was active.','success');
     }
     await refresh();
   }catch(error){
