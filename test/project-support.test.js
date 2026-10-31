@@ -235,6 +235,7 @@ test('Maven Java project produces commands only with verified JDK and Maven', as
     put(root, 'src/main/java/Main.java', 'class Main {}\n');
     const withoutGlobalMaven = await inspect(root, ['java', 'javac']);
     assert.equal(projectAt(withoutGlobalMaven, '.').commandPlans.length, 0, 'a Unix-only mvnw script is not a valid Windows wrapper');
+    assert.ok(projectAt(withoutGlobalMaven, '.').missingPrerequisites.some(item => item.reason === 'Maven or the project Maven wrapper'));
     const profile = await inspect(root, ['java', 'javac', 'mvn']);
     const project = projectAt(profile, '.');
     assert.ok(project.projectTypes.includes('Java (Maven)'));
