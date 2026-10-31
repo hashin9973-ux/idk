@@ -177,7 +177,7 @@ function readManifest(root, relative, fsApi, maxBytes) {
   } catch (error) { return { content: null, error: error.code === 'ENOENT' ? 'missing' : 'unreadable' }; }
 }
 function parseManifestMetadata(root, project, fsApi, maxBytes) {
-  const metadata = { packageScripts: [], packageManager: null, entryPoints: [], workspaceMembers: [], configErrors: [], makeTargets: [], cmakeHasTests: false, mesonHasTests: false };
+  const metadata = { packageScripts: [], packageManager: null, entryPoints: [], workspaceMembers: [], configErrors: [], makeTargets: [], cmakeHasTests: false, mesonHasTests: false, rakeHasTestTarget: false };
   for (const manifestPath of project.manifests) {
     const name = path.posix.basename(manifestPath).toLowerCase();
     const loaded = readManifest(root, manifestPath, fsApi, maxBytes);
@@ -220,6 +220,8 @@ function parseManifestMetadata(root, project, fsApi, maxBytes) {
       metadata.cmakeHasTests = /(?:enable_testing\s*\(|include\s*\(\s*CTest|add_test\s*\()/i.test(source);
     } else if (name === 'meson.build') {
       metadata.mesonHasTests = /\btest\s*\(/i.test(source);
+    } else if (name === 'rakefile') {
+      metadata.rakeHasTestTarget = /Rake::TestTask|\btask\s+[:\"']test\b/i.test(source);
     } else if (name.endsWith('.uproject')) {
       const parsed = parseJson(source);
       if (!parsed) metadata.configErrors.push({ path: manifestPath, reason: 'malformed_json' });
@@ -338,7 +340,7 @@ function projectRequiredTools(project) {
   return required;
 }
 
-function buildCommandPlans(project, toolchains, fsApi) {
+function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
   const available = new Set(toolchains.filter(tool => tool.usable).map(tool => tool.name));
   const plans = [];
   const hasManifest = name => project.manifests.some(item => path.posix.basename(item).toLowerCase() === name.toLowerCase());
@@ -381,7 +383,7 @@ function buildCommandPlans(project, toolchains, fsApi) {
     if (available.has('rustfmt')) add('format_check', 'cargo fmt --all -- --check', 'cargo', 'rustfmt');
     if (available.has('clippy')) add('lint', 'cargo clippy --workspace --all-targets --all-features -- -D warnings', 'cargo', 'cargo-clippy');
   }
-  if (project.projectTypes.includes('Go')) {
+  if (project.projectTypes.includes('Go') && hasManifest('go.mod')) {
     add('build', 'go build ./...', 'go', 'go.mod');
     add('test', 'go test ./...', 'go', 'go.mod');
   }
@@ -412,9 +414,13 @@ function buildCommandPlans(project, toolchains, fsApi) {
       add('build', 'msbuild ' + JSON.stringify(relative) + ' /restore', 'msbuild', relative);
     }
   }
-  if (project.projectTypes.includes('Visual Studio solution') && available.has('msbuild')) {
+  if (project.projectTypes.includes('Visual Studio solution')) {
     const solution = project.manifests.find(item => /\.(?:sln|slnx)$/i.test(item));
-    if (solution) { const relative = projectRelativePath(solution); add('build', 'msbuild ' + JSON.stringify(relative) + ' /restore', 'msbuild', relative); }
+    if (solution) {
+      const relative = projectRelativePath(solution);
+      if (available.has('msbuild')) add('build', 'msbuild ' + JSON.stringify(relative) + ' /restore', 'msbuild', relative);
+      else if (available.has('dotnet')) add('build', 'dotnet build ' + JSON.stringify(relative), 'dotnet', relative);
+    }
   }
   if (project.projectTypes.includes('C++ (MSBuild)') && available.has('msbuild')) {
     const vcxproj = project.manifests.find(item => item.toLowerCase().endsWith('.vcxproj'));
@@ -423,13 +429,14 @@ function buildCommandPlans(project, toolchains, fsApi) {
   const hasCppCompiler = ['cl', 'clang', 'g++', 'gcc'].some(name => available.has(name));
   if (project.projectTypes.includes('C/C++ (CMake)') && available.has('cmake') && hasCppCompiler) {
     const buildDirectories = ['build', 'cmake-build-debug', 'cmake-build-release', path.join('out', 'build')];
-    const configuredBuild = buildDirectories.find(directory => { try { return fsApi.existsSync(path.join(root === '.' ? '.' : root, directory, 'CMakeCache.txt')); } catch { return false; } });
+    const absoluteProjectRoot = path.join(workspaceRoot, ...(root === '.' ? [] : root.split('/')));
+    const configuredBuild = buildDirectories.find(directory => { try { return fsApi.existsSync(path.join(absoluteProjectRoot, directory, 'CMakeCache.txt')); } catch { return false; } });
     if (configuredBuild) add('build', 'cmake --build ' + JSON.stringify(configuredBuild), 'cmake', 'CMakeCache.txt');
     else plans.push({ kind: 'configure', command: 'cmake -S . -B build', executable: 'cmake', source: 'CMakeLists.txt', available: true, executed: false, note: 'Configure before building; inspect the selected generator and project options first.' });
-    if (project.metadata.cmakeHasTests && available.has('ctest')) add('test', 'ctest --test-dir build --output-on-failure', 'ctest', 'CMake test registration');
+    if (configuredBuild && project.metadata.cmakeHasTests && available.has('ctest')) add('test', 'ctest --test-dir ' + JSON.stringify(configuredBuild) + ' --output-on-failure', 'ctest', 'CMakeCache.txt and CMake test registration');
   }
   if (project.projectTypes.includes('C/C++ (Meson)') && available.has('meson') && hasCppCompiler) {
-    const configured = hasFile('build/meson-private/coredata.dat');
+    const configured = project.paths.some(item => item.isFile && item.path.replace(/\\/g, '/').toLowerCase() === (projectDirectory === '.' ? 'build/meson-private/coredata.dat' : projectDirectory + '/build/meson-private/coredata.dat').toLowerCase());
     if (configured) {
       add('build', 'meson compile -C build', 'meson', 'Meson build directory');
       if (project.metadata.mesonHasTests) add('test', 'meson test -C build', 'meson', 'Meson test() declarations');
@@ -445,8 +452,8 @@ function buildCommandPlans(project, toolchains, fsApi) {
     add('build', 'swift build', 'swift', 'Package.swift');
     add('test', 'swift test', 'swift', 'Package.swift');
   }
-  if (project.projectTypes.includes('Ruby') && available.has('bundle') && (hasFile('rakefile') || hasFile('Rakefile'))) {
-    add('test', 'bundle exec rake test', 'bundle', 'Gemfile and Rakefile');
+  if (project.projectTypes.includes('Ruby') && available.has('bundle') && project.metadata.rakeHasTestTarget === true) {
+    add('test', 'bundle exec rake test', 'bundle', 'Gemfile and declared Rake test task');
   }
   if (project.projectTypes.includes('Scala (sbt)')) {
     add('build', 'sbt compile', 'sbt', 'build.sbt');
@@ -503,7 +510,8 @@ async function discoverToolchain(name, options) {
   } catch (error) {
     const text = String(error.stdout || '') + '\n' + String(error.stderr || '');
     const version = text.split(/\r?\n/).map(value => value.trim()).find(value => value && /\d/.test(value)) || null;
-    return { name, available: true, path: executablePath, version: version ? version.slice(0, 180) : null, usable: false, error: error.killed ? 'version_timeout' : 'version_check_failed' };
+    const timedOut = error.killed === true || error.code === 'ETIMEDOUT';
+    return { name, available: true, path: executablePath, version: version ? version.slice(0, 180) : null, usable: Boolean(version) && !timedOut, error: timedOut ? 'version_timeout' : version ? 'version_probe_nonzero_with_version' : 'version_check_failed' };
   }
 }
 
@@ -688,7 +696,7 @@ async function discoverWorkspaceProjects(workspaceRoot, options = {}) {
     if (project.projectTypes.includes('Unity')) project.missingPrerequisites.push({ reason: 'Unity Editor path and batch-mode target configuration have not been resolved', anyOf: ['unity'], available: toolchainMap.get('unity')?.available === true });
     project.toolchains = projectToolNames(project).map(name => toolchainMap.get(name)).filter(Boolean);
     if (project.languages.some(item => item.language === 'python') && toolchainMap.has('pytest-module')) project.toolchains.push(toolchainMap.get('pytest-module'));
-    project.commandPlans = buildCommandPlans(project, project.toolchains, fsApi).map(plan => {
+    project.commandPlans = buildCommandPlans(project, project.toolchains, fsApi, root).map(plan => {
       const evidence = project.toolchains.find(tool => tool.name === plan.executable) || null;
       let command = plan.command;
       if (plan.executable === 'msbuild' && evidence?.usable && evidence.path) {
@@ -729,7 +737,7 @@ async function discoverWorkspaceProjects(workspaceRoot, options = {}) {
       workspaceMembers: project.workspaceMembers.slice(0, 100),
       configErrors: project.metadata.configErrors.slice(0, 20),
       makeTargets: project.metadata.makeTargets.slice(0, 100),
-      cmakeHasTests: project.metadata.cmakeHasTests, mesonHasTests: project.metadata.mesonHasTests,
+      cmakeHasTests: project.metadata.cmakeHasTests, mesonHasTests: project.metadata.mesonHasTests, rakeHasTestTarget: project.metadata.rakeHasTestTarget,
       unrealModules: (project.metadata.unrealModules || []).slice(0, 100),
       flutter: project.metadata.flutter === true
     },
