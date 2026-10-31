@@ -360,14 +360,17 @@ function gitWorktree(root,args={}){assertGitRepo(root);const operation=args.oper
  if(new Set(expectedKeys).size!==expectedKeys.length)throw new Error('expectedChangedPaths contains duplicate paths.');
  const primaryStatus=git(root,['status','--porcelain=v1','-z','--untracked-files=all']);
  if(primaryStatus.exitCode!==0)throw new Error(primaryStatus.stderr||'Could not inspect the primary worktree status.');
+ const normalizedRoot=normalizeGitWorktreePath(root);
  const registeredWorktreePaths=listing.worktrees
-  .filter(item=>normalizeGitWorktreePath(item.path)!==normalizeGitWorktreePath(root))
-  .map(item=>path.relative(root,item.path).replace(/\\/g,'/').replace(/^\.\/+/, '').replace(/\/+$/,'').toLowerCase())
-  .filter(value=>value&&!value.startsWith('../')&&!path.isAbsolute(value));
+  .map(item=>normalizeGitWorktreePath(item.path))
+  .filter(value=>value&&value!==normalizedRoot&&value.startsWith(normalizedRoot+path.sep));
  const dirtyPrimaryEntries=primaryStatus.stdout.split('\0').filter(Boolean).filter(entry=>{
   const statusCode=entry.slice(0,2);
-  const statusPath=entry.slice(3).replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase();
-  return !(statusCode==='??'&&registeredWorktreePaths.some(registered=>statusPath===registered||statusPath.startsWith(registered+'/')));
+  if(statusCode!=='??')return true;
+  const statusPath=entry.slice(3).replace(/[\\/]+$/,'');
+  const normalizedStatusPath=normalizeGitWorktreePath(path.resolve(root,statusPath));
+  return !registeredWorktreePaths.some(registered=>
+   normalizedStatusPath===registered||normalizedStatusPath.startsWith(registered+path.sep));
  });
  if(dirtyPrimaryEntries.length)throw new Error('The primary worktree must be clean before integration. Unrelated changes: '+dirtyPrimaryEntries.map(entry=>entry.slice(3)).join(', '));
  const sourceStatus=git(source.path,['status','--porcelain=v1','--untracked-files=all']);
