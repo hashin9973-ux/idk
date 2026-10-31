@@ -593,8 +593,10 @@ test('failed SHA-checked eviction leaves the oldest session registered and usabl
   advance(1000);
   await assert.rejects(registry.startSession({ label: 'Retry after transport failure' }), /simulated temporary transport failure/);
   assert.equal(records.has('bridge/sessions/' + first.session_id + '.json'), true);
-  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), false);
-  assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id);
+  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), true,
+    'the eviction intent is durable before deletion so a retry can complete it safely');
+  assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id,
+    'a pending tombstone does not invalidate a session whose registration still exists');
 
   options.failDelete = false;
   const next = await registry.startSession({ label: 'Retry succeeds' });
