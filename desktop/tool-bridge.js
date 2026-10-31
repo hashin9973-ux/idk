@@ -501,7 +501,7 @@ function isPlainObject(value) {
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
-function computerServiceCall(service, args, requestId) {
+function computerServiceCall(service, args, requestId, signal = null) {
   switch (args.action) {
     case 'status': return service.status(args);
     case 'connect': return service.connectColab();
