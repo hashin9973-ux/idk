@@ -324,3 +324,16 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 @keyframes agent-assignment-fade-in{from{opacity:0}to{opacity:1}}
 @keyframes agent-assignment-pop-in{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
 @media(prefers-reduced-motion:reduce){.agent-assignment-overlay:not([hidden]),.agent-assignment-dialog{animation:none!important}}
+
+
+/* Keep each terminal prompt pinned below its scrollable request history. */
+.agent-message-composer{flex:0 0 auto;min-height:34px;margin-top:2px;padding:6px 2px 1px;border-top:1px solid #34404c;background:transparent}
+.agent-message-composer input{min-height:28px;color:var(--text-primary,#eee);caret-color:currentColor}
+.agent-message-composer input:disabled{opacity:.55;cursor:not-allowed}
+.agent-message-composer input:focus-visible{outline:1px solid #8299b3;outline-offset:2px}
+.agent-console-icon-button:focus-visible{outline:1px solid #9bb6d2;outline-offset:2px}
+.agent-action-menu{position:fixed;z-index:1400;display:grid;gap:2px;min-width:190px;max-width:calc(100vw - 16px);padding:5px;border:1px solid #657386;border-radius:5px;background:#080d14;color:#e8edf4;box-shadow:0 8px 24px #000b;font:11px/1.4 Consolas,"Cascadia Mono",monospace}
+.agent-action-menu[hidden]{display:none!important}
+.agent-action-menu button{display:block;width:100%;min-height:28px;padding:5px 8px;border:1px solid transparent;border-radius:3px;background:transparent;color:inherit;text-align:left;font:inherit;cursor:pointer}
+.agent-action-menu button:hover,.agent-action-menu button:focus-visible{border-color:#657386;background:#1b2735;color:#fff;outline:none}
+.agent-action-menu button:disabled{opacity:.45;cursor:not-allowed}
