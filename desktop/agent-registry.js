@@ -182,7 +182,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function isEvicted(sessionId) {
-    return Boolean(await readEviction(sessionId));
+    const eviction = await readEviction(sessionId);
+    return Boolean(eviction && !(await readSession(sessionId)));
   }
 
   async function assertNotEvicted(sessionId) {
@@ -574,7 +575,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   async function requestCompleted(request) {
     if (!request || !request.session_id || !request.agent_id) return null;
     return withSessionLock(request.session_id, () => withLock('seat:' + request.agent_id, async () => {
-      if (await isRevoked(request.session_id) || await isEvicted(request.session_id)) return null;
+      if (await isRevoked(request.session_id)) return null;
       const sessionRemote = await readSession(request.session_id);
       if (!sessionRemote || sessionRemote.value.status === 'disconnected') return null;
       const now = timestamp();
@@ -618,6 +619,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         throw new Error('AGENT_SEAT_UNAVAILABLE: This session ID remains registered, but its previous agent seat is no longer assigned to it.');
       }
       const current = remote.value;
+      if (current.status === 'disconnected') throw new Error('SESSION_DISCONNECTED: This session was explicitly disconnected.');
       if (paused) {
         if (current.status === 'paused') return { paused: true, session_id: sessionId, agent_id: agentId, already_in_state: true };
         if (current.status !== 'active') throw new Error('Only an active session can be paused. Current status: ' + current.status);
