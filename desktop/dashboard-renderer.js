@@ -7,6 +7,7 @@ let busy={observe:false,accept:false,colab:false,workspace:false,github:false,re
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
 let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
+let pendingAgentDelete=null;
 let refreshInFlight=false,refreshRequested=false,lastBrowserActivation=Symbol('unset');
 let agentReplyRefreshInFlight=false;
 function dashboardSnapshot(){
@@ -257,6 +258,7 @@ function createAgentIcon(kind){
   const paths=kind==='workspace'
     ? ['M2.25 1.75h7l4.5 4.5v8h-11.5z','M9.25 1.75v4.5h4.5M4.5 9h7M4.5 11.5h7']
     : kind==='trash' ? ['M2.5 4h11M6 4V2.5h4V4M4 4.5l.7 9h6.6l.7-9M6.5 6.5v4.5M9.5 6.5v4.5']
+    : kind==='history' ? ['M2 8a6 6 0 1 0 1.76-4.24M2 2v4h4M8 4.5v4l2.5 1.5']
     : kind==='edit' ? ['M2 11.5l-.5 3 3-.5L13 5.5 10.5 3z','M9.5 4l2.5 2.5']
     : ['M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z','M4.5 5.25h7M4.5 7.75h5'];
   for(const d of paths){const pathElement=document.createElementNS('http://www.w3.org/2000/svg','path');pathElement.setAttribute('d',d);svg.append(pathElement)}
@@ -281,11 +283,12 @@ function makeAgentWidget(agent,index){
   workspaceButton.title='Configure this agent workspace';workspaceButton.setAttribute('aria-label','Configure workspace for '+agent.agent_id);
   workspaceButton.append(createAgentIcon('workspace'));
   const nicknameButton=document.createElement('button');nicknameButton.type='button';nicknameButton.className='agent-console-icon-button agent-nickname-button';nicknameButton.title='Set agent nickname';nicknameButton.setAttribute('aria-label','Set nickname for '+agent.agent_id);nicknameButton.append(createAgentIcon('edit'));
-  const dumpButton=document.createElement('button');dumpButton.type='button';dumpButton.className='agent-console-icon-button agent-dump-button';dumpButton.title='Configure automatic widget-history cleanup';dumpButton.setAttribute('aria-label','Configure autodump for '+agent.agent_id);dumpButton.append(createAgentIcon('trash'));
+  const dumpButton=document.createElement('button');dumpButton.type='button';dumpButton.className='agent-console-icon-button agent-dump-button';dumpButton.title='Configure automatic widget-history cleanup';dumpButton.setAttribute('aria-label','Configure autodump for '+agent.agent_id);dumpButton.append(createAgentIcon('history'));
+  const deleteButton=document.createElement('button');deleteButton.type='button';deleteButton.className='agent-console-icon-button agent-delete-button';deleteButton.title='Revoke this session and remove its widget';deleteButton.setAttribute('aria-label','Delete agent widget for '+agent.agent_id);deleteButton.append(createAgentIcon('trash'));
   const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
   messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
   messageButton.append(createAgentIcon('message'));
-  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton);
+  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton,deleteButton);
   header.append(identity,status,busy,counts,actions);
   const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';
   const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='Message this agent…';input.setAttribute('aria-label','Message for '+agent.agent_id);
@@ -309,6 +312,18 @@ function makeAgentWidget(agent,index){
   });
   nicknameButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id);const value=window.prompt('Custom nickname for '+agent.agent_id+' (leave blank to reset):',current.nickname||'');if(value===null)return;await api.setAgentWidgetSettings(agent.agent_id,{...current.autoDump,nickname:value});await refresh();}catch(error){note('Could not save agent nickname: '+error.message,'error')}});
   dumpButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id),cfg=current.autoDump||{};autoDumpEditingAgent=agent.agent_id;$('agent-autodump-title').textContent='Auto-dump · '+agent.agent_id;$('agent-autodump-count').value=String(cfg.maxCount||0);$('agent-autodump-age').value=String(cfg.maxAgeMinutes||0);$('agent-autodump-exclusions').value=(cfg.exclusions||[]).join(', ');$('agent-autodump-dialog').showModal()}catch(error){note('Could not open autodump settings: '+error.message,'error')}});
+  deleteButton.addEventListener('click',event=>{
+    event.stopPropagation();
+    const sessionId=card.dataset.sessionId||'';
+    if(!sessionId||deleteButton.disabled)return;
+    pendingAgentDelete={agentId:agent.agent_id,sessionId};
+    $('agent-delete-agent-id').textContent=agent.agent_id;
+    $('agent-delete-session-id').textContent=sessionId;
+    $('agent-delete-wipe-mailbox').checked=false;
+    $('agent-delete-error').textContent='';
+    $('agent-delete-confirm').disabled=false;
+    $('agent-delete-dialog').showModal();
+  });
   messageButton.addEventListener('click',event=>{
     event.stopPropagation();composer.hidden=!composer.hidden;
     if(!composer.hidden){input.focus();input.select();}
@@ -342,6 +357,8 @@ function renderAgentMailboxes(rawAgents){
   if(!agentWidgetHost)return;
   const all=Array.isArray(rawAgents)?rawAgents:[];
   const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^agent-[0-9]{3,}$/.test(agent.agent_id));
+  const visibleIds=new Set(agents.map(agent=>agent.agent_id));
+  for(const [id,card] of agentWidgets){if(!visibleIds.has(id)){card.remove();agentWidgets.delete(id);}}
   const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' seat'+(agents.length===1?'':'s');
   agents.forEach((agent,index)=>{
     let card=agentWidgets.get(agent.agent_id);
@@ -360,6 +377,7 @@ function renderAgentMailboxes(rawAgents){
     const messageButton=header.querySelector('.agent-message-button');
     const nicknameButton=header.querySelector('.agent-nickname-button');
     const dumpButton=header.querySelector('.agent-dump-button');
+    const deleteButton=header.querySelector('.agent-delete-button');
     // The panel belongs to the seat, not the task/session label. Individual
     // requests and their tool names remain listed in the console body below.
     name.textContent=String(agent.nickname||agent.agent_id);name.title=String(agent.agent_id)+(agent.nickname?' · '+agent.nickname:'');
@@ -370,6 +388,8 @@ function renderAgentMailboxes(rawAgents){
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
+    deleteButton.disabled=!hasSession;
+    deleteButton.title=hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'No active session to revoke';
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
     workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_scope==='agent-default'?' · saved agent default':agent.workspace_scope==='session'?' · current conversation override':agent.workspace_custom?' · custom':' · global default'));
     const active=agent.status==='active';
@@ -739,6 +759,38 @@ function autoArrangeWidgets(){
   updateAgentCanvasHeight();scheduleSaveDashboardState();note('Widgets arranged into a compact grid.','success');
 }
 let autoDumpEditingAgent='';
+$('agent-delete-cancel').addEventListener('click',()=>{
+  pendingAgentDelete=null;
+  $('agent-delete-dialog').close();
+});
+$('agent-delete-confirm').addEventListener('click',async()=>{
+  if(!pendingAgentDelete)return;
+  const {agentId,sessionId}=pendingAgentDelete;
+  const button=$('agent-delete-confirm');
+  button.disabled=true;
+  button.textContent='Revoking…';
+  $('agent-delete-error').textContent='';
+  const wipeMailbox=$('agent-delete-wipe-mailbox').checked===true;
+  try{
+    const result=await api.deleteAgentWidget(sessionId,wipeMailbox);
+    pendingAgentDelete=null;
+    $('agent-delete-dialog').close();
+    const cleanup=result&&result.mailbox_cleanup||{};
+    if(wipeMailbox&&cleanup.status!=='completed'){
+      note('Session revoked and widget removed; mailbox cleanup failed and remains retryable: '+String(cleanup.error||cleanup.status||'unknown error'),'error');
+    }else if(wipeMailbox){
+      note('Session revoked, widget removed, and '+Number(cleanup.deleted_files||0)+' attributable mailbox files cleaned.','success');
+    }else{
+      note('Session revoked and widget removed. The agent ID remains available for reassignment.','success');
+    }
+    await refresh();
+  }catch(error){
+    $('agent-delete-error').textContent='Deletion failed: '+String(error&&error.message||error);
+    button.disabled=false;
+  }finally{
+    button.textContent='Delete and revoke';
+  }
+});
 $('agent-autodump-cancel').addEventListener('click',()=>$('agent-autodump-dialog').close());
 $('agent-autodump-save').addEventListener('click',async()=>{
   const id=autoDumpEditingAgent;if(!id)return;
