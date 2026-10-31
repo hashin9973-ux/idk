@@ -88,9 +88,9 @@ function createProjectIntelligence(options={}){
     if(!data.lastScan||typeof data.lastScan!=='object'||Array.isArray(data.lastScan)||counters.some(key=>!Number.isSafeInteger(data.lastScan[key])||data.lastScan[key]<0)||typeof data.lastScan.truncated!=='boolean'||!Array.isArray(data.lastScan.incompleteReasons)||data.lastScan.incompleteReasons.length>20||data.lastScan.incompleteReasons.some(reason=>typeof reason!=='string'||reason.length>80))throw Error('cache scan metadata is invalid');
    }
    const restored=new Map();let bytes=0;
-   for(const d of data.documents){
-    const invalidReason=cachedDocumentError(s,d);
-    if(invalidReason)throw Error('cache contains invalid document metadata for '+String(d&&d.path||'unknown').slice(0,120)+': '+invalidReason);
+   for(let documentIndex=0;documentIndex<data.documents.length;documentIndex++){
+    const d=data.documents[documentIndex],invalidReason=cachedDocumentError(s,d);
+    if(invalidReason)throw Error('cache contains invalid document metadata at record '+documentIndex+': '+invalidReason);
     const key=d.path.toLowerCase();if(restored.has(key))throw Error('cache contains duplicate paths');
     bytes+=d.size;if(bytes>maxBytes)throw Error('cache exceeds the configured byte budget');
     restored.set(key,d);
