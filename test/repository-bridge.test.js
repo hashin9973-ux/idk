@@ -1797,10 +1797,7 @@ test('revoking an in-flight agent session aborts its local tool and publishes a 
 
   try {
     await bridge.start();
-    await Promise.race([
-      started,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution did not start.')), 2000))
-    ]);
+    await waitFor(() => Boolean(capturedSignal), 2000);
     assert.ok(capturedSignal && !capturedSignal.aborted);
 
     const revoked = await bridge.revokeAgentSession(DEFAULT_TEST_SESSION_ID);
