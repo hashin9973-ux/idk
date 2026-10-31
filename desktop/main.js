@@ -1255,7 +1255,15 @@ function enrichedBridgeState(state) {
     !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
   const nicknames = settings.agentNicknames && typeof settings.agentNicknames === 'object' ? settings.agentNicknames : {};
   const autoDump = settings.agentAutoDump && typeof settings.agentAutoDump === 'object' ? settings.agentAutoDump : {};
-  const agentMailboxes = [...byId.values()].map(agent => {
+  const hiddenIds = new Set(Array.isArray(settings.agentHiddenIds)
+    ? settings.agentHiddenIds.filter(id => typeof id === 'string' && /^agent-[0-9]{3,}$/.test(id)) : []);
+  for (const agent of byId.values()) if (agent && agent.session_id) hiddenIds.delete(agent.agent_id);
+  const normalizedHiddenIds = [...hiddenIds].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+  if (JSON.stringify(settings.agentHiddenIds || []) !== JSON.stringify(normalizedHiddenIds)) {
+    settings.agentHiddenIds = normalizedHiddenIds;
+    persistSettings();
+  }
+  const agentMailboxes = [...byId.values()].filter(agent => !hiddenIds.has(agent.agent_id)).map(agent => {
     const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
       ? agent.session_id : null;
     const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
@@ -2303,6 +2311,33 @@ function registerIpc() {
     persistSettings(); publishSharedState();
     return { agentId };
   });
+  ipcMain.handle('app:agent-widget-delete', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const sessionId = payload && payload.sessionId;
+    if (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
+      throw new Error('A valid agent session ID is required to delete this widget.');
+    }
+    if (payload && payload.wipeMailbox !== undefined && typeof payload.wipeMailbox !== 'boolean') {
+      throw new Error('The mailbox wipe option must be a boolean.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.revokeAgentSession !== 'function') {
+      throw new Error('The repository worker is unavailable; no session was deleted.');
+    }
+    const result = await repositoryBridge.revokeAgentSession(sessionId, { wipeMailbox: payload.wipeMailbox === true });
+    if (!result || result.revoked !== true || !/^agent-[0-9]{3,}$/.test(String(result.agent_id || ''))) {
+      throw new Error('The worker did not confirm session revocation; the widget was not hidden.');
+    }
+    const hidden = new Set(Array.isArray(settings.agentHiddenIds) ? settings.agentHiddenIds : []);
+    hidden.add(result.agent_id);
+    settings.agentHiddenIds = [...hidden];
+    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+      !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+    delete overrides[sessionId];
+    settings.agentWorkspaces = overrides;
+    persistSettings();
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
   ipcMain.handle('app:agent-widget-settings', (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
     if (!payload || typeof payload !== 'object' || !/^agent-[0-9]{3,}$/.test(String(payload.agentId || ''))) {
@@ -2823,7 +2858,8 @@ if (!hasInstanceLock) {
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
-          executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId),
+          executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal),
+          cancelTool: (requestId, reason) => toolBridge.cancelTool(requestId, reason),
           onState: broadcastBridgeState,
           requestSessionAssignment,
           onSessionAssigned: persistAssignedSessionWorkspace,
