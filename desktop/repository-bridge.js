@@ -2352,8 +2352,11 @@ function createRepositoryBridge(deps) {
         mailboxCleanup = { status: 'failed', deleted_records: 0, deleted_files: 0, error: cleanError(error.message), retryable: true };
       }
       if (cancellationDrainTimedOut) mailboxCleanup = {
-        ...mailboxCleanup, cancellation_drain_timed_out: true,
-        preservation_note: [mailboxCleanup.preservation_note, 'One or more cancelled worker requests did not settle within the 3-second cleanup drain window; retry mailbox cleanup after they finish.'].filter(Boolean).join(' ')
+        ...mailboxCleanup,
+        status: mailboxCleanup.status === 'completed' ? 'completed_with_preserved_records' : mailboxCleanup.status,
+        cancellation_drain_timed_out: true,
+        pending_cancellation_requests: requestsToDrain.length,
+        preservation_note: [mailboxCleanup.preservation_note, 'One or more cancelled worker requests did not settle within the 3-second cleanup drain window; cleanup is not confirmed complete. Retry mailbox cleanup after they finish.'].filter(Boolean).join(' ')
       };
     }
     announce();
