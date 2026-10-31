@@ -5,6 +5,7 @@ const DEFAULT_MAX_BYPASS = 24;
 const DEFAULT_MAX_QUEUED = 10000;
 const DEFAULT_AGING_INTERVAL_MS = 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
+const DEFAULT_RESOURCE_LIMITS = Object.freeze({ filesystem: 64, 'source-analysis': 8, compilation: 2, editor: 1, cook: 1, packaging: 1, gpu: 1, 'binary-assets': 2, 'mailbox-network': 32, 'desktop-control': 1, audio: 1, shell: 4, git: 2 });
 
 function overlaps(a, b) {
   return a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
@@ -49,6 +50,8 @@ function createExecutionScheduler(options = {}) {
   const shutdownTimeoutMs = Number.isInteger(options.shutdownTimeoutMs)
     ? Math.max(0, Math.min(options.shutdownTimeoutMs, 120000)) : DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+  const resourceLimits = { ...DEFAULT_RESOURCE_LIMITS, ...(options.resourceLimits && typeof options.resourceLimits === 'object' ? options.resourceLimits : {}) };
+  for (const [name, limit] of Object.entries(resourceLimits)) resourceLimits[name] = Number.isInteger(limit) ? Math.max(1, Math.min(limit, 100)) : DEFAULT_RESOURCE_LIMITS[name] || maxActive;
   const queue = [];
   const active = new Map();
   let sequence = 0;
@@ -63,11 +66,18 @@ function createExecutionScheduler(options = {}) {
 
   function state() {
     const now = Date.now();
+    const poolUsage = {};
+    for (const [name, limit] of Object.entries(resourceLimits)) poolUsage[name] = { active: 0, limit };
+    for (const item of active.values()) for (const name of item.footprint.resourcePools || []) {
+      if (!poolUsage[name]) poolUsage[name] = { active: 0, limit: maxActive };
+      poolUsage[name].active++;
+    }
     return {
       active: active.size,
       queued: queue.length,
       maxActive,
       maxQueued,
+      resourcePools: poolUsage,
       completed,
       failed,
       cancelled,
@@ -120,6 +130,12 @@ function createExecutionScheduler(options = {}) {
 
   function canStart(item) {
     if (stopped || active.size >= maxActive) return false;
+    for (const pool of item.footprint.resourcePools || []) {
+      const limit = Number.isInteger(resourceLimits[pool]) ? resourceLimits[pool] : maxActive;
+      let used = 0;
+      for (const running of active.values()) if ((running.footprint.resourcePools || []).includes(pool)) used++;
+      if (used >= limit) return false;
+    }
     if (item.footprint.barrier) {
       return active.size === 0 && !queue.some(other =>
         other !== item && other.sequence < item.sequence);
@@ -225,9 +241,10 @@ function createExecutionScheduler(options = {}) {
             resources: Array.isArray(footprint.resources) ? footprint.resources : [],
             resourceReads: Array.isArray(footprint.resourceReads) ? footprint.resourceReads : [],
             resourceWrites: Array.isArray(footprint.resourceWrites) ? footprint.resourceWrites : [],
+            resourcePools: [...new Set(Array.isArray(footprint.resourcePools) ? footprint.resourcePools.filter(value => typeof value === 'string' && value.length <= 80) : [])],
             barrier: footprint.barrier === true
           }
-        : { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: true },
+        : { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], resourcePools: [], barrier: true },
       controller,
       externalSignal: meta.signal && typeof meta.signal.addEventListener === 'function' ? meta.signal : null,
       externalAbortListener: null,
@@ -302,6 +319,7 @@ function createExecutionScheduler(options = {}) {
 
 module.exports = {
   DEFAULT_MAX_ACTIVE,
+  DEFAULT_RESOURCE_LIMITS,
   footprintsConflict,
   createExecutionScheduler
 };
