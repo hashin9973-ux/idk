@@ -369,6 +369,10 @@ test('optional mailbox wipe removes only fully attributable records and preserve
   records.set('bridge/requests/' + requestId + '.json', { value: request, sha: 'req-sha' });
   records.set('bridge/claims/' + requestId + '.json', { value: claim, sha: 'claim-sha' });
   records.set('bridge/results/' + requestId + '.json', { value: result, sha: 'result-sha' });
+  records.set('bridge/artifacts/' + requestId + '/orphaned-cancelled-output.txt', {
+    value: 'artifact bytes owned by the request, but absent from its cancellation result manifest',
+    sha: 'orphan-artifact-sha'
+  });
   records.set('bridge/requests/' + incompleteId + '.json', {
     value: { ...request, request_id: incompleteId }, sha: 'incomplete-request-sha'
   });
@@ -394,6 +398,8 @@ test('optional mailbox wipe removes only fully attributable records and preserve
   assert.equal(records.has('bridge/requests/' + requestId + '.json'), false);
   assert.equal(records.has('bridge/claims/' + requestId + '.json'), false);
   assert.equal(records.has('bridge/results/' + requestId + '.json'), false);
+  assert.equal(records.has('bridge/artifacts/' + requestId + '/orphaned-cancelled-output.txt'), false,
+    'request-scoped orphan artifacts are removed even when the cancellation result has no manifest');
   assert.equal(records.has('bridge/requests/' + incompleteId + '.json'), true, 'incomplete session requests are preserved');
   assert.equal(records.has('bridge/agent-messages/' + target.session_id + '/' + targetMessage.message_id + '.json'), false);
   assert.equal(records.has('bridge/agent-messages/' + other.session_id + '/' + otherMessage.message_id + '.json'), true,
