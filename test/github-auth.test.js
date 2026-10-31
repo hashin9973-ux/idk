@@ -843,7 +843,7 @@ test('agent revocation aborts an in-flight authenticated Git command', async () 
   const mockExec = async (file, args, options) => {
     calls.push({ file, args: [...args], options });
     if (args[0] === 'remote' && args[1] === 'get-url') {
-      return { stdout: 'https://github.com/example/private-repo.git\\n', stderr: '' };
+      return { stdout: 'https://github.com/example/private-repo.git\n', stderr: '' };
     }
     if (args[0] === 'fetch') {
       return new Promise((resolve, reject) => {
