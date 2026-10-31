@@ -965,6 +965,7 @@ test('session lifecycle, bounded retention, shared task coordination and game me
   assert.match(registry,/SESSION_EVICTED/);
   assert.match(registry,/lastActivity - b\.lastActivity/);
   assert.doesNotMatch(registry,/expireSession|SESSION_EXPIRED|SESSION_INACTIVE_AFTER_MS|status: 'expired'/);
+  assert.match(bridge,/cleanupEvictedSessions\(error && error\.evicted_sessions\)/);
   assert.match(bridge,/cancelSessionOperations\(evicted\.session_id, 'SESSION_EVICTED'\)/);
   assert.match(bridge,/taskOrchestrator\.detachSession\(evicted\.session_id, 'evicted'\)/);
   assert.match(read('desktop','task-orchestrator.js'),/\['disconnected', 'revoked', 'evicted'\]/);
@@ -1038,6 +1039,9 @@ test('agent widget render, composer, workspace and context actions survive statu
   assert.match(styles, /\.agent-message-composer\{flex:0 0 auto/);
   assert.match(main, /function applyRecentAgentWorkspace\(/);
   assert.match(main, /function selectAgentWorkspace\(/);
+  assert.match(main, /resolveSessionWorkspaceRoot/);
+  assert.match(main, /settings\.agentWorkspaceDefaults = defaults/);
+  assert.match(main, /settings\.agentWorkspaces = sessionOverrides/);
   assert.match(main, /persistSettings\(\)/);
   assert.match(preload, /selectAgentWorkspace:/);
   assert.match(preload, /setAgentWorkspaceFromRecent:/);
