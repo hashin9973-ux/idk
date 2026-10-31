@@ -251,7 +251,7 @@ function manifestPaths(entries, relativeRoot) {
       lower === 'pytest.ini' || lower === 'tox.ini' || lower === 'rakefile' || lower === 'makefile' ||
       /^requirements(?:[-_.].*)?\.txt$/.test(lower) || /\.(?:uproject|uplugin|sln|slnx|vcxproj|csproj|gemspec)$/.test(lower) ||
       /\.(?:xcodeproj|xcworkspace)$/.test(lower);
-    if (recognized) paths.push(relativeRoot ? relativeRoot + '/' + entry.name : entry.name);
+    if (recognized && (entry.isFile || !/\.(?:xcodeproj|xcworkspace)$/.test(lower))) paths.push(relativeRoot ? relativeRoot + '/' + entry.name : entry.name);
   }
   return paths;
 }
@@ -307,14 +307,21 @@ function projectRequiredTools(project) {
     add(['cmake'], 'CMake build system');
     if (!languages.has('cpp') && !languages.has('c')) add(['cl', 'clang', 'g++', 'gcc'], 'C/C++ compiler');
   }
-  if (kinds.has('C/C++ (Meson)')) add(['meson'], 'Meson build system');
-  if (kinds.has('C/C++ (Make)')) add(['make'], 'Make build system');
+  if (kinds.has('C/C++ (Meson)')) {
+    add(['meson'], 'Meson build system');
+    if (!languages.has('cpp') && !languages.has('c')) add(['cl', 'clang', 'g++', 'gcc'], 'C/C++ compiler');
+  }
+  if (kinds.has('C/C++ (Make)')) {
+    add(['make'], 'Make build system');
+    if (!languages.has('cpp') && !languages.has('c')) add(['cl', 'clang', 'g++', 'gcc'], 'C/C++ compiler');
+  }
   if (kinds.has('C++ (MSBuild)')) add(['msbuild'], 'Visual Studio MSBuild');
   if (kinds.has('.NET / C#')) add(['dotnet', 'msbuild'], '.NET SDK or MSBuild');
   if (kinds.has('Rust (Cargo)')) add(['cargo'], 'Rust Cargo package/build tool');
   if (kinds.has('Java (standard)') || kinds.has('Java (standard source-only)')) add(['javac'], 'Java compiler (JDK)');
   if (kinds.has('Java (Maven)')) {
     add(['java'], 'Java runtime');
+    add(['javac'], 'Java compiler (JDK)');
     if (!project.paths.some(item => item.isFile && /(?:^|\/)mvnw(?:\.cmd)?$/i.test(item.path) && path.posix.dirname(item.path) === (project.root === '.' ? '.' : project.root))) add(['mvn'], 'Maven or the project Maven wrapper');
   }
   if (kinds.has('Gradle')) {
@@ -389,7 +396,7 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
   }
   if (project.projectTypes.includes('Java (Maven)')) {
     const wrapper = hasRootFile('mvnw.cmd') ? (process.platform === 'win32' ? '.\\mvnw.cmd' : './mvnw.cmd') : hasRootFile('mvnw') ? './mvnw' : null;
-    if (wrapper || available.has('mvn')) {
+    if (available.has('java') && available.has('javac') && (wrapper || available.has('mvn'))) {
       const command = wrapper || 'mvn';
       add('build', command + ' -DskipTests package', 'mvn', 'pom.xml' + (wrapper ? ' and Maven wrapper' : ''), !wrapper);
       add('test', command + ' test', 'mvn', 'pom.xml' + (wrapper ? ' and Maven wrapper' : ''), !wrapper);
@@ -397,7 +404,7 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
   }
   if (project.projectTypes.includes('Gradle')) {
     const wrapper = hasRootFile('gradlew.bat') ? (process.platform === 'win32' ? '.\\gradlew.bat' : './gradlew.bat') : hasRootFile('gradlew') ? './gradlew' : null;
-    if (wrapper || available.has('gradle')) {
+    if (available.has('java') && (wrapper || available.has('gradle'))) {
       const command = wrapper || 'gradle';
       add('build', command + ' build', 'gradle', 'Gradle build file' + (wrapper ? ' and Gradle wrapper' : ''), !wrapper);
       add('test', command + ' test', 'gradle', 'Gradle build file' + (wrapper ? ' and Gradle wrapper' : ''), !wrapper);
@@ -414,19 +421,20 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
       add('build', 'msbuild ' + JSON.stringify(relative) + ' /restore', 'msbuild', relative);
     }
   }
+  const hasCppCompiler = ['cl', 'clang', 'g++', 'gcc'].some(name => available.has(name));
   if (project.projectTypes.includes('Visual Studio solution')) {
     const solution = project.manifests.find(item => /\.(?:sln|slnx)$/i.test(item));
     if (solution) {
       const relative = projectRelativePath(solution);
-      if (available.has('msbuild')) add('build', 'msbuild ' + JSON.stringify(relative) + ' /restore', 'msbuild', relative);
-      else if (available.has('dotnet')) add('build', 'dotnet build ' + JSON.stringify(relative), 'dotnet', relative);
+      const needsCpp = project.languages.some(item => ['c', 'cpp'].includes(item.language));
+      if (available.has('msbuild') && (!needsCpp || hasCppCompiler)) add('build', 'msbuild ' + JSON.stringify(relative) + ' /restore', 'msbuild', relative);
+      else if (!needsCpp && available.has('dotnet')) add('build', 'dotnet build ' + JSON.stringify(relative), 'dotnet', relative);
     }
   }
-  if (project.projectTypes.includes('C++ (MSBuild)') && available.has('msbuild')) {
+  if (project.projectTypes.includes('C++ (MSBuild)') && available.has('msbuild') && hasCppCompiler) {
     const vcxproj = project.manifests.find(item => item.toLowerCase().endsWith('.vcxproj'));
     if (vcxproj) { const relative = projectRelativePath(vcxproj); add('build', 'msbuild ' + JSON.stringify(relative) + ' /m', 'msbuild', relative); }
   }
-  const hasCppCompiler = ['cl', 'clang', 'g++', 'gcc'].some(name => available.has(name));
   if (project.projectTypes.includes('C/C++ (CMake)') && available.has('cmake') && hasCppCompiler) {
     const buildDirectories = ['build', 'cmake-build-debug', 'cmake-build-release', path.join('out', 'build')];
     const absoluteProjectRoot = path.join(workspaceRoot, ...(root === '.' ? [] : root.split('/')));
