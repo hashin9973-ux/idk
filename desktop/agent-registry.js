@@ -220,7 +220,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) return;
     try {
       const existing = await readSession(sessionId);
-      if (!existing || existing.value.status === 'expired') return;
+      if (!existing || existing.value.status === 'expired' || existing.value.status === 'revoked') return;
       await mutateSession(sessionId, current => ({
         ...current, status: 'expired', ended_at: timestamp(),
         ...(replacementSessionId ? { replaced_by_session_id: replacementSessionId } : {}),
