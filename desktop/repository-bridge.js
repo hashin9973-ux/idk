@@ -667,7 +667,10 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict, maxSessions: 10000 });
+  const agentRegistry = createAgentRegistry({
+    readRemoteFile, listFolder, writeRemoteJson,
+    deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict, maxSessions: 10000
+  });
   const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
 
   async function publishState(force = false) {
