@@ -51,6 +51,38 @@ test('project tasks enforce dependency completion and atomic overlapping scope l
   await assert.rejects(tasks.claimTask(b, { task_id: (await tasks.createTask(a, { project_id: project.project_id, title: 'Player file', objective: 'Edit same area', acceptance_criteria: ['No conflict'], scope_paths: ['Source/Game/Player/Player.cpp'] })).task_id }), /TASK_SCOPE_CONFLICT/);
 });
 
+test('explicit hierarchical module scopes are case-insensitive project-wide ownership locks', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000 });
+  const project = await tasks.initProject(a, { name: 'Module ownership' });
+  const runtime = await tasks.createTask(a, {
+    project_id: project.project_id, title: 'Runtime module', objective: 'Edit runtime',
+    acceptance_criteria: ['Runtime builds'], scope_paths: ['Source/Game/Runtime'],
+    scope_modules: ['Game.Runtime']
+  });
+  const nestedRuntime = await tasks.createTask(b, {
+    project_id: project.project_id, title: 'Runtime AI', objective: 'Edit nested runtime module',
+    acceptance_criteria: ['AI builds'], scope_paths: ['Source/Game/AI'],
+    scope_modules: ['game.runtime.ai']
+  });
+  const editor = await tasks.createTask(c, {
+    project_id: project.project_id, title: 'Editor module', objective: 'Edit editor',
+    acceptance_criteria: ['Editor builds'], scope_paths: ['Source/Game/Editor'],
+    scope_modules: ['Game.Editor']
+  });
+  const descriptiveOnly = await tasks.createTask(d, {
+    project_id: project.project_id, title: 'Metadata only', objective: 'Keep label descriptive',
+    acceptance_criteria: ['Tests build'], scope_paths: ['Source/Game/Tests'],
+    module: 'Game.Runtime'
+  });
+  await tasks.claimTask(a, { task_id: runtime.task_id });
+  await assert.rejects(tasks.claimTask(b, { task_id: nestedRuntime.task_id }), /TASK_SCOPE_CONFLICT/);
+  const editorClaim = await tasks.claimTask(c, { task_id: editor.task_id });
+  assert.deepEqual(editorClaim.module_ownership, ['Game.Editor']);
+  const metadataClaim = await tasks.claimTask(d, { task_id: descriptiveOnly.task_id });
+  assert.deepEqual(metadataClaim.module_ownership, []);
+});
+
 test('independent review, real worktree integration callback, and complete verification gate tasks', async () => {
   const deps = mailbox();
   let integrationCalls = 0, verificationCalls = 0;
@@ -62,12 +94,25 @@ test('independent review, real worktree integration callback, and complete verif
   await tasks.submitTask(a, { task_id: task.task_id, commit_sha: 'a'.repeat(40), changed_paths: ['Source/Game/Player.cpp'], evidence: [{ kind: 'implementation', summary: 'Implemented.' }] });
   await assert.rejects(tasks.reviewTask(a, { task_id: task.task_id, verdict: 'approve' }), /different session/);
   await tasks.reviewTask(b, { task_id: task.task_id, verdict: 'approve' });
+  await assert.rejects(tasks.integrateTask(b, { task_id: task.task_id, target_branch: 'main' }, async () => ({
+    integrated: true, source_commit: 'c'.repeat(40), target_before: 'd'.repeat(40),
+    changed_paths: ['Source/Game/Player.cpp'], merge_commit: 'b'.repeat(40)
+  })), /did not verify the submitted commit and actual changed paths/);
   const integrated = await tasks.integrateTask(b, { task_id: task.task_id, target_branch: 'main' }, async input => {
     integrationCalls++;
-    assert.deepEqual(input, { operation: 'integrate', path: '.bridge-worktrees/gameplay', branch: 'task/gameplay', targetBranch: 'main' });
-    return { integrated: true, merge_commit: 'b'.repeat(40) };
+    assert.deepEqual(input, {
+      operation: 'integrate', path: '.bridge-worktrees/gameplay', branch: 'task/gameplay', targetBranch: 'main',
+      submittedCommitSha: 'a'.repeat(40), scopePaths: ['Source/Game'],
+      expectedChangedPaths: ['Source/Game/Player.cpp']
+    });
+    return {
+      integrated: true, source_commit: 'a'.repeat(40), target_before: 'd'.repeat(40),
+      changed_paths: ['Source/Game/Player.cpp'], merge_commit: 'b'.repeat(40)
+    };
   });
   assert.equal(integrated.status, 'verification');
+  assert.equal(integrated.integration.source_commit, 'a'.repeat(40));
+  assert.deepEqual(integrated.integration.changed_paths, ['Source/Game/Player.cpp']);
   const verified = await tasks.verifyTask(b, { task_id: task.task_id, checks: [
     { kind: 'build', summary: 'Build succeeded', command: 'build' },
     { kind: 'test', summary: 'Tests passed', command: 'test' },
@@ -205,7 +250,15 @@ test('detaching a submitted task preserves review gates and submission attributi
   const integrated = await tasks.integrateTask(c, { task_id: task.task_id, target_branch: 'main' }, async input => {
     integrations++;
     assert.equal(input.branch, 'task/feature');
-    return { integrated: true, merge_commit: 'f'.repeat(40) };
+    assert.deepEqual(input, {
+      operation: 'integrate', path: '.bridge-worktrees/feature', branch: 'task/feature', targetBranch: 'main',
+      submittedCommitSha: 'e'.repeat(40), scopePaths: ['Source/Game/Feature'],
+      expectedChangedPaths: ['Source/Game/Feature/Feature.cpp']
+    });
+    return {
+      integrated: true, source_commit: 'e'.repeat(40), target_before: 'd'.repeat(40),
+      changed_paths: ['Source/Game/Feature/Feature.cpp'], merge_commit: 'f'.repeat(40)
+    };
   });
   assert.equal(integrated.status, 'verification');
   await assert.rejects(tasks.verifyTask(a, { task_id: task.task_id, checks: [

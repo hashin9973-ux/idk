@@ -205,12 +205,16 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   function activityTime(seat, session) {
-    const values = [
-      seat && seat.last_activity_at, seat && seat.last_seen_at, seat && seat.updated_at,
-      session && session.last_activity_at, session && session.updated_at,
+    const activityValues = [
+      seat && seat.last_activity_at, seat && seat.last_seen_at,
+      session && session.last_activity_at
+    ].map(value => Date.parse(String(value || ''))).filter(Number.isFinite);
+    if (activityValues.length) return Math.max(...activityValues);
+    const fallbackValues = [
+      seat && seat.updated_at, session && session.updated_at,
       seat && seat.created_at, session && session.created_at
     ].map(value => Date.parse(String(value || ''))).filter(Number.isFinite);
-    return values.length ? Math.max(...values) : 0;
+    return fallbackValues.length ? Math.max(...fallbackValues) : 0;
   }
 
   function isBusy(seat, session) {
@@ -276,12 +280,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
           const ownsSeat = Boolean(seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id === sessionId);
           const terminal = ['expired', 'revoked', 'disconnected'].includes(remote.value.status);
           if (!terminal && (!ownsSeat || !isInactive(seat, remote.value))) return null;
-          return { sessionId, remote, session: remote.value, lastActivity: activityTime(seat, remote.value) };
+          return { sessionId, remote, session: remote.value, lastActivity: activityTime(ownsSeat ? seat : null, remote.value) };
         } catch { return null; }
       }));
       candidates.push(...rows.filter(Boolean));
     }
-    candidates.sort((a, b) => a.lastActivity - b.lastActivity);
+    candidates.sort((a, b) => a.lastActivity - b.lastActivity || a.sessionId.localeCompare(b.sessionId));
     const evictedSessions = [];
     let remaining = names.length;
     for (const candidate of candidates) {
