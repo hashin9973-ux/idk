@@ -781,7 +781,8 @@ $('agent-delete-confirm').addEventListener('click',async()=>{
       pendingAgentDelete={agentId,sessionId};
       const detail=cleanup.status==='failed'
         ? String(cleanup.error||'Mailbox cleanup failed.')
-        : 'Preserved '+Number(cleanup.preserved_request_records||0)+' non-terminal or incomplete request records.';
+        : ['Preserved '+Number(cleanup.preserved_request_records||0)+' non-terminal or incomplete request records.',
+            cleanup.preservation_note || 'The mailbox scan did not confirm that every attributable record was removed.'].filter(Boolean).join(' ');
       $('agent-delete-error').textContent='Session revoked and widget removed. Mailbox cleanup is not complete. '+detail+' You can retry this wipe after outstanding operations settle.';
       note('Session revoked and widget removed; mailbox cleanup needs a retry.','error');
       button.disabled=false;
