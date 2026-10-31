@@ -223,7 +223,7 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 @keyframes agent-assignment-pulse{50%{opacity:.45;box-shadow:0 0 0 9px transparent}}
 .agent-assignment-toggle{margin:10px 0 14px}
 .agent-assignment-dialog .field-label{display:flex;flex-direction:column;gap:6px;margin:12px 0;color:var(--text);font-size:12px}
-.agent-assignment-dialog select,.agent-assignment-dialog textarea{width:100%;min-width:0;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font:inherit;font-size:12px;line-height:1.45}
+.agent-assignment-dialog select,.agent-assignment-dialog textarea{width:100%;min-width:0;padding:9px;border:1px solid var(--border);border-radius:6px;background:var(--surface-soft);color:var(--text);font:inherit;font-size:12px;line-height:1.45}
 .agent-assignment-dialog textarea{resize:vertical}
 .agent-assignment-workspace{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px;border:1px solid var(--border);border-radius:7px;background:var(--surface)}
 .agent-assignment-workspace>div{display:flex;flex-direction:column;gap:4px;min-width:0}
@@ -270,3 +270,18 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 .task-board-state{flex:0 0 auto;padding:2px 5px;border:1px solid var(--outline);border-radius:4px;color:var(--muted);font-size:9px;text-transform:uppercase}
 .task-board-meta{color:var(--muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
 .task-board-row code{color:var(--muted);font-size:8px;overflow-wrap:anywhere}
+
+.agent-console-workspace{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9eabba;font-size:9px;line-height:13px}
+.agent-console-unread{flex:0 0 auto;padding:1px 5px;border:1px solid #8b7541;border-radius:8px;background:#33280e;color:#ffe2a0;font:600 9px/13px Consolas,"Cascadia Mono",monospace}
+.agent-console-unread[hidden]{display:none}
+.agent-workspace-menu{position:absolute;z-index:100;top:32px;right:8px;width:min(360px,calc(100% - 16px));max-height:260px;overflow:auto;padding:7px;border:1px solid #687789;border-radius:7px;background:#17212c;box-shadow:0 8px 24px #0009;display:grid;gap:4px}
+.agent-workspace-menu[hidden]{display:none}
+.agent-workspace-menu-label{padding:3px 4px;color:#aebdca;font-size:9px;overflow-wrap:anywhere}
+.agent-workspace-menu button{min-width:0;padding:6px 8px;border:1px solid #39495a;border-radius:4px;background:#202c38;color:#eaf0f6;text-align:left;font:10px/1.4 Consolas,"Cascadia Mono",monospace;overflow-wrap:anywhere}
+.agent-workspace-menu button:hover{border-color:#94a8bb;background:#2b3b4b}
+.agent-assignment-suggestion{display:grid;gap:8px;margin:10px 0;padding:10px;border:1px solid var(--accent);border-radius:7px;background:var(--surface)}
+.agent-assignment-suggestion[hidden]{display:none}
+.agent-assignment-suggestion>div:first-child{display:grid;gap:4px;min-width:0}
+.agent-assignment-suggestion small{color:var(--muted);font-size:10px;overflow-wrap:anywhere}
+.agent-assignment-suggestion-actions{display:flex;gap:7px;flex-wrap:wrap}
+.agent-assignment-actions #agent-assignment-extend{margin-right:auto}

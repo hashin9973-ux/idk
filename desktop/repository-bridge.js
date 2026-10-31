@@ -88,6 +88,14 @@ function validateRequest(requestId, request) {
   const allowed = isContextRequest ? [] : TOOL_ARGUMENT_KEYS[request.tool].filter(key => key !== 'approved');
   const extra = Object.keys(request.args).filter(key => !allowed.includes(key));
   if (extra.length) throw new Error('Unsupported argument field(s): ' + extra.join(', '));
+  if (isSessionBootstrap && request.args.workspace_suggestion !== undefined) {
+    const suggestion = request.args.workspace_suggestion;
+    if (!isPlainObject(suggestion) || Object.keys(suggestion).some(key => !['path', 'reason'].includes(key)) ||
+        typeof suggestion.path !== 'string' || !suggestion.path.trim() || suggestion.path.length > 2048 ||
+        typeof suggestion.reason !== 'string' || !suggestion.reason.trim() || suggestion.reason.length > 400) {
+      throw new Error('session_start.workspace_suggestion must contain only a grounded path and reason.');
+    }
+  }
   if (request.agent_id !== undefined || request.agent_token !== undefined) {
     throw new Error('Legacy agent_id/agent_token request identity is no longer supported. Call session_start and include session_id.');
   }
@@ -375,6 +383,7 @@ function createRepositoryBridge(deps) {
         })(),
         busy: Boolean(live.length || group.busy),
         session_id: group.session_id || null,
+        unread_message_count: Number(group.unread_message_count) || 0,
         active_count: rows.filter(item => ['validating', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(item.status)).length,
         queued_count: rows.filter(item => ['queued', 'loading', 'claiming'].includes(item.status)).length,
         request_count: rows.length,
@@ -417,7 +426,8 @@ function createRepositoryBridge(deps) {
           last_completed_at: agent.last_completed_at || null,
           recent_request_ids: Array.isArray(agent.recent_request_ids) ? agent.recent_request_ids.slice(-50) : [],
           active_request_ids: Array.isArray(agent.active_request_ids) ? agent.active_request_ids.slice(-50) : [],
-          reusable: agent.reusable === true
+          reusable: agent.reusable === true,
+          unread_message_count: Number(agent.unread_message_count) || 0
         });
       }
       announce();
@@ -2025,7 +2035,8 @@ function createRepositoryBridge(deps) {
         const directory = await agentRegistry.statuses();
         const assignment = await requestSessionAssignment({
           label: request.args.label || 'ChatGPT session',
-          agents: directory.agents || [], count: directory.count || 0
+          agents: directory.agents || [], count: directory.count || 0,
+          workspaceSuggestion: request.args.workspace_suggestion || null
         });
         if (!assignment || assignment.cancelled === true) {
           throw new Error('SESSION_ASSIGNMENT_CANCELLED: No agent was assigned. The request timed out or was dismissed; no session_id was created.');
@@ -2039,9 +2050,8 @@ function createRepositoryBridge(deps) {
         // Auto-assignment chooses the seat only after the popup completes. Do not
         // pass its global placeholder workspace as a session override: the main
         // process must resolve the selected seat's default before the global one.
-        const assignedWorkspace = assignment.autoAssign === true ? null :
-          (typeof assignment.workspace_root === 'string' && assignment.workspace_root.trim()
-            ? assignment.workspace_root : null);
+        const assignedWorkspace = typeof assignment.workspace_root === 'string' && assignment.workspace_root.trim()
+          ? assignment.workspace_root : null;
         await onSessionAssigned({ session_id: created.session_id, agent_id: created.agent_id, workspace_root: assignedWorkspace });
         let initialMessageStatus = null;
         if (typeof assignment.message === 'string' && assignment.message.trim()) {

@@ -88,6 +88,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
   refreshProjectIndex: () => ipcRenderer.invoke('app:project-index-refresh'),
   selectAgentWorkspace: (agentId, sessionId = null) => ipcRenderer.invoke('app:agent-select-workspace', { agentId, sessionId }),
+  setAgentWorkspaceFromRecent: (agentId, sessionId, workspaceRoot) => ipcRenderer.invoke('app:agent-workspace-recent', { agentId, sessionId, workspaceRoot }),
   addAgentWidget: () => ipcRenderer.invoke('app:agent-widget-add'),
   deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false) => ipcRenderer.invoke('app:agent-widget-delete', { agentId, sessionId, wipeMailbox }),
   pauseAgentSession: (agentId, sessionId, paused) => ipcRenderer.invoke('app:agent-session-pause', { agentId, sessionId, paused }),
@@ -98,6 +99,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   setAgentWidgetSettings: (agentId, value) => ipcRenderer.invoke('app:agent-widget-settings', { agentId, value }),
   chooseAgentAssignmentWorkspace: () => ipcRenderer.invoke('app:agent-assignment-workspace'),
   respondAgentAssignment: payload => ipcRenderer.invoke('app:agent-assignment-response', payload),
+  extendAgentAssignment: requestId => ipcRenderer.invoke('app:agent-assignment-extend', { requestId }),
   onAgentAssignmentRequested(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, payload) => callback(payload && typeof payload === 'object' ? payload : {});

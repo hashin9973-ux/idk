@@ -662,3 +662,23 @@ test('failed retention deletion leaves an expired retryable record and releases 
   assert.notEqual(replacement.session_id, session.session_id);
   assert.equal(backing.records.has(path), false);
 });
+
+
+test('dashboard unread message counts are read-only and use exact session receipts', async () => {
+  const { registry, records } = mockMailbox();
+  const sender = await registry.startSession({ label: 'Unread sender' });
+  const recipient = await registry.startSession({ label: 'Unread recipient' });
+  const sent = await registry.sendMessage(sender.session_id, {
+    to_session_id: recipient.session_id, subject: 'Unread test', message: 'Incoming agent message'
+  });
+  await registry.sendUserMessage(recipient.session_id, { message: 'User messages are not counted as incoming agent messages.' });
+  const unread = await registry.statuses(recipient.agent_id);
+  assert.equal(unread.agents[0].unread_message_count, 1);
+  assert.equal(records.has('bridge/agent-message-receipts/' + recipient.session_id + '/' + sent.message_id + '.json'), false,
+    'counting unread messages must not mark them as read');
+  const read = await registry.readMessages(recipient.session_id, { unread_only: true });
+  assert.equal(read.count, 2, 'the existing inbox reader still includes both user and agent messages');
+  const afterRead = await registry.statuses(recipient.agent_id);
+  assert.equal(afterRead.agents[0].unread_message_count, 0);
+  assert.equal(records.has('bridge/agent-message-receipts/' + recipient.session_id + '/' + sent.message_id + '.json'), true);
+});

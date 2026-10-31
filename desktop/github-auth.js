@@ -143,7 +143,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       throw new Error('Configure a valid shared GitHub repository before using the mailbox API.');
     }
     const base = '/repos/' + owner + '/' + repository;
-    const allowedFolders = new Set(['bridge', 'bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents', 'bridge/sessions', 'bridge/agent-messages', 'bridge/agent-message-receipts', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
+    const allowedFolders = new Set(['bridge', 'bridge/requests', 'bridge/results', 'bridge/claims', 'bridge/state', 'bridge/context', 'bridge/artifacts', 'bridge/agents', 'bridge/sessions', 'bridge/revoked-sessions', 'bridge/agent-messages', 'bridge/agent-message-receipts', 'bridge/vision', 'bridge/vision/requests', 'bridge/vision/results', 'bridge/vision/reports', 'bridge/vision/claims']);
     let relative = '';
     let kind = '';
 
@@ -271,6 +271,9 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'sessions' &&
         /^session-[a-f0-9]{32}\.json$/.test(parts[2])) {
       kind = 'session-record';
+    } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'revoked-sessions' &&
+        /^session-[a-f0-9]{32}\.json$/.test(parts[2])) {
+      kind = 'revocation-record';
     } else if (parts.length === 4 && parts[0] === 'bridge' &&
         ['agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
         /^session-[a-f0-9]{32}$/.test(parts[2]) &&
@@ -312,7 +315,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       };
     }
 
-    if (!['file', 'state', 'artifact', 'session-record', 'agent-message', 'agent-message-receipt', 'vision-control', 'vision-runtime', 'vision-record', 'vision-report'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records, vision state/job paths and approved artifact paths.');
+    if (!['file', 'state', 'artifact', 'session-record', 'revocation-record', 'agent-message', 'agent-message-receipt', 'vision-control', 'vision-runtime', 'vision-record', 'vision-report'].includes(kind)) throw new Error('PUT is only permitted for mailbox file records, vision state/job paths and approved artifact paths.');
     if (!input.body || typeof input.body !== 'object' || Array.isArray(input.body)) throw new Error('Mailbox writes require a JSON body.');
     const allowedBodyKeys = ['message', 'content', 'branch', 'sha'];
     if (Object.keys(input.body).some(key => !allowedBodyKeys.includes(key)) ||
@@ -339,6 +342,17 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       if (payload.protocol !== 'chatgpt-local-agent-session/v1' ||
           payload.session_id !== sessionId || !/^agent-[0-9]{3,}$/.test(String(payload.agent_id || ''))) {
         throw new Error('Session records must match the session ID in their path and use the supported session protocol.');
+      }
+    }
+    if (kind === 'revocation-record') {
+      const sessionId = parts[2].slice(0, -5);
+      if (payload.protocol !== 'chatgpt-local-agent-session-revocation/v1' ||
+          payload.session_id !== sessionId || !/^agent-[0-9]{3,}$/.test(String(payload.agent_id || '')) ||
+          typeof payload.revoked_at !== 'string' || !Number.isFinite(Date.parse(payload.revoked_at)) ||
+          typeof payload.reason !== 'string' || !payload.reason.trim() || payload.reason.length > 120 ||
+          !Array.isArray(payload.active_request_ids) || payload.active_request_ids.length > 2000 ||
+          payload.active_request_ids.some(id => typeof id !== 'string' || !id.length || id.length > 120)) {
+        throw new Error('Revocation records must match the session ID in their path and use the supported revocation protocol.');
       }
     }
     if (kind === 'agent-message' || kind === 'agent-message-receipt') {

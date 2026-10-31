@@ -57,7 +57,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
-  session_start: ['label'],
+  session_start: ['label', 'workspace_suggestion'],
   agent_status: ['agent_id'],
   send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message'],
   read_agent_messages: ['unread_only', 'limit'],
@@ -421,7 +421,11 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   session_start: {
-    label: { type: 'string', description: 'Optional short label shown on the conversation’s reusable seat widget.', maxLength: 64 }
+    label: { type: 'string', description: 'Optional short label shown on the conversation’s reusable seat widget.', maxLength: 64 },
+    workspace_suggestion: { type: 'object', description: 'Optional grounded workspace directory suggestion. Include only a path supported by the conversation or discovered project context; the desktop validates it and asks the user before applying it to this session.', properties: {
+      path: { type: 'string', description: 'Existing workspace directory path; do not guess or fabricate it.', minLength: 1, maxLength: 2048 },
+      reason: { type: 'string', description: 'Brief explanation of why this directory fits the requested task.', minLength: 1, maxLength: 400 }
+    }, required: ['path', 'reason'], additionalProperties: false }
   },
   agent_status: {
     agent_id: { type: 'string', description: 'Optional seat ID. Omit to list all seats.', pattern: '^agent-[0-9]{3,}$' }
@@ -699,6 +703,14 @@ function createToolBridge(deps) {
       throw new Error('computer.mode must be normal or fast.');
     }
     if (tool === 'project_impact' && !args.path && !args.symbol) throw new Error('project_impact requires path or symbol.');
+    if (tool === 'session_start' && args.workspace_suggestion !== undefined) {
+      const suggestion = args.workspace_suggestion;
+      if (!isPlainObject(suggestion) || Object.keys(suggestion).some(key => !['path', 'reason'].includes(key)) ||
+          typeof suggestion.path !== 'string' || !suggestion.path.trim() || suggestion.path.length > 2048 ||
+          typeof suggestion.reason !== 'string' || !suggestion.reason.trim() || suggestion.reason.length > 400) {
+        throw new Error('session_start.workspace_suggestion must contain only a grounded path and reason.');
+      }
+    }
     if (tool === 'git_worktree') {
       if (!['list', 'add', 'remove', 'integrate'].includes(args.operation)) throw new Error('git_worktree.operation must be list, add, remove, or integrate.');
       if (args.operation === 'add' && (typeof args.branch !== 'string' || !args.branch.trim())) throw new Error('git_worktree add requires branch.');

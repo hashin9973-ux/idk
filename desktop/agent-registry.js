@@ -713,6 +713,48 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     };
   }
 
+  async function countUnreadMessages(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return 0;
+    let entries;
+    try { entries = await listFolder(inboxPath(sessionId)); }
+    catch (error) {
+      if (/not found|404/i.test(String(error && error.message || error))) entries = [];
+      else throw error;
+    }
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
+      .sort().slice(-200);
+    if (!names.length) return 0;
+    let receiptEntries;
+    try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
+    catch (error) {
+      if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = [];
+      else throw error;
+    }
+    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
+      .map(name => name.slice(0, -5)));
+    let unread = 0;
+    for (let start = 0; start < names.length; start += 16) {
+      const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+        const messageId = name.slice(0, -5);
+        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        if (!remote) return null;
+        const record = remote.value;
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+        }
+        return record;
+      }));
+      for (const record of rows) {
+        if (record && record.sender_agent_id !== 'user' && record.sender_type !== 'user' &&
+            !record.read_at && !receiptIds.has(record.message_id)) unread++;
+      }
+    }
+    return unread;
+  }
+
   async function statuses(filterAgentId = null) {
     if (filterAgentId && !AGENT_ID_PATTERN.test(filterAgentId)) throw new Error('agent_id has an invalid format.');
     const ids = filterAgentId ? [filterAgentId] : await listSeatIds();
@@ -742,6 +784,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         agent_id: agentId, label: seat.label || (session && session.label) || agentId,
         status: paused ? 'paused' : active ? 'active' : 'inactive', busy,
         session_id: seat.current_session_id || null, session_status: session && session.status || 'missing', paused,
+        unread_message_count: session && seat.current_session_id ? await countUnreadMessages(seat.current_session_id) : 0,
         last_revoked_session_id: seat.last_revoked_session_id || null,
         last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
         last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
@@ -1073,7 +1116,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   return {
     startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked,
     setSessionPaused, disconnectSession, enforceSessionLimit, withSessionLock, withSessionLocks,
-    sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
+    sendMessage, sendUserMessage, readMessages, countUnreadMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }

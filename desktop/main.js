@@ -36,6 +36,7 @@ const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
 const { createProjectIntelligence } = require('./project-intelligence');
+const { inspectWorkspace } = require('./workspace-insights');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
 const { createCloudSync, safeShareUrl } = require('./cloud-sync');
 const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');
@@ -152,6 +153,9 @@ let windowsInputController = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
 let projectIntelligence = null;
+const workspaceInsightCache = new Map();
+const workspaceInsightInflight = new Map();
+const WORKSPACE_INSIGHT_TTL_MS = 60000;
 let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
@@ -457,6 +461,92 @@ function selectWorkspace() {
   });
 }
 
+function rememberAgentWorkspace(agentId, workspaceRoot) {
+  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+      typeof workspaceRoot !== 'string' || !workspaceRoot.trim() || workspaceRoot.length > 2048) return [];
+  try {
+    const resolved = path.resolve(workspaceRoot);
+    if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) return [];
+    const canonical = fs.realpathSync(resolved);
+    const history = settings.agentRecentWorkspaces && typeof settings.agentRecentWorkspaces === 'object' &&
+      !Array.isArray(settings.agentRecentWorkspaces) ? { ...settings.agentRecentWorkspaces } : {};
+    const previous = Array.isArray(history[agentId]) ? history[agentId].filter(value =>
+      typeof value === 'string' && value.length <= 2048).slice(0, 20) : [];
+    history[agentId] = [canonical, ...previous.filter(value =>
+      path.resolve(value).toLowerCase() !== canonical.toLowerCase())].slice(0, 5);
+    settings.agentRecentWorkspaces = history;
+    return history[agentId];
+  } catch { return []; }
+}
+
+function queueWorkspaceInsight(workspaceRoot) {
+  if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) return;
+  const key = path.resolve(workspaceRoot).toLowerCase();
+  const cached = workspaceInsightCache.get(key);
+  if (cached && Date.now() - cached.checkedAt < WORKSPACE_INSIGHT_TTL_MS) return;
+  if (workspaceInsightInflight.has(key)) return;
+  const task = inspectWorkspace(workspaceRoot, { fsApi: fs, execFileAsync }).then(profile => {
+    const previous = workspaceInsightCache.get(key);
+    workspaceInsightCache.set(key, { profile, checkedAt: Date.now() });
+    if (JSON.stringify(previous && previous.profile || null) !== JSON.stringify(profile) && repositoryBridge) {
+      setImmediate(() => { if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState()); });
+    }
+  }).catch(() => {
+    workspaceInsightCache.set(key, { profile: null, checkedAt: Date.now() });
+  }).finally(() => workspaceInsightInflight.delete(key));
+  workspaceInsightInflight.set(key, task);
+}
+
+async function applyRecentAgentWorkspace(agentId, sessionId, workspaceRoot) {
+  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+      typeof workspaceRoot !== 'string' || !workspaceRoot.trim() || workspaceRoot.length > 2048) {
+    throw new Error('A valid agent and recent workspace are required.');
+  }
+  if (sessionId !== null && sessionId !== undefined &&
+      (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
+    throw new Error('The agent session ID is invalid.');
+  }
+  const history = settings.agentRecentWorkspaces && settings.agentRecentWorkspaces[agentId];
+  const known = Array.isArray(history) && history.some(value =>
+    typeof value === 'string' && path.resolve(value).toLowerCase() === path.resolve(workspaceRoot).toLowerCase());
+  if (!known) throw new Error('That folder is not in this agent’s recent workspace list. Browse to select it first.');
+  const candidate = path.resolve(workspaceRoot);
+  const linkStat = fs.lstatSync(candidate);
+  if (linkStat.isSymbolicLink() || !linkStat.isDirectory()) throw new Error('The recent workspace is no longer a real directory.');
+  const selected = fs.realpathSync(candidate);
+  if (isFilesystemRoot(selected)) {
+    const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+      type: 'warning', title: 'Use the entire drive for this agent?',
+      message: 'This agent will be able to read, create, edit, move, and delete files anywhere on ' + selected + '.',
+      detail: 'This is not an operating-system sandbox. PowerShell still runs with your Windows-user permissions.',
+      buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
+    });
+    if (warning.response !== 0) return { canceled: true, workspaceRoot: getWorkspaceRoot(), agent_id: agentId };
+  }
+  const currentAgents = repositoryBridge && repositoryBridge.getState().agentMailboxes;
+  const seat = Array.isArray(currentAgents) ? currentAgents.find(item => item && item.agent_id === agentId) : null;
+  if (sessionId && seat && seat.session_id && seat.session_id !== sessionId) {
+    throw new Error('This agent seat now belongs to a different conversation. Refresh before changing its workspace.');
+  }
+  const defaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
+    ? { ...settings.agentWorkspaceDefaults } : {};
+  if (selected.toLowerCase() === getWorkspaceRoot().toLowerCase()) delete defaults[agentId];
+  else defaults[agentId] = selected;
+  settings.agentWorkspaceDefaults = defaults;
+  if (sessionId) {
+    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+      !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+    if (selected.toLowerCase() === getWorkspaceRoot().toLowerCase()) delete overrides[sessionId];
+    else overrides[sessionId] = selected;
+    settings.agentWorkspaces = overrides;
+  }
+  rememberAgentWorkspace(agentId, selected);
+  persistSettings();
+  queueWorkspaceInsight(selected);
+  if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
+  return { canceled: false, workspaceRoot: selected, agent_id: agentId, session_id: sessionId || null };
+}
+
 async function selectAgentWorkspace(agentId, sessionId = null) {
   if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
     throw new Error('A valid agent ID is required to configure its workspace.');
@@ -500,6 +590,8 @@ async function selectAgentWorkspace(agentId, sessionId = null) {
   if (selected === getWorkspaceRoot()) delete defaults[agentId];
   else defaults[agentId] = selected;
   settings.agentWorkspaceDefaults = defaults;
+  rememberAgentWorkspace(agentId, selected);
+  queueWorkspaceInsight(selected);
   if (sessionIsCurrent) {
     if (selected === getWorkspaceRoot()) delete sessionOverrides[sessionId];
     else sessionOverrides[sessionId] = selected;
@@ -564,13 +656,27 @@ function showNextSessionAssignment() {
       pending.timer = setTimeout(() => {
         dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
         finishSessionAssignment(requestId, null);
-      }, 90000);
+      }, Number.isInteger(pending.payload.timeoutMs) ? pending.payload.timeoutMs : 90000);
     };
     if (win.webContents.isLoading()) win.webContents.once('did-finish-load', send);
     else send();
     win.show(); win.focus();
     return;
   }
+}
+
+function extendSessionAssignment(requestId) {
+  const pending = pendingSessionAssignments.get(requestId);
+  if (!pending || activeSessionAssignmentId !== requestId) throw new Error('No matching active session assignment exists.');
+  const maximumExtensions = 5;
+  if ((pending.extensions || 0) >= maximumExtensions) return { extended: false, extensionsRemaining: 0 };
+  if (pending.timer) clearTimeout(pending.timer);
+  pending.extensions = (pending.extensions || 0) + 1;
+  pending.timer = setTimeout(() => {
+    dashboardSend('app:agent-assignment-dismissed', { requestId, reason: 'timeout' });
+    finishSessionAssignment(requestId, null);
+  }, 60000);
+  return { extended: true, secondsAdded: 60, extensionsRemaining: maximumExtensions - pending.extensions };
 }
 
 function finishSessionAssignment(requestId, result) {
@@ -584,20 +690,35 @@ function finishSessionAssignment(requestId, result) {
   return true;
 }
 
-function requestSessionAssignment({ label = 'ChatGPT session', agents = [] } = {}) {
+function requestSessionAssignment({ label = 'ChatGPT session', agents = [], workspaceSuggestion = null } = {}) {
   const requestId = crypto.randomUUID();
   showDashboardWindow();
   const win = dashboardWindow;
   if (!win || win.isDestroyed()) return Promise.resolve(null);
   const workspaceDefaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object'
     ? settings.agentWorkspaceDefaults : {};
+  let normalizedSuggestion = null;
+  if (workspaceSuggestion && typeof workspaceSuggestion === 'object' &&
+      typeof workspaceSuggestion.path === 'string' && workspaceSuggestion.path.trim() &&
+      typeof workspaceSuggestion.reason === 'string' && workspaceSuggestion.reason.trim()) {
+    try {
+      const candidate = path.isAbsolute(workspaceSuggestion.path.trim())
+        ? path.resolve(workspaceSuggestion.path.trim()) : path.resolve(getWorkspaceRoot(), workspaceSuggestion.path.trim());
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) normalizedSuggestion = {
+        path: fs.realpathSync(candidate), reason: workspaceSuggestion.reason.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 400)
+      };
+    } catch {}
+  }
+  const recentWorkspaceDefaults = settings.agentRecentWorkspaces && typeof settings.agentRecentWorkspaces === 'object'
+    ? settings.agentRecentWorkspaces : {};
   const payload = {
     requestId, label: String(label || 'ChatGPT session').slice(0, 80),
     agents: Array.isArray(agents) ? agents.slice(0, 200) : [],
-    defaultWorkspace: getWorkspaceRoot(), workspaceDefaults, timeoutMs: 90000
+    defaultWorkspace: getWorkspaceRoot(), workspaceDefaults, recentWorkspaceDefaults,
+    ...(normalizedSuggestion ? { workspaceSuggestion: normalizedSuggestion } : {}), timeoutMs: 90000
   };
   return new Promise(resolve => {
-    pendingSessionAssignments.set(requestId, { resolve, timer: null, webContents: win.webContents, payload });
+    pendingSessionAssignments.set(requestId, { resolve, timer: null, webContents: win.webContents, payload, extensions: 0, confirmedWorkspaceRoots: new Set() });
     sessionAssignmentQueue.push(requestId);
     showNextSessionAssignment();
   });
@@ -620,6 +741,8 @@ async function chooseAssignmentWorkspace() {
     });
     if (warning.response !== 0) return { canceled: true, workspaceRoot: getWorkspaceRoot() };
   }
+  const pending = pendingSessionAssignments.get(activeSessionAssignmentId);
+  if (pending && pending.confirmedWorkspaceRoots instanceof Set) pending.confirmedWorkspaceRoots.add(selected.toLowerCase());
   return { canceled: false, workspaceRoot: selected };
 }
 
@@ -639,6 +762,8 @@ function persistAssignedSessionWorkspace({ session_id, agent_id, workspace_root 
   if (root === getWorkspaceRoot()) delete overrides[session_id];
   else overrides[session_id] = root;
   settings.agentWorkspaces = overrides;
+  rememberAgentWorkspace(agent_id, root);
+  queueWorkspaceInsight(root);
   persistSettings();
   if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
   return root;
@@ -1256,6 +1381,8 @@ function enrichedBridgeState(state) {
   }
   const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
     !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
+  const recentWorkspaceDefaults = settings.agentRecentWorkspaces && typeof settings.agentRecentWorkspaces === 'object' &&
+    !Array.isArray(settings.agentRecentWorkspaces) ? settings.agentRecentWorkspaces : {};
   const nicknames = settings.agentNicknames && typeof settings.agentNicknames === 'object' ? settings.agentNicknames : {};
   const autoDump = settings.agentAutoDump && typeof settings.agentAutoDump === 'object' ? settings.agentAutoDump : {};
   const hiddenIds = new Set(Array.isArray(settings.agentHiddenIds)
@@ -1266,7 +1393,7 @@ function enrichedBridgeState(state) {
     settings.agentHiddenIds = normalizedHiddenIds;
     persistSettings();
   }
-  const agentMailboxes = [...byId.values()].filter(agent => !hiddenIds.has(agent.agent_id)).map(agent => {
+  let agentMailboxes = [...byId.values()].filter(agent => !hiddenIds.has(agent.agent_id)).map(agent => {
     const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
       ? agent.session_id : null;
     const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
@@ -1277,13 +1404,29 @@ function enrichedBridgeState(state) {
       return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
         auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
         workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
+        recent_workspace_roots: Array.isArray(recentWorkspaceDefaults[agent.agent_id]) ? recentWorkspaceDefaults[agent.agent_id].filter(value => typeof value === 'string').slice(0, 5) : [],
         workspace_scope: hasSessionOverride ? 'session' : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
       return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
         auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
         workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
+        recent_workspace_roots: Array.isArray(recentWorkspaceDefaults[agent.agent_id]) ? recentWorkspaceDefaults[agent.agent_id].filter(value => typeof value === 'string').slice(0, 5) : [],
         workspace_error: String(error && error.message || error).slice(0, 300) };
     }
+  });
+  for (const agent of agentMailboxes) if (agent.workspace_root) queueWorkspaceInsight(agent.workspace_root);
+  const activeByWorkspace = new Map();
+  for (const agent of agentMailboxes) {
+    if (!agent.session_id || (agent.status !== 'active' && agent.busy !== true) || !agent.workspace_root) continue;
+    const key = path.resolve(agent.workspace_root).toLowerCase();
+    if (!activeByWorkspace.has(key)) activeByWorkspace.set(key, []);
+    activeByWorkspace.get(key).push(agent.agent_id);
+  }
+  agentMailboxes = agentMailboxes.map(agent => {
+    const key = agent.workspace_root ? path.resolve(agent.workspace_root).toLowerCase() : '';
+    const shared = key && activeByWorkspace.has(key) ? activeByWorkspace.get(key).filter(id => id !== agent.agent_id) : [];
+    const profile = key && workspaceInsightCache.get(key) ? workspaceInsightCache.get(key).profile : null;
+    return { ...agent, workspace_profile: profile, workspace_shared_with: shared };
   });
   // Keep transient mailbox transport failures visible while continuing retries.
   const connectionError = workerStatus === 'online' ? '' : (
@@ -2455,31 +2598,72 @@ function registerIpc() {
     if (!payload || typeof payload !== 'object') throw new Error('Agent workspace selection details are required.');
     return selectAgentWorkspace(payload.agentId, payload.sessionId || null);
   });
+  ipcMain.handle('app:agent-workspace-recent', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!payload || typeof payload !== 'object') throw new Error('Recent workspace selection details are required.');
+    return applyRecentAgentWorkspace(payload.agentId, payload.sessionId || null, payload.workspaceRoot);
+  });
   ipcMain.handle('app:agent-assignment-workspace', async event => {
     assertLocalUi(event, 'dashboard.html');
     return chooseAssignmentWorkspace();
   });
-  ipcMain.handle('app:agent-assignment-response', (event, payload) => {
+  ipcMain.handle('app:agent-assignment-extend', (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
     if (!payload || typeof payload.requestId !== 'string') throw new Error('A session assignment request ID is required.');
     const pending = pendingSessionAssignments.get(payload.requestId);
     if (!pending || pending.webContents !== event.sender || activeSessionAssignmentId !== payload.requestId) {
       throw new Error('No matching active session assignment exists.');
     }
-    if (payload.cancelled !== true && typeof payload.autoAssign !== 'boolean') throw new Error('Assignment mode must be explicitly selected.');
+    return extendSessionAssignment(payload.requestId);
+  });
+  ipcMain.handle('app:agent-assignment-response', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!payload || typeof payload.requestId !== 'string') throw new Error('A session assignment request ID is required.');
+    const pending = pendingSessionAssignments.get(payload.requestId);
+    if (!pending || pending.webContents !== event.sender || activeSessionAssignmentId !== payload.requestId) {
+      throw new Error('No matching active session assignment exists.');
+    }
+    if (payload.cancelled === true) {
+      finishSessionAssignment(payload.requestId, null);
+      return { accepted: true, cancelled: true };
+    }
+    if (typeof payload.autoAssign !== 'boolean') throw new Error('Assignment mode must be explicitly selected.');
     const agentId = payload.autoAssign === true ? null : payload.agentId;
-    if (payload.cancelled !== true && payload.autoAssign !== true &&
+    if (payload.autoAssign !== true &&
         (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId))) {
       throw new Error('Choose a valid existing or new agent ID.');
     }
-    const workspaceRoot = typeof payload.workspaceRoot === 'string' && payload.workspaceRoot.trim()
+    const submittedWorkspace = typeof payload.workspaceRoot === 'string' && payload.workspaceRoot.trim();
+    let workspaceRoot = submittedWorkspace
       ? resolveWorkspaceRoot(payload.workspaceRoot, getWorkspaceRoot()) : getWorkspaceRoot();
+    if (!fs.existsSync(workspaceRoot) || !fs.statSync(workspaceRoot).isDirectory()) {
+      throw new Error('The selected session workspace is no longer an existing directory. Keep the default or choose another folder.');
+    }
+    workspaceRoot = fs.realpathSync(workspaceRoot);
+    if (isFilesystemRoot(workspaceRoot)) {
+      const defaults = settings.agentWorkspaceDefaults && typeof settings.agentWorkspaceDefaults === 'object' ? settings.agentWorkspaceDefaults : {};
+      const recent = settings.agentRecentWorkspaces && typeof settings.agentRecentWorkspaces === 'object' ? settings.agentRecentWorkspaces : {};
+      const knownWorkspacePaths = [...Object.values(defaults), ...Object.values(recent).flatMap(value => Array.isArray(value) ? value : [])];
+      const previouslyApproved = workspaceRoot.toLowerCase() === getWorkspaceRoot().toLowerCase() ||
+        knownWorkspacePaths.some(value => typeof value === 'string' && path.resolve(value).toLowerCase() === workspaceRoot.toLowerCase()) ||
+        (pending.confirmedWorkspaceRoots instanceof Set && pending.confirmedWorkspaceRoots.has(workspaceRoot.toLowerCase()));
+      if (!previouslyApproved) {
+        const warning = await dialog.showMessageBox(mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined, {
+          type: 'warning', title: 'Use the entire drive for this agent session?',
+          message: 'The assigned agent will be able to read, create, edit, move, and delete files anywhere on ' + workspaceRoot + '.',
+          detail: 'This is not an operating-system sandbox. PowerShell still runs with your Windows-user permissions.',
+          buttons: ['Use entire drive', 'Cancel'], defaultId: 1, cancelId: 1
+        });
+        if (warning.response !== 0) throw new Error('Whole-drive workspace selection was cancelled. Choose another folder or keep the current default.');
+      }
+    }
     const message = typeof payload.message === 'string' ? payload.message.trim() : '';
     if (message.length > 20000) throw new Error('The optional initial message is longer than 20,000 characters.');
-    finishSessionAssignment(payload.requestId, payload.cancelled === true ? null : {
-      autoAssign: payload.autoAssign, agent_id: agentId, workspace_root: workspaceRoot, message
+    const sessionWorkspace = payload.autoAssign === true && !submittedWorkspace ? null : workspaceRoot;
+    finishSessionAssignment(payload.requestId, {
+      autoAssign: payload.autoAssign, agent_id: agentId, workspace_root: sessionWorkspace, message
     });
-    return { accepted: true, cancelled: payload.cancelled === true };
+    return { accepted: true, cancelled: false };
   });
   ipcMain.handle('app:agent-send-message', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
