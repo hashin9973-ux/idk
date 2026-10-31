@@ -186,7 +186,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function assertNotEvicted(sessionId) {
-    if (await isEvicted(sessionId)) {
+    const eviction = await readEviction(sessionId);
+    if (eviction) {
+      if (eviction.value.previous_status === 'disconnected') {
+        throw new Error('SESSION_DISCONNECTED: This session was explicitly disconnected before cap eviction.');
+      }
       throw new Error('SESSION_EVICTED: This session ID was removed by the 10,000-ID registration cap. Start a new conversation session before using the bridge again.');
     }
   }
@@ -290,15 +294,15 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     if (!Number.isInteger(maxSessions) || maxSessions < 1) {
       throw new Error('The session registration cap must be a positive integer.');
     }
-    if (typeof deleteRemoteFiles !== 'function') {
-      throw new Error('SESSION_LIMIT_REACHED: SHA-checked session eviction is unavailable; no session was removed.');
-    }
     const evictedSessions = [];
     let names = [...new Set((await listFolder('bridge/sessions'))
       .map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
 
     while (names.length >= maxSessions) {
+      if (typeof deleteRemoteFiles !== 'function') {
+        throw new Error('SESSION_LIMIT_REACHED: SHA-checked session eviction is unavailable; no session was removed.');
+      }
       const candidates = (await Promise.all(names.map(async name => {
         const sessionId = name.slice(0, -5);
         const remote = await readSession(sessionId);
@@ -601,7 +605,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const current = remote.value;
       if (paused) {
         if (current.status === 'paused') return { paused: true, session_id: sessionId, agent_id: agentId, already_in_state: true };
-        if (!['active', 'expired'].includes(current.status)) throw new Error('Only an active session can be paused. Current status: ' + current.status);
+        if (current.status !== 'active') throw new Error('Only an active session can be paused. Current status: ' + current.status);
         const at = timestamp();
         await mutateSession(sessionId, value => ({ ...value, status: 'paused', paused_at: at }));
         await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({ ...value, status: 'paused', paused_session_id: sessionId, paused_at: at }));
