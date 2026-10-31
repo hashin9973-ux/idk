@@ -85,7 +85,6 @@ async function main() {
         indexedSourceBytes: indexed.totalIndexedBytes
       },
       warmCache: {
-        cacheKey: restored.cacheKey,
         filesIndexed: restored.filesIndexed,
         lastFullScanAt: restored.lastFullScanAt,
         error: restored.error,
