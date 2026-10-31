@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id),api=window.windowsBridge;
 const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list'),agentWidgetHost=$('agent-widget-host'),terminal=window.AgentTerminal;
 const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),browserEnabled=$('browser-enabled'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
-let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const agentWidgets=new Map(),openAgentDetails=new Set();let savedWidgetLayout={};const grid=12,minW=180,minH=100;
+let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const agentWidgets=new Map(),agentActionMenus=new Map(),openAgentDetails=new Set();let savedWidgetLayout={};const grid=12,minW=180,minH=100;
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
 let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
@@ -378,6 +378,12 @@ function makeAgentWidget(agent,index){
   const messageThread=document.createElement('div');messageThread.className='agent-message-thread';
   messageThread.hidden=true;messageThread.setAttribute('aria-live','polite');messageThread.dataset.noWidgetDrag='true';
   const workspaceMenu=document.createElement('div');workspaceMenu.className='agent-workspace-menu';workspaceMenu.hidden=true;workspaceMenu.dataset.noWidgetDrag='true';
+  const actionMenu=document.createElement('div');actionMenu.className='agent-action-menu';actionMenu.hidden=true;actionMenu.dataset.noWidgetDrag='true';
+  const actionItems=[['Workspace',workspaceButton],['Nickname',nicknameButton],['History cleanup',dumpButton],['Pause session',pauseButton],['Disconnect session',disconnectButton],['Delete widget',deleteButton]];
+  const actionMenuButtons=new Map();
+  for(const [label,target] of actionItems){const item=document.createElement('button');item.type='button';item.textContent=label;item.addEventListener('click',()=>{actionMenu.hidden=true;target.click()});actionMenu.append(item);actionMenuButtons.set(target,item)}
+  document.body.append(actionMenu);agentActionMenus.set(agent.agent_id,actionMenu);
+  card.addEventListener('contextmenu',event=>{if(event.target.closest('input,textarea'))return;event.preventDefault();event.stopPropagation();for(const menu of agentActionMenus.values())menu.hidden=true;actionMenu.hidden=false;actionMenu.style.left=Math.max(8,Math.min(window.innerWidth-190,event.clientX))+'px';actionMenu.style.top=Math.max(8,Math.min(window.innerHeight-240,event.clientY))+'px'});
   card.append(header,body,messageThread,composer,workspaceMenu);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
   pauseButton.addEventListener('click',async event=>{
     event.stopPropagation();
@@ -453,7 +459,7 @@ function renderAgentMailboxes(rawAgents){
   const all=Array.isArray(rawAgents)?rawAgents:[];
   const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^agent-[0-9]{3,}$/.test(agent.agent_id));
   const visibleIds=new Set(agents.map(agent=>agent.agent_id));
-  for(const [id,card] of agentWidgets){if(!visibleIds.has(id)){card.remove();agentWidgets.delete(id);}}
+  for(const [id,card] of agentWidgets){if(!visibleIds.has(id)){card.remove();agentWidgets.delete(id);const menu=agentActionMenus.get(id);if(menu)menu.remove();agentActionMenus.delete(id);}}
   const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' seat'+(agents.length===1?'':'s');
   agents.forEach((agent,index)=>{
     let card=agentWidgets.get(agent.agent_id);
@@ -514,6 +520,8 @@ function renderAgentMailboxes(rawAgents){
     pauseButton.replaceChildren(createAgentIcon(paused?'play':'pause'));
     pauseButton.title=paused?'Resume this session':'Temporarily pause this session';
     pauseButton.setAttribute('aria-label',paused?'Resume this session':'Pause this session');
+    const pauseMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('button:nth-child(4)');if(pauseMenuItem){pauseMenuItem.textContent=paused?'Resume session':'Pause session';pauseMenuItem.disabled=!hasSession;}
+    const disconnectMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('button:nth-child(5)');if(disconnectMenuItem)disconnectMenuItem.disabled=!hasSession;
     disconnectButton.disabled=!hasSession;
     disconnectButton.title=hasSession?'Disconnect '+String(agent.session_id)+' from '+agent.agent_id:'No session to disconnect';
     deleteButton.disabled=false;
