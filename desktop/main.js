@@ -556,6 +556,9 @@ function showNextSessionAssignment() {
     const send = () => {
       if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId)) return;
       if (win.isDestroyed()) { finishSessionAssignment(requestId, null); return; }
+      showSpeechCaption({ id: 'assignment-' + requestId, mode: 'notification',
+        text: 'A new ChatGPT conversation is requesting an agent seat. Choose its agent ID and workspace in the assignment window.',
+        agentLabel: 'Agent assignment', status: 'Waiting for agent assignment', showPlayButton: false });
       dashboardSend('app:agent-assignment-requested', pending.payload);
       playAssignmentNotificationSound();
       pending.timer = setTimeout(() => {
@@ -1906,8 +1909,8 @@ function showSpeechCaption(request) {
     id: String(request.id || crypto.randomUUID()), fullText: text, chunks,
     agentLabel: String(request.agentLabel || request.agentId || 'Windows Bridge').slice(0, 48),
     chunkIndex: 0, speechJobId: '', mode,
-    showPlayButton: mode === 'notification',
-    status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…',
+    showPlayButton: request.showPlayButton === undefined ? mode === 'notification' : request.showPlayButton === true,
+    status: String(request.status || (mode === 'notification' ? 'Ready to play' : 'Preparing speech…')),
     error: ''
   };
   const previousMode = activeCaptionPayload && activeCaptionPayload.mode;
@@ -2077,6 +2080,7 @@ function getUiState() {
       browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
+      sessionAutoExpire: settings.sessionAutoExpire === true,
       observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
     },
     dashboardState: normalizeDashboardState(settings.dashboardState || defaultDashboardState()),
@@ -2367,6 +2371,52 @@ function registerIpc() {
     persistSettings();
     broadcastBridgeState(repositoryBridge.getState());
     return result;
+  });
+  ipcMain.handle('app:agent-session-pause', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    const sessionId = payload && payload.sessionId;
+    const paused = payload && payload.paused;
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+        typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId) ||
+        typeof paused !== 'boolean') throw new Error('Valid agent_id, session_id, and paused values are required.');
+    if (!repositoryBridge || typeof repositoryBridge.pauseAgentSession !== 'function') throw new Error('The repository worker cannot pause sessions.');
+    const state = repositoryBridge.getState();
+    const seat = (state.agentMailboxes || []).find(item => item.agent_id === agentId);
+    if (!seat || seat.session_id !== sessionId) throw new Error('The selected agent seat no longer belongs to this session.');
+    const result = await repositoryBridge.pauseAgentSession(sessionId, paused);
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
+  ipcMain.handle('app:agent-session-disconnect', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    const sessionId = payload && payload.sessionId;
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+        typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
+      throw new Error('Valid agent_id and session_id values are required.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.disconnectAgentSession !== 'function') throw new Error('The repository worker cannot disconnect sessions.');
+    const state = repositoryBridge.getState();
+    const seat = (state.agentMailboxes || []).find(item => item.agent_id === agentId);
+    if (!seat || seat.session_id !== sessionId) throw new Error('The selected agent seat no longer belongs to this session.');
+    const result = await repositoryBridge.disconnectAgentSession(sessionId);
+    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' && !Array.isArray(settings.agentWorkspaces)
+      ? { ...settings.agentWorkspaces } : {};
+    delete overrides[sessionId];
+    settings.agentWorkspaces = overrides;
+    persistSettings();
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
+  ipcMain.handle('app:session-auto-expire', (event, enabled) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (typeof enabled !== 'boolean') throw new Error('Session auto-expire must be a boolean.');
+    settings.sessionAutoExpire = enabled;
+    persistSettings();
+    publishSharedState();
+    dashboardSend('app:preferences', getUiState().settings);
+    return { enabled, maxSessions: 10000, eviction: 'Least recently active non-busy and unpaused session only; active or paused sessions are preserved.' };
   });
   ipcMain.handle('app:agent-widget-settings', (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
@@ -2893,7 +2943,8 @@ if (!hasInstanceLock) {
           onState: broadcastBridgeState,
           requestSessionAssignment,
           onSessionAssigned: persistAssignedSessionWorkspace,
-          publishContextOnStart: true
+          publishContextOnStart: true,
+          isSessionAutoExpireEnabled: () => settings.sessionAutoExpire === true
         });
         if (getLocalTtsSettings().enabled) {
           setImmediate(() => {

@@ -86,6 +86,7 @@ function applyDashboardState(value){
     active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
   }finally{suppressDashboardSave=false}
 }
+function applySessionAutoExpire(value){const input=$('session-auto-expire');if(input)input.checked=value===true;const status=$('session-auto-expire-status');if(status)status.textContent=value===true?'ON · The oldest eligible inactive session is removed only when the 10,000-record limit would be exceeded.':'OFF · At the 10,000-ID limit, new session starts are refused rather than deleting active or paused sessions.';}
 function applyTtsSettings(value){
   const s=value&&typeof value==='object'?value:{};
   $('tts-mode').value=s.mode==='notification'?'notification':'autoplay';
@@ -260,6 +261,9 @@ function createAgentIcon(kind){
     : kind==='trash' ? ['M2.5 4h11M6 4V2.5h4V4M4 4.5l.7 9h6.6l.7-9M6.5 6.5v4.5M9.5 6.5v4.5']
     : kind==='history' ? ['M2 8a6 6 0 1 0 1.76-4.24M2 2v4h4M8 4.5v4l2.5 1.5']
     : kind==='edit' ? ['M2 11.5l-.5 3 3-.5L13 5.5 10.5 3z','M9.5 4l2.5 2.5']
+    : kind==='pause' ? ['M5 3v10M11 3v10']
+    : kind==='play' ? ['M4 2.5l9 5.5-9 5.5z']
+    : kind==='scissors' ? ['M3 3l10 10M13 3L3 13','M2.5 3a1 1 0 1 0 2 0a1 1 0 0 0-2 0','M11.5 13a1 1 0 1 0 2 0a1 1 0 0 0-2 0']
     : ['M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z','M4.5 5.25h7M4.5 7.75h5'];
   for(const d of paths){const pathElement=document.createElementNS('http://www.w3.org/2000/svg','path');pathElement.setAttribute('d',d);svg.append(pathElement)}
   return svg;
@@ -285,20 +289,50 @@ function makeAgentWidget(agent,index){
   const nicknameButton=document.createElement('button');nicknameButton.type='button';nicknameButton.className='agent-console-icon-button agent-nickname-button';nicknameButton.title='Set agent nickname';nicknameButton.setAttribute('aria-label','Set nickname for '+agent.agent_id);nicknameButton.append(createAgentIcon('edit'));
   const dumpButton=document.createElement('button');dumpButton.type='button';dumpButton.className='agent-console-icon-button agent-dump-button';dumpButton.title='Configure automatic widget-history cleanup';dumpButton.setAttribute('aria-label','Configure autodump for '+agent.agent_id);dumpButton.append(createAgentIcon('history'));
   const deleteButton=document.createElement('button');deleteButton.type='button';deleteButton.className='agent-console-icon-button agent-delete-button';deleteButton.title='Revoke this session and remove its widget';deleteButton.setAttribute('aria-label','Delete agent widget for '+agent.agent_id);deleteButton.append(createAgentIcon('trash'));
+  const pauseButton=document.createElement('button');pauseButton.type='button';pauseButton.className='agent-console-icon-button agent-pause-button';pauseButton.title='Pause this session';pauseButton.setAttribute('aria-label','Pause this session');pauseButton.append(createAgentIcon('pause'));
+  const disconnectButton=document.createElement('button');disconnectButton.type='button';disconnectButton.className='agent-console-icon-button agent-disconnect-button';disconnectButton.title='Disconnect this session from its agent seat';disconnectButton.setAttribute('aria-label','Disconnect session from agent seat');disconnectButton.append(createAgentIcon('scissors'));
   const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
   messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
   messageButton.append(createAgentIcon('message'));
-  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton,deleteButton);
+  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton,pauseButton,disconnectButton,deleteButton);
   header.append(identity,status,busy,counts,actions);
   const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';
   const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='Message this agent…';input.setAttribute('aria-label','Message for '+agent.agent_id);
-  const send=document.createElement('button');send.type='button';send.className='agent-message-send';send.textContent='Send';
+  const send=document.createElement('button');send.type='button';send.className='agent-message-send';send.textContent='➤';send.title='Send message';send.setAttribute('aria-label','Send message');
   const cancel=document.createElement('button');cancel.type='button';cancel.className='agent-message-cancel';cancel.textContent='×';cancel.title='Close message box';cancel.setAttribute('aria-label','Close message box');
   composer.append(input,send,cancel);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
   const messageThread=document.createElement('div');messageThread.className='agent-message-thread';
   messageThread.hidden=true;messageThread.setAttribute('aria-live','polite');messageThread.dataset.noWidgetDrag='true';
   card.append(header,composer,body,messageThread);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  pauseButton.addEventListener('click',async event=>{
+    event.stopPropagation();
+    const sessionId=card.dataset.sessionId||'';
+    if(!sessionId||pauseButton.disabled)return;
+    const wasPaused=card.dataset.paused==='true';
+    pauseButton.disabled=true;
+    try{
+      const result=await api.pauseAgentSession(agent.agent_id,sessionId,!wasPaused);
+      note(result.paused?'Session paused. New requests are rejected until it is resumed.':'Session resumed.','success');
+      await refresh();
+    }catch(error){note('Could not '+(wasPaused?'resume':'pause')+' '+agent.agent_id+': '+String(error&&error.message||error),'error')}
+    finally{pauseButton.disabled=false}
+  });
+  disconnectButton.addEventListener('click',async event=>{
+    event.stopPropagation();
+    const sessionId=card.dataset.sessionId||'';
+    if(!sessionId||disconnectButton.disabled)return;
+    const confirmed=window.confirm('Disconnect '+sessionId+' from '+agent.agent_id+'? Its seat becomes available to another conversation. The disconnected session ID cannot be reused.');
+    if(!confirmed)return;
+    disconnectButton.disabled=true;
+    try{
+      await api.disconnectAgentSession(agent.agent_id,sessionId);
+      card.dataset.pendingMessageIds='[]';
+      note('Session disconnected. '+agent.agent_id+' is available for reassignment.','success');
+      await refresh();
+    }catch(error){note('Could not disconnect '+agent.agent_id+': '+String(error&&error.message||error),'error')}
+    finally{disconnectButton.disabled=false}
+  });
   workspaceButton.addEventListener('click',async event=>{
     event.stopPropagation();const sessionId=card.dataset.sessionId||'';
     if(workspaceButton.disabled)return;
@@ -379,6 +413,8 @@ function renderAgentMailboxes(rawAgents){
     const nicknameButton=header.querySelector('.agent-nickname-button');
     const dumpButton=header.querySelector('.agent-dump-button');
     const deleteButton=header.querySelector('.agent-delete-button');
+    const pauseButton=header.querySelector('.agent-pause-button');
+    const disconnectButton=header.querySelector('.agent-disconnect-button');
     // The panel belongs to the seat, not the task/session label. Individual
     // requests and their tool names remain listed in the console body below.
     name.textContent=String(agent.nickname||agent.agent_id);name.title=String(agent.agent_id)+(agent.nickname?' · '+agent.nickname:'');
@@ -389,6 +425,14 @@ function renderAgentMailboxes(rawAgents){
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
+    const paused=agent.session_status==='paused'||agent.paused===true;
+    card.dataset.paused=paused?'true':'false';
+    pauseButton.disabled=!hasSession;
+    pauseButton.replaceChildren(createAgentIcon(paused?'play':'pause'));
+    pauseButton.title=paused?'Resume this session':'Temporarily pause this session';
+    pauseButton.setAttribute('aria-label',paused?'Resume this session':'Pause this session');
+    disconnectButton.disabled=!hasSession;
+    disconnectButton.title=hasSession?'Disconnect '+String(agent.session_id)+' from '+agent.agent_id:'No session to disconnect';
     deleteButton.disabled=false;
     deleteButton.title=hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'Remove this empty agent widget';
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
@@ -816,6 +860,7 @@ $('agent-autodump-save').addEventListener('click',async()=>{
   catch(error){note('Could not save autodump settings: '+error.message,'error')}
   finally{button.disabled=false;autoDumpEditingAgent=''}
 });
+$('session-auto-expire').addEventListener('change',async event=>{const input=event.currentTarget;const next=input.checked;input.disabled=true;try{const result=await api.setSessionAutoExpire(next);applySessionAutoExpire(result.enabled);note(result.enabled?'Session auto-expire enabled.':'Session auto-expire disabled.','success')}catch(error){input.checked=!next;note('Could not change session auto-expire: '+String(error&&error.message||error),'error')}finally{input.disabled=false}});
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
@@ -823,7 +868,7 @@ api.onPrepareForTray(async payload=>{
   try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
-api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
+api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(typeof s.sessionAutoExpire==='boolean')applySessionAutoExpire(s.sessionAutoExpire);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
 window.addEventListener('resize',()=>{
   if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
   positionControls();
@@ -844,5 +889,5 @@ window.addEventListener('resize',()=>{
   if(layoutChanged)scheduleSaveDashboardState();
   updateBrowserBounds()
 });window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
-applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
+applyTheme('midnight');applySessionAutoExpire(false);renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();
