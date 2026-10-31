@@ -227,8 +227,12 @@ function createProjectIntelligence(options={}){
   if(!terms.length)throw Error('Query contains no searchable identifiers.');
   const kind=['all','symbol','file'].includes(args.kind)?args.kind:'all';
   const limit=Number.isInteger(args.maxResults)?Math.min(Math.max(args.maxResults,1),100):30;
-  const filter=args.path?rel(args.path).toLowerCase():'';
-  if(args.path&&!inside(s.root,path.resolve(s.root,args.path)))throw Error('Search path must remain inside the workspace.');
+  let filter='';
+  if(args.path){
+   const target=path.resolve(s.root,args.path);
+   if(!inside(s.root,target))throw Error('Search path must remain inside the workspace.');
+   filter=rel(path.relative(s.root,target)).toLowerCase();
+  }
   const hits=new Map();let postingsScanned=0,scanTruncated=false;
   function add(d,score,type,sym){
    if(filter&&d.path.toLowerCase()!==filter&&!d.path.toLowerCase().startsWith(filter.replace(/\/+$/,'')+'/'))return;
@@ -248,7 +252,7 @@ function createProjectIntelligence(options={}){
      if(kind!=='file'||pathMatch)add(d,pathMatch?5:2,pathMatch?'file':'identifier');
     }
    }
-   if(scanTruncated||kind==='file')break;
+   if(scanTruncated)break;
    if(kind!=='file'){
     for(const hit of s.symbolMap.get(term)||[]){
      if(++postingsScanned>MAX_SEARCH_POSTINGS){scanTruncated=true;break;}
