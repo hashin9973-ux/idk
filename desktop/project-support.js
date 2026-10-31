@@ -496,6 +496,20 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
   }).slice(0, 30);
 }
 
+function runToolVersionProbe(execFileAsync, executablePath, args, execOptions, options) {
+  const platform = options.platform || process.platform;
+  if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(executablePath)) {
+    // Windows command shims cannot be directly executed through execFile with shell:false.
+    // Only fixed, internal version arguments are passed; no project or user command is interpolated.
+    const invocation = '"' + executablePath + '" ' + args.map(value => '"' + String(value).replace(/"/g, '""') + '"').join(' ');
+    const commandLine = '"' + invocation + '"';
+    const environment = options.environment || process.env;
+    const commandProcessor = environment.ComSpec || environment.COMSPEC || 'cmd.exe';
+    return execFileAsync(commandProcessor, ['/d', '/s', '/c', commandLine], execOptions);
+  }
+  return execFileAsync(executablePath, args, execOptions);
+}
+
 async function discoverToolchain(name, options) {
   const definition = TOOL_DEFINITIONS[name];
   if (!definition) return { name, available: false, path: null, version: null, usable: false, error: 'unsupported_probe' };
@@ -511,7 +525,7 @@ async function discoverToolchain(name, options) {
   executablePath = executablePath || options.executablePaths?.[name] || null;
   if (!executablePath) return { name, available: false, path: null, version: null, usable: false, error: 'not_found' };
   try {
-    const checked = await execFileAsync(executablePath, definition.args, execOptions);
+    const checked = await runToolVersionProbe(execFileAsync, executablePath, definition.args, execOptions, options);
     const text = String(checked.stdout || '') + '\n' + String(checked.stderr || '');
     const version = text.split(/\r?\n/).map(value => value.trim()).find(value => value && /\d/.test(value)) || null;
     return { name, available: true, path: executablePath, version: version ? version.slice(0, 180) : null, usable: Boolean(version), error: version ? null : 'version_unavailable' };
