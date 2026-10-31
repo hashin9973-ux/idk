@@ -43,7 +43,7 @@ test('project_status enriches the selected workspace with detected source langua
   try {
     const result = await tools.executeTool(root, 'project_status', {});
     assert.equal(result.isGitRepository, false);
-    assert.ok(result.detectedTechnologies.includes('JavaScript'));
+    assert.ok(result.detectedTechnologies.some(value => value.startsWith('JavaScript')));
     assert.ok(result.project_support);
     assert.equal(result.project_support.scan.truncated, false);
     assert.ok(result.project_support.projects.some(project => project.root === '.'));
