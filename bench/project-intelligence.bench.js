@@ -57,8 +57,9 @@ async function main() {
       let header = null;
       if (stat.isFile() && stat.size <= 256 * 1024 * 1024) {
         const data = JSON.parse(await fs.readFile(path.join(storage, name), 'utf8'));
-        const match = name.match(/^project-index-([a-f0-9]{64})\\.json$/);
-        header = { version: data.version, rootKey: data.rootKey, fileKey: match ? match[1] : null, rootKeyMatchesFileName: Boolean(match && data.rootKey === match[1]), documents: Array.isArray(data.documents) ? data.documents.length : null, lastFullScanAt: data.lastFullScanAt, generatedAt: data.generatedAt };
+        const prefix = 'project-index-', suffix = '.json';
+        const fileKey = name.startsWith(prefix) && name.endsWith(suffix) ? name.slice(prefix.length, -suffix.length) : null;
+        header = { version: data.version, rootKey: data.rootKey, fileKey, rootKeyMatchesFileName: Boolean(fileKey && data.rootKey === fileKey), documents: Array.isArray(data.documents) ? data.documents.length : null, lastFullScanAt: data.lastFullScanAt, generatedAt: data.generatedAt };
       }
       return { name, bytes: stat.size, isFile: stat.isFile(), header };
     }));
