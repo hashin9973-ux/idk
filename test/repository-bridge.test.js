@@ -451,7 +451,7 @@ test('session_start forwards a grounded workspace suggestion and honors an expli
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     assert.deepEqual(assignmentOptions.workspaceSuggestion, suggestion);
     assert.equal(assigned.workspace_root, process.cwd());
-    assert.equal(result.result.result.workspace_root, process.cwd());
+    assert.equal(result.result.result.workspace_root, '<workspace>', 'the mailbox result redacts the selected local workspace path');
     assert.equal(result.result.result.assignment_mode, 'automatic-confirmed');
   } finally { await bridge.stop(); }
 });

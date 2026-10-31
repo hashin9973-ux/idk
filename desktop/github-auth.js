@@ -274,6 +274,8 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
     } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'revoked-sessions' &&
         /^session-[a-f0-9]{32}\.json$/.test(parts[2])) {
       kind = 'revocation-record';
+    } else if (parts.length === 3 && parts[0] === 'bridge' && parts[1] === 'revoked-sessions') {
+      throw new Error('Path is outside the supported repository mailbox folders.');
     } else if (parts.length === 4 && parts[0] === 'bridge' &&
         ['agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
         /^session-[a-f0-9]{32}$/.test(parts[2]) &&

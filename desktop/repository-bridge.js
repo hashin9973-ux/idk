@@ -384,6 +384,7 @@ function createRepositoryBridge(deps) {
         busy: Boolean(live.length || group.busy),
         session_id: group.session_id || null,
         unread_message_count: Number(group.unread_message_count) || 0,
+        unread_message_count_partial: group.unread_message_count_partial === true,
         active_count: rows.filter(item => ['validating', 'claimed', 'executing', 'publishing', 'waiting-result'].includes(item.status)).length,
         queued_count: rows.filter(item => ['queued', 'loading', 'claiming'].includes(item.status)).length,
         request_count: rows.length,
@@ -427,7 +428,8 @@ function createRepositoryBridge(deps) {
           recent_request_ids: Array.isArray(agent.recent_request_ids) ? agent.recent_request_ids.slice(-50) : [],
           active_request_ids: Array.isArray(agent.active_request_ids) ? agent.active_request_ids.slice(-50) : [],
           reusable: agent.reusable === true,
-          unread_message_count: Number(agent.unread_message_count) || 0
+          unread_message_count: Number(agent.unread_message_count) || 0,
+          unread_message_count_partial: agent.unread_message_count_partial === true
         });
       }
       announce();

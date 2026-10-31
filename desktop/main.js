@@ -487,12 +487,15 @@ function queueWorkspaceInsight(workspaceRoot) {
   if (workspaceInsightInflight.has(key)) return;
   const task = inspectWorkspace(workspaceRoot, { fsApi: fs, execFileAsync }).then(profile => {
     const previous = workspaceInsightCache.get(key);
+    workspaceInsightCache.delete(key);
     workspaceInsightCache.set(key, { profile, checkedAt: Date.now() });
+    while (workspaceInsightCache.size > 100) workspaceInsightCache.delete(workspaceInsightCache.keys().next().value);
     if (JSON.stringify(previous && previous.profile || null) !== JSON.stringify(profile) && repositoryBridge) {
       setImmediate(() => { if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState()); });
     }
   }).catch(() => {
     workspaceInsightCache.set(key, { profile: null, checkedAt: Date.now() });
+    while (workspaceInsightCache.size > 100) workspaceInsightCache.delete(workspaceInsightCache.keys().next().value);
   }).finally(() => workspaceInsightInflight.delete(key));
   workspaceInsightInflight.set(key, task);
 }

@@ -494,9 +494,12 @@ function renderAgentMailboxes(rawAgents){
     workspaceLine.textContent=parts.join(' · ');
     workspaceLine.title=[workspaceRoot,projectTypes.join(', '),git.repository?'Git root: '+git.root:'',git.branch?'Branch: '+git.branch:'',git.dirty?'Tracked changes present':'',sharedWith.length?'Also used by '+sharedWith.join(', '):''].filter(Boolean).join('\\n');
     const unreadCount=Math.max(0,Number(agent.unread_message_count)||0);
-    unread.hidden=unreadCount===0;
-    unread.textContent=unreadCount>99?'MSG 99+':'MSG '+unreadCount;
-    unread.title=unreadCount+' unread incoming agent message'+(unreadCount===1?'':'s');
+    const unreadPartial=agent.unread_message_count_partial===true;
+    unread.hidden=unreadCount===0&&!unreadPartial;
+    unread.textContent=unreadPartial?(unreadCount>99?'MSG 99+':unreadCount?'MSG '+unreadCount+'+':'MSG ?'):(unreadCount>99?'MSG 99+':'MSG '+unreadCount);
+    unread.title=unreadPartial
+      ? 'At least '+unreadCount+' unread incoming agent message'+(unreadCount===1?'':'s')+' in the most recent 25 inbox entries; older inbox history may also contain unread messages.'
+      : unreadCount+' unread incoming agent message'+(unreadCount===1?'':'s');
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
