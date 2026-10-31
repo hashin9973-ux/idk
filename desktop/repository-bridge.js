@@ -2749,6 +2749,7 @@ function createRepositoryBridge(deps) {
     sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message }),
     pauseAgentSession: (sessionId, paused) => setAgentSessionPaused(sessionId, paused),
     disconnectAgentSession,
+    getTaskDashboard: () => taskOrchestrator.dashboard(),
     readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args),
     revokeAgentSession
   };

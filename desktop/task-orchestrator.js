@@ -189,7 +189,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   }
 
   async function listProjects(identity, args = {}) {
-    validateIdentity(identity);
+    if (identity) validateIdentity(identity);
     const entries = await listFolder('bridge/projects');
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^project-[a-f0-9]{24}\.json$/.test(name)))].slice(0, 200);
@@ -272,7 +272,8 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   }
 
   async function listTasks(identity, args = {}) {
-    validateIdentity(identity);
+    if (identity) validateIdentity(identity);
+    if (args.assigned_to_me === true && !identity) throw new Error('A session identity is required for assigned_to_me filtering.');
     const projectId = String(args.project_id || '');
     if (!(await readProject(projectId))) throw new Error('Project not found: ' + projectId);
     const entries = await listFolder('bridge/tasks');
@@ -295,7 +296,30 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
         if (matching.length >= limit) break;
       }
     }
-    return { project_id: projectId, tasks: matching, count: matching.length, offset: cursor, next_offset: cursor + matching.length < names.length ? cursor + matching.length : null, scanned: Math.min(names.length, cursor + Math.max(limit, 20)) };
+    const scanned = Math.min(names.length, cursor + Math.max(limit, 20));
+    return { project_id: projectId, tasks: matching, count: matching.length, offset: cursor, next_offset: scanned < names.length ? scanned : null, scanned };
+  }
+
+  async function dashboard() {
+    const listing = await listProjects(null, {});
+    const projects = [];
+    for (let start = 0; start < Math.min(listing.projects.length, 20); start += 5) {
+      const group = listing.projects.slice(start, start + 5);
+      const boards = await Promise.all(group.map(async project => {
+        const result = await listTasks(null, { project_id: project.project_id, limit: 30 });
+        const counts = {};
+        for (const item of result.tasks) counts[item.status] = (counts[item.status] || 0) + 1;
+        return {
+          ...project,
+          task_count: result.count,
+          task_counts: counts,
+          tasks: result.tasks.slice(0, 20),
+          task_list_truncated: result.next_offset !== null
+        };
+      }));
+      projects.push(...boards);
+    }
+    return { generated_at: now(), projects, project_count: listing.count, projects_truncated: listing.truncated || listing.count > projects.length };
   }
 
   async function getTask(identity, args = {}) {
@@ -589,7 +613,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   }
 
   return {
-    initProject, getProject, listProjects, createTask, listTasks, getTask, claimTask, heartbeat,
+    initProject, getProject, listProjects, createTask, listTasks, dashboard, getTask, claimTask, heartbeat,
     updateTask, submitTask, reviewTask, integrateTask, verifyTask, addDecision, cancelTask,
     taskPath, projectPath, TASK_PROTOCOL, PROJECT_PROTOCOL, TASK_STATES
   };
