@@ -5,7 +5,6 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const crypto = require('node:crypto');
 const { performance } = require('node:perf_hooks');
 const { createProjectIntelligence } = require('../desktop/project-intelligence');
 const { createExecutionScheduler } = require('../desktop/execution-scheduler');
@@ -85,6 +84,7 @@ async function main() {
         indexedSourceBytes: indexed.totalIndexedBytes
       },
       warmCache: {
+        cacheKey: restored.cacheKey,
         filesIndexed: restored.filesIndexed,
         lastFullScanAt: restored.lastFullScanAt,
         error: restored.error,
