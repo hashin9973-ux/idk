@@ -673,7 +673,14 @@ function createRepositoryBridge(deps) {
         last_request_tree_entry_count: lastRequestTreeEntryCount,
         request_tree_scan_count: requestTreeReconcileCount,
         last_poll_duration_ms: lastPollDurationMs,
+        stalled_operation_recovery_ms: operationRecoveryWindowMs,
+        poll_in_flight: pollInFlight,
+        poll_started_at: pollStartedAt ? new Date(pollStartedAt).toISOString() : null,
+        poll_timer_active: Boolean(timer),
         request_commit_probe_interval_ms: FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
+        request_commit_probe_in_flight: requestCommitProbeInFlight,
+        request_commit_probe_started_at: requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
+        request_commit_probe_timer_active: Boolean(requestCommitProbeTimer),
         last_request_commit_probe_at: lastRequestCommitProbeAt,
         last_request_commit_probe_duration_ms: lastRequestCommitProbeDurationMs,
         last_request_commit_probe_error: lastRequestCommitProbeError
@@ -2405,7 +2412,6 @@ function createRepositoryBridge(deps) {
           lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
           lastRequestTreeEntryCount = requestFiles.length;
           requestTreeReconcileCount++;
-          if (!running || pollPromise !== task) return;
         } else {
           // Use bounded request-tree polling as the discovery source instead of
           // awaiting the path-filtered commit cursor on every cycle. A slow
@@ -2422,7 +2428,6 @@ function createRepositoryBridge(deps) {
             lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
             lastRequestTreeEntryCount = files.length;
             requestTreeReconcileCount++;
-            if (!running || pollPromise !== task) return;
           } else {
             files = [];
           }
