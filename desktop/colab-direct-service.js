@@ -2012,7 +2012,8 @@ function createVisionService(deps) {
     if (typeof controlSessionTimer.unref === 'function') controlSessionTimer.unref();
   }
 
-  async function inputAction(args = {}, callId = null) {
+  async function inputAction(args = {}, callId = null, signal = null) {
+    if (signal && signal.aborted) throw Object.assign(new Error(String(signal.reason && signal.reason.message || signal.reason || 'Operation cancelled.')), { name: 'AbortError', code: 'ABORT_ERR' });
     const action = args.action;
     if (action === 'start_control') {
       if (!inputControl || typeof inputControl.run !== 'function') {
