@@ -857,7 +857,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
 
 
 test('worker drains queued mailbox requests without a folder re-read for every completion', async () => {
-  const requests = Array.from({ length: 40 }, (_, index) => ({
+  const requests = Array.from({ length: 80 }, (_, index) => ({
     protocol: PROTOCOL,
     request_id: 'req-parallel-' + String(index + 1).padStart(2, '0'),
     created_at: new Date().toISOString(),
@@ -889,8 +889,8 @@ test('worker drains queued mailbox requests without a folder re-read for every c
     await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
     await new Promise(resolve => setTimeout(resolve, 25));
     const requestFolderTreeGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
-    assert.equal(executions, 40);
-    assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
+    assert.equal(executions, 80);
+    assert.equal(maximumActive, 64, 'the worker should fill its configured 64-request limit, then refill from its local queue');
     assert.equal(requestFolderTreeGetsAfterDrain, requestFolderTreeGetsAtDispatch, 'request completion should drain queued work without another tree listing when the request-commit cursor is unchanged');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
