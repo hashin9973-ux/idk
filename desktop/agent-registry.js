@@ -450,6 +450,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)))];
     let deletedRequests = 0;
+    let ownedRequestRecords = 0;
     const requestRecords = [];
     for (let start = 0; start < requestNames.length; start += 16) {
       const group = requestNames.slice(start, start + 16);
@@ -457,6 +458,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         const requestId = name.slice(0, -5);
         const requestRemote = await readRemoteFile('bridge/requests/' + name);
         if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
+        ownedRequestRecords++;
         const [claim, result] = await Promise.all([
           readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
         ]);
@@ -526,9 +528,17 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       }
     }
     const deletion = await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })));
-    return { status: 'completed', deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
-      deleted_request_records: deletedRequests, deleted_message_records: deletedMessages, commit_sha: deletion.commitSha || null,
-      preserved_session_and_revocation_records: true };
+    const preservedRequests = Math.max(0, ownedRequestRecords - deletedRequests);
+    return {
+      status: preservedRequests ? 'completed_with_preserved_records' : 'completed',
+      deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
+      deleted_request_records: deletedRequests, deleted_message_records: deletedMessages,
+      preserved_request_records: preservedRequests,
+      preservation_note: preservedRequests
+        ? 'Some requests were retained because their claim/result journal was missing, active, incomplete, or could not be proven terminal. Retry cleanup after those operations settle.'
+        : null,
+      commit_sha: deletion.commitSha || null, preserved_session_and_revocation_records: true
+    };
   }
 
   async function statuses(filterAgentId = null) {
