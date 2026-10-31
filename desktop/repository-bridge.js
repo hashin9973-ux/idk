@@ -378,7 +378,7 @@ function createRepositoryBridge(deps) {
         label: group.label || group.agent_id || 'Legacy / unassigned',
         status: (() => {
           const last = Date.parse(String(group.last_activity_at || group.last_seen_at || ''));
-          return last && Date.now() - last <= agentRegistry.SESSION_INACTIVE_AFTER_MS ? 'active' : 'inactive';
+          return last && Date.now() - last <= agentRegistry.AGENT_ACTIVITY_RECENCY_WINDOW_MS ? 'active' : 'inactive';
         })(),
         busy: Boolean(live.length || group.busy),
         session_id: group.session_id || null,
@@ -672,6 +672,12 @@ function createRepositoryBridge(deps) {
     deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict, maxSessions: 10000
   });
   const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
+
+  async function getSessionInvalidation(sessionId) {
+    if (await agentRegistry.isRevoked(sessionId)) return 'revoked';
+    if (await agentRegistry.isEvicted(sessionId)) return 'evicted';
+    return null;
+  }
 
   async function publishState(force = false) {
     const now = Date.now();
@@ -1609,7 +1615,7 @@ function createRepositoryBridge(deps) {
           agent_status_tool: 'agent_status',
           agent_messaging_tools: ['send_agent_message', 'read_agent_messages', 'reply_to_agent_message'],
           message_receipt_path_template: 'bridge/agent-message-receipts/<recipient-session-id>/<message-id>.json',
-          activity_status_window_ms: agentRegistry.SESSION_INACTIVE_AFTER_MS,
+          activity_status_window_ms: agentRegistry.AGENT_ACTIVITY_RECENCY_WINDOW_MS,
           artifact_path_template: 'bridge/artifacts/<request-id>/<artifact-name>',
           output_limit_fallback: 'If output_truncated is true, a result is partial, a field contains OUTPUT EXTERNALIZED, or the inline result says the repository size limit was exceeded, fetch the listed artifact paths through GitHub MCP before reasoning from the preview. For complete_result_part, fetch all parts and concatenate in ascending part order to reconstruct the full JSON, then follow its artifacts manifest. For tool_output_part, fetch all parts for that field and concatenate in ascending part order. Critical: if nested stdout_truncated or stderr_truncated is true, the local runner discarded bytes before artifact publication; fetching the artifact recovers only the captured portion and is NOT a complete output. Rerun the command in bounded pages or redirect its full output to a workspace file, then read that file with read_file pages until EOF. Never report an output complete until all required parts are read and neither capture-truncation flag remains unexplained.',
           claim_path_template: 'bridge/claims/<same-request-id>.json',
@@ -1743,12 +1749,15 @@ function createRepositoryBridge(deps) {
 
     // A completed claim now stores its result as a recovery journal. If result
     // publication was interrupted, republish that exact result, never rerun work.
-    if (prior.value.session_id && await agentRegistry.isRevoked(prior.value.session_id)) {
+    const priorInvalidation = prior.value.session_id ? await getSessionInvalidation(prior.value.session_id) : null;
+    if (priorInvalidation) {
       const revokedResult = {
         protocol: RESULT_PROTOCOL, request_id: requestId, session_id: prior.value.session_id,
         ...(prior.value.agent_id ? { agent_id: prior.value.agent_id } : {}),
         status: 'cancelled', completed_at: new Date().toISOString(),
-        error: 'SESSION_REVOKED: The owning agent session was revoked before this mailbox result could be accepted.'
+        error: priorInvalidation === 'evicted'
+          ? 'SESSION_EVICTED: The owning session ID was evicted by the registration cap before this mailbox result could be accepted.'
+          : 'SESSION_REVOKED: The owning agent session was explicitly revoked before this mailbox result could be accepted.'
       };
       const completed = {
         protocol: 'chatgpt-local-repo-claim/v1', request_id: requestId,
@@ -1867,12 +1876,15 @@ function createRepositoryBridge(deps) {
     const sessionId = result && result.session_id || requestSessions.get(requestId) || null;
     const publish = async () => {
       let finalResult = result;
-      if (sessionId && await agentRegistry.isRevoked(sessionId)) {
+      const sessionInvalidation = sessionId ? await getSessionInvalidation(sessionId) : null;
+      if (sessionInvalidation) {
         finalResult = {
           protocol: RESULT_PROTOCOL, request_id: requestId, session_id: sessionId,
           ...(result && result.agent_id ? { agent_id: result.agent_id } : {}),
           status: 'cancelled', completed_at: new Date().toISOString(),
-          error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+          error: sessionInvalidation === 'evicted'
+            ? 'SESSION_EVICTED: The result was suppressed because its session ID was evicted by the registration cap.'
+            : 'SESSION_REVOKED: The result was suppressed because its owning agent session was explicitly revoked.'
         };
       }
       const resultPath = 'bridge/results/' + requestId + '.json';
@@ -2050,6 +2062,16 @@ function createRepositoryBridge(deps) {
           throw new Error('SESSION_ASSIGNMENT_INVALID: Choose a valid agent ID or enable automatic assignment.');
         }
         const created = await agentRegistry.startSession({ ...request.args, ...(selectedAgentId ? { agent_id: selectedAgentId } : {}) });
+        const evictionCleanup = [];
+        for (const evicted of Array.isArray(created.evicted_sessions) ? created.evicted_sessions : []) {
+          const executionCancellation = await cancelSessionOperations(evicted.session_id, 'SESSION_EVICTED');
+          let taskCleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
+          if (!executionCancellation.drain_timed_out) {
+            try { taskCleanup = await taskOrchestrator.detachSession(evicted.session_id, 'evicted'); }
+            catch (error) { taskCleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+          }
+          evictionCleanup.push({ ...evicted, execution_cancellation: executionCancellation, task_cleanup: taskCleanup });
+        }
         // Auto-assignment chooses the seat only after the popup completes. Do not
         // pass its global placeholder workspace as a session override: the main
         // process must resolve the selected seat's default before the global one.
@@ -2063,6 +2085,7 @@ function createRepositoryBridge(deps) {
         }
         report = { ok: true, result: {
           ...created, ...(assignedWorkspace ? { workspace_root: assignedWorkspace } : {}),
+          ...(evictionCleanup.length ? { eviction_cleanup: evictionCleanup } : {}),
           assignment_mode: assignment.autoAssign === true ? 'automatic-confirmed' : 'manual',
           ...(initialMessageStatus ? { initial_message: initialMessageStatus } : {})
         } };
@@ -2137,8 +2160,13 @@ function createRepositoryBridge(deps) {
     }
 
     toolFinishedAt = Date.now();
-    if (request.session_id && await agentRegistry.isRevoked(request.session_id)) {
-      report = { ok: false, cancelled: true, error: 'SESSION_REVOKED: The operation was cancelled or its result suppressed after this agent session was revoked.', tool: request.tool, call_id: requestId };
+    const requestInvalidation = request.session_id ? await getSessionInvalidation(request.session_id) : null;
+    if (requestInvalidation) {
+      report = { ok: false, cancelled: true,
+        error: requestInvalidation === 'evicted'
+          ? 'SESSION_EVICTED: The operation was cancelled or its result suppressed after the session ID was evicted by the registration cap.'
+          : 'SESSION_REVOKED: The operation was cancelled or its result suppressed after this agent session was explicitly revoked.',
+        tool: request.tool, call_id: requestId };
     }
     let workspaceRootForSanitization = '';
     try { workspaceRootForSanitization = getWorkspaceRoot ? getWorkspaceRoot(request.session_id || null) : ''; } catch {}
@@ -2271,12 +2299,15 @@ function createRepositoryBridge(deps) {
 
     // Recheck immediately before committing the recovery journal. Revocation can
     // happen while large output is being externalized or archived.
-    if (request.session_id && await agentRegistry.isRevoked(request.session_id)) {
+    const resultInvalidation = request.session_id ? await getSessionInvalidation(request.session_id) : null;
+    if (resultInvalidation) {
       resultRecord = {
         protocol: RESULT_PROTOCOL, request_id: requestId, tool: request.tool,
         session_id: request.session_id, ...(request.agent_id ? { agent_id: request.agent_id } : {}),
         status: 'cancelled', completed_at: new Date().toISOString(),
-        error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+        error: resultInvalidation === 'evicted'
+          ? 'SESSION_EVICTED: The result was suppressed because its session ID was evicted by the registration cap.'
+          : 'SESSION_REVOKED: The result was suppressed because its owning agent session was explicitly revoked.'
       };
     }
     // Store the completed result in the claim journal before publishing the
@@ -2459,7 +2490,7 @@ function createRepositoryBridge(deps) {
     const cancellation = [];
     for (const requestId of requestIds) {
       const controller = requestAbortControllers.get(requestId);
-      if (controller && !controller.signal.aborted) controller.abort(new Error(reasonCode + ': The owning agent session was paused or disconnected.'));
+      if (controller && !controller.signal.aborted) controller.abort(new Error(reasonCode + ': The owning agent session was invalidated (${reasonCode}).'));
       let schedulerCancelled = false;
       try { schedulerCancelled = cancelTool(requestId, reasonCode + ': The owning agent session was paused or disconnected.') === true; } catch {}
       cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
