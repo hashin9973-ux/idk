@@ -956,3 +956,9 @@ test('worktree integration schema and task dashboard polling remain bounded', ()
   assert.match(tasks,/listProjects\(null, \{ limit: 10 \}\)/);
   assert.match(tasks,/limit: 10/);
 });
+
+
+test('worker admission leaves headroom for fifty collaborating sessions',()=>{
+  const bridge=read('desktop','repository-bridge.js');
+  assert.match(bridge,/MAX_CONCURRENT_REQUESTS = 64/);
+});

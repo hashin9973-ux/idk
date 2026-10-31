@@ -19,7 +19,7 @@ const DEFAULT_INTERVAL_MS = 1000;
 const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 10_000;
 const FAST_REQUEST_COMMIT_POLL_INTERVAL_MS = 2_000;
 const MAX_RECENT_REQUEST_COMMITS = 20;
-const MAX_CONCURRENT_REQUESTS = 32;
+const MAX_CONCURRENT_REQUESTS = 64;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -482,6 +482,7 @@ function createRepositoryBridge(deps) {
       activeRequestIds: [...activeRequestIds],
       activeCount: activeRequestIds.size,
       pendingCount,
+      maxConcurrentRequests: MAX_CONCURRENT_REQUESTS,
       requestPolling: {
         pollIntervalMs: Math.max(1000, Number(intervalMs) || DEFAULT_INTERVAL_MS),
         requestTreeScanIntervalMs: Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS),
