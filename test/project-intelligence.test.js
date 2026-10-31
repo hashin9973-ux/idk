@@ -73,3 +73,25 @@ test('indexes JavaScript and TypeScript class methods as searchable symbols',()=
  const ts=extractSymbols('export class Worker { public async refreshIndex(): Promise<void> { return; } }','typescript');
  assert.ok(ts.some(item=>item.name==='refreshIndex'&&item.kind==='method'));
 });
+
+test('warm cache accepts normal numeric relative import specifiers',async()=>{
+ const root=await fs.mkdtemp(path.join(os.tmpdir(),'project-index-numeric-import-'));
+ const storage=await fs.mkdtemp(path.join(os.tmpdir(),'project-index-numeric-cache-'));
+ await fs.mkdir(path.join(root,'src'),{recursive:true});
+ await fs.writeFile(path.join(root,'src','module-00001.js'),'export function numberedModule() { return 1; }\\n');
+ await fs.writeFile(path.join(root,'src','module-00002.js'),"import { numberedModule } from './module-00001';\\nexport function useNumberedModule() { return numberedModule(); }\\n");
+ const first=createProjectIntelligence({storageDirectory:storage,watch:false});
+ try{
+  await first.start(root);
+  const scanned=await first.status(root);
+  assert.equal(scanned.filesIndexed,2);
+  await first.stop();
+  const warm=createProjectIntelligence({storageDirectory:storage,watch:false});
+  try{
+   const restored=await warm.status(root);
+   assert.equal(restored.filesIndexed,2);
+   assert.equal(restored.lastFullScanAt,scanned.lastFullScanAt);
+   assert.equal(restored.cacheWarning,null);
+  }finally{await warm.stop();}
+ }finally{await first.stop().catch(()=>{});await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
+});

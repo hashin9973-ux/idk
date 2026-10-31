@@ -59,7 +59,7 @@ function createProjectIntelligence(options={}){
   if(!Array.isArray(d.pathTerms)||d.pathTerms.length>80||d.pathTerms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return 'invalid path terms';
   if(!Array.isArray(d.terms)||d.terms.length>220||d.terms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return 'invalid identifier terms';
   if(!Array.isArray(d.symbols)||d.symbols.length>160||d.symbols.some(symbol=>!symbol||typeof symbol!=='object'||typeof symbol.name!=='string'||symbol.name.length<1||symbol.name.length>200||typeof symbol.kind!=='string'||symbol.kind.length>40||!Number.isSafeInteger(symbol.line)||symbol.line<1))return 'invalid symbol metadata';
-  if(!Array.isArray(d.imports)||d.imports.length>80||d.imports.some(item=>typeof item!=='string'||!item.length||item.length>2048||/[\\x00-\\x1f]/.test(item)))return 'invalid import metadata';
+  if(!Array.isArray(d.imports)||d.imports.length>80||d.imports.some(item=>typeof item!=='string'||!item.length||item.length>2048||item.split('').some(character=>character.charCodeAt(0)<32)))return 'invalid import metadata';
   return null;
  }
  function validCachedDocument(s,d){return cachedDocumentError(s,d)===null;}
