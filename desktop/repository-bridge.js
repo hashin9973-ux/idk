@@ -2390,7 +2390,8 @@ function createRepositoryBridge(deps) {
     pollInFlight = true;
     const startedAt = Date.now();
     pollStartedAt = startedAt;
-    const task = (async () => {
+    let task;
+    task = Promise.resolve().then(async () => {
       let requestScanSucceeded = false;
       try {
         let files;
@@ -2480,7 +2481,7 @@ function createRepositoryBridge(deps) {
           announce();
         }
       }
-    })();
+    });
     pollPromise = task;
     return task;
   }
