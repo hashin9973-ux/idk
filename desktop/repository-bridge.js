@@ -2385,19 +2385,19 @@ function createRepositoryBridge(deps) {
     }
     let cancellationDrainTimedOut = false;
     let mailboxCleanup = { status: 'not_requested', deleted_records: 0, deleted_files: 0 };
+    if (requestsToDrain.length) {
+      // Stop task-lease cleanup until cancelled tool executions have either
+      // drained or been reported as incomplete; never hand off a workspace
+      // scope while the old session may still be mutating it.
+      let drainTimer = null;
+      const drained = await Promise.race([
+        Promise.allSettled(requestsToDrain).then(() => true),
+        new Promise(resolve => { drainTimer = setTimeout(() => resolve(false), 3000); })
+      ]);
+      if (drainTimer) clearTimeout(drainTimer);
+      cancellationDrainTimedOut = drained !== true;
+    }
     if (options && options.wipeMailbox === true) {
-      // Give aborted workers a bounded opportunity to publish their terminal
-      // cancelled claim/result before the session-scoped mailbox wipe runs.
-      // Never wait indefinitely on an uncooperative native process or network call.
-      if (requestsToDrain.length) {
-        let drainTimer = null;
-        const drained = await Promise.race([
-          Promise.allSettled(requestsToDrain).then(() => true),
-          new Promise(resolve => { drainTimer = setTimeout(() => resolve(false), 3000); })
-        ]);
-        if (drainTimer) clearTimeout(drainTimer);
-        cancellationDrainTimedOut = drained !== true;
-      }
       try { mailboxCleanup = await agentRegistry.wipeMailbox(sessionId); }
       catch (error) {
         mailboxCleanup = { status: 'failed', deleted_records: 0, deleted_files: 0, error: cleanError(error.message), retryable: true };
@@ -2410,8 +2410,13 @@ function createRepositoryBridge(deps) {
         preservation_note: [mailboxCleanup.preservation_note, 'One or more cancelled worker requests did not settle within the 3-second cleanup drain window; cleanup is not confirmed complete. Retry mailbox cleanup after they finish.'].filter(Boolean).join(' ')
       };
     }
+    let taskCleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
+    if (!cancellationDrainTimedOut) {
+      try { taskCleanup = await taskOrchestrator.detachSession(sessionId, 'revoked'); }
+      catch (error) { taskCleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+    }
     announce();
-    return { ...revoked, cancellation, cancellation_drain_timed_out: cancellationDrainTimedOut, mailbox_cleanup: mailboxCleanup };
+    return { ...revoked, cancellation, cancellation_drain_timed_out: cancellationDrainTimedOut, mailbox_cleanup: mailboxCleanup, task_cleanup: taskCleanup };
   }
 
   async function cancelSessionOperations(sessionId, reasonCode) {
@@ -2448,6 +2453,12 @@ function createRepositoryBridge(deps) {
   async function disconnectAgentSession(sessionId) {
     const result = await agentRegistry.disconnectSession(sessionId);
     result.execution_cancellation = await cancelSessionOperations(sessionId, 'SESSION_DISCONNECTED');
+    if (result.execution_cancellation.drain_timed_out) {
+      result.task_cleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
+    } else {
+      try { result.task_cleanup = await taskOrchestrator.detachSession(sessionId, 'disconnected'); }
+      catch (error) { result.task_cleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+    }
     announce();
     return result;
   }

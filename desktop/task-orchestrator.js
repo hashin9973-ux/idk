@@ -452,10 +452,39 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     return taskSummary(updated);
   }
 
-  async function releaseTaskLease(projectId, taskId, sessionId) {
+  async function releaseTaskLease(projectId, taskId, sessionId = null) {
     await mutateProject(projectId, project => ({
-      ...project, leases: project.leases.filter(item => !(item.task_id === taskId && item.session_id === sessionId))
+      ...project, leases: project.leases.filter(item =>
+        !(item.task_id === taskId && (!sessionId || item.session_id === sessionId)))
     }));
+  }
+
+  async function renewTaskLease(projectId, taskId, identity, durationMs = leaseMs) {
+    validateIdentity(identity);
+    const timestamp = clock();
+    const leaseUntil = new Date(timestamp + Math.max(leaseMs, durationMs)).toISOString();
+    const taskRemote = await readTask(taskId);
+    if (!taskRemote || taskRemote.value.project_id !== projectId) throw new Error('Task not found in this project.');
+    const scope = taskRemote.value.scope_paths.length ? taskRemote.value.scope_paths : ['.'];
+    await mutateProject(projectId, project => {
+      const live = activeLeases(project, timestamp);
+      const sameTask = live.find(item => item.task_id === taskId);
+      const conflict = live.find(item => item.task_id !== taskId &&
+        item.scope_paths.some(a => scope.some(b => pathsOverlap(a, b))));
+      if (conflict) throw new Error('TASK_SCOPE_CONFLICT: ' + conflict.task_id + ' currently owns an overlapping scope while this task is in a review/integration/verification gate.');
+      const leases = live.filter(item => item.task_id !== taskId);
+      leases.push({
+        task_id: taskId,
+        session_id: sameTask ? sameTask.session_id : identity.session_id,
+        agent_id: sameTask ? sameTask.agent_id : identity.agent_id,
+        scope_paths: sameTask ? sameTask.scope_paths : scope,
+        expires_at: leaseUntil,
+        claimed_at: sameTask && sameTask.claimed_at || new Date(timestamp).toISOString()
+      });
+      return { ...project, leases };
+    });
+    await mutateTask(taskId, current => ({ ...current, lease_expires_at: leaseUntil }));
+    return leaseUntil;
   }
 
   async function submitTask(identity, args = {}) {
@@ -508,7 +537,10 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     if (!['approve', 'reject'].includes(verdict)) throw new Error('verdict must be approve or reject.');
     const task = await readTask(taskId);
     if (!task || task.value.status !== 'review') throw new Error('Only a task in review can be reviewed.');
-    if (task.value.assignee_session_id === identity.session_id) throw new Error('Independent review requires a different session from the task owner.');
+    const submission = task.value.submissions[task.value.submissions.length - 1];
+    const implementerSessionId = submission && submission.submitted_by_session_id || task.value.assignee_session_id;
+    if (implementerSessionId === identity.session_id) throw new Error('Independent review requires a session other than the original task implementer.');
+    await renewTaskLease(task.value.project_id, taskId, identity);
     const comment = boundedText(args.comment, 3000, 'comment', verdict === 'reject');
     const timestamp = now();
     const updated = await mutateTask(taskId, current => ({
@@ -518,6 +550,10 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       history: [...current.history, { at: timestamp, by_session_id: identity.session_id, by_agent_id: identity.agent_id,
         action: 'review_' + verdict, status: verdict === 'approve' ? 'integration' : 'needs_rework' }].slice(-100)
     }));
+    if (verdict === 'reject') {
+      if (!task.value.assignee_session_id) await releaseTaskLease(task.value.project_id, taskId);
+      else await heartbeat({ session_id: task.value.assignee_session_id, agent_id: task.value.assignee_agent_id }, { task_id: taskId }).catch(() => {});
+    }
     return taskSummary(updated);
   }
 
@@ -527,9 +563,10 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const taskId = String(args.task_id || '');
     const task = await readTask(taskId);
     if (!task || task.value.status !== 'integration') throw new Error('Only an approved task in integration can be merged.');
-    if (task.value.assignee_session_id === identity.session_id) throw new Error('A separate integrator session is required.');
     const submission = task.value.submissions[task.value.submissions.length - 1];
+    if (submission && submission.submitted_by_session_id === identity.session_id) throw new Error('A separate integrator session is required.');
     if (!submission || !/^[a-f0-9]{7,40}$/i.test(submission.commit_sha)) throw new Error('The task has no valid submitted commit.');
+    await renewTaskLease(task.value.project_id, taskId, identity);
     const path = boundedText(args.worktree_path || submission.worktree_path, 512, 'worktree_path', true);
     const branch = boundedText(args.branch || submission.branch, 120, 'branch', true);
     const targetBranch = boundedText(args.target_branch, 120, 'target_branch', true);
@@ -553,7 +590,9 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const taskId = String(args.task_id || '');
     const task = await readTask(taskId);
     if (!task || task.value.status !== 'verification') throw new Error('Only an integrated task awaiting verification can be verified.');
-    if (task.value.assignee_session_id === identity.session_id) throw new Error('Independent verification requires a session other than the task owner.');
+    const submission = task.value.submissions[task.value.submissions.length - 1];
+    if (submission && submission.submitted_by_session_id === identity.session_id) throw new Error('Independent verification requires a session other than the original task implementer.');
+    await renewTaskLease(task.value.project_id, taskId, identity, 60 * 60 * 1000);
     const checks = Array.isArray(args.checks) ? args.checks : [];
     if (checks.length < 1 || checks.length > 10) throw new Error('checks must contain 1–10 build/test/runtime checks.');
     const results = [];
@@ -583,7 +622,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       history: [...current.history, { at: timestamp, by_session_id: identity.session_id, by_agent_id: identity.agent_id,
         action: failed.length ? 'verification_failed' : 'verified', status: failed.length ? 'needs_rework' : 'verified' }].slice(-100)
     }));
-    if (!failed.length) await releaseTaskLease(task.value.project_id, taskId, task.value.assignee_session_id);
+    if (!failed.length || !task.value.assignee_session_id) await releaseTaskLease(task.value.project_id, taskId);
     return { ...taskSummary(updated), verification: updated.verification, failed_checks: failed.map(item => item.kind) };
   }
 
@@ -603,6 +642,65 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     return { project_id: projectId, ...record, retained_decisions: updated.decisions.length };
   }
 
+  async function detachSession(sessionId, reason = 'disconnected') {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required to detach task ownership.');
+    const normalizedReason = ['disconnected', 'revoked', 'expired'].includes(reason) ? reason : 'disconnected';
+    const entries = await listFolder('bridge/tasks');
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^task-[0-9]{13}-[a-f0-9]{16}\.json$/.test(name)))].sort();
+    const scanLimit = Math.min(names.length, 50000);
+    const summary = { session_id: sessionId, reason: normalizedReason, scanned: scanLimit,
+      blocked_and_unassigned: 0, gated_tasks_preserved: 0, unassigned_without_work: 0,
+      released_leases: 0, errors: [], truncated: names.length > scanLimit };
+    for (let start = 0; start < scanLimit; start += 20) {
+      const batch = names.slice(start, Math.min(scanLimit, start + 20));
+      await Promise.all(batch.map(async name => {
+        const taskId = name.slice(0, -5);
+        try {
+          const remote = await readTask(taskId);
+          if (!remote || remote.value.assignee_session_id !== sessionId || TERMINAL_TASK_STATES.has(remote.value.status)) return;
+          const originalStatus = remote.value.status;
+          const gated = ['review', 'integration', 'verification'].includes(originalStatus);
+          const timestamp = now();
+          const updated = await mutateTask(taskId, current => {
+            if (current.assignee_session_id !== sessionId || TERMINAL_TASK_STATES.has(current.status)) return current;
+            const isGate = ['review', 'integration', 'verification'].includes(current.status);
+            const nextStatus = isGate ? current.status : ['proposed', 'ready'].includes(current.status) ? current.status : 'blocked';
+            const reasonText = isGate ? null :
+              'The task owner session was ' + normalizedReason + '. Inspect its preserved worktree and branch before assigning a replacement agent.';
+            return {
+              ...current,
+              status: nextStatus,
+              assignee_session_id: null,
+              assignee_agent_id: null,
+              lease_expires_at: isGate ? current.lease_expires_at : null,
+              blocked_reason: reasonText,
+              history: [...current.history, {
+                at: timestamp, by_session_id: sessionId, by_agent_id: current.assignee_agent_id || null,
+                action: 'owner_session_' + normalizedReason,
+                status: nextStatus,
+                ...(reasonText ? { reason: reasonText } : {})
+              }].slice(-100)
+            };
+          });
+          if (updated.assignee_session_id !== null) return;
+          if (gated || ['review', 'integration', 'verification'].includes(updated.status)) {
+            summary.gated_tasks_preserved++;
+          } else {
+            summary.unassigned_without_work++;
+            if (updated.status === 'blocked') summary.blocked_and_unassigned++;
+            await releaseTaskLease(updated.project_id, taskId, sessionId);
+            summary.released_leases++;
+          }
+        } catch (error) {
+          summary.errors.push({ task_id: taskId, error: cleanError(String(error && error.message || error)) });
+        }
+      }));
+    }
+    summary.status = summary.errors.length || summary.truncated ? 'completed_with_preserved_records' : 'completed';
+    return summary;
+  }
+
   async function cancelTask(identity, args = {}) {
     validateIdentity(identity);
     const taskId = String(args.task_id || '');
@@ -616,13 +714,13 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       ...current, status: 'cancelled',
       history: [...current.history, { at: timestamp, by_session_id: identity.session_id, by_agent_id: identity.agent_id, action: 'cancelled', status: 'cancelled' }].slice(-100)
     }));
-    if (updated.assignee_session_id) await releaseTaskLease(updated.project_id, taskId, updated.assignee_session_id);
+    await releaseTaskLease(updated.project_id, taskId);
     return taskSummary(updated);
   }
 
   return {
     initProject, getProject, listProjects, createTask, listTasks, dashboard, getTask, claimTask, heartbeat,
-    updateTask, submitTask, reviewTask, integrateTask, verifyTask, addDecision, cancelTask,
+    updateTask, submitTask, reviewTask, integrateTask, verifyTask, addDecision, cancelTask, detachSession,
     taskPath, projectPath, TASK_PROTOCOL, PROJECT_PROTOCOL, TASK_STATES
   };
 }

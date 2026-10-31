@@ -30,6 +30,8 @@ function mailbox() {
 
 const a = { session_id: 'session-' + 'a'.repeat(32), agent_id: 'agent-001' };
 const b = { session_id: 'session-' + 'b'.repeat(32), agent_id: 'agent-002' };
+const c = { session_id: 'session-' + 'c'.repeat(32), agent_id: 'agent-003' };
+const d = { session_id: 'session-' + 'd'.repeat(32), agent_id: 'agent-004' };
 
 test('task resources treat parent and child paths as conflicting', () => {
   assert.equal(pathsOverlap('Source/Game', 'Source/Game/Player.cpp'), true);
@@ -158,4 +160,66 @@ test('task list cursor advances by scanned mailbox records without repeating row
   assert.equal(second.count, 15);
   const ids = [...first.tasks, ...second.tasks].map(item => item.task_id);
   assert.equal(new Set(ids).size, 45);
+});
+
+
+test('disconnecting an implementation owner blocks and unassigns in-progress tasks, releasing their scope leases', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000 });
+  const project = await tasks.initProject(a, { name: 'Detach active owner' });
+  const task = await tasks.createTask(a, { project_id: project.project_id, title: 'Player work', objective: 'Implement player', acceptance_criteria: ['Builds'], scope_paths: ['Source/Game/Player'] });
+  await tasks.claimTask(a, { task_id: task.task_id });
+  await tasks.updateTask(a, { task_id: task.task_id, status: 'in_progress' });
+  const detached = await tasks.detachSession(a.session_id, 'disconnected');
+  assert.equal(detached.status, 'completed');
+  assert.equal(detached.blocked_and_unassigned, 1);
+  const saved = await tasks.getTask(b, { task_id: task.task_id });
+  assert.equal(saved.status, 'blocked');
+  assert.equal(saved.assignee_session_id, null);
+  assert.match(saved.blocked_reason, /disconnected/i);
+  assert.equal((await tasks.getProject(project.project_id)).active_lease_count, 0);
+  const replacement = await tasks.claimTask(b, { task_id: task.task_id });
+  assert.equal(replacement.assignee_session_id, b.session_id);
+});
+
+test('detaching a submitted task preserves review gates and submission attribution while allowing independent reviewers and verifiers', async () => {
+  const deps = mailbox();
+  const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000 });
+  let integrations = 0, verifications = 0;
+  const project = await tasks.initProject(a, { name: 'Detach submitted owner' });
+  const task = await tasks.createTask(a, { project_id: project.project_id, title: 'Submitted feature', objective: 'Implement and validate', acceptance_criteria: ['Builds'], scope_paths: ['Source/Game/Feature'] });
+  await tasks.claimTask(a, { task_id: task.task_id, branch: 'task/feature', worktree_path: '.bridge-worktrees/feature' });
+  await tasks.updateTask(a, { task_id: task.task_id, status: 'in_progress' });
+  await tasks.submitTask(a, { task_id: task.task_id, commit_sha: 'e'.repeat(40), changed_paths: ['Source/Game/Feature/Feature.cpp'], evidence: [{ kind: 'implementation', summary: 'Implemented feature' }] });
+  const detached = await tasks.detachSession(a.session_id, 'revoked');
+  assert.equal(detached.gated_tasks_preserved, 1);
+  let saved = await tasks.getTask(b, { task_id: task.task_id });
+  assert.equal(saved.status, 'review');
+  assert.equal(saved.assignee_session_id, null);
+  assert.equal(saved.submissions[0].submitted_by_session_id, a.session_id);
+  await assert.rejects(tasks.reviewTask(a, { task_id: task.task_id, verdict: 'approve' }), /original task implementer/);
+  await tasks.reviewTask(b, { task_id: task.task_id, verdict: 'approve' });
+  await assert.rejects(tasks.integrateTask(a, { task_id: task.task_id, target_branch: 'main' }, async () => {
+    throw new Error('The original implementation session must not integrate its own task.');
+  }), /separate integrator/);
+  const integrated = await tasks.integrateTask(c, { task_id: task.task_id, target_branch: 'main' }, async input => {
+    integrations++;
+    assert.equal(input.branch, 'task/feature');
+    return { integrated: true, merge_commit: 'f'.repeat(40) };
+  });
+  assert.equal(integrated.status, 'verification');
+  await assert.rejects(tasks.verifyTask(a, { task_id: task.task_id, checks: [
+    { kind: 'build', summary: 'Build', command: 'build' },
+    { kind: 'test', summary: 'Test', command: 'test' },
+    { kind: 'runtime', summary: 'Runtime', command: 'runtime' }
+  ] }, async () => { throw new Error('Original implementation session cannot verify itself.'); }), /original task implementer/);
+  const verified = await tasks.verifyTask(d, { task_id: task.task_id, checks: [
+    { kind: 'build', summary: 'Build passed', command: 'build' },
+    { kind: 'test', summary: 'Tests passed', command: 'test' },
+    { kind: 'runtime', summary: 'Runtime passed', command: 'runtime' }
+  ] }, async () => { verifications++; return { exitCode: 0, durationMs: 10 }; });
+  assert.equal(verified.status, 'verified');
+  assert.equal(integrations, 1);
+  assert.equal(verifications, 3);
+  assert.equal((await tasks.getProject(project.project_id)).active_lease_count, 0);
 });
