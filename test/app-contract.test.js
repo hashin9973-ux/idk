@@ -35,9 +35,15 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('agent-workspace-button'));
   assert.ok(!renderer.includes('agent-message-button'));
   assert.ok(renderer.includes("const composer=document.createElement('form')"));
+  assert.ok(renderer.includes('composer.append(input)'));
+  assert.ok(renderer.includes('if(messageInput)'));
+  assert.ok(renderer.includes("event.key==='Enter'"));
   assert.ok(renderer.includes('terminal.formatRequestCommands'));
   assert.ok(renderer.includes('showAgentRequestDetails'));
   assert.ok(styles.includes('.agent-command-line'));
+  assert.ok(styles.includes('.agent-action-menu{position:fixed'));
+  assert.ok(renderer.includes('actionMenu.style.left'));
+  assert.ok(renderer.includes("event.target.closest('input,textarea')"));
   assert.ok(html.includes('agent-terminal.js'));
   assert.ok(main.includes('autoDismissMs: 6500'));
   assert.ok(renderer.includes('agent-delete-button'));
@@ -63,6 +69,13 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('workspace_shared_with'));
   assert.ok(renderer.includes('unread_message_count_partial'));
   assert.ok(renderer.includes('api.setAgentWorkspaceFromRecent(agent.agent_id,card.dataset.sessionId||null,root)'));
+  assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
+  assert.ok(main.includes('settings.agentWorkspaceDefaults = defaults'));
+  assert.ok(main.includes('settings.agentWorkspaces = sessionOverrides'));
+  assert.ok(main.includes("app:agent-select-workspace"));
+  assert.ok(main.includes("app:agent-workspace-recent"));
+  assert.ok(preload.includes('selectAgentWorkspace:'));
+  assert.ok(preload.includes('setAgentWorkspaceFromRecent:'));
   assert.ok(renderer.includes('api.extendAgentAssignment(assignmentState.requestId)'));
   assert.ok(html.includes('agent-assignment-suggestion'));
   assert.ok(html.includes('agent-assignment-recent-workspace'));
@@ -931,7 +944,7 @@ test('session lifecycle, bounded retention, shared task coordination and game me
   const bridge=read('desktop','repository-bridge.js');
   const tools=read('desktop','tool-bridge.js');
   assert.doesNotMatch(html,/session-auto-expire/);
-  assert.match(html,/hard cap of 10,000 session records/);
+  assert.match(html,/at most 10,000 registered IDs/);
   assert.match(html,/id="task-board-project"/);
   assert.match(renderer,/agent-pause-button/);
   assert.match(renderer,/agent-disconnect-button/);
@@ -947,7 +960,14 @@ test('session lifecycle, bounded retention, shared task coordination and game me
   assert.match(registry,/SESSION_LIMIT_REACHED/);
   assert.match(registry,/function isSeatAvailable/);
   assert.doesNotMatch(registry,/exceeded the inactivity window/);
-  assert.match(registry,/never automatically expired or deleted/);
+  assert.match(registry,/function enforceSessionLimit/);
+  assert.match(registry,/EVICTION_RECORD_PROTOCOL/);
+  assert.match(registry,/SESSION_EVICTED/);
+  assert.match(registry,/lastActivity - b\.lastActivity/);
+  assert.doesNotMatch(registry,/expireSession|SESSION_EXPIRED|SESSION_INACTIVE_AFTER_MS|status: 'expired'/);
+  assert.match(bridge,/cancelSessionOperations\(evicted\.session_id, 'SESSION_EVICTED'\)/);
+  assert.match(bridge,/taskOrchestrator\.detachSession\(evicted\.session_id, 'evicted'\)/);
+  assert.match(read('desktop','task-orchestrator.js'),/\['disconnected', 'revoked', 'evicted'\]/);
   assert.match(bridge,/taskOrchestrator\.dashboard/);
   assert.match(tools,/task_project_init/);
   assert.match(tools,/task_review/);
@@ -993,4 +1013,32 @@ test('agent disconnect and revocation hand off or preserve the task gates after 
   assert.match(tasks,/async function detachSession/);
   assert.match(tasks,/gated_tasks_preserved/);
   assert.match(tasks,/blocked_and_unassigned/);
+});
+
+
+test('agent widget render, composer, workspace and context actions survive status refresh', () => {
+  const renderer = read('desktop', 'dashboard-renderer.js');
+  const main = read('desktop', 'main.js');
+  const preload = read('desktop', 'preload.js');
+  const styles = read('desktop', 'dashboard.css');
+  assert.match(renderer, /requiredWidgetParts/);
+  assert.match(renderer, /if\(messageInput\)\{/);
+  assert.match(renderer, /composer\.append\(input\)/);
+  assert.match(renderer, /api\.sendAgentMessage\(sessionId,message\)/);
+  assert.match(renderer, /input\.addEventListener\('keydown'/);
+  assert.match(renderer, /agent-pause-button/);
+  assert.match(renderer, /api\.pauseAgentSession/);
+  assert.match(renderer, /api\.disconnectAgentSession/);
+  assert.match(renderer, /api\.deleteAgentWidget/);
+  assert.match(renderer, /agent-dump-button/);
+  assert.match(renderer, /showAgentRequestDetails/);
+  assert.match(renderer, /addEventListener\('contextmenu'/);
+  assert.match(renderer, /data-agent-action/);
+  assert.match(styles, /\.agent-action-menu\{position:fixed/);
+  assert.match(styles, /\.agent-message-composer\{flex:0 0 auto/);
+  assert.match(main, /function applyRecentAgentWorkspace\(/);
+  assert.match(main, /function selectAgentWorkspace\(/);
+  assert.match(main, /persistSettings\(\)/);
+  assert.match(preload, /selectAgentWorkspace:/);
+  assert.match(preload, /setAgentWorkspaceFromRecent:/);
 });
