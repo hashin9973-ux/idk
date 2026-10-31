@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 
 const AGENT_RECORD_PROTOCOL = 'chatgpt-local-agent-seat/v2';
 const SESSION_RECORD_PROTOCOL = 'chatgpt-local-agent-session/v1';
+const REQUEST_RECORD_PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const REVOCATION_RECORD_PROTOCOL = 'chatgpt-local-agent-session-revocation/v1';
 // Local operator messages use a dedicated sender identity and do not borrow an agent session.
 const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
@@ -463,7 +464,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const rows = await Promise.all(group.map(async name => {
         const requestId = name.slice(0, -5);
         const requestRemote = await readRemoteFile('bridge/requests/' + name);
-        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== 'chatgpt-local-repo-request/v1' ||
+        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== REQUEST_RECORD_PROTOCOL ||
             requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
         ownedRequestRecords++;
         const [claim, result] = await Promise.all([
@@ -875,7 +876,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   return {
     startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked, withSessionLock,
     sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
-    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
+    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }
 
