@@ -368,8 +368,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
               const deletion = await deleteRemoteFiles([{
                 path: sessionPath(candidate.sessionId), sha: latest.sha
               }]);
-              if (!deletion || deletion.ok === false || deletion.conflict === true) {
-                return { kind: 'changed' };
+              if (deletion && deletion.conflict === true) return { kind: 'changed' };
+              if (!deletion || deletion.ok === false) {
+                throw new Error('SHA-checked session deletion did not complete; the registered session remains valid.');
               }
 
               try {
@@ -449,6 +450,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     if (requestedAgentId && !AGENT_ID_PATTERN.test(requestedAgentId)) throw new Error('The selected agent ID is invalid.');
     return withLock('seat-allocation', async () => {
       const retention = await enforceSessionLimit();
+      try {
       for (let attempt = 0; attempt < 64; attempt++) {
         const ids = await listSeatIds();
         const rows = await Promise.all(ids.map(readSeatAndSession));
@@ -510,6 +512,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         }
       }
       throw new Error('Could not lease an available agent seat after repeated concurrent allocation attempts.');
+      } catch (error) {
+        if (retention.evicted && retention.evicted.length && error && typeof error === 'object') {
+          error.evicted_sessions = retention.evicted;
+        }
+        throw error;
+      }
     });
   }
 
