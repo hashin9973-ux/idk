@@ -591,7 +591,15 @@ async function discoverToolchains(languages, options = {}) {
   if (!options.noCache && cached && Date.now() - cached.checkedAt < TOOLCHAIN_TTL_MS) return cached.tools.map(tool => ({ ...tool }));
   const visualStudioPaths = names.some(name => ['msbuild', 'cl'].includes(name)) ? await discoverVisualStudioExecutablePaths(options) : {};
   const probeOptions = { ...options, executablePaths: { ...(options.executablePaths || {}), ...visualStudioPaths } };
-  const tools = await Promise.all(names.map(name => discoverToolchain(name, probeOptions)));
+  const tools = new Array(names.length);
+  let nextTool = 0;
+  const probeWorkers = Array.from({ length: Math.min(8, names.length) }, async () => {
+    while (nextTool < names.length) {
+      const index = nextTool++;
+      tools[index] = await discoverToolchain(names[index], probeOptions);
+    }
+  });
+  await Promise.all(probeWorkers);
   if (names.includes('unity')) {
     const editorPath = discoverUnityEditorPath(options);
     const index = tools.findIndex(tool => tool.name === 'unity');
@@ -750,7 +758,7 @@ async function discoverWorkspaceProjects(workspaceRoot, options = {}) {
       flutter: project.metadata.flutter === true
     },
     children: project.children.slice(0, 50), missingPrerequisites: project.missingPrerequisites.slice(0, 30),
-    toolchains: project.toolchains.slice(0, 40), commandPlans: project.commandPlans.slice(0, 30),
+    toolchains: project.toolchains.map(tool => tool.name).slice(0, 40), commandPlans: project.commandPlans.slice(0, 15),
     supportLevel: project.supportLevel
   }));
   const profile = {
