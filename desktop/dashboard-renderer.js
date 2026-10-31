@@ -774,14 +774,23 @@ $('agent-delete-confirm').addEventListener('click',async()=>{
   const wipeMailbox=$('agent-delete-wipe-mailbox').checked===true;
   try{
     const result=await api.deleteAgentWidget(agentId,sessionId,wipeMailbox);
+    const cleanup=result&&result.mailbox_cleanup||{};
+    if(wipeMailbox&&cleanup.status!=='completed'){
+      // The session is already revoked and the widget is hidden. Keep the
+      // confirmation open so incomplete/failed mailbox cleanup can be retried.
+      pendingAgentDelete={agentId,sessionId};
+      const detail=cleanup.status==='failed'
+        ? String(cleanup.error||'Mailbox cleanup failed.')
+        : 'Preserved '+Number(cleanup.preserved_request_records||0)+' non-terminal or incomplete request records.';
+      $('agent-delete-error').textContent='Session revoked and widget removed. Mailbox cleanup is not complete. '+detail+' You can retry this wipe after outstanding operations settle.';
+      note('Session revoked and widget removed; mailbox cleanup needs a retry.','error');
+      button.disabled=false;
+      await refresh();
+      return;
+    }
     pendingAgentDelete=null;
     $('agent-delete-dialog').close();
-    const cleanup=result&&result.mailbox_cleanup||{};
-    if(wipeMailbox&&cleanup.status==='failed'){
-      note('Session revoked and widget removed; mailbox cleanup failed and remains retryable: '+String(cleanup.error||cleanup.status||'unknown error'),'error');
-    }else if(wipeMailbox&&cleanup.status==='completed_with_preserved_records'){
-      note('Session revoked and widget removed. Cleaned '+Number(cleanup.deleted_files||0)+' mailbox files; preserved '+Number(cleanup.preserved_request_records||0)+' non-terminal or incomplete requests. '+String(cleanup.preservation_note||''),'error');
-    }else if(wipeMailbox){
+    if(wipeMailbox){
       note('Session revoked, widget removed, and '+Number(cleanup.deleted_files||0)+' attributable mailbox files cleaned.','success');
     }else if(sessionId){
       note('Session revoked and widget removed. The agent ID remains available for reassignment.','success');
@@ -793,7 +802,7 @@ $('agent-delete-confirm').addEventListener('click',async()=>{
     $('agent-delete-error').textContent='Deletion failed: '+String(error&&error.message||error);
     button.disabled=false;
   }finally{
-    button.textContent='Delete and revoke';
+    button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke';
   }
 });
 $('agent-autodump-cancel').addEventListener('click',()=>$('agent-autodump-dialog').close());
