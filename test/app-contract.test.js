@@ -933,3 +933,20 @@ test('session lifecycle, bounded retention, shared task coordination and game me
   assert.match(tools,/task_review/);
   assert.match(tools,/game_project_intelligence/);
 });
+
+
+test('worktree integration schema and task dashboard polling remain bounded', () => {
+  const tools=read('desktop','tool-bridge.js');
+  const renderer=read('desktop','dashboard-renderer.js');
+  const tasks=read('desktop','task-orchestrator.js');
+  assert.match(tools,/operation: \{ type: 'string',[^}]*'integrate'/);
+  assert.match(tools,/targetBranch/);
+  assert.match(tools,/session_start: 'Create a cryptographically random stable session_id[^']*context_message/);
+  assert.match(renderer,/app:task-dashboard/);
+  const start=renderer.indexOf('async function refresh(){');
+  const end=renderer.indexOf('\nfunction ',start+15);
+  assert.ok(start>=0&&end>start);
+  assert.doesNotMatch(renderer.slice(start,end),/loadTaskDashboard/);
+  assert.match(tasks,/listProjects\(null, \{ limit: 10 \}\)/);
+  assert.match(tasks,/limit: 10/);
+});

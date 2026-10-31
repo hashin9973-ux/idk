@@ -570,3 +570,30 @@ test('session auto-expire never evicts a paused session even when it is the only
   assert.ok(records.has('bridge/sessions/' + session.session_id + '.json'));
   assert.equal(records.get('bridge/agents/agent-001.json').value.current_session_id, session.session_id);
 });
+
+
+test('session auto-expire evicts enough oldest records when a legacy mailbox is already over the hard cap', async () => {
+  const { registry, records } = mockMailbox(Date.now(), { maxSessions: 2, autoExpire: true });
+  const created = ['a','b','c'].map((value,index) => ({
+    session_id: 'session-' + value.repeat(32),
+    protocol: SESSION_RECORD_PROTOCOL,
+    agent_id: 'agent-' + String(index+1).padStart(3,'0'),
+    label: 'Legacy expired ' + index,
+    status: 'expired',
+    created_at: new Date(1000+index).toISOString(),
+    updated_at: new Date(1000+index).toISOString(),
+    last_activity_at: new Date(1000+index).toISOString(),
+    active_request_ids: []
+  }));
+  for (let index=0;index<created.length;index++) {
+    records.set('bridge/sessions/'+created[index].session_id+'.json',{
+      value:structuredClone(created[index]),sha:'legacy-sha-'+index
+    });
+  }
+  const newSession=await registry.startSession({label:'Within-cap replacement'});
+  assert.ok(records.has('bridge/sessions/'+created[2].session_id+'.json'));
+  assert.equal(records.has('bridge/sessions/'+created[0].session_id+'.json'),false);
+  assert.equal(records.has('bridge/sessions/'+created[1].session_id+'.json'),false);
+  assert.ok(records.has('bridge/sessions/'+newSession.session_id+'.json'));
+  assert.equal([...records.keys()].filter(path=>path.startsWith('bridge/sessions/')).length,2);
+});
