@@ -368,7 +368,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(bridge, /SESSION_ID_REQUIRED/);
   const agentRegistry = read('desktop', 'agent-registry.js');
   assert.match(agentRegistry, /AGENT_RECORD_PROTOCOL/);
-  assert.match(agentRegistry, /SESSION_INACTIVE_AFTER_MS/);
+  assert.match(agentRegistry, /AGENT_ACTIVITY_RECENCY_WINDOW_MS/);
   assert.match(agentRegistry, /SESSION_RECORD_PROTOCOL/);
   const toolBridge = read('desktop', 'tool-bridge.js');
   assert.ok(toolBridge.includes("session_start: ['label', 'workspace_suggestion']"));
