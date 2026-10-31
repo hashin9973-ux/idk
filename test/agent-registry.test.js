@@ -388,7 +388,9 @@ test('optional mailbox wipe removes only fully attributable records and preserve
 
   await registry.revokeSession(target.session_id);
   const cleanup = await registry.wipeMailbox(target.session_id);
-  assert.equal(cleanup.status, 'completed');
+  assert.equal(cleanup.status, 'completed_with_preserved_records');
+  assert.equal(cleanup.deleted_request_records, 1);
+  assert.equal(cleanup.preserved_request_records, 1);
   assert.equal(records.has('bridge/requests/' + requestId + '.json'), false);
   assert.equal(records.has('bridge/claims/' + requestId + '.json'), false);
   assert.equal(records.has('bridge/results/' + requestId + '.json'), false);
