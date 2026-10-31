@@ -463,7 +463,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const rows = await Promise.all(group.map(async name => {
         const requestId = name.slice(0, -5);
         const requestRemote = await readRemoteFile('bridge/requests/' + name);
-        if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
+        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== 'chatgpt-local-repo-request/v1' ||
+            requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
         ownedRequestRecords++;
         const [claim, result] = await Promise.all([
           readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
