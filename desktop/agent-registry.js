@@ -486,13 +486,20 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       addFile('bridge/claims/' + name, record.claim.sha);
       addFile('bridge/results/' + name, record.result.sha);
       const manifest = Array.isArray(record.result.value.artifacts) ? record.result.value.artifacts : [];
+      const requestArtifactPrefix = 'bridge/artifacts/' + record.requestId + '/';
+      const legacyBatchArtifactPrefix = 'bridge/artifacts/' + record.requestId + '-batch-output-';
       const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
-        typeof value === 'string' && (value.startsWith('bridge/artifacts/' + record.requestId + '/') ||
-          value.startsWith('bridge/artifacts/' + record.requestId + '-batch-output-'))));
+        typeof value === 'string' && (value.startsWith(requestArtifactPrefix) ||
+          value.startsWith(legacyBatchArtifactPrefix)));
       const nested = await listFolder('bridge/artifacts/' + record.requestId);
       for (const item of [...flatArtifacts, ...nested]) {
         const itemPath = String(item && (item.path || item.name) || '');
-        if (ownedPaths.has(itemPath) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
+        // A revoked request's result journal is intentionally replaced with a
+        // compact cancellation record, so its original artifact manifest may
+        // no longer exist. The request-ID-scoped folder/legacy prefix remain
+        // authoritative ownership boundaries for orphaned request artifacts.
+        const requestScoped = itemPath.startsWith(requestArtifactPrefix) || itemPath.startsWith(legacyBatchArtifactPrefix);
+        if ((ownedPaths.has(itemPath) || requestScoped) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
       }
       deletedRequests++;
     }
