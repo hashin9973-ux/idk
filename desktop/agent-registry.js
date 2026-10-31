@@ -302,6 +302,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       .map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
 
+    try {
     while (names.length >= maxSessions) {
       if (typeof deleteRemoteFiles !== 'function') {
         throw new Error('SESSION_LIMIT_REACHED: SHA-checked session eviction is unavailable; no session was removed.');
@@ -365,16 +366,26 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
                   if (!confirmed) throw error;
                 }
               }
-              const deletion = await deleteRemoteFiles([{
-                path: sessionPath(candidate.sessionId), sha: latest.sha
-              }]);
+              let deletion;
+              try {
+                deletion = await deleteRemoteFiles([{
+                  path: sessionPath(candidate.sessionId), sha: latest.sha
+                }]);
+              } catch (error) {
+                // The GitHub commit may have landed even when its response was lost.
+                // Verify the source record before deciding whether eviction completed.
+                if (await readSession(candidate.sessionId)) throw error;
+                deletion = { deleted: 1, recovered_after_lost_response: true };
+              }
               if (deletion && deletion.conflict === true) return { kind: 'changed' };
               if (!deletion || deletion.ok === false) {
                 throw new Error('SHA-checked session deletion did not complete; the registered session remains valid.');
               }
 
+              let seatCleanupError = null;
               if (ownsSeat) {
-                await mutateJson(seatPath(candidate.session.agent_id),
+                try {
+                  await mutateJson(seatPath(candidate.session.agent_id),
                     value => validateSeatRecord(value, candidate.session.agent_id),
                     value => value.current_session_id !== candidate.sessionId ? value : ({
                       ...value,
@@ -384,7 +395,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
                       last_evicted_session_id: candidate.sessionId,
                       last_evicted_at: evictedAt
                     }));
+                } catch (error) {
+                  // The session record is already gone. A stale seat can be safely
+                  // reused because readSeatAndSession sees no current session.
+                  seatCleanupError = String(error && error.message || error);
                 }
+              }
               return {
                 kind: 'evicted',
                 session_id: candidate.sessionId,
@@ -392,7 +408,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
                 last_activity_at: latest.value.last_activity_at || latest.value.created_at || null,
                 previous_status: latest.value.status || 'unknown',
                 cancelled_request_ids: Array.isArray(latest.value.active_request_ids)
-                  ? latest.value.active_request_ids.slice(-100) : []
+                  ? latest.value.active_request_ids.slice(-100) : [],
+                ...(seatCleanupError ? { seat_cleanup_error: seatCleanupError } : {})
               };
             })
           );
@@ -427,6 +444,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       }
     }
     return { count: names.length, evicted: evictedSessions };
+    } catch (error) {
+      if (evictedSessions.length && error && typeof error === 'object') error.evicted_sessions = evictedSessions;
+      throw error;
+    }
   }
 
   async function removeUnassignedSession(sessionId) {
@@ -447,8 +468,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       ? null : String(args.agent_id);
     if (requestedAgentId && !AGENT_ID_PATTERN.test(requestedAgentId)) throw new Error('The selected agent ID is invalid.');
     return withLock('seat-allocation', async () => {
-      const retention = await enforceSessionLimit();
+      let retention = { count: 0, evicted: [] };
       try {
+      retention = await enforceSessionLimit();
       for (let attempt = 0; attempt < 64; attempt++) {
         const ids = await listSeatIds();
         const rows = await Promise.all(ids.map(readSeatAndSession));
@@ -511,9 +533,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       }
       throw new Error('Could not lease an available agent seat after repeated concurrent allocation attempts.');
       } catch (error) {
-        if (retention.evicted && retention.evicted.length && error && typeof error === 'object') {
-          error.evicted_sessions = retention.evicted;
-        }
+        const evicted = Array.isArray(error && error.evicted_sessions) && error.evicted_sessions.length
+          ? error.evicted_sessions : retention.evicted;
+        if (evicted && evicted.length && error && typeof error === 'object') error.evicted_sessions = evicted;
         throw error;
       }
     });
