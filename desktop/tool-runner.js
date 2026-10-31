@@ -307,7 +307,7 @@ function runPowerShell(root,args,signal=null){
   },timeoutMs);
  });
 }
-async function runTests(root,args={}){if(args.command!==undefined){if(typeof args.command!=='string'||!args.command.trim())throw new Error('command must be a non-empty PowerShell command when supplied.');return runPowerShell(root,{command:args.command,...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});}const p=path.join(root,'package.json');if(fs.existsSync(p)){try{const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.scripts&&typeof j.scripts.test==='string')return runPowerShell(root,{command:'npm test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});}catch{}}if(fs.existsSync(path.join(root,'pyproject.toml'))||fs.existsSync(path.join(root,'requirements.txt'))||fs.existsSync(path.join(root,'tests')))return runPowerShell(root,{command:'python -m pytest',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});if(fs.existsSync(path.join(root,'global.json'))||fs.readdirSync(root).some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))return runPowerShell(root,{command:'dotnet test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});throw new Error('No standard test command detected. Supply a project-native command with command if auto-detection does not apply.');}
+async function runTests(root,args={},signal=null){if(args.command!==undefined){if(typeof args.command!=='string'||!args.command.trim())throw new Error('command must be a non-empty PowerShell command when supplied.');return runPowerShell(root,{command:args.command,...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);}const p=path.join(root,'package.json');if(fs.existsSync(p)){try{const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.scripts&&typeof j.scripts.test==='string')return runPowerShell(root,{command:'npm test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);}catch{}}if(fs.existsSync(path.join(root,'pyproject.toml'))||fs.existsSync(path.join(root,'requirements.txt'))||fs.existsSync(path.join(root,'tests')))return runPowerShell(root,{command:'python -m pytest',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);if(fs.existsSync(path.join(root,'global.json'))||fs.readdirSync(root).some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))return runPowerShell(root,{command:'dotnet test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);throw new Error('No standard test command detected. Supply a project-native command with command if auto-detection does not apply.');}
 
 function assertGitRepo(root){if(!fs.existsSync(path.join(root,'.git')))throw new Error('workspace is not a Git repository.');}
 function boundedGit(root,args,limit=MAX_OUTPUT){assertGitRepo(root);const r=git(root,args);return{...r,stdout:r.stdout.slice(0,limit),stderr:r.stderr.slice(0,Math.min(limit,16000)),truncated:r.stdout.length>limit||r.stderr.length>Math.min(limit,16000)};}
@@ -351,7 +351,8 @@ function getCapabilities(root){return{workspaceRoot:root,protocol:'chatgpt-local
 {name:'create_directory',mode:'automatic-workspace-write'},{name:'move_path',mode:'automatic-workspace-write'},{name:'delete_path',mode:'automatic-workspace-write'},
 {name:'git_create_branch',mode:'approval'},{name:'git_switch_branch',mode:'approval'},{name:'git_commit',mode:'approval'},
 {name:'shell',mode:'approval'},{name:'run_tests',mode:'approval'},{name:'update_plan',mode:'local'}]};}
-async function executeTool(rootInput,tool,args={}){
+async function executeTool(rootInput,tool,args={},signal=null){
+ if(signal&&signal.aborted){const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));error.name='AbortError';error.code='ABORT_ERR';throw error;}
  if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('arguments must be a JSON object.');
  const root=path.resolve(rootInput);if(!fs.existsSync(root)||!fs.statSync(root).isDirectory())throw new Error('workspace directory is unavailable.');getToolPolicy(tool,args);
  switch(tool){
@@ -382,8 +383,8 @@ async function executeTool(rootInput,tool,args={}){
  case'create_directory':return createDirectory(root,args);
  case'move_path':return movePath(root,args);
  case'delete_path':return deletePath(root,args);
- case'shell':return runPowerShell(root,args);
- case'run_tests':return args.command?runPowerShell(root,{command:args.command,timeoutMs:args.timeoutMs}):runTests(root);
+ case'shell':return runPowerShell(root,args,signal);
+ case'run_tests':return args.command?runPowerShell(root,{command:args.command,timeoutMs:args.timeoutMs},signal):runTests(root,args,signal);
  case'update_plan':if(!Array.isArray(args.items)||args.items.length>30)throw new Error('items must contain at most 30 plan steps.');plan=args.items.map((p,i)=>typeof p==='string'?{id:i+1,step:p,status:'pending'}:{id:i+1,step:String(p.step||''),status:['pending','in_progress','completed'].includes(p.status)?p.status:'pending'});return{plan};
  default:throw new Error('unsupported tool.');
  }}
