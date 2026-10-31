@@ -246,7 +246,7 @@ test('an idle session remains authenticated and keeps its agent seat indefinitel
   assert.notEqual(replacement.session_id, first.session_id);
   assert.equal(records.get('bridge/agents/' + first.agent_id + '.json').value.current_session_id, first.session_id);
 });
-test('recent legacy seats are protected until their activity expires', async () => {
+test('recent legacy seats are protected until the recency window passes', async () => {
   const { registry, records, advance, now } = mockMailbox();
   const lastSeen = new Date(now()).toISOString();
   records.set('bridge/agents/agent-001.json', {
@@ -624,8 +624,11 @@ test('the cap removes enough oldest records to return below its hard limit', asy
   const third = await registry.startSession({ label: 'Trim over-cap inventory' });
   assert.equal([...records.keys()].filter(path => path.startsWith('bridge/sessions/')).length, 2);
   assert.ok(third.evicted_sessions.length >= 2);
-  assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id);
-  assert.equal((await registry.authenticate({ session_id: second.session_id })).session_id, second.session_id);
+  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), true);
+  assert.equal(records.has('bridge/evicted-sessions/' + second.session_id + '.json'), true);
+  assert.equal(records.has('bridge/sessions/' + 'session-' + String(1).padStart(32, 'a') + '.json'), false);
+  assert.equal(records.has('bridge/sessions/' + 'session-' + String(2).padStart(32, 'a') + '.json'), true);
+  assert.equal((await registry.authenticate({ session_id: third.session_id })).session_id, third.session_id);
 });
 test('dashboard unread message counts are read-only and use exact session receipts', async () => {
   const { registry, records } = mockMailbox();
