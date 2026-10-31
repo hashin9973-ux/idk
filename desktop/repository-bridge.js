@@ -2241,14 +2241,25 @@ function createRepositoryBridge(deps) {
       if (agentActivityStarted) {
         try {
           const updatedAgent = await agentRegistry.requestCompleted(request);
-          setAgentDirectoryEntry(request.agent_id, {
-            label: updatedAgent.label || request.agent_label || request.agent_id,
-            status: 'active', busy: Array.isArray(updatedAgent.active_request_ids) && updatedAgent.active_request_ids.length > 0,
-            session_id: request.session_id, last_activity_at: updatedAgent.last_activity_at || null,
-            last_seen_at: updatedAgent.last_activity_at || null,
-            last_request_id: updatedAgent.last_request_id || request.request_id,
-            active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(-50) : []
-          });
+          if (updatedAgent) {
+            setAgentDirectoryEntry(request.agent_id, {
+              label: updatedAgent.label || request.agent_label || request.agent_id,
+              status: 'active', busy: Array.isArray(updatedAgent.active_request_ids) && updatedAgent.active_request_ids.length > 0,
+              session_id: request.session_id, last_activity_at: updatedAgent.last_activity_at || null,
+              last_seen_at: updatedAgent.last_activity_at || null,
+              last_request_id: updatedAgent.last_request_id || request.request_id,
+              active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(-50) : []
+            });
+          } else {
+            // A revoked/reassigned session must not be restored by a late completion.
+            const latest = await agentRegistry.statuses(request.agent_id);
+            const current = (latest.agents || [])[0];
+            if (current) setAgentDirectoryEntry(request.agent_id, {
+              ...current, label: current.label || request.agent_label || request.agent_id,
+              session_id: current.session_id || null,
+              active_request_ids: Array.isArray(current.active_request_ids) ? current.active_request_ids.slice(-50) : []
+            });
+          }
         } catch (error) { lastError = 'Agent status update failed for ' + request.agent_id + ': ' + cleanError(error.message); }
       }
       updateMailboxUiRecord(requestId, {
@@ -2286,6 +2297,20 @@ function createRepositoryBridge(deps) {
 
   async function revokeAgentSession(sessionId, options = {}) {
     const revoked = await agentRegistry.revokeSession(sessionId);
+    try {
+      const latest = await agentRegistry.statuses(revoked.agent_id);
+      const current = (latest.agents || [])[0];
+      if (current) setAgentDirectoryEntry(revoked.agent_id, {
+        ...current, label: current.label || revoked.agent_id,
+        session_id: current.session_id || null,
+        active_request_ids: Array.isArray(current.active_request_ids) ? current.active_request_ids.slice(-50) : []
+      });
+    } catch {
+      const prior = agentDirectory.get(revoked.agent_id) || {};
+      setAgentDirectoryEntry(revoked.agent_id, {
+        ...prior, session_id: null, status: 'inactive', busy: false, active_request_ids: []
+      });
+    }
     const requestIds = new Set(revoked.cancelled_request_ids || []);
     for (const [requestId, ownerSessionId] of requestSessions) {
       if (ownerSessionId === sessionId) requestIds.add(requestId);
