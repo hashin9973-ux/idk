@@ -87,3 +87,56 @@ test('control controller rejects non-Windows execution instead of silently prete
   await assert.rejects(controller.run([{ type: 'press', key: 'ENTER' }]), /only on Windows/);
   await controller.dispose();
 });
+
+
+test('revoking an agent aborts its active desktop input process and releases a possibly held key', async () => {
+  const calls = [];
+  let signalListener = null;
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const controller = createWindowsInputController({
+    platform: 'win32',
+    getFrame: () => ({ width: 100, height: 100 }),
+    executePowerShell: async (script, timeoutMs, signal) => {
+      const match = script.match(/FromBase64String\('([A-Za-z0-9+/=]+)'\)/);
+      assert.ok(match);
+      const operations = JSON.parse(Buffer.from(match[1], 'base64').toString('utf8'));
+      calls.push({ operations, timeoutMs, signal });
+      if (calls.length === 1) {
+        markStarted();
+        await new Promise((resolve, reject) => {
+          signalListener = () => reject(Object.assign(new Error('SESSION_REVOKED: deleted'), { name: 'AbortError', code: 'ABORT_ERR' }));
+          signal.addEventListener('abort', signalListener, { once: true });
+          if (signal.aborted) signalListener();
+        });
+      }
+    }
+  });
+  const abort = new AbortController();
+  const running = controller.run([{ type: 'key_down', key: 'W' }], { width: 100, height: 100 }, abort.signal);
+  await started;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].signal, abort.signal);
+  abort.abort(new Error('SESSION_REVOKED: agent widget was deleted.'));
+  await assert.rejects(running, /SESSION_REVOKED/);
+  assert.equal(calls.length, 2, 'a best-effort unscoped release batch must run after cancellation');
+  assert.ok(calls[1].operations.some(op => op.type === 'key_event' && op.vk === 0x57 && op.up === true));
+  await controller.dispose();
+});
+
+test('an already-aborted desktop input request never starts a PowerShell process', async () => {
+  let calls = 0;
+  const controller = createWindowsInputController({
+    platform: 'win32',
+    getFrame: () => ({ width: 100, height: 100 }),
+    executePowerShell: async () => { calls++; }
+  });
+  const abort = new AbortController();
+  abort.abort(new Error('SESSION_REVOKED'));
+  await assert.rejects(
+    controller.run([{ type: 'click', x: 50, y: 50 }], { width: 100, height: 100 }, abort.signal),
+    /SESSION_REVOKED/
+  );
+  assert.equal(calls, 0);
+  await controller.dispose();
+});
