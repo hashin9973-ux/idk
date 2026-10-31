@@ -9,12 +9,14 @@ const {
   SESSION_INACTIVE_AFTER_MS
 } = require('../desktop/agent-registry');
 
-function mockMailbox(startTime = Date.now()) {
+function mockMailbox(startTime = Date.now(), options = {}) {
   const records = new Map();
   let nextSha = 1;
   let now = startTime;
   const registry = createAgentRegistry({
     clock: () => now,
+    isSessionAutoExpireEnabled: () => options.autoExpire === true,
+    maxSessions: Number.isInteger(options.maxSessions) ? options.maxSessions : 10000,
     async readRemoteFile(path) {
       const stored = records.get(path);
       return stored ? { value: structuredClone(stored.value), sha: stored.sha } : null;
@@ -496,4 +498,75 @@ test('agent-to-agent sends serialize against recipient revocation', async () => 
     [],
     'no agent-to-agent inbox message may be written after recipient revocation'
   );
+});
+
+
+test('session pause blocks authentication, retains its seat, and resumes without changing identity', async () => {
+  const { registry, records } = mockMailbox();
+  const session = await registry.startSession({ label: 'Pause lifecycle' });
+  assert.match(session.context_message, /agent-001/);
+  assert.match(session.context_message, new RegExp(session.session_id));
+  const paused = await registry.setSessionPaused(session.session_id, true);
+  assert.equal(paused.paused, true);
+  await assert.rejects(registry.authenticate({ session_id: session.session_id }), /SESSION_PAUSED/);
+  const seatWhilePaused = records.get('bridge/agents/agent-001.json').value;
+  assert.equal(seatWhilePaused.current_session_id, session.session_id);
+  assert.equal(seatWhilePaused.status, 'paused');
+  const statusWhilePaused = await registry.statuses();
+  assert.equal(statusWhilePaused.agents[0].status, 'paused');
+  const resumed = await registry.setSessionPaused(session.session_id, false);
+  assert.equal(resumed.paused, false);
+  assert.equal((await registry.authenticate({ session_id: session.session_id })).agent_id, 'agent-001');
+  assert.equal(records.get('bridge/sessions/' + session.session_id + '.json').value.status, 'active');
+});
+
+test('disconnect releases the reusable seat while preserving a permanently detached session record', async () => {
+  const { registry, records } = mockMailbox();
+  const session = await registry.startSession({ label: 'Disconnect lifecycle' });
+  const result = await registry.disconnectSession(session.session_id);
+  assert.equal(result.disconnected, true);
+  assert.equal(result.seat_released, true);
+  assert.equal(records.get('bridge/sessions/' + session.session_id + '.json').value.status, 'disconnected');
+  assert.equal(records.get('bridge/agents/agent-001.json').value.current_session_id, null);
+  await assert.rejects(registry.authenticate({ session_id: session.session_id }), /SESSION_DISCONNECTED/);
+  const replacement = await registry.startSession({ label: 'Replacement session' });
+  assert.equal(replacement.agent_id, 'agent-001');
+  assert.notEqual(replacement.session_id, session.session_id);
+  assert.ok(records.has('bridge/sessions/' + session.session_id + '.json'));
+});
+
+test('session cap refuses creation when auto-expire is disabled', async () => {
+  const { registry, records } = mockMailbox(Date.now(), { maxSessions: 2, autoExpire: false });
+  const first = await registry.startSession();
+  await registry.startSession();
+  await assert.rejects(registry.startSession(), /SESSION_LIMIT_REACHED/);
+  assert.ok(records.has('bridge/sessions/' + first.session_id + '.json'));
+  assert.equal([...records.keys()].filter(key => key.startsWith('bridge/sessions/')).length, 2);
+});
+
+test('session auto-expire selects the oldest eligible non-busy inactive session at the hard cap', async () => {
+  const start = Date.now();
+  const { registry, records, advance, now } = mockMailbox(start, { maxSessions: 2, autoExpire: true });
+  const oldest = await registry.startSession({ label: 'Oldest' });
+  const newer = await registry.startSession({ label: 'Newer' });
+  advance(9 * 60 * 1000);
+  await registry.requestStarted({ session_id: newer.session_id, agent_id: newer.agent_id, request_id: 'req-newer-activity' });
+  await registry.requestCompleted({ session_id: newer.session_id, agent_id: newer.agent_id, request_id: 'req-newer-activity' });
+  advance(2 * 60 * 1000);
+  const replacement = await registry.startSession({ label: 'Replacement' });
+  assert.equal(replacement.agent_id, oldest.agent_id);
+  assert.notEqual(replacement.session_id, oldest.session_id);
+  assert.equal(records.has('bridge/sessions/' + oldest.session_id + '.json'), false);
+  assert.equal(records.has('bridge/sessions/' + newer.session_id + '.json'), true);
+  assert.ok(Date.parse(records.get('bridge/sessions/' + newer.session_id + '.json').value.last_activity_at) > start);
+});
+
+test('session auto-expire never evicts a paused session even when it is the only record', async () => {
+  const { registry, records, advance } = mockMailbox(Date.now(), { maxSessions: 1, autoExpire: true });
+  const session = await registry.startSession({ label: 'Paused retention guard' });
+  await registry.setSessionPaused(session.session_id, true);
+  advance(60 * 60 * 1000);
+  await assert.rejects(registry.startSession(), /All 1 sessions are active, busy, paused/);
+  assert.ok(records.has('bridge/sessions/' + session.session_id + '.json'));
+  assert.equal(records.get('bridge/agents/agent-001.json').value.current_session_id, session.session_id);
 });
