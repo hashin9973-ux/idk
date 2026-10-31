@@ -225,7 +225,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       const dependency = await readTask(dependencyId);
       if (!dependency || dependency.value.project_id !== projectId) throw new Error('Every dependency must exist in the same project: ' + dependencyId);
     }
-    const scopes = Array.isArray(args.scope_paths) ? [...new Set(args.scope_paths.map(normalizeScopePath))] : [];
+    const scopes = Array.isArray(args.scope_paths) && args.scope_paths.length ? [...new Set(args.scope_paths.map(normalizeScopePath))] : ['.'];
     if (scopes.length > 100) throw new Error('scope_paths may contain at most 100 paths.');
     const priority = Number.isInteger(args.priority) ? Math.min(100, Math.max(0, args.priority)) : 50;
     const dedupeKey = boundedText(args.dedupe_key, 160, 'dedupe_key');
@@ -373,6 +373,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       const updated = await mutateTask(taskId, current => {
         if (current.project_id !== projectId) throw new Error('Task project changed; refusing claim.');
         if (TERMINAL_TASK_STATES.has(current.status)) throw new Error('A terminal task cannot be claimed.');
+        if (['review', 'integration', 'verification'].includes(current.status)) throw new Error('TASK_STAGE_LOCKED: This task is in ' + current.status + ' and must use its dedicated review, integration or verification gate.');
         if (current.assignee_session_id && current.assignee_session_id !== identity.session_id &&
             Date.parse(current.lease_expires_at || '') > timestamp) throw new Error('TASK_ALREADY_CLAIMED: The task lease is still active.');
         const worktreePath = args.worktree_path === undefined ? current.worktree_path : normalizeScopePath(args.worktree_path);
@@ -407,11 +408,12 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       throw new Error('This task status cannot renew an ownership lease.');
     }
     const leaseUntil = new Date(clock() + leaseMs).toISOString();
-    await mutateProject(task.value.project_id, project => ({
-      ...project,
-      leases: project.leases.map(item => item.task_id === taskId && item.session_id === identity.session_id
-        ? { ...item, expires_at: leaseUntil } : item)
-    }));
+    await mutateProject(task.value.project_id, project => {
+      const liveLease = project.leases.find(item => item.task_id === taskId && item.session_id === identity.session_id);
+      if (!liveLease || Date.parse(liveLease.expires_at || '') <= clock()) throw new Error('TASK_LEASE_LOST: The project-wide ownership lease expired or was reassigned. Re-read the task before continuing.');
+      return { ...project, leases: project.leases.map(item => item.task_id === taskId && item.session_id === identity.session_id
+        ? { ...item, expires_at: leaseUntil } : item) };
+    });
     const updated = await mutateTask(taskId, current => ({
       ...current, lease_expires_at: leaseUntil
     }));
@@ -428,13 +430,13 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const existing = await readTask(taskId);
     if (!existing || existing.value.assignee_session_id !== identity.session_id) throw new Error('Only the assigned session may update this task.');
     const reason = boundedText(args.reason, 2000, 'reason', nextStatus === 'blocked');
-    if (['failed', 'cancelled'].includes(nextStatus)) await releaseTaskLease(existing.value.project_id, taskId, identity.session_id);
+    if (['failed', 'cancelled', 'ready'].includes(nextStatus)) await releaseTaskLease(existing.value.project_id, taskId, identity.session_id);
     const timestamp = now();
     const updated = await mutateTask(taskId, current => ({
       ...current, status: nextStatus, blocked_reason: nextStatus === 'blocked' ? reason : null,
       history: [...current.history, { at: timestamp, by_session_id: identity.session_id, by_agent_id: identity.agent_id, action: 'status_changed', status: nextStatus, ...(reason ? { reason } : {}) }].slice(-100)
     }));
-    if (!['failed', 'cancelled'].includes(nextStatus)) await heartbeat(identity, { task_id: taskId });
+    if (!['failed', 'cancelled', 'ready'].includes(nextStatus)) await heartbeat(identity, { task_id: taskId });
     return taskSummary(updated);
   }
 
@@ -454,6 +456,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     if (!/^[a-f0-9]{7,40}$/i.test(commit)) throw new Error('commit_sha must be a Git commit hash.');
     const changed = Array.isArray(args.changed_paths) ? [...new Set(args.changed_paths.map(normalizeScopePath))] : [];
     if (changed.length > 200) throw new Error('changed_paths may contain at most 200 entries.');
+    if (!changed.length) throw new Error('changed_paths must include at least one workspace-relative changed path.');
     const outOfScope = changed.filter(path => !task.value.scope_paths.some(scope => pathsOverlap(scope, path)));
     if (task.value.scope_paths.length && outOfScope.length) throw new Error('SUBMISSION_OUT_OF_SCOPE: changed paths exceed the task ownership scope: ' + outOfScope.join(', '));
     const evidence = Array.isArray(args.evidence) ? args.evidence : [];
@@ -587,12 +590,6 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       created_at: now(), created_by_session_id: identity.session_id, created_by_agent_id: identity.agent_id };
     const updated = await mutateProject(projectId, project => ({ ...project, decisions: [...project.decisions, record].slice(-200) }));
     return { project_id: projectId, ...record, retained_decisions: updated.decisions.length };
-  }
-
-  async function releaseTaskLease(projectId, taskId, sessionId) {
-    await mutateProject(projectId, project => ({
-      ...project, leases: project.leases.filter(item => !(item.task_id === taskId && item.session_id === sessionId))
-    }));
   }
 
   async function cancelTask(identity, args = {}) {
