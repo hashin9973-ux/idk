@@ -2320,6 +2320,7 @@ function createRepositoryBridge(deps) {
     for (const [requestId, ownerSessionId] of requestSessions) {
       if (ownerSessionId === sessionId) requestIds.add(requestId);
     }
+    const requestsToDrain = [...requestIds].map(requestId => requestTasks.get(requestId)).filter(Boolean);
     const cancellation = [];
     for (const requestId of requestIds) {
       const controller = requestAbortControllers.get(requestId);
@@ -2331,15 +2332,32 @@ function createRepositoryBridge(deps) {
       catch {}
       cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
     }
+    let cancellationDrainTimedOut = false;
     let mailboxCleanup = { status: 'not_requested', deleted_records: 0, deleted_files: 0 };
     if (options && options.wipeMailbox === true) {
+      // Give aborted workers a bounded opportunity to publish their terminal
+      // cancelled claim/result before the session-scoped mailbox wipe runs.
+      // Never wait indefinitely on an uncooperative native process or network call.
+      if (requestsToDrain.length) {
+        let drainTimer = null;
+        const drained = await Promise.race([
+          Promise.allSettled(requestsToDrain).then(() => true),
+          new Promise(resolve => { drainTimer = setTimeout(() => resolve(false), 3000); })
+        ]);
+        if (drainTimer) clearTimeout(drainTimer);
+        cancellationDrainTimedOut = drained !== true;
+      }
       try { mailboxCleanup = await agentRegistry.wipeMailbox(sessionId); }
       catch (error) {
         mailboxCleanup = { status: 'failed', deleted_records: 0, deleted_files: 0, error: cleanError(error.message), retryable: true };
       }
+      if (cancellationDrainTimedOut) mailboxCleanup = {
+        ...mailboxCleanup, cancellation_drain_timed_out: true,
+        preservation_note: [mailboxCleanup.preservation_note, 'One or more cancelled worker requests did not settle within the 3-second cleanup drain window; retry mailbox cleanup after they finish.'].filter(Boolean).join(' ')
+      };
     }
     announce();
-    return { ...revoked, cancellation, mailbox_cleanup: mailboxCleanup };
+    return { ...revoked, cancellation, cancellation_drain_timed_out: cancellationDrainTimedOut, mailbox_cleanup: mailboxCleanup };
   }
 
   function dispatchPendingRequests() {
