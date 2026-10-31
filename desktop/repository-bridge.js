@@ -1825,25 +1825,30 @@ function createRepositoryBridge(deps) {
 
   async function publishResult(requestId, result) {
     const sessionId = result && result.session_id || requestSessions.get(requestId) || null;
-    if (sessionId && await agentRegistry.isRevoked(sessionId)) {
-      result = {
-        protocol: RESULT_PROTOCOL, request_id: requestId, session_id: sessionId,
-        ...(result && result.agent_id ? { agent_id: result.agent_id } : {}),
-        status: 'cancelled', completed_at: new Date().toISOString(),
-        error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
-      };
-    }
-    const resultPath = 'bridge/results/' + requestId + '.json';
-    const agentId = result && result.agent_id || requestAgents.get(requestId) || null;
-    const record = agentId && result && !result.agent_id ? { ...result, agent_id: agentId } : result;
-    // Result files are immutable. Try create-only directly rather than making a
-    // separate GET to check existence first.
-    const written = await writeRemoteJson(resultPath, record, null, true);
-    if (written.ok || written.conflict) {
-      if (knownResultFiles) knownResultFiles.add(requestId + '.json');
-      return { published: true, alreadyExists: written.conflict === true };
-    }
-    return { published: false, conflict: false };
+    const publish = async () => {
+      let finalResult = result;
+      if (sessionId && await agentRegistry.isRevoked(sessionId)) {
+        finalResult = {
+          protocol: RESULT_PROTOCOL, request_id: requestId, session_id: sessionId,
+          ...(result && result.agent_id ? { agent_id: result.agent_id } : {}),
+          status: 'cancelled', completed_at: new Date().toISOString(),
+          error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+        };
+      }
+      const resultPath = 'bridge/results/' + requestId + '.json';
+      const agentId = finalResult && finalResult.agent_id || requestAgents.get(requestId) || null;
+      const record = agentId && finalResult && !finalResult.agent_id ? { ...finalResult, agent_id: agentId } : finalResult;
+      // Result files are immutable. Hold the session publication lock across the
+      // tombstone check and create-only write so a concurrent delete cannot slip
+      // a live result into the mailbox after revocation commits.
+      const written = await writeRemoteJson(resultPath, record, null, true);
+      if (written.ok || written.conflict) {
+        if (knownResultFiles) knownResultFiles.add(requestId + '.json');
+        return { published: true, alreadyExists: written.conflict === true };
+      }
+      return { published: false, conflict: false };
+    };
+    return sessionId ? agentRegistry.withSessionLock(sessionId, publish) : publish();
   }
 
   async function processRequest(filename, signal = null) {
