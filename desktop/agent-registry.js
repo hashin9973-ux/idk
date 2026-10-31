@@ -279,19 +279,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     return { agent_id: agentId, remote, seat, sessionRemote, session: sessionRemote && sessionRemote.value || null };
   }
 
-  async function expireSession(sessionId, replacementSessionId) {
-    if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) return;
-    try {
-      const existing = await readSession(sessionId);
-      if (!existing || existing.value.status === 'expired' || existing.value.status === 'revoked') return;
-      await mutateSession(sessionId, current => ({
-        ...current, status: 'expired', ended_at: timestamp(),
-        ...(replacementSessionId ? { replaced_by_session_id: replacementSessionId } : {}),
-        active_request_ids: []
-      }));
-    } catch { /* Seat reassignment is authoritative even if marking history fails. */ }
-  }
-
   function sessionLastActivityTime(session) {
     const last = Date.parse(String(session && session.last_activity_at || ''));
     if (Number.isFinite(last)) return last;
@@ -609,7 +596,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       if (!remote) throw new Error('SESSION_ID_NOT_FOUND: The session record is missing.');
       const seat = await readSeat(agentId);
       if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL || seat.value.current_session_id !== sessionId) {
-        throw new Error('SESSION_EXPIRED: This agent seat has been reassigned; the session cannot be paused or resumed.');
+        throw new Error('AGENT_SEAT_UNAVAILABLE: This session ID remains registered, but its previous agent seat is no longer assigned to it.');
       }
       const current = remote.value;
       if (paused) {
