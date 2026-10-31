@@ -6,6 +6,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS, getExecutionFootprint, executionFootprintsConflict } = require('./tool-bridge');
 const { createAgentRegistry } = require('./agent-registry');
+const { createTaskOrchestrator } = require('./task-orchestrator');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
@@ -177,7 +178,8 @@ function createRepositoryBridge(deps) {
     cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS,
     requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
     requestSessionAssignment = async () => null,
-    onSessionAssigned = async () => {}
+    onSessionAssigned = async () => {},
+    isSessionAutoExpireEnabled = () => false
   } = deps;
 
   const workerId = randomUUID();
@@ -641,7 +643,8 @@ function createRepositoryBridge(deps) {
   }
 
   const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson,
-    deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict });
+    deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict, isSessionAutoExpireEnabled, maxSessions: 10000 });
+  const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
 
   async function publishState(force = false) {
     const now = Date.now();
@@ -2028,6 +2031,44 @@ function createRepositoryBridge(deps) {
         } };
       } else if (request.tool === 'agent_status') {
         report = { ok: true, result: await agentRegistry.statuses(request.args.agent_id || null) };
+      } else if (request.tool === 'task_project_init') {
+        report = { ok: true, result: await taskOrchestrator.initProject(request, request.args) };
+      } else if (request.tool === 'task_project_status') {
+        report = { ok: true, result: await taskOrchestrator.getProject(request.args.project_id) };
+      } else if (request.tool === 'task_project_list') {
+        report = { ok: true, result: await taskOrchestrator.listProjects(request, request.args) };
+      } else if (request.tool === 'task_create') {
+        report = { ok: true, result: await taskOrchestrator.createTask(request, request.args) };
+      } else if (request.tool === 'task_list') {
+        report = { ok: true, result: await taskOrchestrator.listTasks(request, request.args) };
+      } else if (request.tool === 'task_get') {
+        report = { ok: true, result: await taskOrchestrator.getTask(request, request.args) };
+      } else if (request.tool === 'task_claim') {
+        report = { ok: true, result: await taskOrchestrator.claimTask(request, request.args) };
+      } else if (request.tool === 'task_heartbeat') {
+        report = { ok: true, result: await taskOrchestrator.heartbeat(request, request.args) };
+      } else if (request.tool === 'task_update') {
+        report = { ok: true, result: await taskOrchestrator.updateTask(request, request.args) };
+      } else if (request.tool === 'task_submit') {
+        report = { ok: true, result: await taskOrchestrator.submitTask(request, request.args) };
+      } else if (request.tool === 'task_review') {
+        report = { ok: true, result: await taskOrchestrator.reviewTask(request, request.args) };
+      } else if (request.tool === 'task_integrate') {
+        report = { ok: true, result: await taskOrchestrator.integrateTask(request, request.args, async integration => {
+          const operation = await executeTool('git_worktree', integration, requestId + '-integrate', request.session_id, signal);
+          if (!operation || operation.ok !== true || !operation.result) throw new Error(String(operation && operation.error || 'Local Git worktree integration failed.'));
+          return operation.result;
+        }) };
+      } else if (request.tool === 'task_verify') {
+        report = { ok: true, result: await taskOrchestrator.verifyTask(request, request.args, async check => {
+          const operation = await executeTool('run_tests', { command: check.command, timeoutMs: check.timeoutMs }, requestId + '-verify-' + check.kind, request.session_id, signal);
+          if (!operation || operation.ok !== true || !operation.result) return operation && operation.result || { exitCode: 1, stderr: operation && operation.error || 'Verification command failed.' };
+          return operation.result;
+        }) };
+      } else if (request.tool === 'task_decision') {
+        report = { ok: true, result: await taskOrchestrator.addDecision(request, request.args) };
+      } else if (request.tool === 'task_cancel') {
+        report = { ok: true, result: await taskOrchestrator.cancelTask(request, request.args) };
       } else if (request.tool === 'send_agent_message') {
         report = { ok: true, result: await agentRegistry.sendMessage(request.session_id, request.args) };
       } else if (request.tool === 'read_agent_messages') {
@@ -2040,6 +2081,12 @@ function createRepositoryBridge(deps) {
         report = await executeTool(request.tool, request.args, requestId, request.session_id || null, signal);
         if (request.tool === 'get_agent_context' && report && report.ok && report.result && typeof report.result === 'object') {
           report.result.agent_status = await agentRegistry.statuses();
+          report.result.task_projects = await taskOrchestrator.listProjects(request);
+          report.result.task_coordination = {
+            lifecycle: ['proposed', 'ready', 'claimed', 'in_progress', 'blocked', 'review', 'integration', 'verification', 'verified', 'needs_rework', 'failed', 'cancelled'],
+            tools: ['task_project_init', 'task_project_list', 'task_project_status', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_heartbeat', 'task_update', 'task_submit', 'task_review', 'task_integrate', 'task_verify', 'task_decision', 'task_cancel'],
+            note: 'Create/share one project_id across sessions. Claiming tasks reserves path/module scopes project-wide. Submit commits and evidence, require a different session to review, integrate through an approved clean-worktree merge, and verify build, test, and runtime commands independently.'
+          };
           report.result.current_session = {
             session_id: request.session_id, agent_id: request.agent_id,
             label: request.agent_label || request.agent_id
@@ -2363,6 +2410,44 @@ function createRepositoryBridge(deps) {
     return { ...revoked, cancellation, cancellation_drain_timed_out: cancellationDrainTimedOut, mailbox_cleanup: mailboxCleanup };
   }
 
+  async function cancelSessionOperations(sessionId, reasonCode) {
+    const requestIds = new Set();
+    for (const [requestId, ownerSessionId] of requestSessions) if (ownerSessionId === sessionId) requestIds.add(requestId);
+    const tasksToDrain = [...requestIds].map(requestId => requestTasks.get(requestId)).filter(Boolean);
+    const cancellation = [];
+    for (const requestId of requestIds) {
+      const controller = requestAbortControllers.get(requestId);
+      if (controller && !controller.signal.aborted) controller.abort(new Error(reasonCode + ': The owning agent session was paused or disconnected.'));
+      let schedulerCancelled = false;
+      try { schedulerCancelled = cancelTool(requestId, reasonCode + ': The owning agent session was paused or disconnected.') === true; } catch {}
+      cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
+    }
+    if (tasksToDrain.length) {
+      let timer = null;
+      const drained = await Promise.race([
+        Promise.allSettled(tasksToDrain).then(() => true),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), 3000); })
+      ]);
+      if (timer) clearTimeout(timer);
+      return { cancellation, drain_timed_out: drained !== true, pending_requests: tasksToDrain.length };
+    }
+    return { cancellation, drain_timed_out: false, pending_requests: 0 };
+  }
+
+  async function setAgentSessionPaused(sessionId, paused) {
+    const result = await agentRegistry.setSessionPaused(sessionId, paused);
+    if (paused) result.execution_cancellation = await cancelSessionOperations(sessionId, 'SESSION_PAUSED');
+    announce();
+    return result;
+  }
+
+  async function disconnectAgentSession(sessionId) {
+    const result = await agentRegistry.disconnectSession(sessionId);
+    result.execution_cancellation = await cancelSessionOperations(sessionId, 'SESSION_DISCONNECTED');
+    announce();
+    return result;
+  }
+
   function dispatchPendingRequests() {
     if (!running) return;
     while (running && requestTasks.size < MAX_CONCURRENT_REQUESTS && pendingRequestQueue.length) {
@@ -2662,6 +2747,8 @@ function createRepositoryBridge(deps) {
     publishWorkspaceFile, publishFilesystemIndex,
     getAgentSession: sessionId => agentRegistry.authenticate({ session_id: sessionId }),
     sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message }),
+    pauseAgentSession: (sessionId, paused) => setAgentSessionPaused(sessionId, paused),
+    disconnectAgentSession,
     readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args),
     revokeAgentSession
   };
