@@ -653,7 +653,7 @@ function showNextSessionAssignment() {
       if (win.isDestroyed()) { finishSessionAssignment(requestId, null); return; }
       showSpeechCaption({ id: 'assignment-' + requestId, mode: 'notification',
         text: 'A new ChatGPT conversation is requesting an agent seat. Choose its agent ID and workspace in the assignment window.',
-        agentLabel: 'Agent assignment', status: 'Waiting for agent assignment', showPlayButton: false });
+        agentLabel: 'Agent assignment', status: 'Waiting for agent assignment', showPlayButton: false, autoDismissMs: 6500 });
       dashboardSend('app:agent-assignment-requested', pending.payload);
       playAssignmentNotificationSound();
       pending.timer = setTimeout(() => {
@@ -2077,6 +2077,7 @@ function showSpeechCaption(request) {
     if (!captionWindow.isVisible()) mode === 'notification' ? captionWindow.show() : captionWindow.showInactive();
     updateCaptionWindowPayload();
   }
+  if (Number.isFinite(request.autoDismissMs)) scheduleCaptionClose(request.autoDismissMs);
   return payload.id;
 }
 
