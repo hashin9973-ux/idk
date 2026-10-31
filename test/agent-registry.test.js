@@ -37,6 +37,14 @@ function mockMailbox(startTime = Date.now()) {
       records.set(path, { value: structuredClone(value), sha });
       return { ok: true, sha };
     },
+    async deleteRemoteFiles(files) {
+      for (const item of files) {
+        const current = records.get(item.path);
+        if (!current || current.sha !== item.sha) throw new Error('sha conflict during test mailbox cleanup');
+      }
+      for (const item of files) records.delete(item.path);
+      return { deleted: files.length, commitSha: 'test-cleanup-commit' };
+    },
     isConflict(error) {
       return /conflict|sha does not match|not found/i.test(String(error && error.message || error));
     }
@@ -302,4 +310,92 @@ test('manual session allocation permits only the next sequential seat for a new 
     registry.startSession({ label: 'Skip an ID', agent_id: 'agent-004' }),
     /not an existing reusable seat or the next available seat/
   );
+});
+
+
+test('explicit revocation persists a tombstone, releases only the reusable seat, and rejects stale session activity', async () => {
+  const { registry, records } = mockMailbox();
+  const first = await registry.startSession({ label: 'Session to revoke' });
+  const activeRequest = { request_id: 'revoke-request-1', session_id: first.session_id, agent_id: first.agent_id };
+  await registry.requestStarted(activeRequest);
+
+  const revoked = await registry.revokeSession(first.session_id);
+  assert.equal(revoked.revoked, true);
+  assert.equal(revoked.agent_id, first.agent_id);
+  assert.deepEqual(revoked.cancelled_request_ids, [activeRequest.request_id]);
+  assert.equal(await registry.isRevoked(first.session_id), true);
+  assert.ok(records.has('bridge/revoked-sessions/' + first.session_id + '.json'));
+  assert.equal(records.get('bridge/sessions/' + first.session_id + '.json').value.status, 'revoked');
+  assert.equal(records.get('bridge/agents/' + first.agent_id + '.json').value.current_session_id, null);
+  await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_REVOKED/);
+  await assert.rejects(registry.requestStarted(activeRequest), /SESSION_REVOKED/);
+  await assert.rejects(registry.sendUserMessage(first.session_id, { message: 'stale session' }), /SESSION_REVOKED/);
+
+  const replacement = await registry.startSession({ label: 'Replacement session' });
+  assert.equal(replacement.agent_id, first.agent_id, 'the reusable seat is immediately available');
+  assert.notEqual(replacement.session_id, first.session_id, 'revoked conversation IDs are never reused');
+  assert.equal(await registry.isRevoked(first.session_id), true);
+  assert.equal(records.get('bridge/agents/' + first.agent_id + '.json').value.current_session_id, replacement.session_id);
+
+  await registry.requestCompleted(activeRequest);
+  assert.equal(records.get('bridge/sessions/' + first.session_id + '.json').value.status, 'revoked',
+    'a late completion must not reactivate a revoked session');
+});
+
+test('revocation and request admission serialize on the same seat lock', async () => {
+  const { registry } = mockMailbox();
+  const session = await registry.startSession({ label: 'Concurrent revocation' });
+  const request = { request_id: 'concurrent-request-1', session_id: session.session_id, agent_id: session.agent_id };
+  const outcomes = await Promise.allSettled([
+    registry.requestStarted(request),
+    registry.revokeSession(session.session_id)
+  ]);
+  const revoked = outcomes.find(item => item.status === 'fulfilled' && item.value && item.value.revoked);
+  assert.ok(revoked, 'the revocation operation must complete');
+  await assert.rejects(registry.authenticate({ session_id: session.session_id }), /SESSION_REVOKED/);
+  const activeIds = revoked.value.cancelled_request_ids;
+  assert.ok(activeIds.length === 0 || activeIds.includes(request.request_id));
+});
+
+test('optional mailbox wipe removes only fully attributable records and preserves shared or incomplete records', async () => {
+  const { registry, records } = mockMailbox();
+  const target = await registry.startSession({ label: 'Wipe target' });
+  const other = await registry.startSession({ label: 'Other agent' });
+  const requestId = 'wipe-target-request';
+  const request = { protocol: 'chatgpt-local-repo-request/v1', request_id: requestId, session_id: target.session_id, tool: 'read_file' };
+  const claim = { protocol: 'chatgpt-local-repo-claim/v1', request_id: requestId, session_id: target.session_id, status: 'completed' };
+  const result = { protocol: 'chatgpt-local-repo-result/v1', request_id: requestId, session_id: target.session_id, status: 'completed', artifacts: [] };
+  const incompleteId = 'wipe-incomplete-request';
+  records.set('bridge/requests/' + requestId + '.json', { value: request, sha: 'req-sha' });
+  records.set('bridge/claims/' + requestId + '.json', { value: claim, sha: 'claim-sha' });
+  records.set('bridge/results/' + requestId + '.json', { value: result, sha: 'result-sha' });
+  records.set('bridge/requests/' + incompleteId + '.json', {
+    value: { ...request, request_id: incompleteId }, sha: 'incomplete-request-sha'
+  });
+  const targetMessage = {
+    protocol: 'chatgpt-local-agent-message/v1', message_id: 'msg-0000000000001-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    sender_session_id: null, recipient_session_id: target.session_id, sender_agent_id: 'user',
+    recipient_agent_id: target.agent_id, created_at: new Date().toISOString(), message: 'private'
+  };
+  const otherMessage = {
+    ...targetMessage, message_id: 'msg-0000000000002-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    recipient_session_id: other.session_id, recipient_agent_id: other.agent_id
+  };
+  records.set('bridge/agent-messages/' + target.session_id + '/' + targetMessage.message_id + '.json',
+    { value: targetMessage, sha: 'message-target-sha' });
+  records.set('bridge/agent-messages/' + other.session_id + '/' + otherMessage.message_id + '.json',
+    { value: otherMessage, sha: 'message-other-sha' });
+
+  await registry.revokeSession(target.session_id);
+  const cleanup = await registry.wipeMailbox(target.session_id);
+  assert.equal(cleanup.status, 'completed');
+  assert.equal(records.has('bridge/requests/' + requestId + '.json'), false);
+  assert.equal(records.has('bridge/claims/' + requestId + '.json'), false);
+  assert.equal(records.has('bridge/results/' + requestId + '.json'), false);
+  assert.equal(records.has('bridge/requests/' + incompleteId + '.json'), true, 'incomplete session requests are preserved');
+  assert.equal(records.has('bridge/agent-messages/' + target.session_id + '/' + targetMessage.message_id + '.json'), false);
+  assert.equal(records.has('bridge/agent-messages/' + other.session_id + '/' + otherMessage.message_id + '.json'), true,
+    'other sessions inbox records are preserved');
+  assert.equal(records.has('bridge/sessions/' + target.session_id + '.json'), true);
+  assert.equal(records.has('bridge/revoked-sessions/' + target.session_id + '.json'), true);
 });
