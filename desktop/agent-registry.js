@@ -32,7 +32,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now() }) {
+function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), isSessionAutoExpireEnabled = () => false, maxSessions = 10000 }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
@@ -226,7 +226,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     const last = activityTime(seat, session);
     if (seat.protocol !== AGENT_RECORD_PROTOCOL) return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
     if (!seat.current_session_id) return true;
-    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || session.status === 'expired' || session.status === 'revoked';
+    if (session && session.status === 'paused') return false;
+    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || ['expired', 'revoked', 'disconnected'].includes(session.status);
   }
 
   async function readSeatAndSession(agentId) {
@@ -253,12 +254,70 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     } catch { /* Seat reassignment is authoritative even if marking history fails. */ }
   }
 
+  async function enforceSessionLimit() {
+    const entries = await listFolder('bridge/sessions');
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)))];
+    if (names.length < maxSessions) return { count: names.length, evicted: null };
+    let enabled = false;
+    try { enabled = typeof isSessionAutoExpireEnabled === 'function' && isSessionAutoExpireEnabled() === true; } catch {}
+    if (!enabled) throw new Error('SESSION_LIMIT_REACHED: The mailbox already contains ' + maxSessions +
+      ' session IDs. Enable session auto-expire in dashboard Settings to remove the least-recently-active inactive session.');
+    if (typeof deleteRemoteFiles !== 'function') throw new Error('SESSION_LIMIT_REACHED: Safe SHA-checked session deletion is unavailable.');
+    const candidates = [];
+    for (let start = 0; start < names.length; start += 32) {
+      const rows = await Promise.all(names.slice(start, start + 32).map(async name => {
+        const sessionId = name.slice(0, -5);
+        try {
+          const remote = await readSession(sessionId);
+          if (!remote || remote.value.status === 'paused' || isBusy(null, remote.value)) return null;
+          const seatRemote = await readSeat(remote.value.agent_id);
+          const seat = seatRemote && seatRemote.value;
+          const ownsSeat = Boolean(seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id === sessionId);
+          const terminal = ['expired', 'revoked', 'disconnected'].includes(remote.value.status);
+          if (!terminal && (!ownsSeat || !isInactive(seat, remote.value))) return null;
+          return { sessionId, remote, session: remote.value, lastActivity: activityTime(seat, remote.value) };
+        } catch { return null; }
+      }));
+      candidates.push(...rows.filter(Boolean));
+    }
+    candidates.sort((a, b) => a.lastActivity - b.lastActivity);
+    for (const candidate of candidates) {
+      try {
+        const evicted = await withSessionLock(candidate.sessionId, () => withLock('seat:' + candidate.session.agent_id, async () => {
+          const latest = await readSession(candidate.sessionId);
+          if (!latest || latest.sha !== candidate.remote.sha || latest.value.status === 'paused' || isBusy(null, latest.value)) return false;
+          const seat = await readSeat(latest.value.agent_id);
+          const ownsSeat = Boolean(seat && seat.value.protocol === AGENT_RECORD_PROTOCOL && seat.value.current_session_id === candidate.sessionId);
+          if (ownsSeat && !isInactive(seat.value, latest.value)) return false;
+          if (ownsSeat) await mutateJson(seatPath(latest.value.agent_id),
+            value => validateSeatRecord(value, latest.value.agent_id),
+            value => ({ ...value, current_session_id: null, status: 'inactive', active_request_ids: [],
+              last_expired_session_id: candidate.sessionId, last_expired_at: timestamp() }));
+          const result = await deleteRemoteFiles([{ path: sessionPath(candidate.sessionId), sha: latest.sha }]);
+          if (!result || result.ok === false) throw new Error('SHA-checked session deletion did not complete.');
+          return true;
+        }));
+        if (evicted) return { count: names.length - 1, evicted: {
+          session_id: candidate.sessionId, agent_id: candidate.session.agent_id,
+          last_activity_at: candidate.session.last_activity_at || candidate.session.created_at || null
+        } };
+      } catch (error) {
+        if (/conflict|sha|409|changed/i.test(String(error && error.message || error))) continue;
+        throw error;
+      }
+    }
+    throw new Error('SESSION_LIMIT_REACHED: All ' + maxSessions +
+      ' sessions are active, busy, paused, or otherwise unsafe to expire. No session was removed.');
+  }
+
   async function startSession(args = {}) {
     const label = safeLabel(args.label, 'ChatGPT session');
     const requestedAgentId = args.agent_id === undefined || args.agent_id === null || args.agent_id === ''
       ? null : String(args.agent_id);
     if (requestedAgentId && !AGENT_ID_PATTERN.test(requestedAgentId)) throw new Error('The selected agent ID is invalid.');
     return withLock('seat-allocation', async () => {
+      const retention = await enforceSessionLimit();
       for (let attempt = 0; attempt < 64; attempt++) {
         const ids = await listSeatIds();
         const rows = await Promise.all(ids.map(readSeatAndSession));
@@ -303,7 +362,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             return {
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
               last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
-              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
+              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.',
+              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Your reusable seat may be reassigned after 10 minutes without bridge-tool activity. Pause temporarily blocks this session; disconnect releases its seat; delete permanently revokes it.'
             };
           });
           if (!allocated) {
@@ -334,6 +394,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     const remote = await readSession(sessionId);
     if (!remote) throw new Error('SESSION_EXPIRED: This session is missing. Call session_start to lease a new agent seat.');
     const session = remote.value;
+    if (session.status === 'paused') throw new Error('SESSION_PAUSED: This agent session is temporarily paused. Resume it from its dashboard widget before sending more bridge requests.');
+    if (session.status === 'disconnected') throw new Error('SESSION_DISCONNECTED: This session is disconnected from its agent seat. Call session_start to obtain a new session ID.');
     if (session.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation no longer owns its previous seat. Call session_start to lease a fresh seat.');
     const seatRemote = await readSeat(session.agent_id);
     if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
@@ -348,7 +410,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function requestStarted(request) {
     if (!request || !request.session_id || !request.agent_id) return false;
-    return withLock('seat:' + request.agent_id, async () => {
+    return withSessionLock(request.session_id, () => withLock('seat:' + request.agent_id, async () => {
       await assertNotRevoked(request.session_id);
       const seatRemote = await readSeat(request.agent_id);
       if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
@@ -356,15 +418,17 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         throw new Error('SESSION_EXPIRED: This conversation no longer owns its assigned seat. Call session_start.');
       }
       const sessionRemote = await readSession(request.session_id);
-      if (!sessionRemote || sessionRemote.value.status === 'expired') {
-        throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+      if (!sessionRemote || ['expired', 'disconnected'].includes(sessionRemote.value.status)) {
+        throw new Error('SESSION_EXPIRED: This conversation session has expired or disconnected. Call session_start.');
       }
+      if (sessionRemote.value.status === 'paused') throw new Error('SESSION_PAUSED: This session was paused before the request could execute.');
       if (!isBusy(seatRemote.value, sessionRemote.value) && isInactive(seatRemote.value, sessionRemote.value)) {
         throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window before execution. Call session_start.');
       }
       const now = timestamp();
       await mutateSession(request.session_id, current => {
-        if (current.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+        if (['expired', 'disconnected'].includes(current.status)) throw new Error('SESSION_EXPIRED: This conversation session has expired or disconnected. Call session_start.');
+        if (current.status === 'paused') throw new Error('SESSION_PAUSED: This session was paused before the request could execute.');
         const active = Array.isArray(current.active_request_ids) ? current.active_request_ids : [];
         const recent = Array.isArray(current.recent_request_ids) ? current.recent_request_ids : [];
         return {
@@ -384,13 +448,13 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         };
       });
       return true;
-    });
+    }));
   }
 
   async function requestCompleted(request) {
     if (!request || !request.session_id || !request.agent_id) return;
     if (await isRevoked(request.session_id)) return null;
-    return withLock('seat:' + request.agent_id, async () => {
+    return withSessionLock(request.session_id, () => withLock('seat:' + request.agent_id, async () => {
       if (await isRevoked(request.session_id)) return null;
       const seat = await readSeat(request.agent_id);
       if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
@@ -398,17 +462,73 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const now = timestamp();
       try {
         await mutateSession(request.session_id, current => ({
-          ...current, status: 'active', last_activity_at: now, last_completed_at: now,
+          ...current, status: current.status === 'paused' ? 'paused' : 'active', last_activity_at: now, last_completed_at: now,
           active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
         }));
       } catch (error) {
         if (!/SESSION_EXPIRED/i.test(String(error && error.message || error))) throw error;
       }
       return mutateJson(seatPath(request.agent_id), value => validateSeatRecord(value, request.agent_id), current => ({
-        ...current, status: 'active', last_activity_at: now, last_completed_at: now,
+        ...current, status: current.status === 'paused' ? 'paused' : 'active', last_activity_at: now, last_completed_at: now,
         active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
       }));
-    });
+    }));
+  }
+
+  async function setSessionPaused(sessionId, paused) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId) || typeof paused !== 'boolean') throw new Error('A valid session_id and pause boolean are required.');
+    const initial = await readSession(sessionId);
+    if (!initial) throw new Error('The selected session was not found.');
+    const agentId = initial.value.agent_id;
+    return withSessionLock(sessionId, () => withLock('seat:' + agentId, async () => {
+      await assertNotRevoked(sessionId);
+      const remote = await readSession(sessionId);
+      if (!remote) throw new Error('SESSION_EXPIRED: The session record is missing.');
+      const seat = await readSeat(agentId);
+      if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL || seat.value.current_session_id !== sessionId) {
+        throw new Error('SESSION_EXPIRED: This agent seat has been reassigned; the session cannot be paused or resumed.');
+      }
+      const current = remote.value;
+      if (paused) {
+        if (current.status === 'paused') return { paused: true, session_id: sessionId, agent_id: agentId, already_in_state: true };
+        if (current.status !== 'active') throw new Error('Only an active session can be paused. Current status: ' + current.status);
+        const at = timestamp();
+        await mutateSession(sessionId, value => ({ ...value, status: 'paused', paused_at: at }));
+        await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({ ...value, status: 'paused', paused_session_id: sessionId, paused_at: at }));
+        return { paused: true, session_id: sessionId, agent_id: agentId, paused_at: at };
+      }
+      if (current.status !== 'paused') {
+        if (current.status === 'active') return { paused: false, session_id: sessionId, agent_id: agentId, already_in_state: true };
+        throw new Error('Only a paused session can be resumed. Current status: ' + current.status);
+      }
+      const at = timestamp();
+      await mutateSession(sessionId, value => ({ ...value, status: 'active', last_activity_at: at, resumed_at: at }));
+      await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({
+        ...value, status: 'active', last_activity_at: at, resumed_at: at, paused_session_id: null, paused_at: null
+      }));
+      return { paused: false, session_id: sessionId, agent_id: agentId, resumed_at: at };
+    }));
+  }
+
+  async function disconnectSession(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required.');
+    const initial = await readSession(sessionId);
+    if (!initial) throw new Error('The selected session was not found.');
+    const agentId = initial.value.agent_id;
+    return withSessionLock(sessionId, () => withLock('seat:' + agentId, async () => {
+      const remote = await readSession(sessionId);
+      if (!remote) throw new Error('The session record is missing.');
+      if (remote.value.status === 'revoked') throw new Error('SESSION_REVOKED: This session was permanently revoked and cannot be disconnected or restored.');
+      if (remote.value.status === 'disconnected') return { disconnected: true, session_id: sessionId, agent_id: agentId, already_disconnected: true };
+      const seat = await readSeat(agentId);
+      const ownsSeat = Boolean(seat && seat.value.protocol === AGENT_RECORD_PROTOCOL && seat.value.current_session_id === sessionId);
+      const at = timestamp();
+      await mutateSession(sessionId, value => ({ ...value, status: 'disconnected', disconnected_at: at, ended_at: at, active_request_ids: [] }));
+      if (ownsSeat) await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({
+        ...value, current_session_id: null, status: 'inactive', active_request_ids: [], disconnected_session_id: sessionId, disconnected_at: at
+      }));
+      return { disconnected: true, session_id: sessionId, agent_id: agentId, seat_released: ownsSeat, disconnected_at: at };
+    }));
   }
 
   async function revokeSession(sessionId) {
@@ -597,12 +717,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const session = row.session;
       const lastActivity = activityTime(seat, session);
       const busy = isBusy(seat, session);
-      const active = Boolean(session && session.status !== 'expired' && session.status !== 'revoked' && lastActivity &&
-        clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
+      const active = Boolean(session && session.status === 'active' && lastActivity && clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
+      const paused = Boolean(session && session.status === 'paused');
       return {
         agent_id: agentId, label: seat.label || (session && session.label) || agentId,
-        status: active ? 'active' : 'inactive', busy,
-        session_id: seat.current_session_id || null, session_status: session && session.status || 'missing',
+        status: paused ? 'paused' : active ? 'active' : 'inactive', busy,
+        session_id: seat.current_session_id || null, session_status: session && session.status || 'missing', paused,
         last_revoked_session_id: seat.last_revoked_session_id || null,
         last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
         last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
@@ -627,6 +747,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       inactivity_after_ms: SESSION_INACTIVE_AFTER_MS,
       status_legend: {
         active: 'This seat has received bridge-tool activity within the inactivity window.',
+        paused: 'This session is temporarily invalidated, keeps its seat, and can be resumed from its dashboard widget.',
         inactive: 'No bridge-tool activity has arrived within the inactivity window. A non-busy seat may be leased to another conversation.',
         busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned even when activity becomes old.',
         session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
@@ -638,7 +759,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   async function currentSession(sessionId) {
     await assertNotRevoked(sessionId);
     const remote = await readSession(sessionId);
-    if (!remote || remote.value.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session is no longer valid.');
+    if (!remote || ['expired', 'disconnected'].includes(remote.value.status)) throw new Error('SESSION_EXPIRED: This conversation session is no longer valid.');
+    if (remote.value.status === 'paused') throw new Error('SESSION_PAUSED: This session is temporarily paused.');
     const session = remote.value;
     const seat = await readSeat(session.agent_id);
     if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
@@ -930,7 +1052,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   return {
-    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked, withSessionLock, withSessionLocks,
+    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked,
+    setSessionPaused, disconnectSession, enforceSessionLimit, withSessionLock, withSessionLocks,
     sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
