@@ -731,7 +731,7 @@ test('a delete response lost after the remote commit is reconciled as a complete
   await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_EVICTED/);
   assert.equal((await registry.authenticate({ session_id: next.session_id })).session_id, next.session_id);
 });
-\ntest('the cap removes enough oldest records to return below its hard limit', async () => {
+test('the cap removes enough oldest records to return below its hard limit', async () => {
   const { registry, records, advance, now } = mockMailbox(Date.now(), { maxSessions: 2 });
   const first = await registry.startSession({ label: 'First' });
   advance(1000);
