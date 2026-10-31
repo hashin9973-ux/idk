@@ -1764,3 +1764,68 @@ test('oversized non-batch results are compacted into a bounded partial result', 
     await bridge.stop();
   }
 });
+
+
+test('revoking an in-flight agent session aborts its local tool and publishes a cancelled result', async () => {
+  const requestId = 'req-revoke-inflight';
+  const request = {
+    protocol: PROTOCOL, request_id: requestId, session_id: DEFAULT_TEST_SESSION_ID,
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + requestId + '.json', request]] });
+  const fixture = settingsFixture();
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  let capturedSignal = null;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id, sessionId, signal) => {
+      assert.equal(tool, 'project_status');
+      assert.equal(sessionId, DEFAULT_TEST_SESSION_ID);
+      capturedSignal = signal;
+      markStarted();
+      await new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason || new Error('cancelled'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return { ok: true, result: { shouldNotPublish: true } };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    await Promise.race([
+      started,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution did not start.')), 2000))
+    ]);
+    assert.ok(capturedSignal && !capturedSignal.aborted);
+
+    const revoked = await bridge.revokeAgentSession(DEFAULT_TEST_SESSION_ID);
+    assert.equal(revoked.revoked, true);
+    assert.equal(revoked.agent_id, 'agent-001');
+    assert.equal(revoked.cancellation.length, 1);
+    assert.equal(revoked.cancellation[0].abort_signalled, true);
+    assert.equal(capturedSignal.aborted, true);
+
+    await waitFor(() => fake.files.has('bridge/results/' + requestId + '.json'));
+    const result = decode(fake.files.get('bridge/results/' + requestId + '.json'));
+    assert.equal(result.status, 'cancelled');
+    assert.match(result.error || result.result && result.result.error || '', /SESSION_REVOKED/);
+    assert.equal(result.session_id, DEFAULT_TEST_SESSION_ID);
+    const claim = decode(fake.files.get('bridge/claims/' + requestId + '.json'));
+    assert.equal(claim.status, 'completed');
+    assert.equal(claim.result.status, 'cancelled');
+
+    const session = decode(fake.files.get('bridge/sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
+    const seat = decode(fake.files.get('bridge/agents/agent-001.json'));
+    assert.equal(session.status, 'revoked');
+    assert.equal(seat.current_session_id, null);
+    const visibleAgent = bridge.getState().agentMailboxes.find(item => item.agent_id === 'agent-001');
+    assert.equal(visibleAgent.session_id, null, 'late completion must not restore the revoked session in the dashboard');
+  } finally {
+    await bridge.stop();
+  }
+});
