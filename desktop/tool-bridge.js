@@ -1339,7 +1339,7 @@ function createToolBridge(deps) {
             throwIfAborted(executionSignal);
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
             const output = isComputerTool
-              ? await computerServiceCall(visionService, args, id)
+              ? await computerServiceCall(visionService, args, id, executionSignal)
               : isTtsTool
                 ? await synthesizeConfiguredSpeech(args, id, sessionId)
                 : await executeLocalTool(root, tool, args, id, executionSignal);
@@ -1362,7 +1362,7 @@ function createToolBridge(deps) {
         } else {
           throwIfAborted(executionSignal);
           const output = isComputerTool
-            ? await computerServiceCall(visionService, args, id)
+            ? await computerServiceCall(visionService, args, id, executionSignal)
             : isTtsTool
               ? await synthesizeConfiguredSpeech(args, id, sessionId)
               : await executeLocalTool(root, tool, args, id, executionSignal);
