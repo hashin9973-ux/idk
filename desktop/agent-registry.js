@@ -33,7 +33,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
+function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
