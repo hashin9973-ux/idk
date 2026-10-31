@@ -227,11 +227,12 @@ function createWindowsInputController(options = {}) {
   const held = new Map();
   let disposed = false;
 
-  async function runLowLevel(operations, timeoutMs = 8000) {
+  async function runLowLevel(operations, timeoutMs = 8000, signal = null) {
+    if (signal && signal.aborted) throw Object.assign(new Error(String(signal.reason && signal.reason.message || signal.reason || 'Operation cancelled.')), { name: 'AbortError', code: 'ABORT_ERR' });
     if (disposed) throw new Error('Computer input is shutting down.');
     if (platform !== 'win32') throw new Error('Mouse and keyboard input is available only on Windows.');
     const payload = Buffer.from(JSON.stringify(operations), 'utf8').toString('base64');
-    await executePowerShell(POWERSHELL_RUNNER.replace('__PAYLOAD__', payload), timeoutMs);
+    await executePowerShell(POWERSHELL_RUNNER.replace('__PAYLOAD__', payload), timeoutMs, signal);
   }
 
   function cancelHeld(kind, id) {
@@ -270,13 +271,14 @@ function createWindowsInputController(options = {}) {
     return { released: operations.length };
   }
 
-  async function run(steps, frameOverride) {
+  async function run(steps, frameOverride, signal = null) {
+    if (signal && signal.aborted) throw Object.assign(new Error(String(signal.reason && signal.reason.message || signal.reason || 'Operation cancelled.')), { name: 'AbortError', code: 'ABORT_ERR' });
     const { operations, heldUpdates, requestedActions, frame } = toLowLevel(steps, frameOverride || getFrame());
     const startedAt = Date.now();
     try {
       const requestedWait = operations.reduce((total, op) => total + (op.type === 'wait' ? op.ms : 0), 0);
       if (requestedWait > 20000) throw new Error('Total wait time in one input sequence cannot exceed 20,000 ms. Split it into shorter observe-act batches.');
-      await runLowLevel(operations, Math.max(8000, requestedWait + 5000));
+      await runLowLevel(operations, Math.max(8000, requestedWait + 5000), signal);
       for (const update of heldUpdates) scheduleHeld(update);
       return {
         status: 'input_completed', actions_executed: requestedActions,
@@ -302,13 +304,14 @@ function createWindowsInputController(options = {}) {
   return Object.freeze({ run, releaseAll, dispose, getFrame: () => ({ ...(getFrame() || {}) }) });
 }
 
-async function defaultExecutePowerShell(script, timeoutMs) {
+async function defaultExecutePowerShell(script, timeoutMs, signal = null) {
+  if (signal && signal.aborted) throw Object.assign(new Error(String(signal.reason && signal.reason.message || signal.reason || 'Operation cancelled.')), { name: 'AbortError', code: 'ABORT_ERR' });
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
   const powershell = systemRoot + '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
   await execFileAsync(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded
-  ], { windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024, encoding: 'utf8' });
+  ], { windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024, encoding: 'utf8', ...(signal ? { signal } : {}) });
 }
 
 module.exports = { createWindowsInputController, toLowLevel, normalizeKey, KEY_CODES, BUTTONS, HOLD_FAILSAFE_MS };
