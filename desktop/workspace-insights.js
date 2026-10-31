@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { discoverWorkspaceProjects } = require('./project-support');
 
 const ignoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build', 'target', 'bin', 'obj', '.bridge-worktrees']);
 
@@ -44,24 +45,14 @@ async function inspectWorkspace(workspacePath, options = {}) {
   const stat = fsApi.statSync(root);
   if (!stat.isDirectory()) throw new Error('The selected workspace is not a directory.');
 
-  const rootEntries = readDirectory(root, fsApi).slice(0, 500);
-  const rootProjectTypes = detectProjectTypes(rootEntries);
-  const nestedProjectCandidates = [];
-  if (!rootProjectTypes.length) {
-    for (const entry of rootEntries) {
-      if (!entry.isDirectory || ignoredDirectories.has(entry.name.toLowerCase()) ||
-          nestedProjectCandidates.length >= 20) continue;
-      const nestedRoot = path.join(root, entry.name);
-      try {
-        const types = detectProjectTypes(readDirectory(nestedRoot, fsApi).slice(0, 500));
-        if (types.length) nestedProjectCandidates.push({ path: nestedRoot, projectTypes: types });
-      } catch {}
-    }
-  }
-  const detectedProjectRoot = rootProjectTypes.length ? root
-    : nestedProjectCandidates.length === 1 ? nestedProjectCandidates[0].path : null;
-  const projectTypes = rootProjectTypes.length ? rootProjectTypes
-    : [...new Set(nestedProjectCandidates.flatMap(item => item.projectTypes))];
+  const projectSupport = await discoverWorkspaceProjects(root, {
+    fsApi,
+    toolExecFileAsync: options.toolExecFileAsync,
+    skipToolchainDiscovery: options.skipToolchainDiscovery === true,
+    maxDepth: 5,
+    maxEntries: 4000,
+    maxProjects: 200
+  });
 
   let git = { repository: false, root: null, branch: null, dirty: null };
   try {
@@ -86,10 +77,15 @@ async function inspectWorkspace(workspacePath, options = {}) {
 
   return {
     workspaceRoot: root,
-    rootProjectTypes,
-    projectTypes,
-    detectedProjectRoot,
-    nestedProjectCandidates: nestedProjectCandidates.slice(0, 20),
+    rootProjectTypes: projectSupport.rootProjectTypes,
+    projectTypes: projectSupport.projectTypes,
+    detectedProjectRoot: projectSupport.detectedProjectRoot,
+    nestedProjectCandidates: projectSupport.nestedProjectCandidates.slice(0, 20).map(item => ({
+      path: path.join(root, ...item.root.split('/')),
+      root: item.root,
+      projectTypes: item.projectTypes
+    })),
+    projectSupport,
     git
   };
 }
