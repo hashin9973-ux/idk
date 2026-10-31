@@ -2395,6 +2395,7 @@ function createRepositoryBridge(deps) {
             listFolder('bridge/requests'),
             listFolder('bridge/results')
           ]);
+          if (!running || pollPromise !== task) return;
           files = requestFiles;
           requestScanSucceeded = true;
           knownResultFiles = new Set(resultFiles
@@ -2415,6 +2416,7 @@ function createRepositoryBridge(deps) {
           if (reconciliationDue) {
             const scanStartedAt = Date.now();
             files = await listFolder('bridge/requests');
+            if (!running || pollPromise !== task) return;
             requestScanSucceeded = true;
             lastRequestTreeReconcileAt = Date.now();
             lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
@@ -2517,6 +2519,9 @@ function createRepositoryBridge(deps) {
     if (!running) return;
     clearTimeout(timer);
     timer = setTimeout(async () => {
+      // A fired timeout is no longer an active timer. Mark it as such while
+      // awaiting the poll so the watchdog can restore it if that poll stalls.
+      timer = null;
       await pollOnce();
       scheduleNextPoll();
     }, Math.max(1000, intervalMs));
