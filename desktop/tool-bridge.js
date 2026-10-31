@@ -893,7 +893,36 @@ function createToolBridge(deps) {
     return header + resultWarning + 'Arguments (control characters escaped):\n' + displayApprovalValue(JSON.stringify(args, null, 2), 3500);
   }
 
-  async function askApproval(tool, args, root) {
+  function abortError(signal) {
+    const error = new Error(String(signal && signal.reason && signal.reason.message || signal && signal.reason || 'Operation cancelled.'));
+    error.name = 'AbortError';
+    error.code = 'ABORT_ERR';
+    return error;
+  }
+
+  function throwIfAborted(signal) {
+    if (signal && signal.aborted) throw abortError(signal);
+  }
+
+  async function awaitWithAbort(promise, signal) {
+    if (!signal) return promise;
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      const cleanup = () => signal.removeEventListener('abort', onAbort);
+      const onAbort = () => { cleanup(); reject(abortError(signal)); };
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(promise).then(value => {
+        cleanup();
+        resolve(value);
+      }, error => {
+        cleanup();
+        reject(error);
+      });
+    });
+  }
+
+  async function askApproval(tool, args, root, signal = null) {
+    throwIfAborted(signal);
     const options = {
       type: 'warning',
       title: 'Approve local coding tool',
@@ -905,9 +934,10 @@ function createToolBridge(deps) {
       noLink: true
     };
     const win = getMainWindow && getMainWindow();
-    const answer = win && !win.isDestroyed()
-      ? await dialog.showMessageBox(win, options)
-      : await dialog.showMessageBox(options);
+    const prompt = win && !win.isDestroyed()
+      ? dialog.showMessageBox(win, options)
+      : dialog.showMessageBox(options);
+    const answer = await awaitWithAbort(prompt, signal);
     return answer.response === 0;
   }
 
@@ -919,6 +949,7 @@ function createToolBridge(deps) {
   }
 
   async function executeLocalTool(root, tool, args, requestId, signal = null) {
+    throwIfAborted(signal);
     if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact'].includes(tool)) {
       if (!projectIntelligence) throw new Error('The local project intelligence service is unavailable.');
       if (tool === 'project_index_status') return projectIntelligence.status(root, { signal });
@@ -944,7 +975,7 @@ function createToolBridge(deps) {
       });
     }
     if (tool === 'get_capabilities') {
-      const output = await localTools.executeTool(root, tool, args);
+      const output = await localTools.executeTool(root, tool, args, signal);
       if (output && Array.isArray(output.tools)) {
         output.tools.push(
           { name: 'project_index_status', mode: 'local-project-index-read' },
@@ -993,7 +1024,8 @@ function createToolBridge(deps) {
       }
       return output;
     }
-    if (!GITHUB_GIT_TOOLS.has(tool)) return localTools.executeTool(root, tool, args);
+    throwIfAborted(signal);
+    if (!GITHUB_GIT_TOOLS.has(tool)) return localTools.executeTool(root, tool, args, signal);
     if (!githubAuth || typeof githubAuth.runGitOperation !== 'function') {
       throw new Error('Authenticated local Git operations are unavailable in this app build.');
     }
@@ -1012,6 +1044,7 @@ function createToolBridge(deps) {
       call.repository = args.repository;
       call.destination = localTools.safePath(root, args.path, false);
     }
+    throwIfAborted(signal);
     return githubAuth.runGitOperation(call);
   }
 
@@ -1143,11 +1176,11 @@ function createToolBridge(deps) {
   }
   async function executeAgentContext(root, requestId, signal = null) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
-      localTools.executeTool(root, 'environment_info', {}),
-      localTools.executeTool(root, 'project_status', {}),
-      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: isFilesystemRoot(root) ? 1 : 2, maxEntries: 180, format: 'paths' }),
-      localTools.executeTool(root, 'discover_instructions', {}),
-      executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog')
+      localTools.executeTool(root, 'environment_info', {}, signal),
+      localTools.executeTool(root, 'project_status', {}, signal),
+      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: isFilesystemRoot(root) ? 1 : 2, maxEntries: 180, format: 'paths' }, signal),
+      localTools.executeTool(root, 'discover_instructions', {}, signal),
+      executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog', signal)
     ]);
     const found = instructionReport && Array.isArray(instructionReport.instructions) ? instructionReport.instructions : [];
     const instructionFiles = found.map(item => ({
@@ -1160,7 +1193,7 @@ function createToolBridge(deps) {
     const manifestPath = path.join(root, 'package.json');
     if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isFile() && fs.statSync(manifestPath).size <= 256 * 1024) {
       try {
-        const manifestFile = await localTools.executeTool(root, 'read_file', { path: 'package.json' });
+        const manifestFile = await localTools.executeTool(root, 'read_file', { path: 'package.json' }, signal);
         const manifest = JSON.parse(manifestFile.content);
         projectCommands = {
           manifest: 'package.json',
@@ -1299,10 +1332,11 @@ function createToolBridge(deps) {
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
             ? true
-            : await askApproval(tool, args, root);
+            : await askApproval(tool, args, root, executionSignal);
           if (!approved) {
             result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
           } else {
+            throwIfAborted(executionSignal);
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
             const output = isComputerTool
               ? await computerServiceCall(visionService, args, id)
@@ -1326,6 +1360,7 @@ function createToolBridge(deps) {
             }
           }
         } else {
+          throwIfAborted(executionSignal);
           const output = isComputerTool
             ? await computerServiceCall(visionService, args, id)
             : isTtsTool
@@ -1349,7 +1384,8 @@ function createToolBridge(deps) {
         }
       }
     } catch (error) {
-      result = { ok: false, error: String(error && error.message || error) };
+      const cancelled = Boolean((executionSignal && executionSignal.aborted) || error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'));
+      result = { ok: false, ...(cancelled ? { cancelled: true } : {}), error: String(error && error.message || error) };
     }
     return boundedResult({
       protocol: 'chatgpt-local-tool-result-v2',
