@@ -595,6 +595,8 @@ test('failed SHA-checked eviction leaves the oldest session registered and usabl
   assert.equal(records.has('bridge/sessions/' + first.session_id + '.json'), true);
   assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), true,
     'the eviction intent is durable before deletion so a retry can complete it safely');
+  assert.equal(await registry.isEvicted(first.session_id), false,
+    'a pending eviction tombstone is not a completed eviction');
   assert.equal((await registry.authenticate({ session_id: first.session_id })).session_id, first.session_id,
     'a pending tombstone does not invalidate a session whose registration still exists');
 
@@ -602,6 +604,17 @@ test('failed SHA-checked eviction leaves the oldest session registered and usabl
   const next = await registry.startSession({ label: 'Retry succeeds' });
   assert.deepEqual(next.evicted_sessions.map(item => item.session_id), [first.session_id]);
   await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_EVICTED/);
+});
+
+
+test('cap eviction does not erase the explicit-disconnect reason', async () => {
+  const { registry, advance } = mockMailbox(Date.now(), { maxSessions: 1 });
+  const disconnected = await registry.startSession({ label: 'Explicitly disconnected before cap' });
+  await registry.disconnectSession(disconnected.session_id);
+  advance(1000);
+  const next = await registry.startSession({ label: 'Replacement ID' });
+  assert.deepEqual(next.evicted_sessions.map(item => item.session_id), [disconnected.session_id]);
+  await assert.rejects(registry.authenticate({ session_id: disconnected.session_id }), /SESSION_DISCONNECTED/);
 });
 
 test('the cap removes enough oldest records to return below its hard limit', async () => {
