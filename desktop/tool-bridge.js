@@ -1343,6 +1343,9 @@ function createToolBridge(deps) {
       } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
     }
     const suggestedCommands = inferProjectCommands(project);
+    const projectSupport = project && project.project_support || null;
+    const projectSummary = project && typeof project === 'object' ? { ...project } : project;
+    if (projectSummary && typeof projectSummary === 'object') delete projectSummary.project_support;
     const projectIndex = projectIntelligence ? await projectIntelligence.status(root, { signal }) : null;
     return {
       protocol: 'chatgpt-local-agent-context/v1',
@@ -1354,8 +1357,8 @@ function createToolBridge(deps) {
         ? 'The selected workspace is an entire drive. Use drive-relative paths such as Users/Example/Projects/app.js or an absolute Windows path within the selected drive. The background index lists only the root entries; inspect relevant folders on demand.'
         : 'Use workspace-relative paths or absolute Windows paths that resolve inside the selected workspace.',
       environment,
-      project,
-      project_support: project && project.project_support || null,
+      project: projectSummary,
+      project_support: projectSupport,
       project_index: projectIndex,
       project_commands: projectCommands,
       suggested_commands: suggestedCommands,
@@ -1395,7 +1398,7 @@ function createToolBridge(deps) {
           'After session_start, start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, every agent seat’s current status, and the local tool catalog in one result.',
           'For unknown environment facts, run targeted discovery before asking the user: check installed application/game manifests, executable version metadata, likely install locations, frameworks and relevant project files.',
           'When agents collaborate, check agent_status for the current seat/session inventory, send focused assignments or findings with send_agent_message, poll your inbox with read_agent_messages, and reply using reply_to_agent_message so the original conversation receives the response. Messages are addressed to session IDs, not permanently to seat numbers.',
-          'Use project_overview and project_index_status to understand index coverage, then project_search for identifiers/declarations and project_impact before broad file reads or risky cross-module edits. The local index stores metadata only; read relevant source pages before editing, and treat unresolved dependency edges as incomplete.',
+          'Call project_status early to identify every language/project root, project manifest, actual toolchain path/version, support level and missing prerequisite. Run project build/test commands from the reported projectRoot only when the suggested plan's executable/wrapper evidence and project-specific instructions still match. Then use project_overview and project_index_status to understand symbol-index coverage, project_search for identifiers/declarations and project_impact before broad file reads or risky cross-module edits. The local index stores metadata only; read relevant source pages before editing, and treat unresolved dependency edges as incomplete.',
           'For parallel implementation, use separate Git worktrees and non-overlapping file ownership. git_worktree add/remove are approval-gated; never remove a worktree that has uncommitted changes.',
           'Use project_impact to identify likely dependent modules and tests, but verify the project-native test framework and run the correct test command. Do not claim an impacted-test list is complete when the import graph reports uncertainty.',
           'Batch independent read-only inspections. Use one small inspection request, one focused edit request, and one verification request rather than one request per file or command.',
