@@ -493,6 +493,7 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     assert.equal(shell.parameters.properties.timeoutMs.maximum, 120000);
     assert.match(write.returns, /before\/after SHA-256/i);
     assert.match(batch.description, /one mailbox request/i);
+    assert.match(batch.description, /100 active local operations across all requests/i);
     assert.equal(result.result.tool_calling.reference_syntax, '{\"$ref\":\"priorStepId.result.content\"}');
     assert.equal(tools.some(item => item.name === 'github_api'), false);
     assert.equal(tools.some(item => item.name === 'github_status'), false);
