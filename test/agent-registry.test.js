@@ -40,6 +40,7 @@ function mockMailbox(startTime = Date.now(), options = {}) {
     },
     async deleteRemoteFiles(files) {
       if (options.failDelete === true) throw new Error('simulated temporary transport failure');
+      if (options.failDeleteResult) return structuredClone(options.failDeleteResult);
       for (const item of files) {
         const current = records.get(item.path);
         if (!current || current.sha !== item.sha) throw new Error('sha conflict during test mailbox cleanup');
@@ -615,6 +616,40 @@ test('cap eviction does not erase the explicit-disconnect reason', async () => {
   const next = await registry.startSession({ label: 'Replacement ID' });
   assert.deepEqual(next.evicted_sessions.map(item => item.session_id), [disconnected.session_id]);
   await assert.rejects(registry.authenticate({ session_id: disconnected.session_id }), /SESSION_DISCONNECTED/);
+});
+
+
+test('oldest-session eviction errors are propagated when a requested seat is unavailable', async () => {
+  const { registry, records, advance } = mockMailbox(Date.now(), { maxSessions: 2 });
+  const oldest = await registry.startSession({ label: 'Session selected for cap eviction' });
+  advance(1000);
+  const occupied = await registry.startSession({ label: 'Requested occupied seat' });
+  advance(1000);
+
+  let failure;
+  try {
+    await registry.startSession({ label: 'Must report eviction even on allocation failure', agent_id: occupied.agent_id });
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.match(String(failure && failure.message), /currently active or busy/);
+  assert.deepEqual(failure.evicted_sessions.map(item => item.session_id), [oldest.session_id]);
+  assert.equal(records.has('bridge/sessions/' + oldest.session_id + '.json'), false);
+  assert.equal(await registry.isEvicted(oldest.session_id), true);
+  assert.equal((await registry.authenticate({ session_id: occupied.session_id })).session_id, occupied.session_id);
+});
+
+test('a non-conflict deletion failure aborts cap enforcement without spinning', async () => {
+  const options = { maxSessions: 1, failDeleteResult: { ok: false, conflict: false } };
+  const { registry, records, advance } = mockMailbox(Date.now(), options);
+  const retained = await registry.startSession({ label: 'Must remain registered' });
+  advance(1000);
+
+  await assert.rejects(registry.startSession(), /SHA-checked session deletion did not complete/);
+  assert.equal(records.has('bridge/sessions/' + retained.session_id + '.json'), true);
+  assert.equal(await registry.isEvicted(retained.session_id), false);
+  assert.equal((await registry.authenticate({ session_id: retained.session_id })).session_id, retained.session_id);
 });
 
 test('the cap removes enough oldest records to return below its hard limit', async () => {
