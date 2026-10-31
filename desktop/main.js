@@ -35,6 +35,7 @@ const { createColabHandoffServer } = require('./colab-handoff-server');
 const { createWindowsInputController } = require('./windows-input');
 const { captureWindowsUiAutomationSnapshot } = require('./windows-uia');
 const { FilesystemIndexMonitor } = require('./filesystem-index');
+const { createProjectIntelligence } = require('./project-intelligence');
 const { createObserveService, DEFAULT_SAMPLE_FPS } = require('./observe-service');
 const { createCloudSync, safeShareUrl } = require('./cloud-sync');
 const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');
@@ -150,6 +151,7 @@ let observeService = null;
 let windowsInputController = null;
 let repositoryBridge = null;
 let filesystemIndexMonitor = null;
+let projectIntelligence = null;
 let latestFilesystemIndexSnapshot = null;
 let filesystemIndexSyncError = '';
 let finishingQuit = false;
@@ -407,6 +409,12 @@ async function restartFilesystemIndexMonitor() {
     }
   });
   await filesystemIndexMonitor.start();
+  if (projectIntelligence) {
+    void projectIntelligence.start(getWorkspaceRoot()).catch(error => {
+      filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+      console.warn('Could not start project intelligence:', error);
+    });
+  }
 }
 
 function selectWorkspace() {
@@ -548,6 +556,9 @@ function showNextSessionAssignment() {
     const send = () => {
       if (activeSessionAssignmentId !== requestId || !pendingSessionAssignments.has(requestId)) return;
       if (win.isDestroyed()) { finishSessionAssignment(requestId, null); return; }
+      showSpeechCaption({ id: 'assignment-' + requestId, mode: 'notification',
+        text: 'A new ChatGPT conversation is requesting an agent seat. Choose its agent ID and workspace in the assignment window.',
+        agentLabel: 'Agent assignment', status: 'Waiting for agent assignment', showPlayButton: false });
       dashboardSend('app:agent-assignment-requested', pending.payload);
       playAssignmentNotificationSound();
       pending.timer = setTimeout(() => {
@@ -1245,7 +1256,17 @@ function enrichedBridgeState(state) {
   }
   const sessionOverrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
     !Array.isArray(settings.agentWorkspaces) ? settings.agentWorkspaces : {};
-  const agentMailboxes = [...byId.values()].map(agent => {
+  const nicknames = settings.agentNicknames && typeof settings.agentNicknames === 'object' ? settings.agentNicknames : {};
+  const autoDump = settings.agentAutoDump && typeof settings.agentAutoDump === 'object' ? settings.agentAutoDump : {};
+  const hiddenIds = new Set(Array.isArray(settings.agentHiddenIds)
+    ? settings.agentHiddenIds.filter(id => typeof id === 'string' && /^agent-[0-9]{3,}$/.test(id)) : []);
+  for (const agent of byId.values()) if (agent && agent.session_id) hiddenIds.delete(agent.agent_id);
+  const normalizedHiddenIds = [...hiddenIds].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+  if (JSON.stringify(settings.agentHiddenIds || []) !== JSON.stringify(normalizedHiddenIds)) {
+    settings.agentHiddenIds = normalizedHiddenIds;
+    persistSettings();
+  }
+  const agentMailboxes = [...byId.values()].filter(agent => !hiddenIds.has(agent.agent_id)).map(agent => {
     const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
       ? agent.session_id : null;
     const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
@@ -1253,10 +1274,14 @@ function enrichedBridgeState(state) {
     try {
       const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :
         hasSeatDefault ? resolveWorkspaceRoot(defaults[agent.agent_id], getWorkspaceRoot()) : getWorkspaceRoot();
-      return { ...agent, workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
+      return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
+        auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
+        workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_scope: hasSessionOverride ? 'session' : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
-      return { ...agent, workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
+      return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
+        auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
+        workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
         workspace_error: String(error && error.message || error).slice(0, 300) };
     }
   });
@@ -1809,6 +1834,9 @@ function currentCaptionPayload() {
     error: payload.error || '',
     chunkIndex: index,
     chunkCount: chunks.length,
+    agentLabel: String(payload.agentLabel || payload.agentId || 'Windows Bridge').slice(0, 48),
+    paused: payload.paused === true,
+    hasPlayback: Boolean(payload.speechJobId),
     theme: captionThemeId(),
     transparent: getTtsSettings().captionTransparent
   };
@@ -1879,9 +1907,10 @@ function showSpeechCaption(request) {
   if (!Array.isArray(chunks) || !chunks.length) chunks = [text];
   const payload = {
     id: String(request.id || crypto.randomUUID()), fullText: text, chunks,
+    agentLabel: String(request.agentLabel || request.agentId || 'Windows Bridge').slice(0, 48),
     chunkIndex: 0, speechJobId: '', mode,
-    showPlayButton: mode === 'notification',
-    status: mode === 'notification' ? 'Ready to play' : 'Preparing speech…',
+    showPlayButton: request.showPlayButton === undefined ? mode === 'notification' : request.showPlayButton === true,
+    status: String(request.status || (mode === 'notification' ? 'Ready to play' : 'Preparing speech…')),
     error: ''
   };
   const previousMode = activeCaptionPayload && activeCaptionPayload.mode;
@@ -1927,8 +1956,11 @@ function updateCaptionPlaybackProgress(requestId, speechJobId) {
   if (!job) return;
   const chunks = activeCaptionPayload.chunks;
   const nextIndex = Math.max(0, Math.min(chunks.length - 1, Number(job.chunks_completed) || 0));
-  let changed = activeCaptionPayload.chunkIndex !== nextIndex;
-  activeCaptionPayload.chunkIndex = nextIndex;
+  let changed = false;
+  if (!activeCaptionPayload.manualChunkNavigation) {
+    changed = activeCaptionPayload.chunkIndex !== nextIndex;
+    activeCaptionPayload.chunkIndex = nextIndex;
+  }
   if (job.status === 'completed') {
     activeCaptionPayload.chunkIndex = Math.max(0, chunks.length - 1);
     activeCaptionPayload.status = 'Finished';
@@ -2048,6 +2080,7 @@ function getUiState() {
       browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
+      sessionAutoExpire: settings.sessionAutoExpire === true,
       observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
     },
     dashboardState: normalizeDashboardState(settings.dashboardState || defaultDashboardState()),
@@ -2057,7 +2090,9 @@ function getUiState() {
     workspace: {
       root: getWorkspaceRoot(),
       index: filesystemIndexMonitor ? filesystemIndexMonitor.getState() : null,
-      syncError: workspaceInitializationError || filesystemIndexSyncError || ''
+      syncError: workspaceInitializationError || filesystemIndexSyncError || '',
+      projectIntelligence: projectIntelligence ? projectIntelligence.getState(getWorkspaceRoot()) : null,
+      taskScheduler: toolBridge && typeof toolBridge.getExecutionStats === 'function' ? toolBridge.getExecutionStats() : null
     },
     initialization: {
       error: appInitializationError || workspaceInitializationError || '',
@@ -2151,11 +2186,10 @@ function registerIpc() {
     settings.localTts = normalizeLocalTtsSettings({ ...getLocalTtsSettings(), ...value });
     persistSettings(); publishSharedState();
     dashboardSend('app:preferences', getUiState().settings);
-    if (settings.localTts.enabled && visionService) {
-      void visionService.prepareLocalTts().then(status => dashboardSend('app:local-tts-status', status))
-        .catch(error => dashboardSend('app:local-tts-status', { ...visionService.localTtsStatus(), status: error && error.code === 'LOCAL_TTS_RESOURCE_GUARD' ? 'resource_guard_blocked' : 'error', error: String(error && error.message || error).slice(0, 1200) }));
-    } else if (localTtsService) {
+    if (!settings.localTts.enabled && localTtsService) {
       void localTtsService.dispose().then(() => dashboardSend('app:local-tts-status', localTtsService.getStatus()));
+    } else if (settings.localTts.enabled && localTtsService && typeof localTtsService.scheduleIdlePageOut === 'function') {
+      localTtsService.scheduleIdlePageOut();
     }
     return getLocalTtsSettings();
   });
@@ -2169,12 +2203,42 @@ function registerIpc() {
     if (!visionService) throw new Error('Local TTS service is not initialized yet.');
     return visionService.prepareLocalTts();
   });
+  ipcMain.handle('app:local-tts-test', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!getLocalTtsSettings().enabled) throw new Error('Enable local Piper TTS before running the test.');
+    if (!visionService || typeof visionService.synthesizeSpeech !== 'function') throw new Error('Local Piper TTS service is not initialized yet.');
+    const result = await visionService.synthesizeSpeech({ text: 'This is a test of the local Piper voice.', play: true }, crypto.randomUUID());
+    if (!result || result.status !== 'tts_started') throw new Error(String(result && (result.error || result.message) || 'Local Piper test playback did not start.'));
+    return result;
+  });
   ipcMain.handle('app:caption-preview', event => {
     assertLocalUi(event, 'index.html');
     showSpeechCaption({ id: crypto.randomUUID(), mode: getTtsSettings().mode, text: 'This is a preview of your speech captions.' });
     return { shown: Boolean(captionWindow) };
   });
   ipcMain.handle('caption:play', event => { assertCaptionUi(event); return playActiveCaption(); });
+  ipcMain.handle('caption:navigate', (event, direction) => {
+    assertCaptionUi(event);
+    if (!activeCaptionPayload) return { changed: false };
+    const chunks = Array.isArray(activeCaptionPayload.chunks) ? activeCaptionPayload.chunks : [];
+    if (!chunks.length) return { changed: false };
+    const delta = direction === 'previous' ? -1 : direction === 'next' ? 1 : 0;
+    if (!delta) throw new Error('Invalid caption navigation direction.');
+    activeCaptionPayload.chunkIndex = Math.max(0, Math.min(chunks.length - 1, Number(activeCaptionPayload.chunkIndex || 0) + delta));
+    activeCaptionPayload.manualChunkNavigation = true;
+    updateCaptionWindowPayload();
+    return { changed: true, chunkIndex: activeCaptionPayload.chunkIndex };
+  });
+  ipcMain.handle('caption:pause-toggle', async event => {
+    assertCaptionUi(event);
+    if (!activeCaptionPayload || !activeCaptionPayload.speechJobId || !visionService || typeof visionService.controlSpeechPlayback !== 'function') throw new Error('No controllable speech playback is active.');
+    const pause = activeCaptionPayload.paused !== true;
+    await visionService.controlSpeechPlayback(pause ? 'pause' : 'resume');
+    activeCaptionPayload.paused = pause;
+    activeCaptionPayload.status = pause ? 'Paused' : 'Speaking…';
+    updateCaptionWindowPayload();
+    return { paused: pause };
+  });
   ipcMain.handle('caption:dismiss', event => {
     assertCaptionUi(event);
     if (captionWindow && !captionWindow.isDestroyed()) captionWindow.close();
@@ -2232,6 +2296,156 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     const result = await selectWorkspace();
     return { ...result, workspace: getUiState().workspace };
+  });
+  ipcMain.handle('app:project-index-refresh', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!projectIntelligence) throw new Error('Project intelligence is not initialized.');
+    return projectIntelligence.refresh(getWorkspaceRoot(), { force: true });
+  });
+  ipcMain.handle('app:agent-widget-add', event => {
+    assertLocalUi(event, 'dashboard.html');
+    const known = new Set(Array.isArray(settings.agentKnownIds) ? settings.agentKnownIds : []);
+    const liveState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+    for (const agent of Array.isArray(liveState.agentMailboxes) ? liveState.agentMailboxes : []) if (agent && /^agent-[0-9]{3,}$/.test(agent.agent_id)) known.add(agent.agent_id);
+    for (const id of Object.keys(settings.agentWorkspaceDefaults || {})) if (/^agent-[0-9]{3,}$/.test(id)) known.add(id);
+    const next = [...known].reduce((n, id) => Math.max(n, Number(String(id).slice(6)) || 0), 0) + 1;
+    const agentId = 'agent-' + String(next).padStart(3, '0');
+    known.add(agentId);
+    settings.agentKnownIds = [...known].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+    persistSettings(); publishSharedState();
+    return { agentId };
+  });
+  ipcMain.handle('app:agent-widget-delete', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    const sessionId = payload && payload.sessionId;
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
+      throw new Error('A valid agent ID is required to delete this widget.');
+    }
+    if (sessionId !== null && sessionId !== undefined &&
+        (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
+      throw new Error('The selected session ID is invalid.');
+    }
+    if (payload && payload.wipeMailbox !== undefined && typeof payload.wipeMailbox !== 'boolean') {
+      throw new Error('The mailbox wipe option must be a boolean.');
+    }
+    if (payload && payload.wipeMailbox === true && !sessionId) {
+      throw new Error('Mailbox wiping requires a conversation session. This widget has no current session.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.revokeAgentSession !== 'function') {
+      throw new Error('The repository worker is unavailable; no widget was deleted.');
+    }
+
+    const bridgeState = repositoryBridge.getState();
+    const currentAgent = Array.isArray(bridgeState.agentMailboxes)
+      ? bridgeState.agentMailboxes.find(item => item && item.agent_id === agentId) : null;
+    const currentSessionId = currentAgent && typeof currentAgent.session_id === 'string' &&
+      /^session-[a-f0-9]{32}$/.test(currentAgent.session_id) ? currentAgent.session_id : null;
+    if (currentSessionId && currentSessionId !== (sessionId || null)) {
+      throw new Error('This agent seat now belongs to a different ChatGPT session. Refresh the dashboard before deleting it.');
+    }
+
+    let result;
+    if (sessionId) {
+      result = await repositoryBridge.revokeAgentSession(sessionId, { wipeMailbox: payload.wipeMailbox === true });
+      if (!result || result.revoked !== true || result.agent_id !== agentId) {
+        throw new Error('The worker did not confirm revocation of the selected agent session; the widget was not hidden.');
+      }
+    } else {
+      if (currentSessionId) throw new Error('A current session exists but was not included in the delete request.');
+      result = {
+        revoked: false, agent_id: agentId, session_id: null,
+        mailbox_cleanup: { status: 'not_requested', deleted_records: 0, deleted_files: 0 }
+      };
+    }
+
+    const hidden = new Set(Array.isArray(settings.agentHiddenIds) ? settings.agentHiddenIds : []);
+    hidden.add(agentId);
+    settings.agentHiddenIds = [...hidden];
+    if (sessionId) {
+      const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+        !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+      delete overrides[sessionId];
+      settings.agentWorkspaces = overrides;
+    }
+    persistSettings();
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
+  ipcMain.handle('app:agent-session-pause', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    const sessionId = payload && payload.sessionId;
+    const paused = payload && payload.paused;
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+        typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId) ||
+        typeof paused !== 'boolean') throw new Error('Valid agent_id, session_id, and paused values are required.');
+    if (!repositoryBridge || typeof repositoryBridge.pauseAgentSession !== 'function') throw new Error('The repository worker cannot pause sessions.');
+    const state = repositoryBridge.getState();
+    const seat = (state.agentMailboxes || []).find(item => item.agent_id === agentId);
+    if (!seat || seat.session_id !== sessionId) throw new Error('The selected agent seat no longer belongs to this session.');
+    const result = await repositoryBridge.pauseAgentSession(sessionId, paused);
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
+  ipcMain.handle('app:agent-session-disconnect', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    const sessionId = payload && payload.sessionId;
+    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+        typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId)) {
+      throw new Error('Valid agent_id and session_id values are required.');
+    }
+    if (!repositoryBridge || typeof repositoryBridge.disconnectAgentSession !== 'function') throw new Error('The repository worker cannot disconnect sessions.');
+    const state = repositoryBridge.getState();
+    const seat = (state.agentMailboxes || []).find(item => item.agent_id === agentId);
+    if (!seat || seat.session_id !== sessionId) throw new Error('The selected agent seat no longer belongs to this session.');
+    const result = await repositoryBridge.disconnectAgentSession(sessionId);
+    const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' && !Array.isArray(settings.agentWorkspaces)
+      ? { ...settings.agentWorkspaces } : {};
+    delete overrides[sessionId];
+    settings.agentWorkspaces = overrides;
+    persistSettings();
+    broadcastBridgeState(repositoryBridge.getState());
+    return result;
+  });
+  ipcMain.handle('app:session-auto-expire', (event, enabled) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (typeof enabled !== 'boolean') throw new Error('Session auto-expire must be a boolean.');
+    settings.sessionAutoExpire = enabled;
+    persistSettings();
+    publishSharedState();
+    dashboardSend('app:preferences', getUiState().settings);
+    return { enabled, maxSessions: 10000, eviction: 'Least recently active non-busy and unpaused session only; active or paused sessions are preserved.' };
+  });
+  ipcMain.handle('app:task-dashboard', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!repositoryBridge || typeof repositoryBridge.getTaskDashboard !== 'function') return { projects: [], project_count: 0, unavailable: true };
+    return repositoryBridge.getTaskDashboard();
+  });
+  ipcMain.handle('app:agent-widget-settings', (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!payload || typeof payload !== 'object' || !/^agent-[0-9]{3,}$/.test(String(payload.agentId || ''))) {
+      throw new Error('A valid agent ID is required.');
+    }
+    const agentId = payload.agentId;
+    if (payload.value === undefined) {
+      const dump = settings.agentAutoDump && settings.agentAutoDump[agentId] || {};
+      return { agentId, nickname: String(settings.agentNicknames && settings.agentNicknames[agentId] || ''),
+        autoDump: { maxCount: Number(dump.maxCount) || 0, maxAgeMinutes: Number(dump.maxAgeMinutes) || 0,
+          exclusions: Array.isArray(dump.exclusions) ? dump.exclusions : [] } };
+    }
+    const value = payload.value && typeof payload.value === 'object' ? payload.value : {};
+    const nickname = String(value.nickname || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 32);
+    const maxCount = Number.isFinite(Number(value.maxCount)) ? Math.max(0, Math.min(500, Math.round(Number(value.maxCount)))) : 0;
+    const maxAgeMinutes = Number.isFinite(Number(value.maxAgeMinutes)) ? Math.max(0, Math.min(10080, Math.round(Number(value.maxAgeMinutes)))) : 0;
+    const exclusions = Array.isArray(value.exclusions) ? [...new Set(value.exclusions.map(x => String(x).trim().toLowerCase()).filter(x => /^[a-z0-9_.-]{1,80}$/.test(x)))].slice(0, 50) : [];
+    settings.agentNicknames = { ...(settings.agentNicknames || {}) };
+    settings.agentAutoDump = { ...(settings.agentAutoDump || {}) };
+    if (nickname) settings.agentNicknames[agentId] = nickname; else delete settings.agentNicknames[agentId];
+    settings.agentAutoDump[agentId] = { maxCount, maxAgeMinutes, exclusions };
+    persistSettings(); publishSharedState();
+    return { agentId, nickname, autoDump: settings.agentAutoDump[agentId] };
   });
   ipcMain.handle('app:agent-select-workspace', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
@@ -2696,6 +2910,10 @@ if (!hasInstanceLock) {
         void observeService.clearStaleContext().catch(error => {
           appendDiagnosticLog('observe-stale-context-clear-failed', error);
         });
+        projectIntelligence = createProjectIntelligence({
+          storageDirectory: path.join(app.getPath('userData'), 'project-intelligence'),
+          onUpdate: status => dashboardSend('app:project-intelligence-status', status)
+        });
         toolBridge = createToolBridge({
           dialog,
           getMainWindow: () => mainWindow,
@@ -2704,7 +2922,17 @@ if (!hasInstanceLock) {
           githubAuth,
           uploadWorkspaceFile: (requestId, file) => repositoryBridge.publishWorkspaceFile(requestId, file),
           getAutoAcceptAll: () => settings.autoAcceptAll === true,
+          projectIntelligence,
+          onSchedulerUpdate: status => dashboardSend('app:execution-stats', status),
           getTtsSettings,
+          getAgentLabelForSession: sessionId => {
+            const rawState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+            const state = enrichedBridgeState(rawState);
+            const agent = Array.isArray(state.agentMailboxes) ? state.agentMailboxes.find(item => item && item.session_id === sessionId) : null;
+            if (!agent) return null;
+            const nickname = typeof agent.nickname === 'string' ? agent.nickname.trim() : '';
+            return { agentId: agent.agent_id, agentLabel: nickname ? nickname + ' · ' + agent.agent_id : agent.agent_id };
+          },
           onTtsRequest: showSpeechCaption,
           onTtsResult: finishSpeechCaption,
           visionService
@@ -2715,11 +2943,13 @@ if (!hasInstanceLock) {
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
-          executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId),
+          executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal),
+          cancelTool: (requestId, reason) => toolBridge.cancelTool(requestId, reason),
           onState: broadcastBridgeState,
           requestSessionAssignment,
           onSessionAssigned: persistAssignedSessionWorkspace,
-          publishContextOnStart: true
+          publishContextOnStart: true,
+          isSessionAutoExpireEnabled: () => settings.sessionAutoExpire === true
         });
         if (getLocalTtsSettings().enabled) {
           setImmediate(() => {
@@ -2791,9 +3021,11 @@ app.on('before-quit', event => {
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;
-    const stopIndex = filesystemIndexMonitor
-      ? filesystemIndexMonitor.stop().catch(() => {})
-      : Promise.resolve();
+    const stopIndex = Promise.all([
+      filesystemIndexMonitor ? filesystemIndexMonitor.stop().catch(() => {}) : Promise.resolve(),
+      projectIntelligence ? projectIntelligence.stop().catch(() => {}) : Promise.resolve(),
+      toolBridge && typeof toolBridge.stop === 'function' ? toolBridge.stop().catch(() => {}) : Promise.resolve()
+    ]);
     stopIndex.finally(() => {
       repositoryBridge.stop().catch(() => {}).finally(() => app.quit());
     });

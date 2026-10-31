@@ -4,10 +4,25 @@ const { randomUUID, createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { isFilesystemRoot } = require('./workspace-path');
+const { createExecutionScheduler, DEFAULT_RESOURCE_LIMITS } = require('./execution-scheduler');
 
 const TOOL_ARGUMENT_KEYS = Object.freeze({
   get_capabilities: [],
   get_agent_context: [],
+  project_index_status: [],
+  project_index_refresh: ['force'],
+  project_search: ['query', 'path', 'kind', 'maxResults'],
+  project_overview: [],
+  project_impact: ['path', 'symbol'],
+  game_project_intelligence: ['maxFiles'],
+  task_project_init: ['name', 'description', 'project_id'], task_project_list: [], task_project_status: ['project_id'],
+  task_create: ['project_id', 'title', 'objective', 'acceptance_criteria', 'scope_paths', 'dependencies', 'priority', 'module', 'task_type', 'dedupe_key'],
+  task_list: ['project_id', 'status', 'assigned_to_me', 'limit', 'offset'], task_get: ['project_id', 'task_id'],
+  task_claim: ['task_id', 'branch', 'worktree_path'], task_heartbeat: ['task_id'], task_update: ['task_id', 'status', 'reason'],
+  task_submit: ['task_id', 'commit_sha', 'changed_paths', 'evidence', 'branch', 'worktree_path'], task_review: ['task_id', 'verdict', 'comment'],
+  task_integrate: ['task_id', 'target_branch', 'branch', 'worktree_path'], task_verify: ['task_id', 'checks'],
+  task_decision: ['project_id', 'decision', 'rationale', 'affected_modules', 'references'], task_cancel: ['task_id'],
+  git_worktree: ['operation', 'path', 'branch', 'createBranch', 'targetBranch'],
   project_status: [],
   environment_info: [],
   list_dir: ['path'],
@@ -70,16 +85,44 @@ function normalizeExecutionPath(value) {
   return normalized && normalized !== '.' && !normalized.startsWith('../') ? normalized : null;
 }
 
-function getExecutionFootprint(tool, args = {}) {
+function projectIndexResource(workspaceRoot) {
+  if (typeof workspaceRoot !== 'string' || !workspaceRoot.trim()) return 'project-index:*';
+  return 'project-index:' + path.resolve(workspaceRoot).replace(/\\/g, '/').toLowerCase();
+}
+
+function resourcePoolsForTool(tool, args = {}) {
+  if (['read_file','file_info','upload_workspace_file','write_file','create_directory','delete_path','move_path','apply_patch','list_dir','directory_tree','glob_file_search','search'].includes(tool)) return ['filesystem','disk-io'];
+  if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact','game_project_intelligence','get_agent_context'].includes(tool)) return ['source-analysis','disk-io'];
+  if (tool === 'run_tests') { const command=String(args.command||'').toLowerCase(); if(/buildcookrun|cook(?:content)?|unreal.*cook/.test(command))return ['cook','disk-io']; if(/unrealeditor|ue4editor|unity(?:\.exe)?|godot/.test(command))return ['editor','disk-io']; return ['compilation','disk-io']; }
+  if (tool === 'shell') {
+    const command = String(args.command || '').toLowerCase();
+    if (/buildcookrun|cook(?:content)?|unreal.*cook/.test(command)) return ['cook'];
+    if (/package|packaging|electron-builder|gradle.*bundle|dotnet publish/.test(command)) return ['packaging'];
+    if (/unrealeditor|ue4editor|unity(?:\.exe)?|godot/.test(command)) return ['editor'];
+    if (/nvcc|cuda|vulkan|directx|shader.*compile|renderdoc/.test(command)) return ['gpu'];
+    if (/uasset|umap|assetregistry|binary.*asset/.test(command)) return ['binary-assets'];
+    if (/build|compile|linker|cmake|msbuild|ninja|cargo build|dotnet build/.test(command)) return ['compilation'];
+    return ['shell'];
+  }
+  if (tool === 'computer') return ['desktop-control'];
+  if (tool === 'tts') return ['audio'];
+  if (tool.startsWith('git_')) return ['git','disk-io'];
+  return [];
+}
+
+function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
   if (tool === 'batch') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
-    if (!steps.length) return { reads: [], writes: [], resources: [], barrier: true };
-    const combined = { reads: [], writes: [], resources: [], barrier: false };
+    if (!steps.length) return { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: true };
+    const combined = { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], resourcePools: [], barrier: false };
     for (const step of steps) {
-      const footprint = getExecutionFootprint(step.tool, step.args || {});
+      const footprint = getExecutionFootprint(step.tool, step.args || {}, workspaceRoot);
       combined.reads.push(...footprint.reads);
       combined.writes.push(...footprint.writes);
       combined.resources.push(...(footprint.resources || []));
+      combined.resourceReads.push(...(footprint.resourceReads || []));
+      combined.resourceWrites.push(...(footprint.resourceWrites || []));
+      combined.resourcePools.push(...(footprint.resourcePools || []));
       if (footprint.barrier) combined.barrier = true;
     }
     return combined;
@@ -87,6 +130,9 @@ function getExecutionFootprint(tool, args = {}) {
   const reads = [];
   const writes = [];
   const resources = [];
+  const resourceReads = [];
+  const resourceWrites = [];
+  const resourcePools = resourcePoolsForTool(tool, args);
   let barrier = false;
   const add = (target, value) => {
     const normalized = normalizeExecutionPath(value);
@@ -127,8 +173,20 @@ function getExecutionFootprint(tool, args = {}) {
     case 'git_branches':
     case 'git_changed_files':
     case 'discover_instructions':
-    case 'get_agent_context':
       reads.push('*'); break;
+    case 'get_agent_context':
+      reads.push('*');
+      resourceReads.push(projectIndexResource(workspaceRoot));
+      break;
+    case 'project_index_status':
+    case 'project_search':
+    case 'project_overview':
+    case 'project_impact':
+      resourceReads.push(projectIndexResource(workspaceRoot)); break;
+    case 'project_index_refresh':
+      resourceWrites.push(projectIndexResource(workspaceRoot)); break;
+    case 'git_worktree':
+      barrier = true; break;
     case 'computer':
       resources.push('desktop');
       break;
@@ -152,7 +210,7 @@ function getExecutionFootprint(tool, args = {}) {
     default:
       barrier = true; break;
   }
-  return { reads, writes, resources, barrier };
+  return { reads, writes, resources, resourceReads, resourceWrites, resourcePools, barrier };
 }
 
 function executionFootprintsConflict(left, right) {
@@ -160,13 +218,39 @@ function executionFootprintsConflict(left, right) {
   const rightResources = new Set(right.resources || []);
   if ((left.resources || []).some(resource => rightResources.has(resource))) return true;
   const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+  const resourceOverlaps = (a, b) => a === '*' || b === '*' || a === b;
   return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
-    right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+    right.writes.some(a => left.reads.some(b => overlaps(a, b))) ||
+    (left.resourceWrites || []).some(a => (right.resourceReads || []).some(b => resourceOverlaps(a, b)) ||
+      (right.resourceWrites || []).some(b => resourceOverlaps(a, b))) ||
+    (right.resourceWrites || []).some(a => (left.resourceReads || []).some(b => resourceOverlaps(a, b)));
 }
 
 const TOOL_DESCRIPTIONS = Object.freeze({
   get_capabilities: 'List every callable local tool with exact arguments, constraints, permission mode, and result summary. This catalog is stable for the running app build.',
   get_agent_context: 'Return one compact snapshot of the selected Windows workspace, runtime, Git state, project commands, instruction-file locations, directory overview, and callable tool catalog. Full source and instruction contents stay on demand.',
+  project_index_status: 'Read the local persistent project-index status, including indexed files, symbols, dependencies, update state, truncation, and errors. Index metadata stays on Windows.',
+  project_index_refresh: 'Reconcile the local project index with the workspace, reusing unchanged metadata. force=true rebuilds every indexed file.',
+  project_search: 'Search the local project index by path, identifier, and declared symbol. Returns paths and symbol locations, not source contents. Uses lexical/symbol ranking, not embeddings.',
+  project_overview: 'Summarize indexed languages, likely entry points, test candidates, symbol count, and relative import-graph size.',
+  project_impact: 'Find direct and transitive dependents of an indexed file or symbol through resolvable relative imports.',
+  game_project_intelligence: 'Inspect Unreal, Unity, and Godot project metadata locally. For Unreal, identify .uproject/.uplugin, Build.cs/Target.cs module dependencies, C++ reflection macros, and exported Asset Registry JSON. Binary assets are not parsed or edited; use engine-native tooling for authoritative UHT/UBT, Blueprint and runtime information.',
+  task_project_init: 'Create a shared project coordination board. Share its project_id with every collaborating session.',
+  task_project_list: 'List project boards available in the shared mailbox.',
+  task_project_status: 'Read one project board, active ownership leases, persistent architecture decisions, and coordination policy.',
+  task_create: 'Create a durable project task with objective, acceptance criteria, dependencies, priority and file/module scopes. Optional dedupe_key prevents duplicate open tasks.',
+  task_list: 'List project tasks with optional status/owner filters and a bounded page size.',
+  task_get: 'Read the full durable task record, including ownership, submissions, reviews, integration and verification history.',
+  task_claim: 'Atomically claim a ready task and reserve its workspace-relative path/module scopes across all sessions. Include branch/worktree_path after creating an isolated Git worktree.',
+  task_heartbeat: 'Renew an owned task and its cross-agent resource lease while work continues.',
+  task_update: 'Update an owned task to in_progress, blocked, ready, failed or cancelled. Use dedicated submit/review/integrate/verify gates for terminal transitions.',
+  task_submit: 'Submit a commit, changed paths and implementation/build/test/runtime evidence for independent review. Changes outside the claimed scope are rejected.',
+  task_review: 'Independently approve or reject a submitted task. Reviewer must be a different ChatGPT session from the implementer.',
+  task_integrate: 'After independent approval, perform a local clean-worktree-checked Git merge into target_branch. Requires native Windows approval.',
+  task_verify: 'After integration, execute independent build, test, and runtime commands and record their exit codes/results. Requires native Windows approval for each command.',
+  task_decision: 'Record an architecture/interface decision in the shared project board so other sessions can read the rationale and affected modules.',
+  task_cancel: 'Cancel a task and release its project-wide ownership lease. Only its creator or current owner may cancel.',
+  git_worktree: 'List, create, remove, or integrate linked Git worktrees. Add/remove/integrate need local approval; integration requires clean primary and source worktrees.',
   project_status: 'Summarize detected project technologies, whether the selected workspace is a Git repository, current branch/status, and top-level entries.',
   environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
   list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
@@ -198,7 +282,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   shell: 'Run PowerShell as the signed-in Windows user from the selected workspace. Waits for the foreground process to exit or the configured timeout, then returns exitCode, timedOut, stdout, stderr, and durationMs. Each output stream has an 8 MiB capture ceiling; the mailbox externalizes complete captured text above its inline threshold, but output beyond this hard ceiling is marked truncated before archiving and must be retried in bounded pages or redirected to a local file. At timeout it attempts to kill the whole process tree and still returns a timeout result. For long-running servers, start them deliberately in the background with logs redirected to files, poll a bounded readiness check, and do not confuse server startup with command completion. Requires local approval unless Auto-accept everything is enabled; PowerShell is not OS-sandboxed.',
   run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. Each output stream has an 8 MiB capture ceiling; externalized text is lossless only when stdout_truncated/stderr_truncated are false. If either flag is true, rerun in bounded pages or redirect full output to a local file. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
-  session_start: 'Create a cryptographically random stable session_id and lease a reusable agent_id seat. Call once per ChatGPT conversation without session_id; include the returned session_id in every ordinary request and use a fresh request_id for every call. A non-busy seat is reusable after 10 minutes without bridge-tool activity.',
+  session_start: 'Create a cryptographically random stable session_id and lease a reusable agent_id seat. Returns a readable context_message with assigned IDs and calling instructions. Call once per ChatGPT conversation without session_id; include the returned session_id in every ordinary request and use a fresh request_id for every call. A non-busy seat is reusable after 10 minutes without bridge-tool activity.',
   agent_status: 'List every reusable agent seat with active/inactive status, busy flag, current session_id, last activity, and recent request IDs; no credentials are returned.',
   send_agent_message: 'Publish an immutable message to an active conversation using exactly one of to_session_id (preferred) or to_agent_id (resolved to its current session at send time). The stored message is prefixed with [session_id][agent_id]. Publication does not mean it was read or answered.',
   read_agent_messages: 'Read up to 100 unread or recent messages addressed to this exact session inbox. Reading uses a separate receipt record so the immutable message body is not edited.',
@@ -207,21 +291,65 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   computer: 'Native local computer tool for the real Windows workspace. This fast interaction mode is an optional path: when the user requests rapid interaction, inspect the latest live state as needed and use one computer(action=sequence, mode=fast, steps=[...]) call for ordered local input without intermediate narration. The fast mode skips automatic post-action Colab inference unless observe=true, avoiding an extra model/tunnel round trip; request a fresh observation when verification or the next action depends on screen changes. This is an optional tool-loop optimization, not a switch that disables ChatGPT internal reasoning. Observe and detailed screenshots use the primary display at full physical pixel dimensions; JPEG compression lowers quality rather than spatially downscaling. The screenshot report includes active app/window, screen regions, readable text, control relationships, OCR and Windows UI Automation bounds when exposed, plus uncertainty. For closer inspection, pass region=[left,top,right,bottom] in the latest screenshot pixel frame; returned boxes are mapped back to the original full-frame coordinates. When using passive Observe coordinates, pass the matching frame_id with the input action; changed or stale frame IDs are rejected. Accessibility-grounded bounds are preferred to visual estimates. All click/move/drag/scroll/key/mouse inputs execute on local Windows, not in Colab. Ordered local mouse/keyboard inputs, up to 50 steps, can be submitted in one sequence; sequence batches up to 50 inputs. start_control enables a control session; stop_control releases held inputs. Held inputs auto-release after 10 seconds and control expires after 15 minutes idle.',
   tts: 'Synthesize speech with Piper en_US-libritts-high using speaker ID 0. By default, start local playback as soon as the first punctuation-bounded chunk is ready; returns tts_started plus speech_job_id while remaining chunks play, and computer(action=status) reports progress. Set play=false to save without playback. The actual audio bytes stay local and are not published to GitHub.',
   refresh_environment_context: 'Refresh the shared background context snapshot. This is a mailbox control request, not a nested local batch step.',
-  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32). Use maxConcurrency=100 for large, lightweight, independent file operations. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
+  batch: 'Execute 1–100 local tool calls in one mailbox request. Independent operations run concurrently up to maxConcurrency (1–100; default 32); the process-wide scheduler permits up to 100 active local operations across all requests. Higher batch concurrency queues independent lightweight work; conflicting paths remain ordered. File/path conflicts and shell, tests, Git mutations, and other unknown-side-effect operations preserve request order. Explicit {"$ref":"stepId.result.content"} references wait for that earlier step. Each step gets its own status/output. Large batch outputs are bundled as mailbox artifacts; fetch every listed part concurrently and review them together. If output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch all bridge/artifacts/<request_id>/... references and concatenate numbered parts before relying on the preview. If complete_result_part is present, reconstruct that JSON result record first, then follow its artifact manifest. If parts are missing or artifact_errors is non-empty, retry in bounded pages; truncation is not evidence of a safety block. Stop launching later steps after a failure by default.'
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
+  task_project_status: ['project_id'], task_create: ['project_id', 'title', 'objective', 'acceptance_criteria'], task_list: ['project_id'], task_get: ['task_id'], task_claim: ['task_id'], task_heartbeat: ['task_id'], task_update: ['task_id', 'status'], task_submit: ['task_id', 'commit_sha', 'evidence'], task_review: ['task_id', 'verdict'], task_integrate: ['task_id', 'target_branch'], task_verify: ['task_id', 'checks'], task_decision: ['project_id', 'decision', 'rationale'], task_cancel: ['task_id'],
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
   apply_patch: ['patch'], create_directory: ['path'], move_path: ['source', 'destination'],
   delete_path: ['path'], git_create_branch: ['name'], git_switch_branch: ['name'],
   git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
   upload_workspace_file: ['path'], batch: ['steps'],
   send_agent_message: ['message'], reply_to_agent_message: ['message_id', 'message'],
-  computer: ['action'], tts: ['text']
+  project_search: ['query'], computer: ['action'], tts: ['text'], git_worktree: ['operation']
 });
 const BASE_FIELD_SCHEMAS = Object.freeze({
   path: { type: 'string', description: 'Path relative to the selected workspace or an absolute Windows path inside it. Paths outside the selected workspace and symlink escapes are rejected.' },
+  project_id: { type: 'string', description: 'Shared project board ID returned by task_project_init.', pattern: '^project-[a-f0-9]{24}$' },
+  task_id: { type: 'string', description: 'Durable task ID returned by task_create.', pattern: '^task-[0-9]{13}-[a-f0-9]{16}$' },
+  title: { type: 'string', minLength: 1, maxLength: 180, description: 'Concise task title.' },
+  objective: { type: 'string', minLength: 1, maxLength: 6000, description: 'Task objective and expected implementation outcome.' },
+  acceptance_criteria: { description: 'Measurable conditions that must be satisfied before a task is accepted.', type: 'array', minItems: 1, maxItems: 30, items: { type: 'string', minLength: 1, maxLength: 500 } },
+  scope_paths: { description: 'Workspace-relative file or directory scopes reserved while this task is active; parent and child paths overlap.', type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 } },
+  dependencies: { description: 'Task IDs in this project that must reach verified or completed before this task can be claimed.', type: 'array', maxItems: 64, items: { type: 'string', pattern: '^task-[0-9]{13}-[a-f0-9]{16}$' } },
+  priority: { description: 'Scheduling priority from 0 to 100; higher values indicate earlier work.', type: 'integer', minimum: 0, maximum: 100, default: 50 },
+  module: { description: 'Optional game module, subsystem, or code-area label owned by this task.', type: 'string', maxLength: 180 },
+  task_type: { description: 'Task category such as implementation, design, build, asset, test, or integration.', type: 'string', maxLength: 40, default: 'implementation' },
+  dedupe_key: { description: 'Optional stable idempotency key that prevents duplicate open tasks.', type: 'string', maxLength: 160 },
+  status: { description: 'Owner-controlled status transition; review, integration, and verification use their dedicated gated tools.', type: 'string', enum: ['in_progress', 'blocked', 'ready', 'failed', 'cancelled'] },
+  reason: { description: 'Explanation for blocking a task; required when status is blocked.', type: 'string', maxLength: 2000 },
+  commit_sha: { description: 'Git commit hash submitted for independent review.', type: 'string', pattern: '^[a-fA-F0-9]{7,40}$' },
+  changed_paths: { description: 'Workspace-relative changed paths included in the task submission.', type: 'array', maxItems: 200, items: { type: 'string', maxLength: 512 } },
+  evidence: { description: 'Implementation, build, test, or runtime evidence supporting the submitted commit.', type: 'array', minItems: 1, maxItems: 30, items: { type: 'object', properties: {
+    kind: { type: 'string', enum: ['implementation', 'build', 'test', 'runtime', 'review'] },
+    summary: { type: 'string', minLength: 1, maxLength: 1000 },
+    command: { type: 'string', maxLength: 1000 },
+    exit_code: { type: 'integer', minimum: 0, maximum: 255 },
+    request_id: { type: 'string', maxLength: 120 }
+  }, required: ['kind', 'summary'], additionalProperties: false } },
+  verdict: { description: 'Independent review decision: approve or reject.', type: 'string', enum: ['approve', 'reject'] },
+  comment: { description: 'Reviewer explanation or feedback; required when rejecting a submission.', type: 'string', maxLength: 3000 },
+  target_branch: { description: 'Existing primary-worktree branch that receives an independently approved task merge.', type: 'string', minLength: 1, maxLength: 120 },
+  checks: { description: 'Independent build, test, and runtime commands executed after integration.', type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: {
+    kind: { type: 'string', enum: ['build', 'test', 'runtime'] },
+    summary: { type: 'string', minLength: 1, maxLength: 1000 },
+    command: { type: 'string', minLength: 1, maxLength: 4000 },
+    timeout_ms: { type: 'integer', minimum: 1000, maximum: 120000 }
+  }, required: ['kind', 'summary', 'command'], additionalProperties: false } },
+  decision: { description: 'Architecture or interface decision shared with all project sessions.', type: 'string', minLength: 1, maxLength: 3000 },
+  rationale: { description: 'Reasoning supporting the recorded architecture decision.', type: 'string', minLength: 1, maxLength: 5000 },
+  affected_modules: { description: 'Game modules or subsystems affected by the architecture decision.', type: 'array', maxItems: 50, items: { type: 'string', maxLength: 180 } },
+  references: { description: 'Relevant paths, commits, issue IDs, or other supporting references.', type: 'array', maxItems: 30, items: { type: 'string', maxLength: 300 } },
+  assigned_to_me: { type: 'boolean', default: false },
+  offset: { type: 'integer', minimum: 0, default: 0 },
+  maxFiles: { type: 'integer', minimum: 100, maximum: 25000, default: 25000, description: 'Maximum project files examined by the game-engine metadata adapter. Defaults to 25,000.' },
   pattern: { type: 'string', description: 'Glob pattern relative to the workspace, for example **/*.js.', maxLength: 300, default: '**/*' },
   query: { type: 'string', description: 'Non-empty text to search for; interpreted literally unless regex=true.', minLength: 1, maxLength: 500 },
+  operation: { type: 'string', description: 'Git worktree operation.', enum: ['list', 'add', 'remove', 'integrate'] },
+  force: { type: 'boolean', description: 'Force rebuilding every eligible file instead of reusing cached metadata.', default: false },
+  kind: { type: 'string', description: 'Project search scope.', enum: ['all', 'symbol', 'file'], default: 'all' },
+  symbol: { type: 'string', description: 'Declared symbol name for project_impact.', minLength: 1, maxLength: 200 },
+  createBranch: { type: 'boolean', description: 'For worktree add, create a new branch instead of checking out an existing branch.', default: false },
   to_agent_id: { type: 'string', description: 'Active reusable recipient seat ID, such as agent-003.', pattern: '^agent-[0-9]{3,}$' },
   to_session_id: { type: 'string', description: 'Exact active recipient session ID.', pattern: '^session-[a-f0-9]{32}$' },
   subject: { type: 'string', description: 'Optional short agent-message subject.', maxLength: 120 },
@@ -365,6 +493,8 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   git_push: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   git_clone: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   shell: { timeoutMs: { description: 'PowerShell timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
+  project_search: { query: { minLength: 1, maxLength: 300 }, maxResults: { minimum: 1, maximum: 100, default: 30 } },
+  git_worktree: { path: { description: 'Workspace-relative destination for add or registered source worktree path for remove/integrate. Add defaults to .bridge-worktrees/<branch>.' }, branch: { description: 'Existing branch to check out, or the task worktree branch to integrate.', maxLength: 100 }, targetBranch: { type: 'string', description: 'Target branch in the primary worktree.', maxLength: 100 }, createBranch: { default: false } },
   run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
@@ -384,7 +514,7 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   }
 });
 const TOOL_RESULT_SUMMARIES = Object.freeze({
-  session_start: 'Returns session_id, assigned agent_id seat, status, and inactivity window. Preserve session_id for this conversation.',
+  session_start: 'Returns session_id, assigned agent_id seat, inactivity window, and context_message for the user to read. Preserve session_id for this conversation.',
   agent_status: 'Returns every seat’s active/inactive and busy states, current session_id, last activity, and recent/current request IDs.',
   send_agent_message: 'Returns message_id/thread_id, recipient session and seat, timestamp, and delivery status.',
   read_agent_messages: 'Returns messages in the current session inbox, including sender, recipient, thread, timestamps and reply linkage.',
@@ -406,6 +536,16 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   file_info: 'Returns relative path, file type, byte size, timestamps, permissions, and SHA-256 for regular files.',
   git_log: 'Returns Git command metadata and commits with SHA, short SHA, author, ISO date, and subject.',
   git_show: 'Returns Git command, exitCode, stdout/stderr, and output-truncation flag.',
+  project_index_status: 'Returns local index status, indexed file and symbol counts, dependency edges, size, truncation, watcher state, and scan timing.',
+  project_index_refresh: 'Returns refreshed index status and scan counters. Source contents are not published.',
+  project_search: 'Returns ranked paths and matching declarations (name, kind, and line), without source text.',
+  project_overview: 'Returns language counts, likely entry-point and test candidates, directory counts, and graph/index status.',
+  project_impact: 'Returns direct/transitive dependent paths and likely test candidates with graph-confidence limitations.',
+  game_project_intelligence: 'Returns detected engine adapters and bounded project metadata; binary assets are not parsed.',
+  task_project_init: 'Returns a shared project_id for agent collaboration.', task_project_list: 'Returns known shared project boards.', task_project_status: 'Returns project policy, leases and decisions.',
+  task_create: 'Returns a durable task record with acceptance criteria, dependencies and path scopes.', task_list: 'Returns paginated task summaries.', task_get: 'Returns a complete task record.', task_claim: 'Reserves project-wide overlapping file/module scopes for the claiming session.',
+  task_heartbeat: 'Renews a task resource lease.', task_update: 'Updates a task under owner-controlled transitions.', task_submit: 'Publishes a commit and implementation/build/test/runtime evidence for review.', task_review: 'Returns an independent review decision.', task_integrate: 'Performs an approved Git worktree merge and returns the merge commit.', task_verify: 'Runs build, test and runtime commands and records their results.', task_decision: 'Records a shared architecture decision.', task_cancel: 'Cancels a task and releases its lease.',
+  git_worktree: 'Returns registered worktrees or an approval-gated add/remove/integrate result. Integration returns the confirmed merge commit.',
   git_branches: 'Returns local branches with name, current-branch flag, short SHA, and upstream when configured.',
   git_changed_files: 'Returns change count, per-file index/worktree status and path, plus truncation and Git exit information.',
   discover_instructions: 'Returns applicable AGENTS.md paths and contents for the root and ancestor directories of supplied paths.',
@@ -433,9 +573,13 @@ function parameterSchema(tool) {
   const overrides = TOOL_PARAMETER_OVERRIDES[tool] || {};
   const properties = {};
   for (const name of names) {
-    const base = BASE_FIELD_SCHEMAS[name] || { type: 'string', description: 'Argument ' + name + ' for ' + tool + '.' };
+    const base = BASE_FIELD_SCHEMAS[name] || { type: 'string' };
     const override = overrides[name] || {};
-    properties[name] = { ...base, ...override };
+    const property = { ...base, ...override };
+    if (typeof property.description !== 'string' || property.description.trim().length < 10) {
+      property.description = 'Argument ' + name + ' supplied to the ' + tool + ' tool.';
+    }
+    properties[name] = property;
     if (tool === 'git_fetch' || tool === 'git_pull' || tool === 'git_push' || tool === 'git_clone') {
       if (name === 'timeoutMs' && !override.default) properties[name] = { ...properties[name], default: 60000 };
     }
@@ -450,7 +594,7 @@ function isPlainObject(value) {
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
-function computerServiceCall(service, args, requestId) {
+function computerServiceCall(service, args, requestId, signal = null) {
   switch (args.action) {
     case 'status': return service.status(args);
     case 'connect': return service.connectColab();
@@ -472,7 +616,7 @@ function computerServiceCall(service, args, requestId) {
     case 'mouse_up':
     case 'key_down':
     case 'key_up':
-      return service.inputAction(args, requestId);
+      return service.inputAction(args, requestId, signal);
     default: throw new Error('Unsupported computer action.');
   }
 }
@@ -496,15 +640,19 @@ function ttsOutputFailed(args = {}, output) {
 }
 
 function createToolBridge(deps) {
-  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService,
-    getTtsSettings = () => ({ mode: 'autoplay' }), onTtsRequest, onTtsResult } = deps;
+  const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService, projectIntelligence,
+    getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult,
+    onSchedulerUpdate = () => {} } = deps;
   const COMPUTER_TOOLS = new Set(['computer']);
+  const executionScheduler = createExecutionScheduler({ maxActive: 100, resourceLimits: DEFAULT_RESOURCE_LIMITS, onChange: onSchedulerUpdate });
 
-  async function synthesizeConfiguredSpeech(args, id) {
+  async function synthesizeConfiguredSpeech(args, id, sessionId = null) {
     if (args.play === false) return visionService.synthesizeSpeech(args, id);
     const config = typeof getTtsSettings === 'function' ? getTtsSettings() || {} : {};
     const mode = config.mode === 'notification' ? 'notification' : 'autoplay';
-    const request = { id: 'speech-' + randomUUID(), text: String(args.text || '').trim(), mode };
+    const agent = typeof getAgentLabelForSession === 'function' ? getAgentLabelForSession(sessionId) : null;
+    const request = { id: 'speech-' + randomUUID(), text: String(args.text || '').trim(), mode,
+      agentId: agent && agent.agentId || '', agentLabel: agent && agent.agentLabel || 'Windows Bridge' };
     if (typeof onTtsRequest === 'function') { try { onTtsRequest(request); } catch {} }
     if (mode === 'notification') {
       const output = {
@@ -537,6 +685,14 @@ function createToolBridge(deps) {
     if (tool === 'computer' && args.mode !== undefined && !['normal', 'fast'].includes(args.mode)) {
       throw new Error('computer.mode must be normal or fast.');
     }
+    if (tool === 'project_impact' && !args.path && !args.symbol) throw new Error('project_impact requires path or symbol.');
+    if (tool === 'git_worktree') {
+      if (!['list', 'add', 'remove', 'integrate'].includes(args.operation)) throw new Error('git_worktree.operation must be list, add, remove, or integrate.');
+      if (args.operation === 'add' && (typeof args.branch !== 'string' || !args.branch.trim())) throw new Error('git_worktree add requires branch.');
+      if (args.operation === 'remove' && (typeof args.path !== 'string' || !args.path.trim())) throw new Error('git_worktree remove requires path.');
+      if (args.operation === 'integrate' && ['path', 'branch', 'targetBranch'].some(key => typeof args[key] !== 'string' || !args[key].trim())) throw new Error('git_worktree integrate requires path, branch, and targetBranch.');
+      if (args.createBranch !== undefined && typeof args.createBranch !== 'boolean') throw new Error('git_worktree.createBranch must be boolean.');
+    }
     const extra = Object.keys(args).filter(key => !allowed.includes(key));
     if (extra.length) throw new Error('Unsupported argument field(s) for ' + tool + ': ' + extra.join(', '));
     if (tool === 'batch') validateBatchArgs(args);
@@ -558,7 +714,7 @@ function createToolBridge(deps) {
       if (Object.keys(step).some(key => !['id','tool','args'].includes(key))) throw new Error('batch step contains unsupported fields.');
       if (typeof step.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,19}$/.test(step.id)) throw new Error('batch step IDs must be 1–20 simple characters.');
       if (ids.has(step.id)) throw new Error('duplicate batch step ID: ' + step.id);
-      if (typeof step.tool !== 'string' || step.tool === 'batch' || step.tool === 'refresh_environment_context' || step.tool === 'session_start' || step.tool === 'agent_status' || BLOCKED_TOOLS_FOR_MAILBOX.has(step.tool)) {
+      if (typeof step.tool !== 'string' || step.tool === 'batch' || step.tool === 'refresh_environment_context' || step.tool === 'session_start' || step.tool === 'agent_status' || step.tool.startsWith('task_') || BLOCKED_TOOLS_FOR_MAILBOX.has(step.tool)) {
         throw new Error('batch step ' + step.id + ' uses an unsupported or non-nestable tool.');
       }
       if (!isPlainObject(step.args)) throw new Error('batch step ' + step.id + ' args must be an object.');
@@ -591,10 +747,13 @@ function createToolBridge(deps) {
     return String(value || '').replace(/\\/g, '/').split('/').filter(part => part && part !== '.').join('/').toLowerCase();
   }
 
-  function batchFootprint(step) {
+  function batchFootprint(step, workspaceRoot = null) {
     const args = step.args || {};
     const reads = [];
     const writes = [];
+    const resourceReads = [];
+    const resourceWrites = [];
+    const resourcePools = resourcePoolsForTool(step.tool, args);
     let barrier = false;
     const add = (set, value) => {
       const normalized = normalizeBatchPath(value);
@@ -638,8 +797,23 @@ function createToolBridge(deps) {
       case 'git_branches':
       case 'git_changed_files':
       case 'discover_instructions':
+        reads.push('*');
+        break;
       case 'get_agent_context':
         reads.push('*');
+        resourceReads.push(projectIndexResource(workspaceRoot));
+        break;
+      case 'project_index_status':
+      case 'project_search':
+      case 'project_overview':
+      case 'project_impact':
+        resourceReads.push(projectIndexResource(workspaceRoot));
+        break;
+      case 'project_index_refresh':
+        resourceWrites.push(projectIndexResource(workspaceRoot));
+        break;
+      case 'git_worktree':
+        barrier = true;
         break;
       case 'computer':
       case 'tts':
@@ -659,37 +833,43 @@ function createToolBridge(deps) {
         barrier = true;
         break;
     }
-    return { reads, writes, barrier };
+    return { reads, writes, resourceReads, resourceWrites, resourcePools, barrier };
   }
 
   function batchFootprintsConflict(left, right) {
     if (left.barrier || right.barrier) return true;
     const overlaps = (a, b) => a === '*' || b === '*' || a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+    const resourceOverlaps = (a, b) => a === '*' || b === '*' || a === b;
     return left.writes.some(a => right.reads.some(b => overlaps(a, b)) || right.writes.some(b => overlaps(a, b))) ||
-      right.writes.some(a => left.reads.some(b => overlaps(a, b)));
+      right.writes.some(a => left.reads.some(b => overlaps(a, b))) ||
+      (left.resourceWrites || []).some(a => (right.resourceReads || []).some(b => resourceOverlaps(a, b)) ||
+        (right.resourceWrites || []).some(b => resourceOverlaps(a, b))) ||
+      (right.resourceWrites || []).some(a => (left.resourceReads || []).some(b => resourceOverlaps(a, b)));
   }
 
-  function getExecutionFootprint(tool, args = {}) {
-    if (tool !== 'batch') return batchFootprint({ tool, args });
+  function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
+    if (tool !== 'batch') return batchFootprint({ tool, args }, workspaceRoot);
     const steps = Array.isArray(args.steps) ? args.steps : [];
-    if (!steps.length) return { reads: [], writes: [], barrier: true };
-    const combined = { reads: [], writes: [], barrier: false };
+    if (!steps.length) return { reads: [], writes: [], resourceReads: [], resourceWrites: [], barrier: true };
+    const combined = { reads: [], writes: [], resourceReads: [], resourceWrites: [], barrier: false };
     for (const step of steps) {
-      const footprint = batchFootprint(step);
+      const footprint = batchFootprint(step, workspaceRoot);
       combined.reads.push(...footprint.reads);
       combined.writes.push(...footprint.writes);
+      combined.resourceReads.push(...footprint.resourceReads);
+      combined.resourceWrites.push(...footprint.resourceWrites);
       if (footprint.barrier) combined.barrier = true;
     }
     return combined;
   }
 
-  function inferBatchDependencies(steps, index) {
+  function inferBatchDependencies(steps, index, workspaceRoot = null) {
     const current = steps[index];
     const dependencies = new Set(collectBatchRefIds(current.args));
-    const currentFootprint = batchFootprint(current);
+    const currentFootprint = batchFootprint(current, workspaceRoot);
     for (let priorIndex = 0; priorIndex < index; priorIndex++) {
       const prior = steps[priorIndex];
-      if (batchFootprintsConflict(batchFootprint(prior), currentFootprint)) dependencies.add(prior.id);
+      if (batchFootprintsConflict(batchFootprint(prior, workspaceRoot), currentFootprint)) dependencies.add(prior.id);
     }
     return [...dependencies];
   }
@@ -808,7 +988,36 @@ function createToolBridge(deps) {
     return header + resultWarning + 'Arguments (control characters escaped):\n' + displayApprovalValue(JSON.stringify(args, null, 2), 3500);
   }
 
-  async function askApproval(tool, args, root) {
+  function abortError(signal) {
+    const error = new Error(String(signal && signal.reason && signal.reason.message || signal && signal.reason || 'Operation cancelled.'));
+    error.name = 'AbortError';
+    error.code = 'ABORT_ERR';
+    return error;
+  }
+
+  function throwIfAborted(signal) {
+    if (signal && signal.aborted) throw abortError(signal);
+  }
+
+  async function awaitWithAbort(promise, signal) {
+    if (!signal) return promise;
+    throwIfAborted(signal);
+    return new Promise((resolve, reject) => {
+      const cleanup = () => signal.removeEventListener('abort', onAbort);
+      const onAbort = () => { cleanup(); reject(abortError(signal)); };
+      signal.addEventListener('abort', onAbort, { once: true });
+      Promise.resolve(promise).then(value => {
+        cleanup();
+        resolve(value);
+      }, error => {
+        cleanup();
+        reject(error);
+      });
+    });
+  }
+
+  async function askApproval(tool, args, root, signal = null) {
+    throwIfAborted(signal);
     const options = {
       type: 'warning',
       title: 'Approve local coding tool',
@@ -820,9 +1029,10 @@ function createToolBridge(deps) {
       noLink: true
     };
     const win = getMainWindow && getMainWindow();
-    const answer = win && !win.isDestroyed()
-      ? await dialog.showMessageBox(win, options)
-      : await dialog.showMessageBox(options);
+    const prompt = win && !win.isDestroyed()
+      ? dialog.showMessageBox(win, options)
+      : dialog.showMessageBox(options);
+    const answer = await awaitWithAbort(prompt, signal);
     return answer.response === 0;
   }
 
@@ -833,7 +1043,17 @@ function createToolBridge(deps) {
     return value;
   }
 
-  async function executeLocalTool(root, tool, args, requestId) {
+  async function executeLocalTool(root, tool, args, requestId, signal = null) {
+    throwIfAborted(signal);
+    if (tool === 'game_project_intelligence') return inspectGameProject(root, { maxFiles: args.maxFiles });
+    if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact'].includes(tool)) {
+      if (!projectIntelligence) throw new Error('The local project intelligence service is unavailable.');
+      if (tool === 'project_index_status') return projectIntelligence.status(root, { signal });
+      if (tool === 'project_index_refresh') return projectIntelligence.refresh(root, args, { signal });
+      if (tool === 'project_search') return projectIntelligence.search(root, args, { signal });
+      if (tool === 'project_overview') return projectIntelligence.overview(root, { signal });
+      if (tool === 'project_impact') return projectIntelligence.impact(root, args, { signal });
+    }
     if (tool === 'upload_workspace_file') {
       if (typeof uploadWorkspaceFile !== 'function') throw new Error('Repository artifact upload is unavailable.');
       const target = localTools.safePath(root, args.path, false);
@@ -851,9 +1071,16 @@ function createToolBridge(deps) {
       });
     }
     if (tool === 'get_capabilities') {
-      const output = await localTools.executeTool(root, tool, args);
+      const output = await localTools.executeTool(root, tool, args, signal);
       if (output && Array.isArray(output.tools)) {
         output.tools.push(
+          { name: 'project_index_status', mode: 'local-project-index-read' },
+          { name: 'project_index_refresh', mode: 'local-project-index-read' },
+          { name: 'project_search', mode: 'local-project-index-read' },
+          { name: 'project_overview', mode: 'local-project-index-read' },
+          { name: 'project_impact', mode: 'local-project-index-read' },
+          { name: 'game_project_intelligence', mode: 'local-game-engine-metadata-read' },
+          ...['task_project_init','task_project_list','task_project_status','task_create','task_list','task_get','task_claim','task_heartbeat','task_update','task_submit','task_review','task_integrate','task_verify','task_decision','task_cancel'].map(name => ({ name, mode: 'repository-bridge-control' })),
           { name: 'batch', mode: 'local-batch' },
           { name: 'get_agent_context', mode: 'read' },
           { name: 'upload_workspace_file', mode: 'approval-required' },
@@ -885,17 +1112,18 @@ function createToolBridge(deps) {
                 ? 'Normally runs automatically for workspace-relative paths; secret-like paths still require native Windows approval.'
                 : 'No approval dialog is normally required; the app still validates paths and arguments.'
         }));
-        output.catalog_version = 3;
+        output.catalog_version = 4;
         output.tool_calling = {
           mode: 'repository-mailbox-batch',
-          catalog_version: 3,
+          catalog_version: 4,
           rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts, shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. Whenever output_truncated is true or a field says OUTPUT EXTERNALIZED, fetch referenced artifacts with GitHub MCP and concatenate numbered parts in order. For complete_result_part, reconstruct the JSON result before following its artifact manifest. If artifacts are missing or artifact_errors is non-empty, retry the read/search in bounded pages; truncation is not evidence of a safety block. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
       }
       return output;
     }
-    if (!GITHUB_GIT_TOOLS.has(tool)) return localTools.executeTool(root, tool, args);
+    throwIfAborted(signal);
+    if (!GITHUB_GIT_TOOLS.has(tool)) return localTools.executeTool(root, tool, args, signal);
     if (!githubAuth || typeof githubAuth.runGitOperation !== 'function') {
       throw new Error('Authenticated local Git operations are unavailable in this app build.');
     }
@@ -914,30 +1142,45 @@ function createToolBridge(deps) {
       call.repository = args.repository;
       call.destination = localTools.safePath(root, args.path, false);
     }
-    return githubAuth.runGitOperation(call);
+    throwIfAborted(signal);
+    return githubAuth.runGitOperation(call, signal);
   }
 
 
-  async function executeBatch(args, parentId, sessionId = null) {
+  async function executeBatch(args, parentId, sessionId = null, parentSignal = null) {
     const completed = new Map();
     const taskById = new Map();
     const outcomeById = new Map();
     const steps = args.steps;
+    const workspaceRoot = getWorkspaceRoot(sessionId);
     const concurrency = Number.isInteger(args.maxConcurrency) ? args.maxConcurrency : DEFAULT_BATCH_CONCURRENCY;
     const stopOnError = args.stopOnError !== false;
     let active = 0;
     const waiters = [];
+    const activePoolCounts = new Map();
     let firstFailureIndex = Number.POSITIVE_INFINITY;
     let stoppedAt = null;
 
-    async function acquireSlot() {
-      if (active < concurrency) { active++; return; }
-      await new Promise(resolve => waiters.push(resolve));
+    function canAcquirePools(pools) {
+      if (active >= concurrency) return false;
+      for (const pool of pools) {
+        const limit = executionScheduler.getResourceLimit(pool);
+        if ((activePoolCounts.get(pool) || 0) >= limit) return false;
+      }
+      return true;
     }
-    function releaseSlot() {
-      const next = waiters.shift();
-      if (next) next();
-      else active--;
+    async function acquireSlot(pools) {
+      while (!canAcquirePools(pools)) await new Promise(resolve => waiters.push(resolve));
+      active++;
+      for (const pool of pools) activePoolCounts.set(pool, (activePoolCounts.get(pool) || 0) + 1);
+    }
+    function releaseSlot(pools) {
+      active--;
+      for (const pool of pools) {
+        const next = Math.max(0, (activePoolCounts.get(pool) || 0) - 1);
+        if (next) activePoolCounts.set(pool, next); else activePoolCounts.delete(pool);
+      }
+      for (const wake of waiters.splice(0)) wake();
     }
     function itemFor(step, outcome, skipped = false) {
       const item = {
@@ -958,7 +1201,7 @@ function createToolBridge(deps) {
     }
 
     for (const [index, step] of steps.entries()) {
-      const dependencies = inferBatchDependencies(steps, index);
+      const dependencies = inferBatchDependencies(steps, index, workspaceRoot);
       const task = (async () => {
         await Promise.all(dependencies.map(id => taskById.get(id)));
         const failedDependency = dependencies.find(id => !outcomeById.get(id) || outcomeById.get(id).ok !== true);
@@ -974,7 +1217,8 @@ function createToolBridge(deps) {
           outcomeById.set(step.id, skipped);
           return skipped;
         }
-        await acquireSlot();
+        const pools = resourcePoolsForTool(step.tool, step.args || {});
+        await acquireSlot(pools);
         try {
           if (stopOnError && index > firstFailureIndex) {
             const skipped = { ok: false, skipped: true, error: 'Not started because an earlier batch step failed or was cancelled.' };
@@ -986,7 +1230,7 @@ function createToolBridge(deps) {
           try {
             const resolvedArgs = resolveBatchRefs(step.args, completed);
             const childId = (String(parentId).slice(0, 55) || 'batch') + '-' + step.id;
-            outcome = await runTool(step.tool, resolvedArgs, childId, sessionId);
+            outcome = await runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal);
           } catch (error) {
             outcome = { ok: false, error: String(error && error.message || error) };
           }
@@ -998,7 +1242,7 @@ function createToolBridge(deps) {
           }
           return outcome;
         } finally {
-          releaseSlot();
+          releaseSlot(pools);
         }
       })();
       taskById.set(step.id, task);
@@ -1042,13 +1286,13 @@ function createToolBridge(deps) {
     const seen = new Set();
     return commands.filter(item => { const key = item.command.toLowerCase(); if (seen.has(key)) return false; seen.add(key); return true; });
   }
-  async function executeAgentContext(root, requestId) {
+  async function executeAgentContext(root, requestId, signal = null) {
     const [environment, project, tree, instructionReport, capabilities] = await Promise.all([
-      localTools.executeTool(root, 'environment_info', {}),
-      localTools.executeTool(root, 'project_status', {}),
-      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: isFilesystemRoot(root) ? 1 : 2, maxEntries: 180, format: 'paths' }),
-      localTools.executeTool(root, 'discover_instructions', {}),
-      executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog')
+      localTools.executeTool(root, 'environment_info', {}, signal),
+      localTools.executeTool(root, 'project_status', {}, signal),
+      localTools.executeTool(root, 'directory_tree', { path: '.', maxDepth: isFilesystemRoot(root) ? 1 : 2, maxEntries: 180, format: 'paths' }, signal),
+      localTools.executeTool(root, 'discover_instructions', {}, signal),
+      executeLocalTool(root, 'get_capabilities', {}, requestId + '-catalog', signal)
     ]);
     const found = instructionReport && Array.isArray(instructionReport.instructions) ? instructionReport.instructions : [];
     const instructionFiles = found.map(item => ({
@@ -1061,7 +1305,7 @@ function createToolBridge(deps) {
     const manifestPath = path.join(root, 'package.json');
     if (fs.existsSync(manifestPath) && fs.statSync(manifestPath).isFile() && fs.statSync(manifestPath).size <= 256 * 1024) {
       try {
-        const manifestFile = await localTools.executeTool(root, 'read_file', { path: 'package.json' });
+        const manifestFile = await localTools.executeTool(root, 'read_file', { path: 'package.json' }, signal);
         const manifest = JSON.parse(manifestFile.content);
         projectCommands = {
           manifest: 'package.json',
@@ -1073,6 +1317,7 @@ function createToolBridge(deps) {
       } catch { projectCommands = { manifest: 'package.json', parse_error: true }; }
     }
     const suggestedCommands = inferProjectCommands(project, projectCommands);
+    const projectIndex = projectIntelligence ? await projectIntelligence.status(root, { signal }) : null;
     return {
       protocol: 'chatgpt-local-agent-context/v1',
       generated_at: new Date().toISOString(),
@@ -1084,6 +1329,7 @@ function createToolBridge(deps) {
         : 'Use workspace-relative paths or absolute Windows paths that resolve inside the selected workspace.',
       environment,
       project,
+      project_index: projectIndex,
       project_commands: projectCommands,
       suggested_commands: suggestedCommands,
       execution_policy: {
@@ -1122,6 +1368,9 @@ function createToolBridge(deps) {
           'After session_start, start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, every agent seat’s current status, and the local tool catalog in one result.',
           'For unknown environment facts, run targeted discovery before asking the user: check installed application/game manifests, executable version metadata, likely install locations, frameworks and relevant project files.',
           'When agents collaborate, check agent_status for the current seat/session inventory, send focused assignments or findings with send_agent_message, poll your inbox with read_agent_messages, and reply using reply_to_agent_message so the original conversation receives the response. Messages are addressed to session IDs, not permanently to seat numbers.',
+          'Use project_overview and project_index_status to understand index coverage, then project_search for identifiers/declarations and project_impact before broad file reads or risky cross-module edits. The local index stores metadata only; read relevant source pages before editing, and treat unresolved dependency edges as incomplete.',
+          'For parallel implementation, use separate Git worktrees and non-overlapping file ownership. git_worktree add/remove are approval-gated; never remove a worktree that has uncommitted changes.',
+          'Use project_impact to identify likely dependent modules and tests, but verify the project-native test framework and run the correct test command. Do not claim an impacted-test list is complete when the import graph reports uncertainty.',
           'Batch independent read-only inspections. Use one small inspection request, one focused edit request, and one verification request rather than one request per file or command.',
           'Match every result to its request_id. Inspect status, nested ok, exitCode, timedOut, stdout/stderr and truncation. A request or claim alone is not completion.',
           'If the result is missing, inspect its claim and worker state and reread that result. Never replay an uncertain side-effecting request.',
@@ -1139,7 +1388,16 @@ function createToolBridge(deps) {
     };
   }
 
-  async function runTool(tool, inputArgs, callId = null, sessionId = null) {
+  async function runTool(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null) {
+    if (!nested) {
+      const args = { ...(inputArgs || {}) };
+      const id = callId || randomUUID();
+      if (tool === 'batch') return runTool(tool, args, id, sessionId, true, executionSignal);
+      const priority = tool === 'computer' || tool === 'project_search' || tool === 'game_project_intelligence' ? 0 : tool === 'project_index_refresh' ? 30 : 10;
+      return executionScheduler.run(getExecutionFootprint(tool, args, getWorkspaceRoot(sessionId)),
+        ({ signal }) => runTool(tool, args, id, sessionId, true, signal), { id, tool, priority, signal: executionSignal });
+    }
+    if (executionSignal && executionSignal.aborted) throw executionSignal.reason || new Error('Operation cancelled.');
     const root = getWorkspaceRoot(sessionId);
     const args = { ...(inputArgs || {}) };
     const id = callId || randomUUID();
@@ -1147,9 +1405,9 @@ function createToolBridge(deps) {
     try {
       validateArgs(tool, args);
       if (tool === 'batch') {
-        result = await executeBatch(args, id, sessionId);
+        result = await executeBatch(args, id, sessionId, executionSignal);
       } else if (tool === 'get_agent_context') {
-        result = { ok: true, result: await executeAgentContext(root, id) };
+        result = { ok: true, result: await executeAgentContext(root, id, executionSignal) };
       } else {
         const isComputerTool = COMPUTER_TOOLS.has(tool);
         const isTtsTool = tool === 'tts';
@@ -1168,7 +1426,10 @@ function createToolBridge(deps) {
         }
         const inputActions = ['sequence', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up'];
         const controlActive = isComputerTool && typeof visionService.isControlSessionActive === 'function' && visionService.isControlSessionActive();
-        const policy = tool === 'upload_workspace_file'
+        const projectReadTool = tool.startsWith('project_') || tool === 'game_project_intelligence';
+        const policy = projectReadTool
+          ? { tool, requiresApproval: false, automatic: true }
+          : tool === 'upload_workspace_file'
           ? { tool, requiresApproval: true, automatic: false }
           : isComputerTool
             ? {
@@ -1183,16 +1444,17 @@ function createToolBridge(deps) {
         if (policy.requiresApproval) {
           const approved = typeof getAutoAcceptAll === 'function' && getAutoAcceptAll() === true
             ? true
-            : await askApproval(tool, args, root);
+            : await askApproval(tool, args, root, executionSignal);
           if (!approved) {
             result = { ok: false, cancelled: true, message: 'User cancelled the operation. Nothing was executed.' };
           } else {
+            throwIfAborted(executionSignal);
             if (policy.sensitivePath || tool === 'read_file') args.approved = true;
             const output = isComputerTool
-              ? await computerServiceCall(visionService, args, id)
+              ? await computerServiceCall(visionService, args, id, executionSignal)
               : isTtsTool
-                ? await synthesizeConfiguredSpeech(args, id)
-                : await executeLocalTool(root, tool, args, id);
+                ? await synthesizeConfiguredSpeech(args, id, sessionId)
+                : await executeLocalTool(root, tool, args, id, executionSignal);
             if ((isComputerTool && computerOutputFailed(args.action, output)) ||
                 (isTtsTool && ttsOutputFailed(args, output)) ||
                 (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
@@ -1210,11 +1472,12 @@ function createToolBridge(deps) {
             }
           }
         } else {
+          throwIfAborted(executionSignal);
           const output = isComputerTool
-            ? await computerServiceCall(visionService, args, id)
+            ? await computerServiceCall(visionService, args, id, executionSignal)
             : isTtsTool
-              ? await synthesizeConfiguredSpeech(args, id)
-              : await executeLocalTool(root, tool, args, id);
+              ? await synthesizeConfiguredSpeech(args, id, sessionId)
+              : await executeLocalTool(root, tool, args, id, executionSignal);
           if ((isComputerTool && computerOutputFailed(args.action, output)) ||
               (isTtsTool && ttsOutputFailed(args, output)) ||
               (output && Number.isInteger(output.exitCode) && output.exitCode !== 0)) {
@@ -1233,7 +1496,8 @@ function createToolBridge(deps) {
         }
       }
     } catch (error) {
-      result = { ok: false, error: String(error && error.message || error) };
+      const cancelled = Boolean((executionSignal && executionSignal.aborted) || error && (error.name === 'AbortError' || error.code === 'ABORT_ERR'));
+      result = { ok: false, ...(cancelled ? { cancelled: true } : {}), error: String(error && error.message || error) };
     }
     return boundedResult({
       protocol: 'chatgpt-local-tool-result-v2',
@@ -1245,13 +1509,19 @@ function createToolBridge(deps) {
     });
   }
 
-  return { runTool };
+  return {
+    runTool,
+    getExecutionStats: () => executionScheduler.getState(),
+    cancelTool: (id, reason) => executionScheduler.cancel(id, reason),
+    stop: options => executionScheduler.stop(options)
+  };
 }
 
 module.exports = {
   createToolBridge,
   TOOL_ARGUMENT_KEYS,
   getExecutionFootprint,
+  resourcePoolsForTool,
   executionFootprintsConflict,
   BLOCKED_TOOLS_FOR_MAILBOX,
   GITHUB_GIT_TOOLS

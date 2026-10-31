@@ -429,3 +429,37 @@ test('file glob and text search accept a targeted subdirectory path', async () =
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test('an already-aborted request is rejected before local PowerShell startup on every platform', async () => {
+  const root = fixture();
+  const controller = new AbortController();
+  controller.abort(new Error('SESSION_REVOKED: session deletion cancelled this request.'));
+  try {
+    await assert.rejects(
+      tools.executeTool(root, 'shell', { command: "Write-Output 'must not run'" }, controller.signal),
+      error => error && error.name === 'AbortError' && error.code === 'ABORT_ERR' && /SESSION_REVOKED/.test(error.message)
+    );
+  } finally { cleanup(root); }
+});
+
+test('an active PowerShell request terminates its process tree when its agent session is revoked', async t => {
+  if (process.platform !== 'win32') {
+    t.skip('PowerShell process-tree cancellation is only available on Windows.');
+    return;
+  }
+  const root = fixture();
+  const controller = new AbortController();
+  try {
+    const startedAt = Date.now();
+    const operation = tools.executeTool(root, 'shell', {
+      command: "Write-Output 'before revoke'; Start-Sleep -Seconds 60; Write-Output 'must not finish'",
+      timeoutMs: 60000
+    }, controller.signal);
+    await new Promise(resolve => setTimeout(resolve, 350));
+    controller.abort(new Error('SESSION_REVOKED: the agent widget was deleted.'));
+    await assert.rejects(operation, error =>
+      error && error.name === 'AbortError' && error.code === 'ABORT_ERR' && /SESSION_REVOKED/.test(error.message));
+    assert.ok(Date.now() - startedAt < 10000, 'revocation should terminate the local PowerShell process promptly');
+  } finally { cleanup(root); }
+});

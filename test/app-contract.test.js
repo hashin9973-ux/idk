@@ -34,6 +34,13 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(styles.includes('.agent-widget-host{position:relative'));
   assert.ok(renderer.includes('agent-workspace-button'));
   assert.ok(renderer.includes('agent-message-button'));
+  assert.ok(renderer.includes('agent-delete-button'));
+  assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox)'));
+  assert.ok(renderer.includes("cleanup.status!=='completed'"));
+  assert.ok(bridge.includes("status: mailboxCleanup.status === 'completed' ? 'completed_with_preserved_records' : mailboxCleanup.status"));
+  assert.ok(renderer.includes("button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke'"));
+  assert.ok(html.includes('agent-delete-dialog'));
+  assert.ok(html.includes('agent-delete-wipe-mailbox'));
   assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
   assert.ok(renderer.includes('Select an agent ID or choose'));
@@ -70,15 +77,21 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('app:agent-select-workspace'));
   assert.ok(main.includes('app:agent-send-message'));
   assert.ok(main.includes('app:agent-read-replies'));
-  assert.ok(bridge.includes('executeTool(request.tool, request.args, requestId, request.session_id || null)'));
+  assert.ok(bridge.includes('executeTool(request.tool, request.args, requestId, request.session_id || null, signal)'));
+  assert.ok(bridge.includes('revokeAgentSession'));
+  assert.ok(bridge.includes('SESSION_REVOKED'));
+  assert.ok(bridge.includes('requestAbortControllers'));
   assert.ok(bridge.includes('readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)'));
   assert.ok(bridge.includes('requestSessionAssignment({'));
   assert.ok(bridge.includes('requestSessionAssignment = async () => null'));
   assert.ok(bridge.includes('assignment_mode: assignment.autoAssign === true ? \'automatic-confirmed\' : \'manual\''));
   assert.ok(bridge.includes('getWorkspaceRoot(request.session_id || null)'));
-  assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId) => toolBridge.runTool(tool, args, requestId, sessionId)'));
+  assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal)'));
+  assert.ok(main.includes("ipcMain.handle('app:agent-widget-delete'"));
+  assert.ok(main.includes('settings.agentHiddenIds'));
+  assert.ok(preload.includes('deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false)'));
   assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));
-  assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId)'));
+  assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal)'));
 });
 
 test('dashboard is a minimal GitHub and worker status window', () => {
@@ -335,13 +348,13 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
   assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));
   assert.ok(toolBridge.includes("reply_to_agent_message: ['message_id', 'message']"));
-  assert.match(toolBridge, /catalog_version = 3/);
+  assert.match(toolBridge, /catalog_version = 4/);
 });
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
   const main = read('desktop', 'main.js');
-  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null\)/);
+  assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
   assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);
@@ -455,7 +468,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.match(bridge, /All click\/move\/drag\/scroll\/key\/mouse inputs execute on local Windows, not in Colab/);
   assert.ok(bridge.includes("enum: ['status', 'connect', 'enable', 'disable', 'screenshot', 'wait', 'start_control', 'stop_control', 'click', 'move', 'drag', 'scroll', 'press', 'type', 'hotkey', 'mouse_down', 'mouse_up', 'key_down', 'key_up', 'sequence']"));
   assert.ok(bridge.includes("requiresApproval: ['connect', 'enable', 'start_control'].includes(args.action)"));
-  assert.ok(bridge.includes('service.inputAction(args, requestId)'));
+  assert.ok(bridge.includes('service.inputAction(args, requestId, signal)'));
   assert.ok(bridge.includes("Ordered local mouse/keyboard inputs, up to 50 steps"));
   assert.ok(bridge.includes('function computerServiceCall'));
   assert.doesNotMatch(bridge, /name: 'vision_(?:activate|deactivate|status|analyze_screenshot|wait)'/);
@@ -487,7 +500,7 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
   assert.ok(vision.includes('activate immediately'));
-  assert.ok(vision.includes('async function inputAction(args = {}, callId = null)'));
+  assert.ok(vision.includes('async function inputAction(args = {}, callId = null, signal = null)'));
   assert.ok(vision.includes('latestScreenFrame'));
   assert.ok(vision.includes('Screenshot frame: '));
   assert.ok(main.includes("require('./windows-uia')"));
@@ -825,7 +838,7 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.doesNotMatch(html, /id="agent-mailbox-list"/, 'seat consoles must not be nested in the aggregate queue widget');
   assert.match(renderer, /function renderAgentMailboxes\(rawAgents\)/);
   assert.match(renderer, /function makeAgentWidget\(/);
-  assert.match(renderer, /name\.textContent=String\(agent\.agent_id\);/);
+  assert.match(renderer, /name\.textContent=String\(agent\.nickname\|\|agent\.agent_id\);/);
   assert.doesNotMatch(renderer, /name\.textContent=String\(agent\.label\|\|agent\.agent_id\)/, 'widget title must be the seat ID, not its task label');
   assert.doesNotMatch(renderer, /identityLine|agent-console-id['"]/, 'the header must not create or look up a duplicate ID row');
   assert.match(renderer, /tool\.textContent=String\(request\.tool\|\|'unknown tool'\)/, 'request tool names stay inside the console body');
@@ -886,4 +899,78 @@ test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate'
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('GPL-3.0'));
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('issue #340'));
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('does not assert a definitive license'));
+});
+
+test('dashboard exposes agent widget addition, nickname and auto-dump controls',()=>{
+  const fs=require('node:fs');const html=fs.readFileSync(require.resolve('../desktop/dashboard.html'),'utf8');const renderer=fs.readFileSync(require.resolve('../desktop/dashboard-renderer.js'),'utf8');const main=fs.readFileSync(require.resolve('../desktop/main.js'),'utf8');
+  assert.match(html,/add-agent-widget/);assert.match(html,/widget-context-menu/);assert.match(renderer,/autoArrangeWidgets/);assert.match(renderer,/agent-dump-button/);assert.match(main,/app:agent-widget-settings/);assert.match(main,/app:agent-widget-add/);
+});
+
+test('session lifecycle, bounded retention, shared task coordination and game metadata are exposed',()=>{
+  const html=read('desktop','dashboard.html');
+  const renderer=read('desktop','dashboard-renderer.js');
+  const preload=read('desktop','preload.js');
+  const main=read('desktop','main.js');
+  const registry=read('desktop','agent-registry.js');
+  const bridge=read('desktop','repository-bridge.js');
+  const tools=read('desktop','tool-bridge.js');
+  assert.match(html,/id="session-auto-expire"/);
+  assert.match(html,/id="task-board-project"/);
+  assert.match(renderer,/agent-pause-button/);
+  assert.match(renderer,/agent-disconnect-button/);
+  assert.match(renderer,/createAgentIcon\('scissors'\)/);
+  assert.match(preload,/pauseAgentSession:/);
+  assert.match(preload,/disconnectAgentSession:/);
+  assert.match(main,/app:agent-session-pause/);
+  assert.match(main,/app:agent-session-disconnect/);
+  assert.match(main,/app:session-auto-expire/);
+  assert.match(main,/showSpeechCaption\(\{ id: 'assignment-'/);
+  assert.match(registry,/context_message:/);
+  assert.match(registry,/maxSessions = 10000/);
+  assert.match(registry,/SESSION_LIMIT_REACHED/);
+  assert.match(bridge,/taskOrchestrator\.dashboard/);
+  assert.match(tools,/task_project_init/);
+  assert.match(tools,/task_review/);
+  assert.match(tools,/game_project_intelligence/);
+});
+
+
+test('worktree integration schema and task dashboard polling remain bounded', () => {
+  const tools=read('desktop','tool-bridge.js');
+  const renderer=read('desktop','dashboard-renderer.js');
+  const tasks=read('desktop','task-orchestrator.js');
+  assert.match(tools,/operation: \{ type: 'string',[^}]*'integrate'/);
+  assert.match(tools,/targetBranch/);
+  assert.match(tools,/session_start: 'Create a cryptographically random stable session_id[^']*context_message/);
+  assert.match(renderer,/api\.getTaskDashboard\(\)/);
+  assert.match(read('desktop','preload.js'),/app:task-dashboard/);
+  assert.match(read('desktop','main.js'),/app:task-dashboard/);
+  const start=renderer.indexOf('async function refresh(){');
+  const end=renderer.indexOf('\nfunction ',start+15);
+  assert.ok(start>=0&&end>start);
+  const refreshBody=renderer.slice(start,end);
+  const initialGate=refreshBody.indexOf('if(!dashboardStateLoaded)');
+  assert.ok(initialGate>0);
+  assert.doesNotMatch(refreshBody.slice(0,initialGate),/loadTaskDashboard/);
+  assert.equal((refreshBody.match(/loadTaskDashboard\(\)/g)||[]).length,1);
+  assert.match(tasks,/listProjects\(null, \{ limit: 10 \}\)/);
+  assert.match(tasks,/limit: 10/);
+});
+
+
+test('worker admission leaves headroom for fifty collaborating sessions',()=>{
+  const bridge=read('desktop','repository-bridge.js');
+  assert.match(bridge,/MAX_CONCURRENT_REQUESTS = 64/);
+});
+
+
+test('agent disconnect and revocation hand off or preserve the task gates after cancellation drains',()=>{
+  const bridge=read('desktop','repository-bridge.js');
+  const tasks=read('desktop','task-orchestrator.js');
+  assert.match(bridge,/taskOrchestrator\.detachSession\(sessionId, 'revoked'\)/);
+  assert.match(bridge,/taskOrchestrator\.detachSession\(sessionId, 'disconnected'\)/);
+  assert.match(bridge,/Cancelled work did not drain/);
+  assert.match(tasks,/async function detachSession/);
+  assert.match(tasks,/gated_tasks_preserved/);
+  assert.match(tasks,/blocked_and_unassigned/);
 });

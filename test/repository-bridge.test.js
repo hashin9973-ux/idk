@@ -857,7 +857,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
 
 
 test('worker drains queued mailbox requests without a folder re-read for every completion', async () => {
-  const requests = Array.from({ length: 40 }, (_, index) => ({
+  const requests = Array.from({ length: 80 }, (_, index) => ({
     protocol: PROTOCOL,
     request_id: 'req-parallel-' + String(index + 1).padStart(2, '0'),
     created_at: new Date().toISOString(),
@@ -889,8 +889,8 @@ test('worker drains queued mailbox requests without a folder re-read for every c
     await waitFor(() => requests.every(request => fake.files.has('bridge/results/' + request.request_id + '.json')), 5000);
     await new Promise(resolve => setTimeout(resolve, 25));
     const requestFolderTreeGetsAfterDrain = fake.calls.filter(call => call.method === 'GET' && call.path === requestsTreePath).length;
-    assert.equal(executions, 40);
-    assert.equal(maximumActive, 32, 'the worker should fill its configured 32-request limit, then refill from its local queue');
+    assert.equal(executions, 80);
+    assert.equal(maximumActive, 64, 'the worker should fill its configured 64-request limit, then refill from its local queue');
     assert.equal(requestFolderTreeGetsAfterDrain, requestFolderTreeGetsAtDispatch, 'request completion should drain queued work without another tree listing when the request-commit cursor is unchanged');
     for (const request of requests) {
       const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
@@ -1760,6 +1760,116 @@ test('oversized non-batch results are compacted into a bounded partial result', 
     assert.equal(completeEntries[0].detail, entries[0].detail);
     assert.equal(completeEntries[599].detail, entries[599].detail);
     assert.ok(!completeJson.includes('shortened to fit the two-operation result limit'));
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('revoking an in-flight agent session aborts its local tool and publishes a cancelled result', async () => {
+  const requestId = 'req-revoke-inflight';
+  const request = {
+    protocol: PROTOCOL, request_id: requestId, session_id: DEFAULT_TEST_SESSION_ID,
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + requestId + '.json', request]] });
+  const fixture = settingsFixture();
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  let capturedSignal = null;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id, sessionId, signal) => {
+      assert.equal(tool, 'project_status');
+      assert.equal(sessionId, DEFAULT_TEST_SESSION_ID);
+      capturedSignal = signal;
+      markStarted();
+      await new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason || new Error('cancelled'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return { ok: true, result: { shouldNotPublish: true } };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    await waitFor(() => Boolean(capturedSignal), 2000);
+    assert.ok(capturedSignal && !capturedSignal.aborted);
+
+    const revoked = await bridge.revokeAgentSession(DEFAULT_TEST_SESSION_ID);
+    assert.equal(revoked.revoked, true);
+    assert.equal(revoked.agent_id, 'agent-001');
+    assert.equal(revoked.cancellation.length, 1);
+    assert.equal(revoked.cancellation[0].abort_signalled, true);
+    assert.equal(capturedSignal.aborted, true);
+
+    await waitFor(() => fake.files.has('bridge/results/' + requestId + '.json'));
+    const result = decode(fake.files.get('bridge/results/' + requestId + '.json'));
+    assert.equal(result.status, 'cancelled');
+    assert.match(result.error || result.result && result.result.error || '', /SESSION_REVOKED/);
+    assert.equal(result.session_id, DEFAULT_TEST_SESSION_ID);
+    const claim = decode(fake.files.get('bridge/claims/' + requestId + '.json'));
+    assert.equal(claim.status, 'completed');
+    assert.equal(claim.result.status, 'cancelled');
+
+    const session = decode(fake.files.get('bridge/sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
+    const seat = decode(fake.files.get('bridge/agents/agent-001.json'));
+    assert.equal(session.status, 'revoked');
+    assert.equal(seat.current_session_id, null);
+    const visibleAgent = bridge.getState().agentMailboxes.find(item => item.agent_id === 'agent-001');
+    assert.equal(visibleAgent.session_id, null, 'late completion must not restore the revoked session in the dashboard');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+
+test('optional mailbox wipe drains a revoked in-flight worker before deleting its terminal mailbox records', async () => {
+  const requestId = 'req-revoke-and-wipe';
+  const request = {
+    protocol: PROTOCOL, request_id: requestId, session_id: DEFAULT_TEST_SESSION_ID,
+    created_at: new Date().toISOString(), tool: 'project_status', args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + requestId + '.json', request]] });
+  const fixture = settingsFixture();
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id, sessionId, signal) => {
+      markStarted();
+      await new Promise((resolve, reject) => {
+        const onAbort = () => reject(signal.reason || new Error('cancelled'));
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      });
+      return { ok: true, result: { shouldNotPublish: true } };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    await Promise.race([
+      started,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution did not start.')), 2000))
+    ]);
+    const revoked = await bridge.revokeAgentSession(DEFAULT_TEST_SESSION_ID, { wipeMailbox: true });
+    assert.equal(revoked.revoked, true);
+    assert.equal(revoked.cancellation_drain_timed_out, false);
+    assert.equal(revoked.mailbox_cleanup.status, 'completed');
+    assert.equal(revoked.mailbox_cleanup.deleted_request_records, 1);
+    assert.equal(fake.files.has('bridge/requests/' + requestId + '.json'), false);
+    assert.equal(fake.files.has('bridge/claims/' + requestId + '.json'), false);
+    assert.equal(fake.files.has('bridge/results/' + requestId + '.json'), false);
+    const session = decode(fake.files.get('bridge/sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
+    assert.equal(session.status, 'revoked', 'session history remains after an optional mailbox wipe');
+    assert.ok(fake.files.has('bridge/revoked-sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
   } finally {
     await bridge.stop();
   }

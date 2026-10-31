@@ -4,6 +4,8 @@ const { randomBytes } = require('node:crypto');
 
 const AGENT_RECORD_PROTOCOL = 'chatgpt-local-agent-seat/v2';
 const SESSION_RECORD_PROTOCOL = 'chatgpt-local-agent-session/v1';
+const REQUEST_RECORD_PROTOCOL = 'chatgpt-local-repo-bridge/v1';
+const REVOCATION_RECORD_PROTOCOL = 'chatgpt-local-agent-session-revocation/v1';
 // Local operator messages use a dedicated sender identity and do not borrow an agent session.
 const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
 const SESSION_ID_PATTERN = /^session-[a-f0-9]{32}$/;
@@ -30,7 +32,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict, clock = () => Date.now() }) {
+function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), isSessionAutoExpireEnabled = () => false, maxSessions = 10000 }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
@@ -46,6 +48,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   function sessionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id. Call session_start to create a session.');
     return 'bridge/sessions/' + sessionId + '.json';
+  }
+  function revocationPath(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
+    return 'bridge/revoked-sessions/' + sessionId + '.json';
   }
   function inboxPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
@@ -73,6 +79,29 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       unlock();
       if (locks.get(key) === queued) locks.delete(key);
     }
+  }
+
+  function withSessionLock(sessionId, operation) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required.');
+    if (typeof operation !== 'function') throw new TypeError('A session lock operation is required.');
+    return withLock('session:' + sessionId, operation);
+  }
+
+  function withSessionLocks(sessionIds, operation) {
+    if (!Array.isArray(sessionIds) || typeof operation !== 'function') {
+      throw new TypeError('Session IDs and a lock operation are required.');
+    }
+    const ordered = [...new Set(sessionIds)].sort();
+    if (!ordered.length) throw new Error('At least one session_id is required.');
+    for (const sessionId of ordered) {
+      if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
+        throw new Error('A valid session_id is required.');
+      }
+    }
+    const acquire = index => index >= ordered.length
+      ? operation()
+      : withSessionLock(ordered[index], () => acquire(index + 1));
+    return acquire(0);
   }
 
   function isConflictError(error) {
@@ -115,6 +144,27 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (!remote) return null;
     validateSessionRecord(remote.value, sessionId);
     return remote;
+  }
+
+  async function readRevocation(sessionId) {
+    const remote = await readRemoteFile(revocationPath(sessionId));
+    if (!remote) return null;
+    const value = remote.value;
+    if (!value || value.protocol !== REVOCATION_RECORD_PROTOCOL || value.session_id !== sessionId ||
+        !AGENT_ID_PATTERN.test(String(value.agent_id || '')) || typeof value.revoked_at !== 'string') {
+      throw new Error('Session revocation record ' + sessionId + ' is malformed; refusing to authenticate it.');
+    }
+    return remote;
+  }
+
+  async function isRevoked(sessionId) {
+    return Boolean(await readRevocation(sessionId));
+  }
+
+  async function assertNotRevoked(sessionId) {
+    if (await isRevoked(sessionId)) {
+      throw new Error('SESSION_REVOKED: This ChatGPT session was explicitly revoked. Start a new conversation session before using the bridge again.');
+    }
   }
 
   async function writeNewJson(path, value) {
@@ -176,7 +226,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     const last = activityTime(seat, session);
     if (seat.protocol !== AGENT_RECORD_PROTOCOL) return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
     if (!seat.current_session_id) return true;
-    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || session.status === 'expired';
+    if (session && session.status === 'paused') return false;
+    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || ['expired', 'revoked', 'disconnected'].includes(session.status);
   }
 
   async function readSeatAndSession(agentId) {
@@ -194,7 +245,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (!sessionId || !SESSION_ID_PATTERN.test(sessionId)) return;
     try {
       const existing = await readSession(sessionId);
-      if (!existing || existing.value.status === 'expired') return;
+      if (!existing || existing.value.status === 'expired' || existing.value.status === 'revoked') return;
       await mutateSession(sessionId, current => ({
         ...current, status: 'expired', ended_at: timestamp(),
         ...(replacementSessionId ? { replaced_by_session_id: replacementSessionId } : {}),
@@ -203,12 +254,85 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     } catch { /* Seat reassignment is authoritative even if marking history fails. */ }
   }
 
+  async function enforceSessionLimit() {
+    const entries = await listFolder('bridge/sessions');
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)))];
+    if (names.length < maxSessions) return { count: names.length, evicted: null };
+    let enabled = false;
+    try { enabled = typeof isSessionAutoExpireEnabled === 'function' && isSessionAutoExpireEnabled() === true; } catch {}
+    if (!enabled) throw new Error('SESSION_LIMIT_REACHED: The mailbox already contains ' + maxSessions +
+      ' session IDs. Enable session auto-expire in dashboard Settings to remove the least-recently-active inactive session.');
+    if (typeof deleteRemoteFiles !== 'function') throw new Error('SESSION_LIMIT_REACHED: Safe SHA-checked session deletion is unavailable.');
+    const candidates = [];
+    for (let start = 0; start < names.length; start += 32) {
+      const rows = await Promise.all(names.slice(start, start + 32).map(async name => {
+        const sessionId = name.slice(0, -5);
+        try {
+          const remote = await readSession(sessionId);
+          if (!remote || remote.value.status === 'paused' || isBusy(null, remote.value)) return null;
+          const seatRemote = await readSeat(remote.value.agent_id);
+          const seat = seatRemote && seatRemote.value;
+          const ownsSeat = Boolean(seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id === sessionId);
+          const terminal = ['expired', 'revoked', 'disconnected'].includes(remote.value.status);
+          if (!terminal && (!ownsSeat || !isInactive(seat, remote.value))) return null;
+          return { sessionId, remote, session: remote.value, lastActivity: activityTime(seat, remote.value) };
+        } catch { return null; }
+      }));
+      candidates.push(...rows.filter(Boolean));
+    }
+    candidates.sort((a, b) => a.lastActivity - b.lastActivity);
+    const evictedSessions = [];
+    let remaining = names.length;
+    for (const candidate of candidates) {
+      if (remaining < maxSessions) break;
+      try {
+        const evicted = await withSessionLock(candidate.sessionId, () => withLock('seat:' + candidate.session.agent_id, async () => {
+          let latest = await readSession(candidate.sessionId);
+          if (!latest || latest.sha !== candidate.remote.sha || latest.value.status === 'paused' || isBusy(null, latest.value)) return false;
+          const seat = await readSeat(latest.value.agent_id);
+          const ownsSeat = Boolean(seat && seat.value.protocol === AGENT_RECORD_PROTOCOL && seat.value.current_session_id === candidate.sessionId);
+          if (ownsSeat && !isInactive(seat.value, latest.value)) return false;
+          if (!['expired', 'revoked', 'disconnected'].includes(latest.value.status)) {
+            await mutateSession(candidate.sessionId, value => ({
+              ...value, status: 'expired', expired_at: timestamp(), ended_at: timestamp(), active_request_ids: []
+            }));
+            latest = await readSession(candidate.sessionId);
+            if (!latest || !['expired', 'revoked', 'disconnected'].includes(latest.value.status)) {
+              throw new Error('Could not persist terminal session state before retention deletion.');
+            }
+          }
+          if (ownsSeat) await mutateJson(seatPath(latest.value.agent_id),
+            value => validateSeatRecord(value, latest.value.agent_id),
+            value => ({ ...value, current_session_id: null, status: 'inactive', active_request_ids: [],
+              last_expired_session_id: candidate.sessionId, last_expired_at: timestamp() }));
+          const result = await deleteRemoteFiles([{ path: sessionPath(candidate.sessionId), sha: latest.sha }]);
+          if (!result || result.ok === false) throw new Error('SHA-checked session deletion did not complete.');
+          return true;
+        }));
+        if (evicted) {
+          remaining--;
+          evictedSessions.push({ session_id: candidate.sessionId, agent_id: candidate.session.agent_id,
+            last_activity_at: candidate.session.last_activity_at || candidate.session.created_at || null });
+        }
+      } catch (error) {
+        if (/conflict|sha|409|changed/i.test(String(error && error.message || error))) continue;
+        throw error;
+      }
+    }
+    if (remaining < maxSessions) return { count: remaining, evicted: evictedSessions };
+
+    throw new Error('SESSION_LIMIT_REACHED: All ' + maxSessions +
+      ' sessions are active, busy, paused, or otherwise unsafe to expire. No session was removed.');
+  }
+
   async function startSession(args = {}) {
     const label = safeLabel(args.label, 'ChatGPT session');
     const requestedAgentId = args.agent_id === undefined || args.agent_id === null || args.agent_id === ''
       ? null : String(args.agent_id);
     if (requestedAgentId && !AGENT_ID_PATTERN.test(requestedAgentId)) throw new Error('The selected agent ID is invalid.');
     return withLock('seat-allocation', async () => {
+      const retention = await enforceSessionLimit();
       for (let attempt = 0; attempt < 64; attempt++) {
         const ids = await listSeatIds();
         const rows = await Promise.all(ids.map(readSeatAndSession));
@@ -253,7 +377,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
             return {
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
               last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
-              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.'
+              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.',
+              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Your reusable seat may be reassigned after 10 minutes without bridge-tool activity. Pause temporarily blocks this session; disconnect releases its seat; delete permanently revokes it.'
             };
           });
           if (!allocated) {
@@ -280,9 +405,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
       throw new Error('SESSION_ID_REQUIRED: Call session_start once at the beginning of this conversation, then include its session_id on every bridge tool request.');
     }
+    await assertNotRevoked(sessionId);
     const remote = await readSession(sessionId);
     if (!remote) throw new Error('SESSION_EXPIRED: This session is missing. Call session_start to lease a new agent seat.');
     const session = remote.value;
+    if (session.status === 'paused') throw new Error('SESSION_PAUSED: This agent session is temporarily paused. Resume it from its dashboard widget before sending more bridge requests.');
+    if (session.status === 'disconnected') throw new Error('SESSION_DISCONNECTED: This session is disconnected from its agent seat. Call session_start to obtain a new session ID.');
     if (session.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation no longer owns its previous seat. Call session_start to lease a fresh seat.');
     const seatRemote = await readSeat(session.agent_id);
     if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
@@ -297,22 +425,25 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
 
   async function requestStarted(request) {
     if (!request || !request.session_id || !request.agent_id) return false;
-    return withLock('seat:' + request.agent_id, async () => {
+    return withSessionLock(request.session_id, () => withLock('seat:' + request.agent_id, async () => {
+      await assertNotRevoked(request.session_id);
       const seatRemote = await readSeat(request.agent_id);
       if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
           seatRemote.value.current_session_id !== request.session_id) {
         throw new Error('SESSION_EXPIRED: This conversation no longer owns its assigned seat. Call session_start.');
       }
       const sessionRemote = await readSession(request.session_id);
-      if (!sessionRemote || sessionRemote.value.status === 'expired') {
-        throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+      if (!sessionRemote || ['expired', 'disconnected'].includes(sessionRemote.value.status)) {
+        throw new Error('SESSION_EXPIRED: This conversation session has expired or disconnected. Call session_start.');
       }
+      if (sessionRemote.value.status === 'paused') throw new Error('SESSION_PAUSED: This session was paused before the request could execute.');
       if (!isBusy(seatRemote.value, sessionRemote.value) && isInactive(seatRemote.value, sessionRemote.value)) {
         throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window before execution. Call session_start.');
       }
       const now = timestamp();
       await mutateSession(request.session_id, current => {
-        if (current.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session has expired. Call session_start.');
+        if (['expired', 'disconnected'].includes(current.status)) throw new Error('SESSION_EXPIRED: This conversation session has expired or disconnected. Call session_start.');
+        if (current.status === 'paused') throw new Error('SESSION_PAUSED: This session was paused before the request could execute.');
         const active = Array.isArray(current.active_request_ids) ? current.active_request_ids : [];
         const recent = Array.isArray(current.recent_request_ids) ? current.recent_request_ids : [];
         return {
@@ -332,29 +463,250 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
         };
       });
       return true;
-    });
+    }));
   }
 
   async function requestCompleted(request) {
     if (!request || !request.session_id || !request.agent_id) return;
-    return withLock('seat:' + request.agent_id, async () => {
+    if (await isRevoked(request.session_id)) return null;
+    return withSessionLock(request.session_id, () => withLock('seat:' + request.agent_id, async () => {
+      if (await isRevoked(request.session_id)) return null;
       const seat = await readSeat(request.agent_id);
       if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
           seat.value.current_session_id !== request.session_id) return;
       const now = timestamp();
       try {
         await mutateSession(request.session_id, current => ({
-          ...current, status: 'active', last_activity_at: now, last_completed_at: now,
+          ...current, status: current.status === 'paused' ? 'paused' : 'active', last_activity_at: now, last_completed_at: now,
           active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
         }));
       } catch (error) {
         if (!/SESSION_EXPIRED/i.test(String(error && error.message || error))) throw error;
       }
       return mutateJson(seatPath(request.agent_id), value => validateSeatRecord(value, request.agent_id), current => ({
-        ...current, status: 'active', last_activity_at: now, last_completed_at: now,
+        ...current, status: current.status === 'paused' ? 'paused' : 'active', last_activity_at: now, last_completed_at: now,
         active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
       }));
-    });
+    }));
+  }
+
+  async function setSessionPaused(sessionId, paused) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId) || typeof paused !== 'boolean') throw new Error('A valid session_id and pause boolean are required.');
+    const initial = await readSession(sessionId);
+    if (!initial) throw new Error('The selected session was not found.');
+    const agentId = initial.value.agent_id;
+    return withSessionLock(sessionId, () => withLock('seat:' + agentId, async () => {
+      await assertNotRevoked(sessionId);
+      const remote = await readSession(sessionId);
+      if (!remote) throw new Error('SESSION_EXPIRED: The session record is missing.');
+      const seat = await readSeat(agentId);
+      if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL || seat.value.current_session_id !== sessionId) {
+        throw new Error('SESSION_EXPIRED: This agent seat has been reassigned; the session cannot be paused or resumed.');
+      }
+      const current = remote.value;
+      if (paused) {
+        if (current.status === 'paused') return { paused: true, session_id: sessionId, agent_id: agentId, already_in_state: true };
+        if (current.status !== 'active') throw new Error('Only an active session can be paused. Current status: ' + current.status);
+        const at = timestamp();
+        await mutateSession(sessionId, value => ({ ...value, status: 'paused', paused_at: at }));
+        await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({ ...value, status: 'paused', paused_session_id: sessionId, paused_at: at }));
+        return { paused: true, session_id: sessionId, agent_id: agentId, paused_at: at };
+      }
+      if (current.status !== 'paused') {
+        if (current.status === 'active') return { paused: false, session_id: sessionId, agent_id: agentId, already_in_state: true };
+        throw new Error('Only a paused session can be resumed. Current status: ' + current.status);
+      }
+      const at = timestamp();
+      await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({
+        ...value, status: 'active', last_activity_at: at, resumed_at: at, paused_session_id: null, paused_at: null
+      }));
+      await mutateSession(sessionId, value => ({ ...value, status: 'active', last_activity_at: at, resumed_at: at }));
+      return { paused: false, session_id: sessionId, agent_id: agentId, resumed_at: at };
+    }));
+  }
+
+  async function disconnectSession(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required.');
+    const initial = await readSession(sessionId);
+    if (!initial) throw new Error('The selected session was not found.');
+    const agentId = initial.value.agent_id;
+    return withSessionLock(sessionId, () => withLock('seat:' + agentId, async () => {
+      const remote = await readSession(sessionId);
+      if (!remote) throw new Error('The session record is missing.');
+      if (remote.value.status === 'revoked') throw new Error('SESSION_REVOKED: This session was permanently revoked and cannot be disconnected or restored.');
+      if (remote.value.status === 'disconnected') return { disconnected: true, session_id: sessionId, agent_id: agentId, already_disconnected: true };
+      const seat = await readSeat(agentId);
+      const ownsSeat = Boolean(seat && seat.value.protocol === AGENT_RECORD_PROTOCOL && seat.value.current_session_id === sessionId);
+      const at = timestamp();
+      await mutateSession(sessionId, value => ({ ...value, status: 'disconnected', disconnected_at: at, ended_at: at, active_request_ids: [] }));
+      if (ownsSeat) await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), value => ({
+        ...value, current_session_id: null, status: 'inactive', active_request_ids: [], disconnected_session_id: sessionId, disconnected_at: at
+      }));
+      return { disconnected: true, session_id: sessionId, agent_id: agentId, seat_released: ownsSeat, disconnected_at: at };
+    }));
+  }
+
+  async function revokeSession(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required to revoke an agent.');
+    const initial = await readSession(sessionId);
+    const existingRevocation = await readRevocation(sessionId);
+    if (!initial && !existingRevocation) throw new Error('The selected session was not found; no agent seat was changed.');
+    const agentId = initial ? initial.value.agent_id : existingRevocation.value.agent_id;
+    if (existingRevocation && existingRevocation.value.agent_id !== agentId) throw new Error('The revocation record does not match the session owner.');
+    return withSessionLock(sessionId, () => withLock('seat:' + agentId, async () => {
+      const sessionRemote = await readSession(sessionId);
+      const currentSession = sessionRemote && sessionRemote.value;
+      if (currentSession && currentSession.agent_id !== agentId) throw new Error('The session owner changed; refusing to revoke a different seat.');
+      const seatRemote = await readSeat(agentId);
+      const seat = seatRemote && seatRemote.value;
+      const ownsSeat = Boolean(seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id === sessionId);
+      const activeIds = [...new Set([
+        ...(Array.isArray(currentSession && currentSession.active_request_ids) ? currentSession.active_request_ids : []),
+        ...(ownsSeat && Array.isArray(seat.active_request_ids) ? seat.active_request_ids : [])
+      ].filter(id => typeof id === 'string' && id.length > 0))];
+      const now = timestamp();
+      const tombstone = existingRevocation ? existingRevocation.value : {
+        protocol: REVOCATION_RECORD_PROTOCOL, session_id: sessionId, agent_id: agentId,
+        revoked_at: now, reason: 'operator_deleted_agent_widget', active_request_ids: activeIds
+      };
+      if (!existingRevocation) {
+        try { await writeNewJson(revocationPath(sessionId), tombstone); }
+        catch (error) {
+          if (!isConflictError(error)) throw error;
+          const confirmed = await readRevocation(sessionId);
+          if (!confirmed || confirmed.value.session_id !== sessionId || confirmed.value.agent_id !== agentId) throw error;
+        }
+      }
+      if (sessionRemote && currentSession.status !== 'revoked') {
+        await mutateSession(sessionId, current => ({
+          ...current, status: 'revoked', revoked_at: tombstone.revoked_at || now,
+          ended_at: current.ended_at || now, active_request_ids: []
+        }));
+      }
+      if (ownsSeat) {
+        await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), current => {
+          if (current.current_session_id !== sessionId) return current;
+          return { ...current, current_session_id: null, status: 'inactive', active_request_ids: [],
+            last_revoked_session_id: sessionId, last_revoked_at: tombstone.revoked_at || now };
+        });
+      }
+      return { revoked: true, agent_id: agentId, session_id: sessionId,
+        revoked_at: tombstone.revoked_at || now, cancelled_request_ids: activeIds,
+        seat_released: ownsSeat,
+        mailbox_cleanup: { status: 'not_requested', deleted_records: 0, deleted_files: 0 } };
+    }));
+  }
+
+  async function wipeMailbox(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required for mailbox cleanup.');
+    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted session revocation first.');
+    if (typeof deleteRemoteFiles !== 'function') throw new Error('Safe mailbox deletion is unavailable; the session remains revoked.');
+    const files = new Map();
+    const addFile = (filePath, sha) => {
+      if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha);
+    };
+    const requestEntries = await listFolder('bridge/requests');
+    const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)))];
+    let deletedRequests = 0;
+    let ownedRequestRecords = 0;
+    const requestRecords = [];
+    for (let start = 0; start < requestNames.length; start += 16) {
+      const group = requestNames.slice(start, start + 16);
+      const rows = await Promise.all(group.map(async name => {
+        const requestId = name.slice(0, -5);
+        const requestRemote = await readRemoteFile('bridge/requests/' + name);
+        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== REQUEST_RECORD_PROTOCOL ||
+            requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
+        ownedRequestRecords++;
+        const [claim, result] = await Promise.all([
+          readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
+        ]);
+        if (!claim || !result || !claim.value || !result.value ||
+            claim.value.protocol !== 'chatgpt-local-repo-claim/v1' || result.value.protocol !== 'chatgpt-local-repo-result/v1' ||
+            claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
+            result.value.request_id !== requestId || (result.value.session_id && result.value.session_id !== sessionId) ||
+            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
+        return { requestId, requestRemote, claim, result };
+      }));
+      requestRecords.push(...rows.filter(Boolean));
+    }
+    const flatArtifacts = await listFolder('bridge/artifacts');
+    for (const record of requestRecords) {
+      const name = record.requestId + '.json';
+      addFile('bridge/requests/' + name, record.requestRemote.sha);
+      addFile('bridge/claims/' + name, record.claim.sha);
+      addFile('bridge/results/' + name, record.result.sha);
+      const manifest = Array.isArray(record.result.value.artifacts) ? record.result.value.artifacts : [];
+      const requestArtifactPrefix = 'bridge/artifacts/' + record.requestId + '/';
+      const legacyBatchArtifactPrefix = 'bridge/artifacts/' + record.requestId + '-batch-output-';
+      const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
+        typeof value === 'string' && (value.startsWith(requestArtifactPrefix) ||
+          value.startsWith(legacyBatchArtifactPrefix))));
+      const nested = await listFolder('bridge/artifacts/' + record.requestId);
+      for (const item of [...flatArtifacts, ...nested]) {
+        const itemPath = String(item && (item.path || item.name) || '');
+        // A revoked request's result journal is intentionally replaced with a
+        // compact cancellation record, so its original artifact manifest may
+        // no longer exist. The request-ID-scoped folder/legacy prefix remain
+        // authoritative ownership boundaries for orphaned request artifacts.
+        const requestScoped = itemPath.startsWith(requestArtifactPrefix) || itemPath.startsWith(legacyBatchArtifactPrefix);
+        if ((ownedPaths.has(itemPath) || requestScoped) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
+      }
+      deletedRequests++;
+    }
+
+    const sessionEntries = await listFolder('bridge/sessions');
+    const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
+    if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
+    let deletedMessages = 0;
+    for (let start = 0; start < recipientSessions.length; start += 12) {
+      const group = recipientSessions.slice(start, start + 12);
+      const inboxes = await Promise.all(group.map(async recipientSessionId => {
+        let entries;
+        try { entries = await listFolder(inboxPath(recipientSessionId)); }
+        catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+        return { recipientSessionId, entries };
+      }));
+      for (const inbox of inboxes) {
+        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
+        for (let batch = 0; batch < candidates.length; batch += 16) {
+          const rows = await Promise.all(candidates.slice(batch, batch + 16).map(async item => {
+            const name = String(item.name || item.path).split('/').pop();
+            const messageId = name.slice(0, -5);
+            const messageRemote = await readRemoteFile(messagePath(inbox.recipientSessionId, messageId));
+            const record = messageRemote && messageRemote.value;
+            if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' || record.message_id !== messageId ||
+                record.recipient_session_id !== inbox.recipientSessionId ||
+                (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) return null;
+            return { recipientSessionId: inbox.recipientSessionId, messageId, messageRemote };
+          }));
+          for (const item of rows.filter(Boolean)) {
+            addFile(messagePath(item.recipientSessionId, item.messageId), item.messageRemote.sha);
+            const receiptPath = messageReceiptPath(item.recipientSessionId, item.messageId);
+            const receipt = await readRemoteFile(receiptPath);
+            if (receipt && receipt.value && receipt.value.protocol === 'chatgpt-local-agent-message-receipt/v1' &&
+                receipt.value.message_id === item.messageId && receipt.value.recipient_session_id === item.recipientSessionId) {
+              addFile(receiptPath, receipt.sha);
+            }
+            deletedMessages++;
+          }
+        }
+      }
+    }
+    const deletion = await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })));
+    const preservedRequests = Math.max(0, ownedRequestRecords - deletedRequests);
+    return {
+      status: preservedRequests ? 'completed_with_preserved_records' : 'completed',
+      deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
+      deleted_request_records: deletedRequests, deleted_message_records: deletedMessages,
+      preserved_request_records: preservedRequests,
+      preservation_note: preservedRequests
+        ? 'Some requests were retained because their claim/result journal was missing, active, incomplete, or could not be proven terminal. Retry cleanup after those operations settle.'
+        : null,
+      commit_sha: deletion.commitSha || null, preserved_session_and_revocation_records: true
+    };
   }
 
   async function statuses(filterAgentId = null) {
@@ -380,12 +732,13 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       const session = row.session;
       const lastActivity = activityTime(seat, session);
       const busy = isBusy(seat, session);
-      const active = Boolean(session && session.status !== 'expired' && lastActivity &&
-        clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
+      const active = Boolean(session && session.status === 'active' && lastActivity && clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
+      const paused = Boolean(session && session.status === 'paused');
       return {
         agent_id: agentId, label: seat.label || (session && session.label) || agentId,
-        status: active ? 'active' : 'inactive', busy,
-        session_id: seat.current_session_id || null, session_status: session && session.status || 'missing',
+        status: paused ? 'paused' : active ? 'active' : 'inactive', busy,
+        session_id: seat.current_session_id || null, session_status: session && session.status || 'missing', paused,
+        last_revoked_session_id: seat.last_revoked_session_id || null,
         last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
         last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
         last_completed_at: seat.last_completed_at || (session && session.last_completed_at) || null,
@@ -409,6 +762,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       inactivity_after_ms: SESSION_INACTIVE_AFTER_MS,
       status_legend: {
         active: 'This seat has received bridge-tool activity within the inactivity window.',
+        paused: 'This session is temporarily invalidated, keeps its seat, and can be resumed from its dashboard widget.',
         inactive: 'No bridge-tool activity has arrived within the inactivity window. A non-busy seat may be leased to another conversation.',
         busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned even when activity becomes old.',
         session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
@@ -418,8 +772,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   async function currentSession(sessionId) {
+    await assertNotRevoked(sessionId);
     const remote = await readSession(sessionId);
-    if (!remote || remote.value.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session is no longer valid.');
+    if (!remote || ['expired', 'disconnected'].includes(remote.value.status)) throw new Error('SESSION_EXPIRED: This conversation session is no longer valid.');
+    if (remote.value.status === 'paused') throw new Error('SESSION_PAUSED: This session is temporarily paused.');
     const session = remote.value;
     const seat = await readSeat(session.agent_id);
     if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
@@ -440,11 +796,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   async function sendMessage(sessionId, args = {}) {
-    const sender = await currentSession(sessionId);
     const hasAgent = Boolean(args.to_agent_id);
     const hasSession = Boolean(args.to_session_id);
     if (hasAgent === hasSession) throw new Error('Specify exactly one recipient: to_agent_id or to_session_id.');
-    let recipientSessionId, recipientAgentId, recipientLabel;
+    let recipientSessionId;
     if (hasAgent) {
       if (!AGENT_ID_PATTERN.test(String(args.to_agent_id))) throw new Error('to_agent_id has an invalid format.');
       const recipientSeat = await readSeat(args.to_agent_id);
@@ -452,60 +807,73 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
         throw new Error('The recipient seat has no current session.');
       }
       recipientSessionId = recipientSeat.value.current_session_id;
-      recipientAgentId = args.to_agent_id;
-      recipientLabel = recipientSeat.value.label || recipientAgentId;
     } else {
       if (!SESSION_ID_PATTERN.test(String(args.to_session_id))) throw new Error('to_session_id has an invalid format.');
       recipientSessionId = args.to_session_id;
-      const recipient = await currentSession(recipientSessionId);
-      recipientAgentId = recipient.session.agent_id;
-      recipientLabel = recipient.seat.label || recipient.session.label || recipientAgentId;
     }
     if (recipientSessionId === sessionId) throw new Error('Cannot send an agent message to your own current session.');
-    const recipient = await currentSession(recipientSessionId);
-    const last = activityTime(recipient.seat, recipient.session);
-    if (!last || clock() - last > SESSION_INACTIVE_AFTER_MS) {
-      throw new Error('Recipient is inactive. Use agent_status to choose a currently active seat/session.');
-    }
-    const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
-    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
-    const record = {
-      protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
-      sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
-      recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
-      sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
-      subject, message: formatAgentMessage(sender.session, args.message),
-      created_at: timestamp(), read_at: null, in_reply_to: null
-    };
-    await writeMessage(recipientSessionId, record);
-    return {
-      message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
-      to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
-      subject, created_at: record.created_at, status: 'sent',
-      note: 'Message delivered to that conversation session. The recipient can use read_agent_messages and reply_to_agent_message.'
-    };
+
+    return withSessionLocks([sessionId, recipientSessionId], async () => {
+      const sender = await currentSession(sessionId);
+      let recipientAgentId, recipientLabel;
+      if (hasAgent) {
+        const recipientSeat = await readSeat(args.to_agent_id);
+        if (!recipientSeat || recipientSeat.value.protocol !== AGENT_RECORD_PROTOCOL ||
+            recipientSeat.value.current_session_id !== recipientSessionId) {
+          throw new Error('RECIPIENT_SESSION_CHANGED: The selected agent seat was reassigned before the message could be sent.');
+        }
+        recipientAgentId = args.to_agent_id;
+        recipientLabel = recipientSeat.value.label || recipientAgentId;
+      }
+      const recipient = await currentSession(recipientSessionId);
+      if (!hasAgent) recipientAgentId = recipient.session.agent_id;
+      recipientLabel = recipientLabel || recipient.seat.label || recipient.session.label || recipientAgentId;
+      const last = activityTime(recipient.seat, recipient.session);
+      if (!last || clock() - last > SESSION_INACTIVE_AFTER_MS) {
+        throw new Error('Recipient is inactive. Use agent_status to choose a currently active seat/session.');
+      }
+      const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
+      const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+      const record = {
+        protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+        sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
+        recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
+        sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
+        subject, message: formatAgentMessage(sender.session, args.message),
+        created_at: timestamp(), read_at: null, in_reply_to: null
+      };
+      await writeMessage(recipientSessionId, record);
+      return {
+        message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
+        to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
+        subject, created_at: record.created_at, status: 'sent',
+        note: 'Message delivered to that conversation session. The recipient can use read_agent_messages and reply_to_agent_message.'
+      };
+    });
   }
 
   async function sendUserMessage(sessionId, args = {}) {
-    const recipient = await currentSession(sessionId);
-    const message = cleanMessage(args.message, 20000, 'message');
-    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
-    const record = {
-      protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
-      sender_session_id: null, sender_agent_id: 'user',
-      recipient_session_id: sessionId, recipient_agent_id: recipient.session.agent_id,
-      sender_label: 'Windows Bridge User',
-      recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
-      subject: 'Message from Windows Bridge User',
-      message: '[Windows Bridge User] ' + message,
-      created_at: timestamp(), read_at: null, in_reply_to: null, sender_type: 'user'
-    };
-    await writeMessage(sessionId, record);
-    return {
-      message_id: id, thread_id: id, to_agent_id: recipient.session.agent_id,
-      to_session_id: sessionId, created_at: record.created_at, status: 'sent',
-      note: 'The message was published to this exact conversation session inbox. The agent can retrieve it with read_agent_messages.'
-    };
+    return withSessionLock(sessionId, async () => {
+      const recipient = await currentSession(sessionId);
+      const message = cleanMessage(args.message, 20000, 'message');
+      const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+      const record = {
+        protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+        sender_session_id: null, sender_agent_id: 'user',
+        recipient_session_id: sessionId, recipient_agent_id: recipient.session.agent_id,
+        sender_label: 'Windows Bridge User',
+        recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
+        subject: 'Message from Windows Bridge User',
+        message: '[Windows Bridge User] ' + message,
+        created_at: timestamp(), read_at: null, in_reply_to: null, sender_type: 'user'
+      };
+      await writeMessage(sessionId, record);
+      return {
+        message_id: id, thread_id: id, to_agent_id: recipient.session.agent_id,
+        to_session_id: sessionId, created_at: record.created_at, status: 'sent',
+        note: 'The message was published to this exact conversation session inbox. The agent can retrieve it with read_agent_messages.'
+      };
+    });
   }
 
   async function markMessageRead(sessionId, messageId, knownRecord = null) {
@@ -549,6 +917,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   async function readMessages(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
     await currentSession(sessionId);
     const unreadOnly = args.unread_only !== false;
     const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
@@ -590,9 +959,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       scanned_recent_limit: 200, messages: read.filter(Boolean),
       note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
     };
+    });
   }
 
   async function readDashboardReplies(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
     await currentSession(sessionId);
     const suppliedIds = args.message_ids;
     if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
@@ -630,9 +1001,25 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       session_id: sessionId, count: replies.length, messages: replies,
       note: 'Replies are read from the same session-scoped agent-message mailbox; no other session inbox is accessed.'
     };
+    });
   }
 
   async function replyToMessage(sessionId, args = {}) {
+    const originalId = String(args.message_id || '');
+    const initial = await readRemoteFile(messagePath(sessionId, originalId));
+    if (!initial) throw new Error('No message with this message_id exists in the current session inbox.');
+    const initialRecord = initial.value;
+    if (!initialRecord || initialRecord.protocol !== 'chatgpt-local-agent-message/v1' ||
+        initialRecord.message_id !== originalId || initialRecord.recipient_session_id !== sessionId) {
+      throw new Error('Only a message addressed to this session can be replied to.');
+    }
+    const initialIsDashboardUser = initialRecord.sender_type === 'user' && initialRecord.sender_agent_id === 'user' &&
+      initialRecord.sender_session_id === null;
+    const recipientSessionId = initialIsDashboardUser ? sessionId : initialRecord.sender_session_id;
+    if (typeof recipientSessionId !== 'string' || !SESSION_ID_PATTERN.test(recipientSessionId)) {
+      throw new Error('The original message sender session is invalid or unavailable.');
+    }
+    return withSessionLocks([sessionId, recipientSessionId], async () => {
     const sender = await currentSession(sessionId);
     const originalId = String(args.message_id || '');
     const remote = await readRemoteFile(messagePath(sessionId, originalId));
@@ -676,17 +1063,19 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       sender_agent_id: record.sender_agent_id, to_agent_id: record.recipient_agent_id,
       to_session_id: recipientSessionId, created_at: record.created_at, status: 'sent'
     };
+    });
   }
 
   return {
-    startSession, authenticate, requestStarted, requestCompleted, statuses,
+    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked,
+    setSessionPaused, disconnectSession, enforceSessionLimit, withSessionLock, withSessionLocks,
     sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
-    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
+    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }
 
 module.exports = {
-  createAgentRegistry, AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL,
+  createAgentRegistry, AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL,
   AGENT_ID_PATTERN, SESSION_ID_PATTERN, MESSAGE_ID_PATTERN,
   SESSION_INACTIVE_AFTER_MS, AGENT_STALE_AFTER_MS
 };

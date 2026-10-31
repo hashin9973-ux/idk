@@ -833,3 +833,43 @@ test('GitHub logout removes the encrypted credential', async () => {
   assert.equal(settings.github.encryptedToken, undefined);
   assert.equal((await auth.getState()).authenticated, false);
 });
+
+
+test('agent revocation aborts an in-flight authenticated Git command', async () => {
+  const workspace = tempWorkspace();
+  fs.mkdirSync(path.join(workspace, '.git'));
+  let markStarted;
+  const started = new Promise(resolve => { markStarted = resolve; });
+  const calls = [];
+  const mockExec = async (file, args, options) => {
+    calls.push({ file, args: [...args], options });
+    if (args[0] === 'remote' && args[1] === 'get-url') {
+      return { stdout: 'https://github.com/example/private-repo.git\n', stderr: '' };
+    }
+    if (args[0] === 'fetch') {
+      return new Promise((resolve, reject) => {
+        const onAbort = () => reject(Object.assign(new Error('SESSION_REVOKED: agent removed'), {
+          name: 'AbortError', code: 'ABORT_ERR'
+        }));
+        options.signal.addEventListener('abort', onAbort, { once: true });
+        markStarted();
+        if (options.signal.aborted) onAbort();
+      });
+    }
+    throw new Error('Unexpected Git command: ' + args.join(' '));
+  };
+  try {
+    const { auth } = fixture(loginServer(), mockExec);
+    await connect(auth);
+    const abort = new AbortController();
+    const running = auth.runGitOperation({ operation: 'fetch', cwd: workspace, remote: 'origin' }, abort.signal);
+    await started;
+    assert.equal(calls[1].args[0], 'fetch');
+    assert.equal(calls[1].options.signal, abort.signal);
+    abort.abort(new Error('SESSION_REVOKED: agent widget was deleted.'));
+    await assert.rejects(running, error =>
+      error && error.name === 'AbortError' && error.code === 'ABORT_ERR' && /SESSION_REVOKED/.test(error.message));
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true });
+  }
+});
