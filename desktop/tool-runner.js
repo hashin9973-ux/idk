@@ -332,6 +332,17 @@ function normalizeGitWorktreePath(value){
  try{resolved=fs.realpathSync.native(resolved);}catch{}
  return path.normalize(resolved).replace(/[\\/]+$/,'').toLowerCase();
 }
+function normalizeGitRelativePath(value,field,allowRoot=false){
+ if(typeof value!=='string'||!value.trim()||value.length>512)throw new Error(field+' must be a non-empty workspace-relative path of at most 512 characters.');
+ const normalized=value.trim().replace(/\\/g,'/').replace(/^\.\/+/, '').replace(/\/+$/,'');
+ if(allowRoot&&(!normalized||normalized==='.' ))return'.';
+ if(!normalized||normalized.startsWith('/')||/^[A-Za-z]:/.test(normalized)||normalized.split('/').some(part=>!part||part==='.'||part==='..'))throw new Error(field+' must be workspace-relative and cannot contain absolute or traversal segments.');
+ return normalized;
+}
+function gitPathInsideScopes(file,scopes){
+ const candidate=file.toLowerCase();
+ return scopes.some(scope=>scope==='.'||candidate===scope.toLowerCase()||candidate.startsWith(scope.toLowerCase()+'/'));
+}
 function gitWorktree(root,args={}){assertGitRepo(root);const operation=args.operation;if(operation==='list'){const r=git(root,['worktree','list','--porcelain']);if(r.exitCode!==0)throw new Error(r.stderr||'git worktree list failed.');const items=[];let current=null;for(const line of r.stdout.split(/\r?\n/)){if(line.startsWith('worktree ')){if(current){current.path=path.resolve(current.path);items.push(current);}current={path:path.resolve(line.slice(9))};}else if(!line&&current){current.path=path.resolve(current.path);items.push(current);current=null;}else if(current&&line.startsWith('HEAD '))current.head=line.slice(5);else if(current&&line.startsWith('branch '))current.branch=line.slice(7).replace(/^refs\/heads\//,'');else if(current&&line==='detached')current.detached=true;else if(current&&line==='bare')current.bare=true;else if(current&&line==='locked')current.locked=true;else if(current&&line.startsWith('prunable '))current.prunable=line.slice(9);}if(current){current.path=path.resolve(current.path);items.push(current);}return{operation,worktrees:items};}if(operation==='add'){const branch=validateBranchName(root,args.branch);const requested=args.path||path.join('.bridge-worktrees',branch.replace(/[\\/]/g,'-'));const target=safePath(root,requested,false);if(path.resolve(target).toLowerCase()===path.resolve(root).toLowerCase()||!inside(root,target))throw new Error('Worktree path must be a new directory inside the selected workspace.');if(fs.existsSync(target))throw new Error('Worktree destination already exists.');const parent=path.dirname(target);if(!inside(root,parent))throw new Error('Worktree parent must remain inside the selected workspace.');fs.mkdirSync(parent,{recursive:true});const command=['worktree','add'];if(args.createBranch===true)command.push('-b',branch,target);else command.push(target,branch);const r=git(root,command);if(r.exitCode!==0)throw new Error(r.stderr||r.stdout||'git worktree add failed.');return{operation,added:true,path:path.relative(root,target).replace(/\\/g,'/'),branch,createdBranch:args.createBranch===true,...r};}if(operation==='integrate'){
  const requested=args.path,branch=validateBranchName(root,args.branch),targetBranch=validateBranchName(root,args.targetBranch);
  if(typeof requested!=='string'||!requested.trim())throw new Error('git_worktree integrate requires the source worktree path.');
@@ -339,26 +350,62 @@ function gitWorktree(root,args={}){assertGitRepo(root);const operation=args.oper
  const source=listing.worktrees.find(item=>normalizeGitWorktreePath(item.path)===normalizeGitWorktreePath(sourcePath));
  if(!source||normalizeGitWorktreePath(source.path)===normalizeGitWorktreePath(root))throw new Error('The source path is not a registered linked worktree.');
  if(source.branch!==branch)throw new Error('The registered source worktree is on '+String(source.branch||'detached')+', not '+branch+'.');
- const primaryStatus=git(root,['status','--porcelain=v1','--untracked-files=all']);
- if(primaryStatus.exitCode!==0||primaryStatus.stdout.trim())throw new Error('The primary worktree must be clean before integration.');
+ if(typeof args.submittedCommitSha!=='string'||! /^[a-f0-9]{40}$/i.test(args.submittedCommitSha))throw new Error('git_worktree integrate requires the exact submitted 40-character commit SHA.');
+ if(!Array.isArray(args.scopePaths)||args.scopePaths.length<1||args.scopePaths.length>100)throw new Error('git_worktree integrate requires 1–100 declared scopePaths.');
+ if(!Array.isArray(args.expectedChangedPaths)||args.expectedChangedPaths.length<1||args.expectedChangedPaths.length>200)throw new Error('git_worktree integrate requires 1–200 expectedChangedPaths from the task submission.');
+ const submittedCommitSha=args.submittedCommitSha.toLowerCase();
+ const scopePaths=[...new Set(args.scopePaths.map(value=>normalizeGitRelativePath(value,'scopePaths item',true)))];
+ const expectedChangedPaths=args.expectedChangedPaths.map(value=>normalizeGitRelativePath(value,'expectedChangedPaths item'));
+ const expectedKeys=expectedChangedPaths.map(value=>value.toLowerCase());
+ if(new Set(expectedKeys).size!==expectedKeys.length)throw new Error('expectedChangedPaths contains duplicate paths.');
+ const primaryStatus=git(root,['status','--porcelain=v1','-z','--untracked-files=all']);
+ if(primaryStatus.exitCode!==0)throw new Error(primaryStatus.stderr||'Could not inspect the primary worktree status.');
+ const registeredWorktreePaths=listing.worktrees
+  .filter(item=>normalizeGitWorktreePath(item.path)!==normalizeGitWorktreePath(root))
+  .map(item=>path.relative(root,item.path).replace(/\\/g,'/').replace(/^\.\/+/, '').replace(/\/+$/,'').toLowerCase())
+  .filter(value=>value&&!value.startsWith('../')&&!path.isAbsolute(value));
+ const dirtyPrimaryEntries=primaryStatus.stdout.split('\0').filter(Boolean).filter(entry=>{
+  const statusCode=entry.slice(0,2);
+  const statusPath=entry.slice(3).replace(/\\/g,'/').replace(/\/+$/,'').toLowerCase();
+  return !(statusCode==='??'&&registeredWorktreePaths.some(registered=>statusPath===registered||statusPath.startsWith(registered+'/')));
+ });
+ if(dirtyPrimaryEntries.length)throw new Error('The primary worktree must be clean before integration. Unrelated changes: '+dirtyPrimaryEntries.map(entry=>entry.slice(3)).join(', '));
  const sourceStatus=git(source.path,['status','--porcelain=v1','--untracked-files=all']);
  if(sourceStatus.exitCode!==0||sourceStatus.stdout.trim())throw new Error('The source worktree must be clean before integration. Commit all task changes first.');
  const currentBranch=git(root,['branch','--show-current']);
  if(currentBranch.exitCode!==0||currentBranch.stdout.trim()!==targetBranch)throw new Error('The primary workspace must already be on target_branch '+targetBranch+'. No automatic branch switch is performed.');
  const branchExists=git(root,['show-ref','--verify','--quiet','refs/heads/'+branch]);
  if(branchExists.exitCode!==0)throw new Error('The source branch does not exist in the primary Git repository.');
- const sourceSha=git(root,['rev-parse','--verify',branch+'^{commit}']);
- if(sourceSha.exitCode!==0||! /^[a-f0-9]{40}$/i.test(sourceSha.stdout.trim()))throw new Error('The source branch commit could not be resolved.');
+ const branchHead=git(root,['rev-parse','--verify',branch+'^{commit}']);
+ const sourceHead=git(source.path,['rev-parse','--verify','HEAD']);
+ if(branchHead.exitCode!==0||sourceHead.exitCode!==0||! /^[a-f0-9]{40}$/i.test(branchHead.stdout.trim())||! /^[a-f0-9]{40}$/i.test(sourceHead.stdout.trim()))throw new Error('The source branch or worktree HEAD could not be verified.');
+ if(branchHead.stdout.trim().toLowerCase()!==submittedCommitSha||sourceHead.stdout.trim().toLowerCase()!==submittedCommitSha)throw new Error('TASK_SUBMISSION_STALE: The submitted commit must exactly match both the source branch head and source worktree HEAD.');
  const targetBefore=git(root,['rev-parse','--verify','HEAD']);
- const merge=git(root,['merge','--no-ff','--no-edit',branch]);
+ if(targetBefore.exitCode!==0||! /^[a-f0-9]{40}$/i.test(targetBefore.stdout.trim()))throw new Error('The target branch commit could not be resolved.');
+ const diff=git(root,['diff','--name-only','-z',targetBefore.stdout.trim(),submittedCommitSha,'--']);
+ if(diff.exitCode!==0)throw new Error(diff.stderr||'Could not inspect the actual submitted Git diff.');
+ const changedPaths=diff.stdout.split(String.fromCharCode(0)).filter(Boolean).map(value=>normalizeGitRelativePath(value,'Git changed path'));
+ if(!changedPaths.length)throw new Error('The submitted commit contains no file changes relative to the target branch.');
+ const outOfScope=changedPaths.filter(value=>!gitPathInsideScopes(value,scopePaths));
+ if(outOfScope.length)throw new Error('SUBMISSION_OUT_OF_SCOPE: The actual Git diff exceeds declared ownership scopePaths: '+outOfScope.join(', '));
+ const actualKeys=changedPaths.map(value=>value.toLowerCase());
+ if(new Set(actualKeys).size!==actualKeys.length||actualKeys.length!==expectedKeys.length||actualKeys.some(value=>!expectedKeys.includes(value)))throw new Error('SUBMISSION_CHANGED_PATHS_MISMATCH: Actual Git diff paths '+JSON.stringify(changedPaths)+' do not exactly match task-submitted paths '+JSON.stringify(expectedChangedPaths)+'.');
+ const latestBranch=git(root,['rev-parse','--verify',branch+'^{commit}']);
+ const latestSourceHead=git(source.path,['rev-parse','--verify','HEAD']);
+ const latestTargetHead=git(root,['rev-parse','--verify','HEAD']);
+ if(latestBranch.exitCode!==0||latestSourceHead.exitCode!==0||latestTargetHead.exitCode!==0||latestBranch.stdout.trim().toLowerCase()!==submittedCommitSha||latestSourceHead.stdout.trim().toLowerCase()!==submittedCommitSha||latestTargetHead.stdout.trim().toLowerCase()!==targetBefore.stdout.trim().toLowerCase())throw new Error('Git branch or worktree state changed during integration validation; re-read the task before retrying.');
+ const merge=git(root,['merge','--no-ff','--no-edit',submittedCommitSha]);
  if(merge.exitCode!==0){
   const aborted=git(root,['merge','--abort']);
   throw new Error('Git integration failed and the attempted merge was aborted. '+(merge.stderr||merge.stdout||'Merge conflict.')+(aborted.exitCode===0?'':' Merge abort also failed; inspect git status immediately.'));
  }
  const merged=git(root,['rev-parse','--verify','HEAD']);
  if(merged.exitCode!==0||! /^[a-f0-9]{40}$/i.test(merged.stdout.trim()))throw new Error('Git merge returned success but the resulting HEAD could not be verified.');
- return{operation,integrated:true,source_branch:branch,target_branch:targetBranch,source_commit:sourceSha.stdout.trim(),
-  target_before:targetBefore.stdout.trim(),merge_commit:merged.stdout.trim(),path:path.relative(root,source.path).replace(/\\/g,'/'),...merge};
+ const parents=git(root,['rev-list','--parents','-n','1',merged.stdout.trim()]);
+ const parentShas=parents.exitCode===0?parents.stdout.trim().split(/\s+/).slice(1).map(value=>value.toLowerCase()):[];
+ if(!parentShas.includes(targetBefore.stdout.trim().toLowerCase())||!parentShas.includes(submittedCommitSha))throw new Error('The resulting merge commit does not record the verified target and submitted commits as its parents. Evidence='+JSON.stringify({parent_exit_code:parents.exitCode,parent_stdout:parents.stdout,parent_stderr:parents.stderr,parent_shas:parentShas,target_before:targetBefore.stdout.trim(),submitted_commit:submittedCommitSha,merge_commit:merged.stdout.trim()})+'.');
+ return{operation,integrated:true,source_branch:branch,target_branch:targetBranch,source_commit:submittedCommitSha,
+  target_before:targetBefore.stdout.trim(),changed_paths:changedPaths,merge_commit:merged.stdout.trim(),path:path.relative(root,source.path).replace(/\\/g,'/'),...merge};
 }if(operation==='remove'){if(typeof args.path!=='string'||!args.path.trim())throw new Error('git_worktree remove requires path.');const target=safePath(root,args.path,false);if(normalizeGitWorktreePath(target)===normalizeGitWorktreePath(root))throw new Error('The selected workspace itself cannot be removed as a linked worktree.');if(!inside(root,target))throw new Error('Worktree path must remain inside the selected workspace.');const listing=gitWorktree(root,{operation:'list'});const match=listing.worktrees.find(item=>normalizeGitWorktreePath(item.path)===normalizeGitWorktreePath(target));if(!match)throw new Error('The requested directory is not a registered Git worktree. Target='+normalizeGitWorktreePath(target)+'; listed='+listing.worktrees.map(item=>normalizeGitWorktreePath(item.path)).join('; '));if(normalizeGitWorktreePath(match.path)===normalizeGitWorktreePath(root))throw new Error('The primary workspace cannot be removed.');const r=git(root,['worktree','remove',target]);if(r.exitCode!==0)throw new Error(r.stderr||r.stdout||'git worktree remove failed. No force option is used.');return{operation,removed:true,path:path.relative(root,target).replace(/\\/g,'/'),branch:match.branch||null,...r};}throw new Error('git_worktree.operation must be list, add, remove, or integrate.');}
 
 

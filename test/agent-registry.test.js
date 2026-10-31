@@ -562,6 +562,52 @@ test('session auto-expire selects the oldest eligible non-busy inactive session 
   assert.ok(Date.parse(records.get('bridge/sessions/' + newer.session_id + '.json').value.last_activity_at) > start);
 });
 
+test('session auto-expire ranks a historical session by its own last activity after its agent seat is reused', async () => {
+  const { registry, records, now } = mockMailbox(Date.now(), { maxSessions: 2, autoExpire: true });
+  const oldestId = 'session-' + 'a'.repeat(32);
+  const newerId = 'session-' + 'b'.repeat(32);
+  const replacementId = 'session-' + 'c'.repeat(32);
+  records.set('bridge/sessions/' + oldestId + '.json', {
+    sha: 'old-session-sha',
+    value: {
+      protocol: SESSION_RECORD_PROTOCOL, session_id: oldestId, agent_id: 'agent-001',
+      label: 'Historical session', status: 'disconnected',
+      created_at: new Date(500).toISOString(),
+      last_activity_at: new Date(1000).toISOString(),
+      updated_at: new Date(9000).toISOString(),
+      active_request_ids: []
+    }
+  });
+  records.set('bridge/sessions/' + newerId + '.json', {
+    sha: 'new-session-sha',
+    value: {
+      protocol: SESSION_RECORD_PROTOCOL, session_id: newerId, agent_id: 'agent-002',
+      label: 'Other historical session', status: 'disconnected',
+      created_at: new Date(1000).toISOString(),
+      last_activity_at: new Date(2000).toISOString(),
+      updated_at: new Date(2000).toISOString(),
+      active_request_ids: []
+    }
+  });
+  records.set('bridge/agents/agent-001.json', {
+    sha: 'reused-seat-sha',
+    value: {
+      protocol: AGENT_RECORD_PROTOCOL, agent_id: 'agent-001',
+      current_session_id: replacementId, label: 'Reused seat', status: 'active',
+      created_at: new Date(500).toISOString(),
+      last_activity_at: new Date(9000).toISOString(),
+      updated_at: new Date(9000).toISOString(),
+      active_request_ids: []
+    }
+  });
+
+  const replacement = await registry.startSession({ label: 'New conversation' });
+  assert.equal(replacement.agent_id, 'agent-001');
+  assert.equal(records.has('bridge/sessions/' + oldestId + '.json'), false);
+  assert.equal(records.has('bridge/sessions/' + newerId + '.json'), true);
+  assert.ok(now() > Date.parse(records.get('bridge/sessions/' + newerId + '.json').value.last_activity_at));
+});
+
 test('session auto-expire never evicts a paused session even when it is the only record', async () => {
   const { registry, records, advance } = mockMailbox(Date.now(), { maxSessions: 1, autoExpire: true });
   const session = await registry.startSession({ label: 'Paused retention guard' });

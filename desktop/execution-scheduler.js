@@ -51,6 +51,7 @@ function createExecutionScheduler(options = {}) {
   const shutdownTimeoutMs = Number.isInteger(options.shutdownTimeoutMs)
     ? Math.max(0, Math.min(options.shutdownTimeoutMs, 120000)) : DEFAULT_SHUTDOWN_TIMEOUT_MS;
   const onChange = typeof options.onChange === 'function' ? options.onChange : () => {};
+  const getFreeMemoryBytes = typeof options.getFreeMemoryBytes === 'function' ? options.getFreeMemoryBytes : () => os.freemem();
   const cpuCores = Math.max(1, os.cpus().length || 1);
   const totalMemoryBytes = Math.max(1, os.totalmem());
   const adaptiveLimits = {
@@ -62,7 +63,8 @@ function createExecutionScheduler(options = {}) {
   const memoryPressureReserveBytes = Math.max(1024 ** 3, Math.round(totalMemoryBytes * 0.08));
   const heavyPools = new Set(['compilation', 'editor', 'cook', 'packaging', 'gpu', 'binary-assets']);
   function resourceMetrics() {
-    const freeMemoryBytes = os.freemem();
+    const sampledFreeMemoryBytes = Number(getFreeMemoryBytes());
+    const freeMemoryBytes = Number.isFinite(sampledFreeMemoryBytes) ? Math.max(0, sampledFreeMemoryBytes) : 0;
     return { cpu_cores: cpuCores, total_memory_bytes: totalMemoryBytes, free_memory_bytes: freeMemoryBytes,
       process_rss_bytes: process.memoryUsage().rss, memory_pressure: freeMemoryBytes < memoryPressureReserveBytes,
       memory_pressure_reserve_bytes: memoryPressureReserveBytes };

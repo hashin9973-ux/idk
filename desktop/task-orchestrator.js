@@ -35,6 +35,30 @@ function normalizeScopePath(value) {
   return raw;
 }
 
+function normalizeModuleScope(value) {
+  const raw = boundedText(value, 180, 'module scope', true).replace(/\\/g, '/');
+  const segments = raw.split(/[./]/);
+  if (raw.startsWith('/') || raw.endsWith('/') ||
+      segments.some(segment => !segment || segment === '..' || !/^[A-Za-z0-9_$-]+$/.test(segment))) {
+    throw new Error('Module scopes must be hierarchical module identifiers without empty or traversal segments.');
+  }
+  return segments.join('.');
+}
+
+function moduleScopesOverlap(left, right) {
+  const a = String(left).toLowerCase().split('.');
+  const b = String(right).toLowerCase().split('.');
+  const shorter = Math.min(a.length, b.length);
+  for (let index = 0; index < shorter; index++) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
+function moduleScopeSetsOverlap(left = [], right = []) {
+  return left.some(a => right.some(b => moduleScopesOverlap(a, b)));
+}
+
 function pathsOverlap(left, right) {
   const a = left.toLowerCase();
   const b = right.toLowerCase();
@@ -147,6 +171,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       task_id: task.task_id, title: task.title, status: task.status, priority: task.priority,
       assignee_session_id: task.assignee_session_id || null, assignee_agent_id: task.assignee_agent_id || null,
       dependency_count: task.dependencies.length, scope_paths: task.scope_paths,
+      scope_modules: Array.isArray(task.scope_modules) ? task.scope_modules : [],
       updated_at: task.updated_at, lease_expires_at: task.lease_expires_at || null
     };
   }
@@ -166,7 +191,8 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       created_at: createdAt, updated_at: createdAt, leases: [], decisions: [], dedupe_keys: {},
       policy: {
         lease_ms: leaseMs,
-        scope_conflict: 'Workspace-relative path scopes overlap when equal or when one is a parent directory of the other.',
+        scope_conflict: 'Workspace-relative path scopes overlap when equal or when one is a parent directory of the other; module scopes overlap when their case-insensitive hierarchical identifiers are equal or one is a parent namespace of the other.',
+        module_scope: 'scope_modules reserves actual logical module namespaces. The module field is descriptive metadata only and is not an ownership lock.',
         review: 'A reviewer must be a different session from the task owner.',
         verification: 'Integration and verification are separate gates; task completion requires recorded evidence.'
       }
@@ -228,6 +254,13 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     }
     const scopes = Array.isArray(args.scope_paths) && args.scope_paths.length ? [...new Set(args.scope_paths.map(normalizeScopePath))] : ['.'];
     if (scopes.length > 100) throw new Error('scope_paths may contain at most 100 paths.');
+    const moduleScopes = Array.isArray(args.scope_modules)
+      ? [...new Set(args.scope_modules.map(normalizeModuleScope).map(scope => scope.toLowerCase()))]
+      : [];
+    if (moduleScopes.length > 100) throw new Error('scope_modules may contain at most 100 module scopes.');
+    const normalizedModuleScopes = Array.isArray(args.scope_modules)
+      ? [...new Map(args.scope_modules.map(normalizeModuleScope).map(scope => [scope.toLowerCase(), scope])).values()]
+      : [];
     const priority = Number.isInteger(args.priority) ? Math.min(100, Math.max(0, args.priority)) : 50;
     const dedupeKey = boundedText(args.dedupe_key, 160, 'dedupe_key');
     const timestamp = clock();
@@ -236,7 +269,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       protocol: TASK_PROTOCOL, task_id: taskId, project_id: projectId,
       title, objective, acceptance_criteria: criteria, priority,
       status: dependencies.length ? 'proposed' : 'ready',
-      dependencies, scope_paths: scopes,
+      dependencies, scope_paths: scopes, scope_modules: normalizedModuleScopes,
       module: boundedText(args.module, 180, 'module'),
       task_type: boundedText(args.task_type || 'implementation', 40, 'task_type'),
       dedupe_key: dedupeKey || null,
@@ -359,6 +392,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       }
     }
     const scope = task.scope_paths.length ? task.scope_paths : ['.'];
+    const moduleScope = Array.isArray(task.scope_modules) ? task.scope_modules : [];
     const leaseUntil = new Date(timestamp + leaseMs).toISOString();
     let leaseCreated = false;
     await mutateProject(projectId, project => {
@@ -367,16 +401,21 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       if (sameTask && sameTask.session_id !== identity.session_id) {
         throw new Error('TASK_ALREADY_CLAIMED: Another session currently owns this task.');
       }
-      const conflict = live.find(item => item.task_id !== taskId &&
-        item.scope_paths.some(a => scope.some(b => pathsOverlap(a, b))));
+      const conflict = live.find(item => item.task_id !== taskId && (
+        (Array.isArray(item.scope_paths) ? item.scope_paths : []).some(a => scope.some(b => pathsOverlap(a, b))) ||
+        moduleScopeSetsOverlap(Array.isArray(item.scope_modules) ? item.scope_modules : [], moduleScope)
+      ));
       if (conflict) {
-        throw new Error('TASK_SCOPE_CONFLICT: ' + conflict.task_id + ' currently owns an overlapping file/module scope (' +
-          conflict.scope_paths.join(', ') + '). Coordinate or wait for its lease to expire.');
+        const pathDetails = (Array.isArray(conflict.scope_paths) ? conflict.scope_paths : []).join(', ');
+        const moduleDetails = (Array.isArray(conflict.scope_modules) ? conflict.scope_modules : []).join(', ');
+        throw new Error('TASK_SCOPE_CONFLICT: ' + conflict.task_id + ' currently owns an overlapping path/module scope (' +
+          [pathDetails, moduleDetails].filter(Boolean).join('; ') + '). Coordinate or wait for its lease to expire.');
       }
       const leases = live.filter(item => item.task_id !== taskId);
       leases.push({
         task_id: taskId, session_id: identity.session_id, agent_id: identity.agent_id,
-        scope_paths: scope, expires_at: leaseUntil, claimed_at: sameTask && sameTask.claimed_at || new Date(timestamp).toISOString()
+        scope_paths: scope, scope_modules: moduleScope,
+        expires_at: leaseUntil, claimed_at: sameTask && sameTask.claimed_at || new Date(timestamp).toISOString()
       });
       leaseCreated = true;
       return { ...project, leases };
@@ -399,7 +438,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
           lease_expires_at: leaseUntil, worktree_path: worktreePath, branch,
           history, blocked_reason: null };
       });
-      return { ...taskSummary(updated), lease_ms: leaseMs, ownership: scope, note: 'The project-wide ownership lease prevents another session from claiming an overlapping path scope until release or expiry. Renew it with task_heartbeat while working.' };
+      return { ...taskSummary(updated), lease_ms: leaseMs, ownership: scope, module_ownership: moduleScope, note: 'The project-wide ownership lease prevents another session from claiming overlapping path or hierarchical module scopes until release or expiry. Renew it with task_heartbeat while working.' };
     } catch (error) {
       if (leaseCreated) {
         try {
@@ -466,18 +505,22 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const taskRemote = await readTask(taskId);
     if (!taskRemote || taskRemote.value.project_id !== projectId) throw new Error('Task not found in this project.');
     const scope = taskRemote.value.scope_paths.length ? taskRemote.value.scope_paths : ['.'];
+    const moduleScope = Array.isArray(taskRemote.value.scope_modules) ? taskRemote.value.scope_modules : [];
     await mutateProject(projectId, project => {
       const live = activeLeases(project, timestamp);
       const sameTask = live.find(item => item.task_id === taskId);
-      const conflict = live.find(item => item.task_id !== taskId &&
-        item.scope_paths.some(a => scope.some(b => pathsOverlap(a, b))));
-      if (conflict) throw new Error('TASK_SCOPE_CONFLICT: ' + conflict.task_id + ' currently owns an overlapping scope while this task is in a review/integration/verification gate.');
+      const conflict = live.find(item => item.task_id !== taskId && (
+        (Array.isArray(item.scope_paths) ? item.scope_paths : []).some(a => scope.some(b => pathsOverlap(a, b))) ||
+        moduleScopeSetsOverlap(Array.isArray(item.scope_modules) ? item.scope_modules : [], moduleScope)
+      ));
+      if (conflict) throw new Error('TASK_SCOPE_CONFLICT: ' + conflict.task_id + ' currently owns an overlapping path/module scope while this task is in a review/integration/verification gate.');
       const leases = live.filter(item => item.task_id !== taskId);
       leases.push({
         task_id: taskId,
         session_id: sameTask ? sameTask.session_id : identity.session_id,
         agent_id: sameTask ? sameTask.agent_id : identity.agent_id,
         scope_paths: sameTask ? sameTask.scope_paths : scope,
+        scope_modules: sameTask && Array.isArray(sameTask.scope_modules) ? sameTask.scope_modules : moduleScope,
         expires_at: leaseUntil,
         claimed_at: sameTask && sameTask.claimed_at || new Date(timestamp).toISOString()
       });
@@ -494,7 +537,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     if (!task || task.value.assignee_session_id !== identity.session_id) throw new Error('Only the assigned session may submit this task.');
     if (!['claimed', 'in_progress', 'needs_rework'].includes(task.value.status)) throw new Error('Task must be claimed, in progress, or needs_rework before submission.');
     const commit = boundedText(args.commit_sha, 40, 'commit_sha', true);
-    if (!/^[a-f0-9]{7,40}$/i.test(commit)) throw new Error('commit_sha must be a Git commit hash.');
+    if (!/^[a-f0-9]{40}$/i.test(commit)) throw new Error('commit_sha must be the full 40-character Git commit SHA.');
     const changed = Array.isArray(args.changed_paths) ? [...new Set(args.changed_paths.map(normalizeScopePath))] : [];
     if (changed.length > 200) throw new Error('changed_paths may contain at most 200 entries.');
     if (!changed.length) throw new Error('changed_paths must include at least one workspace-relative changed path.');
@@ -565,19 +608,38 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     if (!task || task.value.status !== 'integration') throw new Error('Only an approved task in integration can be merged.');
     const submission = task.value.submissions[task.value.submissions.length - 1];
     if (submission && submission.submitted_by_session_id === identity.session_id) throw new Error('A separate integrator session is required.');
-    if (!submission || !/^[a-f0-9]{7,40}$/i.test(submission.commit_sha)) throw new Error('The task has no valid submitted commit.');
+    if (!submission || !/^[a-f0-9]{40}$/i.test(submission.commit_sha)) throw new Error('The task has no valid full Git commit SHA.');
     await renewTaskLease(task.value.project_id, taskId, identity);
     const path = boundedText(args.worktree_path || submission.worktree_path, 512, 'worktree_path', true);
     const branch = boundedText(args.branch || submission.branch, 120, 'branch', true);
     const targetBranch = boundedText(args.target_branch, 120, 'target_branch', true);
-    const output = await executeIntegration({ operation: 'integrate', path, branch, targetBranch });
-    if (!output || output.integrated !== true || !/^[a-f0-9]{7,40}$/i.test(String(output.merge_commit || ''))) {
-      throw new Error('The local Git worktree integration did not confirm a merge commit.');
+    const scopePaths = Array.isArray(task.value.scope_paths) && task.value.scope_paths.length
+      ? task.value.scope_paths : ['.'];
+    const expectedChangedPaths = Array.isArray(submission.changed_paths) ? submission.changed_paths : [];
+    const output = await executeIntegration({
+      operation: 'integrate', path, branch, targetBranch,
+      submittedCommitSha: submission.commit_sha,
+      scopePaths,
+      expectedChangedPaths
+    });
+    const actualChangedPaths = output && Array.isArray(output.changed_paths)
+      ? output.changed_paths.map(normalizeScopePath) : [];
+    const expectedKeys = expectedChangedPaths.map(normalizeScopePath).map(value => value.toLowerCase()).sort();
+    const actualKeys = actualChangedPaths.map(value => value.toLowerCase()).sort();
+    if (!output || output.integrated !== true ||
+        String(output.source_commit || '').toLowerCase() !== submission.commit_sha.toLowerCase() ||
+        !/^[a-f0-9]{40}$/i.test(String(output.merge_commit || '')) ||
+        !/^[a-f0-9]{40}$/i.test(String(output.target_before || '')) ||
+        !actualChangedPaths.length ||
+        JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
+      throw new Error('The local Git worktree integration did not verify the submitted commit and actual changed paths.');
     }
     const timestamp = now();
     const updated = await mutateTask(taskId, current => ({
       ...current, status: 'verification',
       integration: { source_branch: branch, target_branch: targetBranch,
+        source_commit: output.source_commit, target_before: output.target_before,
+        changed_paths: actualChangedPaths,
         merge_commit: output.merge_commit, merged_at: timestamp, integrated_by_session_id: identity.session_id },
       history: [...current.history, { at: timestamp, by_session_id: identity.session_id,
         by_agent_id: identity.agent_id, action: 'integrated', status: 'verification', merge_commit: output.merge_commit }].slice(-100)
@@ -727,5 +789,5 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
 
 module.exports = {
   createTaskOrchestrator, TASK_PROTOCOL, PROJECT_PROTOCOL, TASK_ID_PATTERN, PROJECT_ID_PATTERN,
-  TASK_STATES, pathsOverlap, normalizeScopePath
+  TASK_STATES, pathsOverlap, normalizeScopePath, normalizeModuleScope, moduleScopesOverlap
 };

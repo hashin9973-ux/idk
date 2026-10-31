@@ -27,7 +27,10 @@ test('persistent Piper worker source is valid Python',t=>{
   const result=spawnSync('python',['-c','import ast,sys; ast.parse(sys.stdin.read())'],{
     input:PYTHON_WORKER_SOURCE,encoding:'utf8',windowsHide:true
   });
-  if(result.error&&result.error.code==='ENOENT')return t.skip('Python is not installed in this test environment.');
+  const launcherOutput=String(result.stdout||'')+'\n'+String(result.stderr||'');
+  const missingInterpreter=(result.error&&result.error.code==='ENOENT')||
+    (result.status===9009&&/Python was not found|Microsoft Store|App execution aliases/i.test(launcherOutput));
+  if(missingInterpreter)return t.skip('A Python interpreter is not available in this test environment (a Windows Store execution alias is not an interpreter).');
   assert.equal(result.status,0,result.stderr||result.error&&result.error.message||'Python worker source failed to compile.');
 });
 

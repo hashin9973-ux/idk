@@ -76,7 +76,7 @@ test('an already-aborted signal rejects immediately without enqueuing',async()=>
 
 
 test('per-resource pools cap expensive work independently of global scheduler capacity', async () => {
- const scheduler=createExecutionScheduler({maxActive:8,resourceLimits:{compilation:2,'desktop-control':1}});
+ const scheduler=createExecutionScheduler({maxActive:8,resourceLimits:{compilation:2,'desktop-control':1},getFreeMemoryBytes:()=>Number.MAX_SAFE_INTEGER});
  const gates=[gate(),gate(),gate()],started=[];
  try{
   const jobs=gates.map((g,index)=>scheduler.run({resourcePools:['compilation']},async()=>{started.push(index);await g.promise;},{id:'compile-'+index,tool:'run_tests'}));
@@ -94,6 +94,16 @@ test('per-resource pools cap expensive work independently of global scheduler ca
   gates[1].resolve();gates[2].resolve();
   await Promise.all([jobs[1],jobs[2],desktop]);
  }finally{await scheduler.stop();}
+});
+
+test('memory pressure backoff limits heavy pools without reducing independent filesystem capacity',()=>{
+ const scheduler=createExecutionScheduler({maxActive:8,resourceLimits:{compilation:4,filesystem:4},getFreeMemoryBytes:()=>0});
+ try{
+  const pools=scheduler.getState().resourcePools;
+  assert.equal(pools.compilation.limit,1);
+  assert.equal(pools.filesystem.limit,4);
+  assert.equal(scheduler.getState().resourceMetrics.memory_pressure,true);
+ }finally{void scheduler.stop();}
 });
 
 test('resource limits do not serialize independent resource classes', async () => {

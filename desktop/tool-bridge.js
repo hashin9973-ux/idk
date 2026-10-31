@@ -16,13 +16,13 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   project_impact: ['path', 'symbol'],
   game_project_intelligence: ['maxFiles'],
   task_project_init: ['name', 'description', 'project_id'], task_project_list: [], task_project_status: ['project_id'],
-  task_create: ['project_id', 'title', 'objective', 'acceptance_criteria', 'scope_paths', 'dependencies', 'priority', 'module', 'task_type', 'dedupe_key'],
+  task_create: ['project_id', 'title', 'objective', 'acceptance_criteria', 'scope_paths', 'scope_modules', 'dependencies', 'priority', 'module', 'task_type', 'dedupe_key'],
   task_list: ['project_id', 'status', 'assigned_to_me', 'limit', 'offset'], task_get: ['project_id', 'task_id'],
   task_claim: ['task_id', 'branch', 'worktree_path'], task_heartbeat: ['task_id'], task_update: ['task_id', 'status', 'reason'],
   task_submit: ['task_id', 'commit_sha', 'changed_paths', 'evidence', 'branch', 'worktree_path'], task_review: ['task_id', 'verdict', 'comment'],
   task_integrate: ['task_id', 'target_branch', 'branch', 'worktree_path'], task_verify: ['task_id', 'checks'],
   task_decision: ['project_id', 'decision', 'rationale', 'affected_modules', 'references'], task_cancel: ['task_id'],
-  git_worktree: ['operation', 'path', 'branch', 'createBranch', 'targetBranch'],
+  git_worktree: ['operation', 'path', 'branch', 'createBranch', 'targetBranch', 'submittedCommitSha', 'scopePaths', 'expectedChangedPaths'],
   project_status: [],
   environment_info: [],
   list_dir: ['path'],
@@ -238,19 +238,19 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   task_project_init: 'Create a shared project coordination board. Share its project_id with every collaborating session.',
   task_project_list: 'List project boards available in the shared mailbox.',
   task_project_status: 'Read one project board, active ownership leases, persistent architecture decisions, and coordination policy.',
-  task_create: 'Create a durable project task with objective, acceptance criteria, dependencies, priority and file/module scopes. Optional dedupe_key prevents duplicate open tasks.',
+  task_create: 'Create a durable project task with objective, acceptance criteria, dependencies, priority, workspace-relative path scopes, and explicit hierarchical scope_modules. The descriptive module field alone is not an ownership lock. Optional dedupe_key prevents duplicate open tasks.',
   task_list: 'List project tasks with optional status/owner filters and a bounded page size.',
   task_get: 'Read the full durable task record, including ownership, submissions, reviews, integration and verification history.',
-  task_claim: 'Atomically claim a ready task and reserve its workspace-relative path/module scopes across all sessions. Include branch/worktree_path after creating an isolated Git worktree.',
+  task_claim: 'Atomically claim a ready task and reserve its workspace-relative path scopes and explicit hierarchical module scopes across all sessions. Include branch/worktree_path after creating an isolated Git worktree.',
   task_heartbeat: 'Renew an owned task and its cross-agent resource lease while work continues.',
   task_update: 'Update an owned task to in_progress, blocked, ready, failed or cancelled. Use dedicated submit/review/integrate/verify gates for terminal transitions.',
   task_submit: 'Submit a commit, changed paths and implementation/build/test/runtime evidence for independent review. Changes outside the claimed scope are rejected.',
   task_review: 'Independently approve or reject a submitted task. Reviewer must be a different ChatGPT session from the implementer.',
-  task_integrate: 'After independent approval, perform a local clean-worktree-checked Git merge into target_branch. Requires native Windows approval.',
+  task_integrate: 'After independent approval, verify the submitted 40-character commit against the source branch and worktree HEAD, inspect the actual Git diff against the declared path scopes and submitted paths, then perform a local merge into target_branch. Requires native Windows approval.',
   task_verify: 'After integration, execute independent build, test, and runtime commands and record their exit codes/results. Requires native Windows approval for each command.',
   task_decision: 'Record an architecture/interface decision in the shared project board so other sessions can read the rationale and affected modules.',
   task_cancel: 'Cancel a task and release its project-wide ownership lease. Only its creator or current owner may cancel.',
-  git_worktree: 'List, create, remove, or integrate linked Git worktrees. Add/remove/integrate need local approval; integration requires clean primary and source worktrees.',
+  git_worktree: 'List, create, remove, or integrate linked Git worktrees. Add/remove/integrate need local approval; task integration requires the exact submitted SHA, clean primary/source worktrees, actual Git-diff scope verification, submitted-path matching, and a verified two-parent merge commit.',
   project_status: 'Summarize detected project technologies, whether the selected workspace is a Git repository, current branch/status, and top-level entries.',
   environment_info: 'Describe the local OS/runtime and available shell. Identity-sensitive fields are redacted before context is published to GitHub.',
   list_dir: 'List up to 500 immediate children of a workspace-relative directory, sorted by name.',
@@ -310,7 +310,8 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   title: { type: 'string', minLength: 1, maxLength: 180, description: 'Concise task title.' },
   objective: { type: 'string', minLength: 1, maxLength: 6000, description: 'Task objective and expected implementation outcome.' },
   acceptance_criteria: { description: 'Measurable conditions that must be satisfied before a task is accepted.', type: 'array', minItems: 1, maxItems: 30, items: { type: 'string', minLength: 1, maxLength: 500 } },
-  scope_paths: { description: 'Workspace-relative file or directory scopes reserved while this task is active; parent and child paths overlap.', type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 } },
+  scope_paths: { description: 'Workspace-relative file or directory scopes reserved while this task is active; parent and child paths overlap. Omission conservatively reserves the workspace root.', type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 } },
+  scope_modules: { description: 'Explicit hierarchical module identifiers reserved while this task is active. Namespace parent/child scopes overlap case-insensitively; the descriptive module field alone is not a lock.', type: 'array', maxItems: 100, items: { type: 'string', maxLength: 180 } },
   dependencies: { description: 'Task IDs in this project that must reach verified or completed before this task can be claimed.', type: 'array', maxItems: 64, items: { type: 'string', pattern: '^task-[0-9]{13}-[a-f0-9]{16}$' } },
   priority: { description: 'Scheduling priority from 0 to 100; higher values indicate earlier work.', type: 'integer', minimum: 0, maximum: 100, default: 50 },
   module: { description: 'Optional game module, subsystem, or code-area label owned by this task.', type: 'string', maxLength: 180 },
@@ -318,7 +319,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   dedupe_key: { description: 'Optional stable idempotency key that prevents duplicate open tasks.', type: 'string', maxLength: 160 },
   status: { description: 'Owner-controlled status transition; review, integration, and verification use their dedicated gated tools.', type: 'string', enum: ['in_progress', 'blocked', 'ready', 'failed', 'cancelled'] },
   reason: { description: 'Explanation for blocking a task; required when status is blocked.', type: 'string', maxLength: 2000 },
-  commit_sha: { description: 'Git commit hash submitted for independent review.', type: 'string', pattern: '^[a-fA-F0-9]{7,40}$' },
+  commit_sha: { description: 'Full 40-character Git commit SHA submitted for independent review.', type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
   changed_paths: { description: 'Workspace-relative changed paths included in the task submission.', type: 'array', maxItems: 200, items: { type: 'string', maxLength: 512 } },
   evidence: { description: 'Implementation, build, test, or runtime evidence supporting the submitted commit.', type: 'array', minItems: 1, maxItems: 30, items: { type: 'object', properties: {
     kind: { type: 'string', enum: ['implementation', 'build', 'test', 'runtime', 'review'] },
@@ -330,6 +331,9 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   verdict: { description: 'Independent review decision: approve or reject.', type: 'string', enum: ['approve', 'reject'] },
   comment: { description: 'Reviewer explanation or feedback; required when rejecting a submission.', type: 'string', maxLength: 3000 },
   target_branch: { description: 'Existing primary-worktree branch that receives an independently approved task merge.', type: 'string', minLength: 1, maxLength: 120 },
+  submittedCommitSha: { description: 'Exact full Git commit SHA submitted to the task and approved by its independent reviewer. It must still be the source branch and source worktree HEAD.', type: 'string', pattern: '^[a-fA-F0-9]{40}$' },
+  scopePaths: { description: 'Workspace-relative path scopes granted by the task lease. The local Git integration verifies every actual changed path is contained in these scopes.', type: 'array', minItems: 1, maxItems: 100, items: { type: 'string', maxLength: 512 } },
+  expectedChangedPaths: { description: 'Changed paths recorded at task submission. The local Git integration compares this list with the actual diff; it is not trusted as proof of scope compliance.', type: 'array', minItems: 1, maxItems: 200, items: { type: 'string', maxLength: 512 } },
   checks: { description: 'Independent build, test, and runtime commands executed after integration.', type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', properties: {
     kind: { type: 'string', enum: ['build', 'test', 'runtime'] },
     summary: { type: 'string', minLength: 1, maxLength: 1000 },
@@ -494,7 +498,16 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   git_clone: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   shell: { timeoutMs: { description: 'PowerShell timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   project_search: { query: { minLength: 1, maxLength: 300 }, maxResults: { minimum: 1, maximum: 100, default: 30 } },
-  git_worktree: { path: { description: 'Workspace-relative destination for add or registered source worktree path for remove/integrate. Add defaults to .bridge-worktrees/<branch>.' }, branch: { description: 'Existing branch to check out, or the task worktree branch to integrate.', maxLength: 100 }, targetBranch: { type: 'string', description: 'Target branch in the primary worktree.', maxLength: 100 }, createBranch: { default: false } },
+  git_worktree: {
+    operation: { type: 'string', enum: ['list', 'add', 'remove', 'integrate'] },
+    path: { description: 'Workspace-relative destination for add or registered source worktree path for remove/integrate. Add defaults to .bridge-worktrees/<branch>.' },
+    branch: { description: 'Existing branch to check out, or the task worktree branch to integrate.', maxLength: 100 },
+    targetBranch: { type: 'string', description: 'Target branch in the primary worktree.', maxLength: 100 },
+    createBranch: { default: false },
+    submittedCommitSha: { type: 'string', description: 'Exact full 40-character commit SHA submitted for independent review.', pattern: '^[a-fA-F0-9]{40}$' },
+    scopePaths: { type: 'array', description: 'Declared workspace-relative path scopes reserved by the task.', minItems: 1, maxItems: 100, items: { type: 'string', maxLength: 512 } },
+    expectedChangedPaths: { type: 'array', description: 'Task-submitted paths, compared against the actual Git diff during integration.', minItems: 1, maxItems: 200, items: { type: 'string', maxLength: 512 } }
+  },
   run_tests: { timeoutMs: { description: 'Test-command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   batch: {
     steps: {
@@ -691,6 +704,9 @@ function createToolBridge(deps) {
       if (args.operation === 'add' && (typeof args.branch !== 'string' || !args.branch.trim())) throw new Error('git_worktree add requires branch.');
       if (args.operation === 'remove' && (typeof args.path !== 'string' || !args.path.trim())) throw new Error('git_worktree remove requires path.');
       if (args.operation === 'integrate' && ['path', 'branch', 'targetBranch'].some(key => typeof args[key] !== 'string' || !args[key].trim())) throw new Error('git_worktree integrate requires path, branch, and targetBranch.');
+      if (args.operation === 'integrate' && (typeof args.submittedCommitSha !== 'string' || !/^[a-f0-9]{40}$/i.test(args.submittedCommitSha))) throw new Error('git_worktree integrate requires submittedCommitSha as a full 40-character Git SHA.');
+      if (args.operation === 'integrate' && (!Array.isArray(args.scopePaths) || args.scopePaths.length < 1 || args.scopePaths.length > 100 || args.scopePaths.some(value => typeof value !== 'string'))) throw new Error('git_worktree integrate requires 1–100 string scopePaths.');
+      if (args.operation === 'integrate' && (!Array.isArray(args.expectedChangedPaths) || args.expectedChangedPaths.length < 1 || args.expectedChangedPaths.length > 200 || args.expectedChangedPaths.some(value => typeof value !== 'string'))) throw new Error('git_worktree integrate requires 1–200 string expectedChangedPaths.');
       if (args.createBranch !== undefined && typeof args.createBranch !== 'boolean') throw new Error('git_worktree.createBranch must be boolean.');
     }
     const extra = Object.keys(args).filter(key => !allowed.includes(key));
