@@ -439,7 +439,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       }
       return { revoked: true, agent_id: agentId, session_id: sessionId,
         revoked_at: tombstone.revoked_at || now, cancelled_request_ids: activeIds,
-        seat_released: ownsSeat || Boolean(seat && seat.current_session_id !== sessionId),
+        seat_released: ownsSeat,
         mailbox_cleanup: { status: 'not_requested', deleted_records: 0, deleted_files: 0 } };
     }));
   }
