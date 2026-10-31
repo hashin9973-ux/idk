@@ -539,7 +539,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     if (!task || task.value.status !== 'review') throw new Error('Only a task in review can be reviewed.');
     const submission = task.value.submissions[task.value.submissions.length - 1];
     const implementerSessionId = submission && submission.submitted_by_session_id || task.value.assignee_session_id;
-    if (implementerSessionId === identity.session_id) throw new Error('Independent review requires a session other than the original task implementer.');
+    if (implementerSessionId === identity.session_id) throw new Error('Independent review requires a different session from the original task implementer.');
     await renewTaskLease(task.value.project_id, taskId, identity);
     const comment = boundedText(args.comment, 3000, 'comment', verdict === 'reject');
     const timestamp = now();

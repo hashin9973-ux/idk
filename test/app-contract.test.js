@@ -967,8 +967,8 @@ test('worker admission leaves headroom for fifty collaborating sessions',()=>{
 test('agent disconnect and revocation hand off or preserve the task gates after cancellation drains',()=>{
   const bridge=read('desktop','repository-bridge.js');
   const tasks=read('desktop','task-orchestrator.js');
-  assert.match(bridge,/taskOrchestrator\\.detachSession\\(sessionId, 'revoked'\\)/);
-  assert.match(bridge,/taskOrchestrator\\.detachSession\\(sessionId, 'disconnected'\\)/);
+  assert.match(bridge,/taskOrchestrator\.detachSession\(sessionId, 'revoked'\)/);
+  assert.match(bridge,/taskOrchestrator\.detachSession\(sessionId, 'disconnected'\)/);
   assert.match(bridge,/Cancelled work did not drain/);
   assert.match(tasks,/async function detachSession/);
   assert.match(tasks,/gated_tasks_preserved/);
