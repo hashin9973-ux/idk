@@ -331,7 +331,7 @@ test('monorepo detects multiple project roots without conflating their project c
     const profile = await inspect(root, ['node', 'npm', 'go']);
     assert.ok(profile.projects.length >= 3);
     assert.ok(profile.relationships.some(item => item.from === '.' && item.to === 'apps/web' && item.kind === 'declared_workspace_member'));
-    assert.ok(projectAt(profile, 'apps/web').commandPlans.some(plan => plan.command === 'npm run test'));
+    assert.ok(projectAt(profile, 'apps/web').commandPlans.some(plan => plan.command === 'npm test'));
     assert.ok(projectAt(profile, 'apps/service').commandPlans.some(plan => plan.command === 'go build ./...'));
     assert.ok(profile.languages.some(item => item.language === 'typescript'));
     assert.ok(profile.languages.some(item => item.language === 'go'));
@@ -380,7 +380,7 @@ test('Windows command-shim package managers are version-probed with fixed argume
     toolExecFileAsync: async (command, args, options) => {
       calls.push({ command, args, shell: options.shell });
       if (command === 'where.exe') {
-        if (args[0] === 'npm') return { stdout: 'C:\\Program Files\\nodejs\\npm.cmd\r\n' };
+        if (args[0] === 'npm') return { stdout: 'C:\\Program Files\\nodejs\\npm\r\nC:\\Program Files\\nodejs\\npm.cmd\r\n' };
         const error = new Error('not found');
         error.code = 'ENOENT';
         throw error;
