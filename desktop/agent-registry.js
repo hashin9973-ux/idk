@@ -464,7 +464,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         ]);
         if (!claim || !result || !claim.value || !result.value ||
             claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
-            result.value.request_id !== requestId || result.value.session_id !== sessionId ||
+            result.value.request_id !== requestId || (result.value.session_id && result.value.session_id !== sessionId) ||
             !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
         return { requestId, requestRemote, claim, result };
       }));
