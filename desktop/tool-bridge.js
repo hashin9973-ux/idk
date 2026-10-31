@@ -1045,7 +1045,7 @@ function createToolBridge(deps) {
       call.destination = localTools.safePath(root, args.path, false);
     }
     throwIfAborted(signal);
-    return githubAuth.runGitOperation(call);
+    return githubAuth.runGitOperation(call, signal);
   }
 
 
