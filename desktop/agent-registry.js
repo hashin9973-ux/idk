@@ -187,12 +187,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function assertNotEvicted(sessionId) {
     const eviction = await readEviction(sessionId);
-    if (eviction) {
-      if (eviction.value.previous_status === 'disconnected') {
-        throw new Error('SESSION_DISCONNECTED: This session was explicitly disconnected before cap eviction.');
-      }
-      throw new Error('SESSION_EVICTED: This session ID was removed by the 10,000-ID registration cap. Start a new conversation session before using the bridge again.');
+    if (!eviction) return;
+    // Eviction records are written before SHA-checked session deletion. A retained
+    // session file means the tombstone is still pending and must not invalidate it.
+    if (await readSession(sessionId)) return;
+    if (eviction.value.previous_status === 'disconnected') {
+      throw new Error('SESSION_DISCONNECTED: This session was explicitly disconnected before cap eviction.');
     }
+    throw new Error('SESSION_EVICTED: This session ID was removed by the 10,000-ID registration cap. Start a new conversation session before using the bridge again.');
   }
 
   async function assertNotRevoked(sessionId) {
@@ -303,14 +305,19 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       if (typeof deleteRemoteFiles !== 'function') {
         throw new Error('SESSION_LIMIT_REACHED: SHA-checked session eviction is unavailable; no session was removed.');
       }
-      const candidates = (await Promise.all(names.map(async name => {
-        const sessionId = name.slice(0, -5);
-        const remote = await readSession(sessionId);
-        return remote ? {
-          sessionId, remote, session: remote.value,
-          lastActivity: sessionLastActivityTime(remote.value)
-        } : null;
-      }))).filter(Boolean);
+      const candidates = [];
+      // Keep GitHub API pressure bounded when the registry reaches its 10,000-ID cap.
+      for (let offset = 0; offset < names.length; offset += 32) {
+        const batch = await Promise.all(names.slice(offset, offset + 32).map(async name => {
+          const sessionId = name.slice(0, -5);
+          const remote = await readSession(sessionId);
+          return remote ? {
+            sessionId, remote, session: remote.value,
+            lastActivity: sessionLastActivityTime(remote.value)
+          } : null;
+        }));
+        candidates.push(...batch.filter(Boolean));
+      }
       candidates.sort((a, b) =>
         a.lastActivity - b.lastActivity || a.sessionId.localeCompare(b.sessionId));
       if (!candidates.length) {
@@ -347,6 +354,16 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
                   ? latest.value.active_request_ids.slice(-100) : [],
                 reason: 'hard_registration_cap'
               };
+              // Commit the tombstone before deleting the registration. If deletion
+              // fails or the worker crashes, assertNotEvicted sees the still-present
+              // session record and allows it; a retry can safely finish the deletion.
+              if (!existingEviction) {
+                try { await writeNewJson(evictionPath(candidate.sessionId), eviction); }
+                catch (error) {
+                  const confirmed = await readEviction(candidate.sessionId);
+                  if (!confirmed) throw error;
+                }
+              }
               const deletion = await deleteRemoteFiles([{
                 path: sessionPath(candidate.sessionId), sha: latest.sha
               }]);
@@ -355,8 +372,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
               }
 
               try {
-                if (!existingEviction) await writeNewJson(evictionPath(candidate.sessionId), eviction);
-              } finally {
                 if (ownsSeat) {
                   await mutateJson(seatPath(candidate.session.agent_id),
                     value => validateSeatRecord(value, candidate.session.agent_id),
