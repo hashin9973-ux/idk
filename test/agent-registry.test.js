@@ -89,6 +89,26 @@ test('concurrent session starts allocate distinct randomized conversation IDs an
   }
 });
 
+
+test('legacy expired status values do not invalidate or release persistent session IDs', async () => {
+  const { registry, records } = mockMailbox();
+  const session = await registry.startSession({ label: 'Legacy status migration' });
+  const sessionPath = 'bridge/sessions/' + session.session_id + '.json';
+  const stored = records.get(sessionPath);
+  stored.value.status = 'expired';
+
+  assert.equal((await registry.authenticate({ session_id: session.session_id })).session_id, session.session_id);
+  const request = {
+    request_id: 'req-agent001-legacy001',
+    session_id: session.session_id,
+    agent_id: session.agent_id
+  };
+  assert.equal(await registry.requestStarted(request), true);
+  await registry.requestCompleted(request);
+  assert.equal(records.get(sessionPath).value.status, 'active');
+  assert.equal(records.get('bridge/agents/' + session.agent_id + '.json').value.current_session_id, session.session_id);
+});
+
 test('session identity remains valid after inactivity and its agent seat is never recycled', async () => {
   const { registry, records, advance } = mockMailbox();
   const first = await registry.startSession({ label: 'Persistent conversation' });
