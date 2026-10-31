@@ -17,6 +17,7 @@ const DEFAULT_INTERVAL_MS = 1000;
 // Keep the independent 2-second commit probe as the fast path; use the full tree as recovery fallback.
 const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 10_000;
 const FAST_REQUEST_COMMIT_POLL_INTERVAL_MS = 2_000;
+const DEFAULT_STALLED_OPERATION_RECOVERY_MS = 60_000;
 const MAX_RECENT_REQUEST_COMMITS = 20;
 const MAX_CONCURRENT_REQUESTS = 32;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
@@ -175,15 +176,19 @@ function createRepositoryBridge(deps) {
     cleanupScanLimit = MAX_MAILBOX_CLEANUP_SCAN,
     cleanupRecordLimit = MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS,
     requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
+    stalledOperationRecoveryMs = DEFAULT_STALLED_OPERATION_RECOVERY_MS,
     requestSessionAssignment = async () => null,
     onSessionAssigned = async () => {}
   } = deps;
 
   const workerId = randomUUID();
+  const operationRecoveryWindowMs = Number.isFinite(Number(stalledOperationRecoveryMs)) && Number(stalledOperationRecoveryMs) > 0
+    ? Number(stalledOperationRecoveryMs) : DEFAULT_STALLED_OPERATION_RECOVERY_MS;
   let running = false;
   let timer = null;
   let pollInFlight = false;
   let pollPromise = null;
+  let pollStartedAt = null;
   const activeRequestIds = new Set();
   const requestAgents = new Map();
   const requestSessions = new Map();
@@ -200,6 +205,7 @@ function createRepositoryBridge(deps) {
   let requestCommitProbeTimer = null;
   let requestCommitProbeInFlight = false;
   let requestCommitProbePromise = null;
+  let requestCommitProbeStartedAt = null;
   let lastRequestCommitSha = null;
   let lastRequestCommitProbeAt = null;
   let lastRequestCommitProbeDurationMs = null;
@@ -480,6 +486,13 @@ function createRepositoryBridge(deps) {
       pendingCount,
       requestPolling: {
         pollIntervalMs: Math.max(1000, Number(intervalMs) || DEFAULT_INTERVAL_MS),
+        stalledOperationRecoveryMs: operationRecoveryWindowMs,
+        pollInFlight,
+        pollStartedAt: pollStartedAt ? new Date(pollStartedAt).toISOString() : null,
+        pollTimerActive: Boolean(timer),
+        requestCommitProbeInFlight,
+        requestCommitProbeStartedAt: requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
+        requestCommitProbeTimerActive: Boolean(requestCommitProbeTimer),
         requestTreeScanIntervalMs: Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS),
         lastRequestTreeScanAt: lastRequestTreeReconcileAt ? new Date(lastRequestTreeReconcileAt).toISOString() : null,
         lastRequestTreeScanDurationMs: lastRequestTreeReconcileDurationMs,
@@ -660,7 +673,14 @@ function createRepositoryBridge(deps) {
         last_request_tree_entry_count: lastRequestTreeEntryCount,
         request_tree_scan_count: requestTreeReconcileCount,
         last_poll_duration_ms: lastPollDurationMs,
+        stalled_operation_recovery_ms: operationRecoveryWindowMs,
+        poll_in_flight: pollInFlight,
+        poll_started_at: pollStartedAt ? new Date(pollStartedAt).toISOString() : null,
+        poll_timer_active: Boolean(timer),
         request_commit_probe_interval_ms: FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
+        request_commit_probe_in_flight: requestCommitProbeInFlight,
+        request_commit_probe_started_at: requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
+        request_commit_probe_timer_active: Boolean(requestCommitProbeTimer),
         last_request_commit_probe_at: lastRequestCommitProbeAt,
         last_request_commit_probe_duration_ms: lastRequestCommitProbeDurationMs,
         last_request_commit_probe_error: lastRequestCommitProbeError
@@ -2261,9 +2281,11 @@ function createRepositoryBridge(deps) {
   }
 
   async function pollRecentRequestCommits() {
-    if (!running || requestCommitProbeInFlight || knownResultFiles === null) return;
+    if (!running || knownResultFiles === null) return;
+    if (requestCommitProbeInFlight) return requestCommitProbePromise;
     requestCommitProbeInFlight = true;
     const startedAt = Date.now();
+    requestCommitProbeStartedAt = startedAt;
     const task = (async () => {
       const config = currentConfig();
       const commitList = await api(
@@ -2272,6 +2294,7 @@ function createRepositoryBridge(deps) {
         null,
         { sha: config.branch, path: 'bridge/requests', per_page: MAX_RECENT_REQUEST_COMMITS }
       );
+      if (!running || requestCommitProbePromise !== task) return;
       if (!Array.isArray(commitList && commitList.result)) {
         throw new Error('GitHub returned an invalid request-commit listing.');
       }
@@ -2307,6 +2330,7 @@ function createRepositoryBridge(deps) {
           return { commitSha: commit.sha, files: null, error: cleanError(error.message) };
         }
       }));
+      if (!running || requestCommitProbePromise !== task) return;
       const failedDetail = details.find(detail => detail.error || !Array.isArray(detail.files));
       if (failedDetail) {
         // Stop retrying the same unavailable commit-detail page every two seconds.
@@ -2315,7 +2339,6 @@ function createRepositoryBridge(deps) {
         throw new Error('Could not read changed files for request commit ' + failedDetail.commitSha + ': ' +
           (failedDetail.error || 'GitHub did not return a files array.'));
       }
-      if (!running) return;
 
       const requestFilenames = new Set();
       for (const detail of details) {
@@ -2338,16 +2361,20 @@ function createRepositoryBridge(deps) {
     try {
       await task;
     } catch (error) {
-      lastRequestCommitProbeError = cleanError(error.message);
+      if (requestCommitProbePromise === task) lastRequestCommitProbeError = cleanError(error.message);
     } finally {
-      lastRequestCommitProbeAt = new Date().toISOString();
-      lastRequestCommitProbeDurationMs = Math.max(0, Date.now() - startedAt);
-      requestCommitProbeInFlight = false;
-      if (requestCommitProbePromise === task) requestCommitProbePromise = null;
-      announce();
+      // A late completion from a probe detached by the watchdog must not clear or
+      // overwrite the newer probe's in-flight state.
+      if (requestCommitProbePromise === task) {
+        lastRequestCommitProbeAt = new Date().toISOString();
+        lastRequestCommitProbeDurationMs = Math.max(0, Date.now() - startedAt);
+        requestCommitProbeInFlight = false;
+        requestCommitProbePromise = null;
+        requestCommitProbeStartedAt = null;
+        announce();
+      }
     }
   }
-
   function startRequestCommitProbe() {
     if (!running) return;
     if (requestCommitProbeTimer) clearInterval(requestCommitProbeTimer);
@@ -2358,10 +2385,13 @@ function createRepositoryBridge(deps) {
   }
 
   async function pollOnce() {
-    if (pollInFlight || !running) return;
+    if (!running) return;
+    if (pollInFlight) return pollPromise;
     pollInFlight = true;
-    const pollStartedAt = Date.now();
-    const task = (async () => {
+    const startedAt = Date.now();
+    pollStartedAt = startedAt;
+    let task;
+    task = Promise.resolve().then(async () => {
       let requestScanSucceeded = false;
       try {
         let files;
@@ -2373,6 +2403,7 @@ function createRepositoryBridge(deps) {
             listFolder('bridge/requests'),
             listFolder('bridge/results')
           ]);
+          if (!running || pollPromise !== task) return;
           files = requestFiles;
           requestScanSucceeded = true;
           knownResultFiles = new Set(resultFiles
@@ -2392,6 +2423,7 @@ function createRepositoryBridge(deps) {
           if (reconciliationDue) {
             const scanStartedAt = Date.now();
             files = await listFolder('bridge/requests');
+            if (!running || pollPromise !== task) return;
             requestScanSucceeded = true;
             lastRequestTreeReconcileAt = Date.now();
             lastRequestTreeReconcileDurationMs = Math.max(0, Date.now() - scanStartedAt);
@@ -2401,6 +2433,7 @@ function createRepositoryBridge(deps) {
             files = [];
           }
         }
+        if (!running || pollPromise !== task) return;
         const sorted = files
           .map(file => file.name)
           .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
@@ -2432,24 +2465,69 @@ function createRepositoryBridge(deps) {
           scheduleContextRefresh();
         }
       } catch (error) {
-        lastError = cleanError(error.message);
-        if (!requestScanSucceeded) lastPollError = lastError;
-        announce();
+        if (pollPromise === task) {
+          lastError = cleanError(error.message);
+          if (!requestScanSucceeded) lastPollError = lastError;
+          announce();
+        }
       } finally {
-        lastPollDurationMs = Math.max(0, Date.now() - pollStartedAt);
-        pollInFlight = false;
-        pollPromise = null;
-        announce();
+        // A detached poll may complete after recovery; it must not clear a newer
+        // poll's active state or replace its duration.
+        if (pollPromise === task) {
+          lastPollDurationMs = Math.max(0, Date.now() - startedAt);
+          pollInFlight = false;
+          pollPromise = null;
+          pollStartedAt = null;
+          announce();
+        }
       }
-    })();
+    });
     pollPromise = task;
     return task;
+  }
+
+  function recoverStalledPolling() {
+    if (!running) return { recovered: false, reason: 'worker-not-running' };
+
+    const now = Date.now();
+    const stalePoll = pollInFlight && Number.isFinite(pollStartedAt) &&
+      now - pollStartedAt >= operationRecoveryWindowMs;
+    const staleProbe = requestCommitProbeInFlight && Number.isFinite(requestCommitProbeStartedAt) &&
+      now - requestCommitProbeStartedAt >= operationRecoveryWindowMs;
+    const missingPollTimer = !timer;
+    const missingProbeTimer = !requestCommitProbeTimer;
+
+    if (stalePoll) {
+      // Detach the old promise. Its identity-checked finally block can no longer
+      // release a newer poll started below.
+      pollInFlight = false;
+      pollPromise = null;
+      pollStartedAt = null;
+    }
+    if (staleProbe) {
+      requestCommitProbeInFlight = false;
+      requestCommitProbePromise = null;
+      requestCommitProbeStartedAt = null;
+    }
+
+    if (stalePoll || missingPollTimer) {
+      scheduleNextPoll();
+      void pollOnce();
+    }
+    if (staleProbe || missingProbeTimer) startRequestCommitProbe();
+
+    const recovered = stalePoll || staleProbe || missingPollTimer || missingProbeTimer;
+    if (recovered) announce();
+    return { recovered, stalePoll, staleProbe, missingPollTimer, missingProbeTimer };
   }
 
   function scheduleNextPoll() {
     if (!running) return;
     clearTimeout(timer);
     timer = setTimeout(async () => {
+      // A fired timeout is no longer an active timer. Mark it as such while
+      // awaiting the poll so the watchdog can restore it if that poll stalls.
+      timer = null;
       await pollOnce();
       scheduleNextPoll();
     }, Math.max(1000, intervalMs));
@@ -2515,7 +2593,7 @@ function createRepositoryBridge(deps) {
   }
 
   return {
-    start, stop, pollOnce, setConfig, getState: stateSnapshot, publishEnvironmentContext,
+    start, stop, pollOnce, recoverStalledPolling, setConfig, getState: stateSnapshot, publishEnvironmentContext,
     publishWorkspaceFile, publishFilesystemIndex,
     getAgentSession: sessionId => agentRegistry.authenticate({ session_id: sessionId }),
     sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message }),

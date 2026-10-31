@@ -1405,6 +1405,7 @@ async function attemptAutoConnect() {
   if (!repositoryBridge || !githubAuth || autoConnectInFlight) return;
   const initial = repositoryBridge.getState();
   if (initial.running) {
+    const recovery = repositoryBridge.recoverStalledPolling();
     const status = resolveWorkerStatus(initial);
     const connectionError = ['offline', 'reconnecting', 'attention'].includes(status)
       ? String(initial.lastPollError || initial.lastError || '')
@@ -1412,10 +1413,12 @@ async function attemptAutoConnect() {
     setAutoConnectionStatus(status, connectionError);
     // Poll the mailbox even when Windows reports "No internet". Only the actual
     // GitHub mailbox request determines whether the transport is reachable.
-    void repositoryBridge.pollOnce().catch(error => {
-      const message = String(error && error.message || error);
-      setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
-    });
+    if (!recovery.recovered) {
+      void repositoryBridge.pollOnce().catch(error => {
+        const message = String(error && error.message || error);
+        setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
+      });
+    }
     return;
   }
   if (!initial.configured) {
