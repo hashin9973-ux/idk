@@ -81,6 +81,23 @@ Use `task_project_init` once per game/project and share the returned `project_id
 
 Recommended lifecycle: `proposed → ready → claimed → in_progress → blocked → review → integration → verification → verified`. Rejected reviews or failed verification return tasks to `needs_rework`. Use `task_heartbeat` while working and `task_submit` with a commit SHA, changed paths, and evidence before asking another session to review. `task_integrate` performs a non-forced merge only when both source and primary worktrees are clean and the primary worktree is already on the selected target branch. `task_verify` requires separate build, test, and runtime commands; the task is not marked verified unless all exit codes are zero.
 
+## Multi-language project and toolchain intelligence
+
+The workspace profile is a bounded, read-only scan of project manifests and source-file extensions. It can report several project roots and languages in one workspace, including C/C++, C#, Rust, Java, Kotlin, Python, Go, JavaScript/TypeScript, PHP, Ruby, Swift, Dart/Flutter, Scala, Elixir, Erlang, Zig, Lua, Perl, R, Vue and Svelte. Recognized project/build metadata includes CMake, Make, Meson, MSBuild/Visual Studio, Unreal, Unity, Godot, .NET, Cargo, Maven, Gradle, Python packaging/test manifests, Go modules/workspaces, npm/pnpm/Yarn, Composer, Bundler, Swift Package Manager/Xcode, Dart/Flutter, sbt, Mix and Rebar3.
+
+Scanning is capped by depth, entry count, manifest size and project count. Drive-root workspaces remain shallow. Common generated/dependency directories and symbolic links are skipped, and likely secret filenames are excluded from language and manifest inspection. Project profiles contain concise metadata, not full source listings. The profile cache is short-lived and separate from the existing source/symbol index.
+
+The local toolchain report separately probes executable lookup and version output. On Windows it also checks Visual Studio installations using the installed Visual Studio locator when available, so MSBuild and MSVC can be found even when their command prompts are not on the normal PATH. Unity Editor path discovery is a presence check; it does not launch the Editor. A successful version probe establishes executable availability, not that a compiler can compile this particular project.
+
+Project support levels have specific meanings:
+- **detected_only**: project files were recognized, but one or more required tools or engine prerequisites are missing/unresolved.
+- **toolchain_available**: relevant toolchains are present, but no grounded build/test plan is currently available from the manifest/configuration.
+- **toolchain_ready**: required tools have usable executable/version evidence and at least one supported workflow can be proposed.
+
+Build/test plans are derived from manifests, registered scripts/targets, local wrappers, configured build directories and discovered executables. They include their project root and evidence source. Discovery does not run these commands, install SDKs/dependencies, or bypass local approval. The agent must work from the indicated project root, inspect project-specific instructions and arguments, then use the normal approval-gated execution tools. A suggested command is not a passing build or test.
+
+Unreal and Unity receive engine-specific detection and prerequisite reporting, but they are not advertised as fully build-ready based only on project markers. UnrealBuildTool/engine association resolution and Unity's batch-mode target configuration remain separate requirements; this profile does not replace the engine editor, asset pipeline, UHT/UBT, or runtime verification. Some source-only language roots can be identified before they contain a recognizable build manifest; those are detection-only until their actual project configuration and tools are established.
+
 ## Game project intelligence and scheduling
 
 `game_project_intelligence` scans bounded local project metadata for Unreal (`.uproject`, `.uplugin`, `Build.cs`, `Target.cs`, C++ reflection macros and exported Asset Registry JSON), Unity manifests/assembly definitions/serialized GUID references, and Godot project configuration/autoloads. It does not parse or edit binary `.uasset`/`.umap` assets, execute UHT/UBT, inspect Blueprint graphs, or replace an engine editor. Use detected engine files and verified project commands to run engine-native build/cook/test/runtime operations through the local Windows tools.
