@@ -571,6 +571,9 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.equal(result.result.protocol, 'chatgpt-local-agent-context/v1');
     assert.equal(result.result.project_commands.name, 'context-fixture');
     assert.equal(result.result.project_commands.scripts.test, 'node --test');
+    assert.ok(result.result.project_support && Array.isArray(result.result.project_support.projects));
+    assert.ok(result.result.project_support.suggestedCommands.some(item => item.command === 'npm test'));
+    assert.equal(Object.hasOwn(result.result.project, 'project_support'), false, 'the full project profile is included only once in agent context');
     assert.ok(Array.isArray(result.result.directory_overview.paths));
     assert.equal(result.result.directory_overview.format, 'paths');
     assert.equal(result.result.execution_policy.auto_accept_all, false);
