@@ -679,6 +679,20 @@ function createRepositoryBridge(deps) {
     return null;
   }
 
+  async function cleanupEvictedSessions(evictedSessions) {
+    const cleanup = [];
+    for (const evicted of Array.isArray(evictedSessions) ? evictedSessions : []) {
+      const executionCancellation = await cancelSessionOperations(evicted.session_id, 'SESSION_EVICTED');
+      let taskCleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
+      if (!executionCancellation.drain_timed_out) {
+        try { taskCleanup = await taskOrchestrator.detachSession(evicted.session_id, 'evicted'); }
+        catch (error) { taskCleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+      }
+      cleanup.push({ ...evicted, execution_cancellation: executionCancellation, task_cleanup: taskCleanup });
+    }
+    return cleanup;
+  }
+
   async function publishState(force = false) {
     const now = Date.now();
     const snapshot = {
@@ -2061,17 +2075,17 @@ function createRepositoryBridge(deps) {
             (typeof selectedAgentId !== 'string' || !/^agent-[0-9]{3,}$/.test(selectedAgentId))) {
           throw new Error('SESSION_ASSIGNMENT_INVALID: Choose a valid agent ID or enable automatic assignment.');
         }
-        const created = await agentRegistry.startSession({ ...request.args, ...(selectedAgentId ? { agent_id: selectedAgentId } : {}) });
-        const evictionCleanup = [];
-        for (const evicted of Array.isArray(created.evicted_sessions) ? created.evicted_sessions : []) {
-          const executionCancellation = await cancelSessionOperations(evicted.session_id, 'SESSION_EVICTED');
-          let taskCleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
-          if (!executionCancellation.drain_timed_out) {
-            try { taskCleanup = await taskOrchestrator.detachSession(evicted.session_id, 'evicted'); }
-            catch (error) { taskCleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+        let created;
+        try {
+          created = await agentRegistry.startSession({ ...request.args, ...(selectedAgentId ? { agent_id: selectedAgentId } : {}) });
+        } catch (error) {
+          const failedAllocationCleanup = await cleanupEvictedSessions(error && error.evicted_sessions);
+          if (failedAllocationCleanup.length && error && typeof error === 'object') {
+            error.eviction_cleanup = failedAllocationCleanup;
           }
-          evictionCleanup.push({ ...evicted, execution_cancellation: executionCancellation, task_cleanup: taskCleanup });
+          throw error;
         }
+        const evictionCleanup = await cleanupEvictedSessions(created.evicted_sessions);
         // Auto-assignment chooses the seat only after the popup completes. Do not
         // pass its global placeholder workspace as a session override: the main
         // process must resolve the selected seat's default before the global one.
