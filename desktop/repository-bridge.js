@@ -1131,6 +1131,9 @@ function createRepositoryBridge(deps) {
     const parts = value.split('/');
     if (parts.length < 3 || parts[0] !== 'bridge' ||
         parts.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) return false;
+    if (parts[1] === 'sessions') {
+      return parts.length === 3 && /^session-[a-f0-9]{32}\.json$/.test(parts[2]);
+    }
     return ['requests', 'results', 'claims', 'artifacts', 'agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
       !parts.some(segment => segment === '.gitkeep');
   }
