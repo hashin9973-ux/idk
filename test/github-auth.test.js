@@ -837,6 +837,7 @@ test('GitHub logout removes the encrypted credential', async () => {
 
 test('agent revocation aborts an in-flight authenticated Git command', async () => {
   const workspace = tempWorkspace();
+  fs.mkdirSync(path.join(workspace, '.git'));
   let markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
   const calls = [];
