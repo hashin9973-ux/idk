@@ -448,7 +448,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     };
     const requestEntries = await listFolder('bridge/requests');
     const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(name)))];
+      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)))];
     let deletedRequests = 0;
     const requestRecords = [];
     for (let start = 0; start < requestNames.length; start += 16) {
@@ -488,7 +488,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
     const sessionEntries = await listFolder('bridge/sessions');
     const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^session-[a-f0-9]{32}\\.json$/.test(name)).map(name => name.slice(0, -5)))];
+      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
     if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
     let deletedMessages = 0;
     for (let start = 0; start < recipientSessions.length; start += 12) {
@@ -500,7 +500,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         return { recipientSessionId, entries };
       }));
       for (const inbox of inboxes) {
-        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
+        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
         for (let batch = 0; batch < candidates.length; batch += 16) {
           const rows = await Promise.all(candidates.slice(batch, batch + 16).map(async item => {
             const name = String(item.name || item.path).split('/').pop();
