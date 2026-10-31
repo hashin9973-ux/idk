@@ -4,7 +4,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { isFilesystemRoot } = require('./workspace-path');
-const { createExecutionScheduler } = require('./execution-scheduler');
+const { createExecutionScheduler, DEFAULT_RESOURCE_LIMITS } = require('./execution-scheduler');
 
 const TOOL_ARGUMENT_KEYS = Object.freeze({
   get_capabilities: [],
@@ -90,11 +90,31 @@ function projectIndexResource(workspaceRoot) {
   return 'project-index:' + path.resolve(workspaceRoot).replace(/\\/g, '/').toLowerCase();
 }
 
+function resourcePoolsForTool(tool, args = {}) {
+  if (['read_file','file_info','upload_workspace_file','write_file','create_directory','delete_path','move_path','apply_patch','list_dir','directory_tree','glob_file_search','search'].includes(tool)) return ['filesystem'];
+  if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact','game_project_intelligence','get_agent_context'].includes(tool)) return ['source-analysis'];
+  if (tool === 'run_tests') return ['compilation'];
+  if (tool === 'shell') {
+    const command = String(args.command || '').toLowerCase();
+    if (/buildcookrun|cook(?:content)?|unreal.*cook/.test(command)) return ['cook'];
+    if (/package|packaging|electron-builder|gradle.*bundle|dotnet publish/.test(command)) return ['packaging'];
+    if (/unrealeditor|ue4editor|unity(?:\.exe)?|godot/.test(command)) return ['editor'];
+    if (/nvcc|cuda|vulkan|directx|shader.*compile|renderdoc/.test(command)) return ['gpu'];
+    if (/uasset|umap|assetregistry|binary.*asset/.test(command)) return ['binary-assets'];
+    if (/build|compile|linker|cmake|msbuild|ninja|cargo build|dotnet build/.test(command)) return ['compilation'];
+    return ['shell'];
+  }
+  if (tool === 'computer') return ['desktop-control'];
+  if (tool === 'tts') return ['audio'];
+  if (tool.startsWith('git_')) return ['git'];
+  return [];
+}
+
 function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
   if (tool === 'batch') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
     if (!steps.length) return { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: true };
-    const combined = { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: false };
+    const combined = { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], resourcePools: [], barrier: false };
     for (const step of steps) {
       const footprint = getExecutionFootprint(step.tool, step.args || {}, workspaceRoot);
       combined.reads.push(...footprint.reads);
@@ -102,6 +122,7 @@ function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
       combined.resources.push(...(footprint.resources || []));
       combined.resourceReads.push(...(footprint.resourceReads || []));
       combined.resourceWrites.push(...(footprint.resourceWrites || []));
+      combined.resourcePools.push(...(footprint.resourcePools || []));
       if (footprint.barrier) combined.barrier = true;
     }
     return combined;
@@ -111,6 +132,7 @@ function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
   const resources = [];
   const resourceReads = [];
   const resourceWrites = [];
+  const resourcePools = resourcePoolsForTool(tool, args);
   let barrier = false;
   const add = (target, value) => {
     const normalized = normalizeExecutionPath(value);
@@ -188,7 +210,7 @@ function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
     default:
       barrier = true; break;
   }
-  return { reads, writes, resources, resourceReads, resourceWrites, barrier };
+  return { reads, writes, resources, resourceReads, resourceWrites, resourcePools, barrier };
 }
 
 function executionFootprintsConflict(left, right) {
@@ -581,7 +603,7 @@ function createToolBridge(deps) {
     getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult,
     onSchedulerUpdate = () => {} } = deps;
   const COMPUTER_TOOLS = new Set(['computer']);
-  const executionScheduler = createExecutionScheduler({ maxActive: 100, onChange: onSchedulerUpdate });
+  const executionScheduler = createExecutionScheduler({ maxActive: 100, resourceLimits: DEFAULT_RESOURCE_LIMITS, onChange: onSchedulerUpdate });
 
   async function synthesizeConfiguredSpeech(args, id, sessionId = null) {
     if (args.play === false) return visionService.synthesizeSpeech(args, id);
@@ -689,6 +711,7 @@ function createToolBridge(deps) {
     const writes = [];
     const resourceReads = [];
     const resourceWrites = [];
+    const resourcePools = resourcePoolsForTool(step.tool, args);
     let barrier = false;
     const add = (set, value) => {
       const normalized = normalizeBatchPath(value);
@@ -768,7 +791,7 @@ function createToolBridge(deps) {
         barrier = true;
         break;
     }
-    return { reads, writes, resourceReads, resourceWrites, barrier };
+    return { reads, writes, resourceReads, resourceWrites, resourcePools, barrier };
   }
 
   function batchFootprintsConflict(left, right) {
@@ -1092,17 +1115,30 @@ function createToolBridge(deps) {
     const stopOnError = args.stopOnError !== false;
     let active = 0;
     const waiters = [];
+    const activePoolCounts = new Map();
     let firstFailureIndex = Number.POSITIVE_INFINITY;
     let stoppedAt = null;
 
-    async function acquireSlot() {
-      if (active < concurrency) { active++; return; }
-      await new Promise(resolve => waiters.push(resolve));
+    function canAcquirePools(pools) {
+      if (active >= concurrency) return false;
+      for (const pool of pools) {
+        const limit = DEFAULT_RESOURCE_LIMITS[pool] || 100;
+        if ((activePoolCounts.get(pool) || 0) >= limit) return false;
+      }
+      return true;
     }
-    function releaseSlot() {
-      const next = waiters.shift();
-      if (next) next();
-      else active--;
+    async function acquireSlot(pools) {
+      while (!canAcquirePools(pools)) await new Promise(resolve => waiters.push(resolve));
+      active++;
+      for (const pool of pools) activePoolCounts.set(pool, (activePoolCounts.get(pool) || 0) + 1);
+    }
+    function releaseSlot(pools) {
+      active--;
+      for (const pool of pools) {
+        const next = Math.max(0, (activePoolCounts.get(pool) || 0) - 1);
+        if (next) activePoolCounts.set(pool, next); else activePoolCounts.delete(pool);
+      }
+      for (const wake of waiters.splice(0)) wake();
     }
     function itemFor(step, outcome, skipped = false) {
       const item = {
@@ -1139,7 +1175,8 @@ function createToolBridge(deps) {
           outcomeById.set(step.id, skipped);
           return skipped;
         }
-        await acquireSlot();
+        const pools = resourcePoolsForTool(step.tool, step.args || {});
+        await acquireSlot(pools);
         try {
           if (stopOnError && index > firstFailureIndex) {
             const skipped = { ok: false, skipped: true, error: 'Not started because an earlier batch step failed or was cancelled.' };
@@ -1163,7 +1200,7 @@ function createToolBridge(deps) {
           }
           return outcome;
         } finally {
-          releaseSlot();
+          releaseSlot(pools);
         }
       })();
       taskById.set(step.id, task);
@@ -1442,6 +1479,7 @@ module.exports = {
   createToolBridge,
   TOOL_ARGUMENT_KEYS,
   getExecutionFootprint,
+  resourcePoolsForTool,
   executionFootprintsConflict,
   BLOCKED_TOOLS_FOR_MAILBOX,
   GITHUB_GIT_TOOLS
