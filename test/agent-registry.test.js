@@ -362,7 +362,7 @@ test('optional mailbox wipe removes only fully attributable records and preserve
   const target = await registry.startSession({ label: 'Wipe target' });
   const other = await registry.startSession({ label: 'Other agent' });
   const requestId = 'wipe-target-request';
-  const request = { protocol: 'chatgpt-local-repo-request/v1', request_id: requestId, session_id: target.session_id, tool: 'read_file' };
+  const request = { protocol: 'chatgpt-local-repo-bridge/v1', request_id: requestId, session_id: target.session_id, tool: 'read_file' };
   const claim = { protocol: 'chatgpt-local-repo-claim/v1', request_id: requestId, session_id: target.session_id, status: 'completed' };
   const result = { protocol: 'chatgpt-local-repo-result/v1', request_id: requestId, session_id: target.session_id, status: 'completed', artifacts: [] };
   const incompleteId = 'wipe-incomplete-request';
