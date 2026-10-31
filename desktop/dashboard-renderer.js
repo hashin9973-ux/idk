@@ -1,6 +1,6 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),api=window.windowsBridge;
-const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list'),agentWidgetHost=$('agent-widget-host'),terminal=window.AgentTerminal;
+const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('browser-page'),browserHost=$('browser-host'),queue=$('queues-widget'),controls=$('controls-widget'),tabList=$('tab-list'),agentWidgetHost=$('agent-widget-host');
 const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),browserEnabled=$('browser-enabled'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
 let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const agentWidgets=new Map(),openAgentDetails=new Set();let savedWidgetLayout={};const grid=12,minW=180,minH=100;
@@ -272,23 +272,6 @@ function renderQueues(a,p){
   }
   positionControls();
 }
-function showAgentRequestDetails(agentId,request){
-  let dialog=$('agent-request-detail-dialog');
-  if(!dialog){
-    dialog=document.createElement('dialog');dialog.id='agent-request-detail-dialog';dialog.className='agent-request-detail-dialog';
-    const form=document.createElement('form');form.method='dialog';
-    const heading=document.createElement('header');heading.className='agent-request-detail-heading';
-    const title=document.createElement('h2');title.className='agent-request-detail-title';
-    const close=document.createElement('button');close.type='submit';close.textContent='Close';close.className='agent-request-detail-close';
-    heading.append(title,close);form.append(heading);
-    for(const label of ['Request JSON','Claim JSON','Result JSON']){const section=document.createElement('section');section.className='agent-request-detail-section';const h=document.createElement('h3');h.textContent=label;const pre=document.createElement('pre');pre.dataset.jsonLabel=label;section.append(h,pre);form.append(section)}
-    dialog.append(form);document.body.append(dialog);
-  }
-  dialog.querySelector('.agent-request-detail-title').textContent=agentId+' · '+String(request.request_id||'request');
-  const values={'Request JSON':request.request_json,'Claim JSON':request.claim_json,'Result JSON':request.result_json};
-  for(const pre of dialog.querySelectorAll('[data-json-label]'))pre.textContent=typeof values[pre.dataset.jsonLabel]==='string'&&values[pre.dataset.jsonLabel]?values[pre.dataset.jsonLabel]:'Not available yet.';
-  if(!dialog.open)dialog.showModal();
-}
 function appendConsoleJsonDetails(parent,label,value){
   const details=document.createElement('details');details.className='agent-json-details';
   const summary=document.createElement('summary');summary.textContent=label;
@@ -370,15 +353,21 @@ function makeAgentWidget(agent,index){
   const deleteButton=document.createElement('button');deleteButton.type='button';deleteButton.className='agent-console-icon-button agent-delete-button';deleteButton.title='Revoke this session and remove its widget';deleteButton.setAttribute('aria-label','Delete agent widget for '+agent.agent_id);deleteButton.append(createAgentIcon('trash'));
   const pauseButton=document.createElement('button');pauseButton.type='button';pauseButton.className='agent-console-icon-button agent-pause-button';pauseButton.title='Pause this session';pauseButton.setAttribute('aria-label','Pause this session');pauseButton.append(createAgentIcon('pause'));
   const disconnectButton=document.createElement('button');disconnectButton.type='button';disconnectButton.className='agent-console-icon-button agent-disconnect-button';disconnectButton.title='Disconnect this session from its agent seat';disconnectButton.setAttribute('aria-label','Disconnect session from agent seat');disconnectButton.append(createAgentIcon('scissors'));
-  actions.append(workspaceButton,nicknameButton,dumpButton,pauseButton,disconnectButton,deleteButton);
+  const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
+  messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
+  messageButton.append(createAgentIcon('message'));
+  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton,pauseButton,disconnectButton,deleteButton);
   header.append(identity,status,busy,unread,counts,actions);
-  const composer=document.createElement('form');composer.className='agent-message-composer';composer.dataset.noWidgetDrag='true';
-  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='> message agent… (Enter to send)';input.setAttribute('aria-label','Message for '+agent.agent_id);input.autocomplete='off';
+  const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';
+  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='Message this agent…';input.setAttribute('aria-label','Message for '+agent.agent_id);
+  const send=document.createElement('button');send.type='button';send.className='agent-message-send';send.textContent='➤';send.title='Send message';send.setAttribute('aria-label','Send message');
+  const cancel=document.createElement('button');cancel.type='button';cancel.className='agent-message-cancel';cancel.textContent='×';cancel.title='Close message box';cancel.setAttribute('aria-label','Close message box');
+  composer.append(input,send,cancel);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
   const messageThread=document.createElement('div');messageThread.className='agent-message-thread';
   messageThread.hidden=true;messageThread.setAttribute('aria-live','polite');messageThread.dataset.noWidgetDrag='true';
   const workspaceMenu=document.createElement('div');workspaceMenu.className='agent-workspace-menu';workspaceMenu.hidden=true;workspaceMenu.dataset.noWidgetDrag='true';
-  card.append(header,body,messageThread,composer,workspaceMenu);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  card.append(header,composer,body,messageThread,workspaceMenu);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
   pauseButton.addEventListener('click',async event=>{
     event.stopPropagation();
     const sessionId=card.dataset.sessionId||'';
@@ -426,10 +415,17 @@ function makeAgentWidget(agent,index){
     $('agent-delete-confirm').disabled=false;
     $('agent-delete-dialog').showModal();
   });
+  messageButton.addEventListener('click',event=>{
+    event.stopPropagation();composer.hidden=!composer.hidden;
+    if(!composer.hidden){input.focus();input.select();}
+  });
+  cancel.addEventListener('click',event=>{event.stopPropagation();composer.hidden=true;});
   const sendMessage=async()=>{
     const sessionId=card.dataset.sessionId||'',message=input.value.trim();
-    if(!sessionId||!message||input.disabled)return;
-    input.disabled=true;input.placeholder='> sending…';
+    if(!sessionId||!message||send.disabled)return;
+    send.disabled=true;
+    send.textContent='Sending…';
+    send.setAttribute('aria-busy','true');
     try {
       const sent=await api.sendAgentMessage(sessionId,message);
       if(sent&&typeof sent.message_id==='string'){
@@ -437,15 +433,15 @@ function makeAgentWidget(agent,index){
         if(!ids.includes(sent.message_id))ids.push(sent.message_id);
         card.dataset.pendingMessageIds=JSON.stringify(ids.slice(-100));
       }
-      input.value='';input.placeholder='> message agent… (Enter to send)';
+      input.value='';composer.hidden=true;
       note('Message sent to '+agent.agent_id+'.','success');
       void refreshAgentReplies();
       await refresh();
     } catch(error) { note('Could not message '+agent.agent_id+': '+error.message,'error'); }
-    finally { input.disabled=false;input.placeholder='> message agent… (Enter to send)'; }
+    finally { send.disabled=false;send.textContent='Send';send.removeAttribute('aria-busy'); }
   };
-  composer.addEventListener('submit',event=>{event.preventDefault();event.stopPropagation();void sendMessage();});
-  input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();void sendMessage();}});
+  send.addEventListener('click',event=>{event.stopPropagation();void sendMessage();});
+  input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();void sendMessage();}else if(event.key==='Escape'){composer.hidden=true;}});
   return card;
 }
 function renderAgentMailboxes(rawAgents){
@@ -472,6 +468,7 @@ function renderAgentMailboxes(rawAgents){
     const busy=header.querySelector('.agent-console-busy');
     const counts=header.querySelector('.agent-console-counts');
     const workspaceButton=header.querySelector('.agent-workspace-button');
+    const messageButton=header.querySelector('.agent-message-button');
     const nicknameButton=header.querySelector('.agent-nickname-button');
     const dumpButton=header.querySelector('.agent-dump-button');
     const deleteButton=header.querySelector('.agent-delete-button');
@@ -505,9 +502,7 @@ function renderAgentMailboxes(rawAgents){
       : unreadCount+' unread incoming agent message'+(unreadCount===1?'':'s');
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
-    const messageInput=card.querySelector('.agent-message-composer input');
-    messageInput.disabled=!hasSession;
-    messageInput.placeholder=hasSession?'> message agent… (Enter to send)':'[no active session]';
+    messageButton.disabled=!hasSession;
     const paused=agent.session_status==='paused'||agent.paused===true;
     card.dataset.paused=paused?'true':'false';
     pauseButton.disabled=!hasSession;
@@ -570,16 +565,32 @@ function renderAgentMailboxes(rawAgents){
     }else{
       for(const request of requests){
         const row=document.createElement('article');row.className='agent-request';
-        const command=document.createElement('div');command.className='agent-command-line';command.setAttribute('role','button');command.tabIndex=0;
-        command.textContent=terminal.formatRequestCommands(request.request_json,request.tool);
-        command.title='Open full request, claim, and result JSON';
+        const titleLine=document.createElement('div');titleLine.className='agent-request-title';
+        const tool=document.createElement('strong');tool.className='agent-tool-name';
+        tool.textContent=String(request.tool||'unknown tool');tool.title='Exact registered tool name';
         const reqStatus=String(request.status||'queued');
-        const output=document.createElement('pre');output.className='agent-command-output';
-        output.textContent=terminal.formatResultOutput(request.result_json,reqStatus,request.error);
-        const openDetails=()=>showAgentRequestDetails(agent.agent_id,request);
-        command.addEventListener('click',openDetails);
-        command.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openDetails()}});
-        row.append(command,output);body.append(row);
+        const stage=document.createElement('span');
+        stage.className='agent-request-stage '+(['completed','partial','failed','rejected','cancelled'].includes(reqStatus)?'is-terminal':['queued','loading','claiming'].includes(reqStatus)?'is-queued':'is-running');
+        stage.textContent=reqStatus;titleLine.append(tool,stage);
+        const id=document.createElement('div');id.className='agent-request-id';id.textContent=String(request.request_id||'');id.title=String(request.request_id||'');
+        row.append(titleLine,id);
+        if(request.error){const error=document.createElement('div');error.className='agent-request-error';error.textContent=String(request.error);row.append(error)}
+        const progressLine=document.createElement('div');progressLine.className='agent-progress-line';
+        const progress=document.createElement('progress');progress.className='agent-progress';progress.max=100;
+        progress.value=Math.max(0,Math.min(100,Number(request.progress)||0));progress.setAttribute('aria-label',String(request.tool||'request')+' stage progress');
+        const percent=document.createElement('span');percent.className='agent-progress-value';percent.textContent=Math.round(progress.value)+'%';
+        progressLine.append(progress,percent);row.append(progressLine);
+        const json=document.createElement('div');json.className='agent-json-group';
+        appendConsoleJsonDetails(json,'Request JSON',request.request_json);
+        appendConsoleJsonDetails(json,'Claim JSON',request.claim_json);
+        appendConsoleJsonDetails(json,'Result JSON',request.result_json);
+        for(const detail of json.querySelectorAll('details')){
+          const key=agent.agent_id+'|'+String(request.request_id||'')+'|'+detail.querySelector('summary').textContent;
+          detail.dataset.detailKey=key;
+          detail.open=openAgentDetails.has(key);
+          detail.addEventListener('toggle',()=>{if(detail.open)openAgentDetails.add(key);else openAgentDetails.delete(key)});
+        }
+        row.append(json);body.append(row);
       }
     }
     body.scrollTop=scrollTop;
@@ -784,7 +795,7 @@ keep.addEventListener('change',()=>void changeBrowserMode());low.addEventListene
 
 let assignmentState=null,assignmentWorkspaceRoot='',assignmentWorkspaceExplicit=false;
 
-function closeAgentAssignment(){ const overlay=$('agent-assignment-overlay');overlay.classList.remove('is-visible');overlay.hidden=true;assignmentState=null;assignmentWorkspaceExplicit=false; }
+function closeAgentAssignment(){ $('agent-assignment-overlay').hidden=true;assignmentState=null;assignmentWorkspaceExplicit=false; }
 function setAssignmentWorkspace(value,explicit=false){
   assignmentWorkspaceRoot=String(value||'');
   assignmentWorkspaceExplicit=explicit;
@@ -854,7 +865,7 @@ function showAgentAssignment(payload){
   $('agent-assignment-status').dataset.state='';
   $('agent-assignment-confirm').disabled=false;
   $('agent-assignment-extend').disabled=false;
-  overlay.hidden=false;overlay.classList.remove('is-visible');requestAnimationFrame(()=>overlay.classList.add('is-visible'));select.focus();
+  overlay.hidden=false;select.focus();
 }
 async function chooseAssignmentWorkspace(){
   const button=$('agent-assignment-choose-workspace');button.disabled=true;

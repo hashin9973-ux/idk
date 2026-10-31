@@ -33,7 +33,13 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(styles.includes('#main-page{overflow:auto'));
   assert.ok(styles.includes('.agent-widget-host{position:relative'));
   assert.ok(renderer.includes('agent-workspace-button'));
-  assert.ok(renderer.includes('agent-message-button'));
+  assert.ok(!renderer.includes('agent-message-button'));
+  assert.ok(renderer.includes("const composer=document.createElement('form')"));
+  assert.ok(renderer.includes('terminal.formatRequestCommands'));
+  assert.ok(renderer.includes('showAgentRequestDetails'));
+  assert.ok(styles.includes('.agent-command-line'));
+  assert.ok(html.includes('agent-terminal.js'));
+  assert.ok(main.includes('autoDismissMs: 6500'));
   assert.ok(renderer.includes('agent-delete-button'));
   assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox)'));
   assert.ok(renderer.includes("cleanup.status!=='completed'"));
@@ -50,7 +56,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('No session was created.'));
   assert.ok(main.includes('playAssignmentNotificationSound'));
   assert.ok(renderer.includes('api.sendAgentMessage(sessionId,message)'));
-  assert.ok(renderer.includes("send.textContent='Sending…'"));
+  assert.ok(renderer.includes("input.placeholder='> sending…'"));
   assert.ok(renderer.includes('api.readAgentReplies(sessionId,ids)'));
   assert.ok(renderer.includes('agent-message-thread'));
   assert.ok(renderer.includes('workspace_profile'));
