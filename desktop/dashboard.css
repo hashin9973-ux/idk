@@ -235,3 +235,23 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 .agent-mailbox-tools{display:flex;align-items:center;gap:8px}.small-icon-button{width:26px;height:26px;border:1px solid #7b8795;border-radius:6px;background:#202a36;color:#f3f6fa;font-size:17px;line-height:1}.small-icon-button:hover{background:#344456}.agent-console-actions{display:flex;gap:3px;flex:0 0 auto}.agent-console-icon-button{width:24px;height:24px;border:1px solid #687789;border-radius:5px;background:#161d26;color:#dce6f0;display:grid;place-items:center;padding:3px}.agent-console-icon-button:hover{background:#2a3949;border-color:#9aabba}.agent-console-icon-button svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}.widget-context-menu{position:absolute;z-index:1000;min-width:180px;padding:5px;border:1px solid #8392a3;border-radius:8px;background:#17212c;box-shadow:0 8px 24px #0009;display:grid;gap:3px}.widget-context-menu[hidden]{display:none}.widget-context-menu button{padding:8px 10px;border:0;border-radius:5px;background:transparent;color:#f2f5f9;text-align:left}.widget-context-menu button:hover{background:#344456}.settings-panel .section-heading p,.settings-panel .help-copy,.settings-panel .checkbox-row,.settings-panel .setting-row label,.settings-panel .form-foot{color:#c1ccda}.settings-panel .section-heading p{font-size:12px;line-height:1.55}.settings-panel .setting-row label,.settings-panel .checkbox-row{font-weight:550}.settings-panel input:disabled+span,.settings-panel :disabled{opacity:.62}
 
 .agent-autodump-dialog{width:min(440px,calc(100vw - 32px));max-width:none;border:1px solid #73859a;border-radius:12px;padding:0;background:#17212c;color:#f1f5fa;box-shadow:0 18px 50px #000a}.agent-autodump-dialog::backdrop{background:#050a11a8;backdrop-filter:blur(3px)}.agent-autodump-dialog form{display:grid;gap:12px;padding:18px}.agent-autodump-dialog h3{margin:0;font-size:16px}.agent-autodump-dialog label{display:grid;gap:5px;color:#dbe5ef;font-size:12px;font-weight:650}.agent-autodump-dialog input,.agent-autodump-dialog textarea{width:100%;border:1px solid #64758a;border-radius:6px;background:#0e151e;color:#f4f7fb;padding:8px;font:inherit}.agent-autodump-dialog p{margin:0;color:#aebdce;font-size:11px;line-height:1.5}.agent-autodump-actions{display:flex;justify-content:flex-end;gap:8px}.agent-autodump-actions button{border:1px solid #708197;border-radius:6px;background:#273648;color:#f4f7fb;padding:7px 13px}.agent-autodump-actions button:last-child{background:#236e60;border-color:#399985}
+
+
+/* Agent deletion is separate from the existing display-history autodump control. */
+.agent-console-actions{gap:2px}
+.agent-console-icon-button{width:22px;min-width:22px;height:22px}
+.agent-console-icon-button:disabled{opacity:.35;cursor:not-allowed}
+.agent-console-icon-button:disabled:hover{border-color:#555;color:#888;background:#111}
+.agent-delete-button:not(:disabled){color:var(--danger)}
+.agent-delete-button:not(:disabled):hover{border-color:var(--danger);color:var(--danger);background:color-mix(in srgb,var(--danger) 12%,transparent)}
+.agent-delete-dialog form{gap:11px}
+.agent-delete-dialog dl{display:grid;grid-template-columns:82px minmax(0,1fr);gap:6px 10px;margin:0;padding:10px;border:1px solid #46576a;border-radius:7px;background:#101923}
+.agent-delete-dialog dt{color:#9fb0c3;font-size:11px}
+.agent-delete-dialog dd{min-width:0;margin:0;color:#f5f7fa;font:11px/1.5 Consolas,"Cascadia Mono",monospace;overflow-wrap:anywhere}
+.agent-delete-dialog .agent-delete-wipe{display:flex;align-items:center;gap:8px;padding:7px 0}
+.agent-delete-dialog .agent-delete-wipe input{width:15px;height:15px;margin:0;accent-color:var(--danger)}
+.agent-delete-warning{padding-left:9px;border-left:2px solid #c18b49}
+.agent-delete-error{color:#ff8c9b!important;overflow-wrap:anywhere}
+.agent-autodump-actions .agent-delete-confirm{background:#8c3040;border-color:#b65363}
+.agent-autodump-actions .agent-delete-confirm:hover{background:#a43a4c}
+@media(max-width:520px){.agent-console-counts{display:none}.agent-console-header{gap:4px}}
