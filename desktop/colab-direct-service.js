@@ -2074,7 +2074,8 @@ function createVisionService(deps) {
       }
     }
     if (controlSessionActive) armControlSessionExpiry();
-    const result = await inputControl.run(steps, latestScreenFrame);
+    const result = await inputControl.run(steps, latestScreenFrame, signal);
+    if (signal && signal.aborted) throw Object.assign(new Error(String(signal.reason && signal.reason.message || signal.reason || 'Operation cancelled.')), { name: 'AbortError', code: 'ABORT_ERR' });
     const shouldObserveAfterSequence = sequence && (args.observe === true || (args.observe !== false && !fastMode));
     if (!shouldObserveAfterSequence) {
       return {
