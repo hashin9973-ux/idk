@@ -523,7 +523,7 @@ function computerServiceCall(service, args, requestId, signal = null) {
     case 'mouse_up':
     case 'key_down':
     case 'key_up':
-      return service.inputAction(args, requestId);
+      return service.inputAction(args, requestId, signal);
     default: throw new Error('Unsupported computer action.');
   }
 }
