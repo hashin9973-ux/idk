@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 
 const AGENT_RECORD_PROTOCOL = 'chatgpt-local-agent-seat/v2';
 const SESSION_RECORD_PROTOCOL = 'chatgpt-local-agent-session/v1';
+const REVOCATION_RECORD_PROTOCOL = 'chatgpt-local-agent-session-revocation/v1';
 // Local operator messages use a dedicated sender identity and do not borrow an agent session.
 const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
 const SESSION_ID_PATTERN = /^session-[a-f0-9]{32}$/;
@@ -30,7 +31,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict, clock = () => Date.now() }) {
+function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now() }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
@@ -46,6 +47,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   function sessionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id. Call session_start to create a session.');
     return 'bridge/sessions/' + sessionId + '.json';
+  }
+  function revocationPath(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
+    return 'bridge/revoked-sessions/' + sessionId + '.json';
   }
   function inboxPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
@@ -117,6 +122,27 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     return remote;
   }
 
+  async function readRevocation(sessionId) {
+    const remote = await readRemoteFile(revocationPath(sessionId));
+    if (!remote) return null;
+    const value = remote.value;
+    if (!value || value.protocol !== REVOCATION_RECORD_PROTOCOL || value.session_id !== sessionId ||
+        !AGENT_ID_PATTERN.test(String(value.agent_id || '')) || typeof value.revoked_at !== 'string') {
+      throw new Error('Session revocation record ' + sessionId + ' is malformed; refusing to authenticate it.');
+    }
+    return remote;
+  }
+
+  async function isRevoked(sessionId) {
+    return Boolean(await readRevocation(sessionId));
+  }
+
+  async function assertNotRevoked(sessionId) {
+    if (await isRevoked(sessionId)) {
+      throw new Error('SESSION_REVOKED: This ChatGPT session was explicitly revoked. Start a new conversation session before using the bridge again.');
+    }
+  }
+
   async function writeNewJson(path, value) {
     const saved = await writeRemoteJson(path, value, null, true);
     if (!saved || !saved.ok) throw new Error('Could not create immutable mailbox record ' + path + '.');
@@ -176,7 +202,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     const last = activityTime(seat, session);
     if (seat.protocol !== AGENT_RECORD_PROTOCOL) return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
     if (!seat.current_session_id) return true;
-    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || session.status === 'expired';
+    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || session.status === 'expired' || session.status === 'revoked';
   }
 
   async function readSeatAndSession(agentId) {
@@ -280,6 +306,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
       throw new Error('SESSION_ID_REQUIRED: Call session_start once at the beginning of this conversation, then include its session_id on every bridge tool request.');
     }
+    await assertNotRevoked(sessionId);
     const remote = await readSession(sessionId);
     if (!remote) throw new Error('SESSION_EXPIRED: This session is missing. Call session_start to lease a new agent seat.');
     const session = remote.value;
@@ -298,6 +325,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   async function requestStarted(request) {
     if (!request || !request.session_id || !request.agent_id) return false;
     return withLock('seat:' + request.agent_id, async () => {
+      await assertNotRevoked(request.session_id);
       const seatRemote = await readSeat(request.agent_id);
       if (!seatRemote || seatRemote.value.protocol !== AGENT_RECORD_PROTOCOL ||
           seatRemote.value.current_session_id !== request.session_id) {
@@ -337,7 +365,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
 
   async function requestCompleted(request) {
     if (!request || !request.session_id || !request.agent_id) return;
+    if (await isRevoked(request.session_id)) return null;
     return withLock('seat:' + request.agent_id, async () => {
+      if (await isRevoked(request.session_id)) return null;
       const seat = await readSeat(request.agent_id);
       if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
           seat.value.current_session_id !== request.session_id) return;
@@ -355,6 +385,150 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
         active_request_ids: (Array.isArray(current.active_request_ids) ? current.active_request_ids : []).filter(id => id !== request.request_id)
       }));
     });
+  }
+
+  async function revokeSession(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required to revoke an agent.');
+    const initial = await readSession(sessionId);
+    const existingRevocation = await readRevocation(sessionId);
+    if (!initial && !existingRevocation) throw new Error('The selected session was not found; no agent seat was changed.');
+    const agentId = initial ? initial.value.agent_id : existingRevocation.value.agent_id;
+    if (existingRevocation && existingRevocation.value.agent_id !== agentId) throw new Error('The revocation record does not match the session owner.');
+    return withLock('seat:' + agentId, async () => {
+      const sessionRemote = await readSession(sessionId);
+      const currentSession = sessionRemote && sessionRemote.value;
+      if (currentSession && currentSession.agent_id !== agentId) throw new Error('The session owner changed; refusing to revoke a different seat.');
+      const seatRemote = await readSeat(agentId);
+      const seat = seatRemote && seatRemote.value;
+      const ownsSeat = Boolean(seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id === sessionId);
+      const activeIds = [...new Set([
+        ...(Array.isArray(currentSession && currentSession.active_request_ids) ? currentSession.active_request_ids : []),
+        ...(ownsSeat && Array.isArray(seat.active_request_ids) ? seat.active_request_ids : [])
+      ].filter(id => typeof id === 'string' && id.length > 0))];
+      const now = timestamp();
+      const tombstone = existingRevocation ? existingRevocation.value : {
+        protocol: REVOCATION_RECORD_PROTOCOL, session_id: sessionId, agent_id: agentId,
+        revoked_at: now, reason: 'operator_deleted_agent_widget', active_request_ids: activeIds
+      };
+      if (!existingRevocation) {
+        try { await writeNewJson(revocationPath(sessionId), tombstone); }
+        catch (error) {
+          if (!isConflictError(error)) throw error;
+          const confirmed = await readRevocation(sessionId);
+          if (!confirmed || confirmed.value.session_id !== sessionId || confirmed.value.agent_id !== agentId) throw error;
+        }
+      }
+      if (sessionRemote && currentSession.status !== 'revoked') {
+        await mutateSession(sessionId, current => ({
+          ...current, status: 'revoked', revoked_at: tombstone.revoked_at || now,
+          ended_at: current.ended_at || now, active_request_ids: []
+        }));
+      }
+      if (ownsSeat) {
+        await mutateJson(seatPath(agentId), value => validateSeatRecord(value, agentId), current => {
+          if (current.current_session_id !== sessionId) return current;
+          return { ...current, current_session_id: null, status: 'inactive', active_request_ids: [],
+            last_revoked_session_id: sessionId, last_revoked_at: tombstone.revoked_at || now };
+        });
+      }
+      return { revoked: true, agent_id: agentId, session_id: sessionId,
+        revoked_at: tombstone.revoked_at || now, cancelled_request_ids: activeIds,
+        seat_released: ownsSeat || Boolean(seat && seat.current_session_id !== sessionId),
+        mailbox_cleanup: { status: 'not_requested', deleted_records: 0, deleted_files: 0 } };
+    });
+  }
+
+  async function wipeMailbox(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required for mailbox cleanup.');
+    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted session revocation first.');
+    if (typeof deleteRemoteFiles !== 'function') throw new Error('Safe mailbox deletion is unavailable; the session remains revoked.');
+    const files = new Map();
+    const addFile = (filePath, sha) => {
+      if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha);
+    };
+    const requestEntries = await listFolder('bridge/requests');
+    const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(name)))];
+    let deletedRequests = 0;
+    const requestRecords = [];
+    for (let start = 0; start < requestNames.length; start += 16) {
+      const group = requestNames.slice(start, start + 16);
+      const rows = await Promise.all(group.map(async name => {
+        const requestId = name.slice(0, -5);
+        const requestRemote = await readRemoteFile('bridge/requests/' + name);
+        if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
+        const [claim, result] = await Promise.all([
+          readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
+        ]);
+        if (!claim || !result || !claim.value || !result.value ||
+            claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
+            result.value.request_id !== requestId || result.value.session_id !== sessionId ||
+            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
+        return { requestId, requestRemote, claim, result };
+      }));
+      requestRecords.push(...rows.filter(Boolean));
+    }
+    const flatArtifacts = await listFolder('bridge/artifacts');
+    for (const record of requestRecords) {
+      const name = record.requestId + '.json';
+      addFile('bridge/requests/' + name, record.requestRemote.sha);
+      addFile('bridge/claims/' + name, record.claim.sha);
+      addFile('bridge/results/' + name, record.result.sha);
+      const manifest = Array.isArray(record.result.value.artifacts) ? record.result.value.artifacts : [];
+      const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
+        typeof value === 'string' && (value.startsWith('bridge/artifacts/' + record.requestId + '/') ||
+          value.startsWith('bridge/artifacts/' + record.requestId + '-batch-output-'))));
+      const nested = await listFolder('bridge/artifacts/' + record.requestId);
+      for (const item of [...flatArtifacts, ...nested]) {
+        const itemPath = String(item && (item.path || item.name) || '');
+        if (ownedPaths.has(itemPath) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
+      }
+      deletedRequests++;
+    }
+
+    const sessionEntries = await listFolder('bridge/sessions');
+    const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^session-[a-f0-9]{32}\\.json$/.test(name)).map(name => name.slice(0, -5)))];
+    if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
+    let deletedMessages = 0;
+    for (let start = 0; start < recipientSessions.length; start += 12) {
+      const group = recipientSessions.slice(start, start + 12);
+      const inboxes = await Promise.all(group.map(async recipientSessionId => {
+        let entries;
+        try { entries = await listFolder(inboxPath(recipientSessionId)); }
+        catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+        return { recipientSessionId, entries };
+      }));
+      for (const inbox of inboxes) {
+        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
+        for (let batch = 0; batch < candidates.length; batch += 16) {
+          const rows = await Promise.all(candidates.slice(batch, batch + 16).map(async item => {
+            const name = String(item.name || item.path).split('/').pop();
+            const messageId = name.slice(0, -5);
+            const messageRemote = await readRemoteFile(messagePath(inbox.recipientSessionId, messageId));
+            const record = messageRemote && messageRemote.value;
+            if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' || record.message_id !== messageId ||
+                record.recipient_session_id !== inbox.recipientSessionId ||
+                (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) return null;
+            return { recipientSessionId: inbox.recipientSessionId, messageId, messageRemote };
+          }));
+          for (const item of rows.filter(Boolean)) {
+            addFile(messagePath(item.recipientSessionId, item.messageId), item.messageRemote.sha);
+            const receiptPath = messageReceiptPath(item.recipientSessionId, item.messageId);
+            const receipt = await readRemoteFile(receiptPath);
+            if (receipt && receipt.value && receipt.value.protocol === 'chatgpt-local-agent-message-receipt/v1' &&
+                receipt.value.message_id === item.messageId && receipt.value.recipient_session_id === item.recipientSessionId) {
+              addFile(receiptPath, receipt.sha);
+            }
+            deletedMessages++;
+          }
+        }
+      }
+    }
+    const deletion = await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })));
+    return { status: 'completed', deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
+      deleted_request_records: deletedRequests, deleted_message_records: deletedMessages, commit_sha: deletion.commitSha || null,
+      preserved_session_and_revocation_records: true };
   }
 
   async function statuses(filterAgentId = null) {
@@ -380,12 +554,13 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
       const session = row.session;
       const lastActivity = activityTime(seat, session);
       const busy = isBusy(seat, session);
-      const active = Boolean(session && session.status !== 'expired' && lastActivity &&
+      const active = Boolean(session && session.status !== 'expired' && session.status !== 'revoked' && lastActivity &&
         clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
       return {
         agent_id: agentId, label: seat.label || (session && session.label) || agentId,
         status: active ? 'active' : 'inactive', busy,
         session_id: seat.current_session_id || null, session_status: session && session.status || 'missing',
+        last_revoked_session_id: seat.last_revoked_session_id || null,
         last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
         last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
         last_completed_at: seat.last_completed_at || (session && session.last_completed_at) || null,
@@ -418,6 +593,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   async function currentSession(sessionId) {
+    await assertNotRevoked(sessionId);
     const remote = await readSession(sessionId);
     if (!remote || remote.value.status === 'expired') throw new Error('SESSION_EXPIRED: This conversation session is no longer valid.');
     const session = remote.value;
@@ -679,14 +855,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isCo
   }
 
   return {
-    startSession, authenticate, requestStarted, requestCompleted, statuses,
+    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked,
     sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
-    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
+    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }
 
 module.exports = {
-  createAgentRegistry, AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL,
+  createAgentRegistry, AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL,
   AGENT_ID_PATTERN, SESSION_ID_PATTERN, MESSAGE_ID_PATTERN,
   SESSION_INACTIVE_AFTER_MS, AGENT_STALE_AFTER_MS
 };
