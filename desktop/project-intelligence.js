@@ -99,7 +99,7 @@ function createProjectIntelligence(options={}){
    s.lastScan=data.lastScan?{entriesVisited:data.lastScan.entriesVisited,eligibleFiles:data.lastScan.eligibleFiles,indexedFiles:data.lastScan.indexedFiles,bytesRead:data.lastScan.bytesRead,skippedForBudget:data.lastScan.skippedForBudget,skippedLargeFiles:data.lastScan.skippedLargeFiles,skippedNonTextFiles:data.lastScan.skippedNonTextFiles,unreadableFiles:data.lastScan.unreadableFiles,unreadableDirectories:data.lastScan.unreadableDirectories,truncated:data.lastScan.truncated,incompleteReasons:[...data.lastScan.incompleteReasons],durationMs:data.lastScan.durationMs}:null;
    s.durationMs=s.lastScan?s.lastScan.durationMs:null;
    rebuild(s);
-  }catch(e){if(e.code!=='ENOENT')s.error='Index cache rejected: '+String(e.message||e).slice(0,250);}
+  }catch(e){if(e.code!=='ENOENT'){s.cacheWarning='Index cache rejected: '+String(e.message||e).slice(0,250);s.error=s.cacheWarning;}}
  }
  async function readDoc(s,abs,p,st,old){if(st.size>MAX_FILE||st.size<0||sensitive(p))return null;if(old&&old.size===st.size&&old.mtimeMs===st.mtimeMs&&old.ctimeMs===st.ctimeMs)return old;try{const b=await fsp.readFile(abs);return b.length<=MAX_FILE?makeDoc(p,st,b):null;}catch{return null;}}
  async function walk(s,rootAbs,rootRel,output,c,budget={files:0,bytes:0},signal=null,oldDocuments=s.documents){

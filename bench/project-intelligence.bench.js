@@ -53,14 +53,13 @@ async function main() {
     // before a new process-local index instance restores its persisted metadata.
     await first.stop();
     const persistedCacheFiles = await fs.readdir(storage);
-    const normalizedRoot = path.resolve(root).replace(/\\\\/g, '/').toLowerCase();
-    const expectedCacheKey = crypto.createHash('sha256').update(normalizedRoot).digest('hex');
     const persistedCacheDetails = await Promise.all(persistedCacheFiles.map(async name => {
       const stat = await fs.stat(path.join(storage, name));
       let header = null;
       if (stat.isFile() && stat.size <= 256 * 1024 * 1024) {
         const data = JSON.parse(await fs.readFile(path.join(storage, name), 'utf8'));
-        header = { version: data.version, rootKey: data.rootKey, documents: Array.isArray(data.documents) ? data.documents.length : null, lastFullScanAt: data.lastFullScanAt, generatedAt: data.generatedAt };
+        const match = name.match(/^project-index-([a-f0-9]{64})\\.json$/);
+        header = { version: data.version, rootKey: data.rootKey, fileKey: match ? match[1] : null, rootKeyMatchesFileName: Boolean(match && data.rootKey === match[1]), documents: Array.isArray(data.documents) ? data.documents.length : null, lastFullScanAt: data.lastFullScanAt, generatedAt: data.generatedAt };
       }
       return { name, bytes: stat.size, isFile: stat.isFile(), header };
     }));
@@ -90,8 +89,6 @@ async function main() {
         lastFullScanAt: restored.lastFullScanAt,
         error: restored.error,
         cacheWarning: restored.cacheWarning,
-        expectedCacheKey,
-        expectedCacheName: 'project-index-' + expectedCacheKey + '.json',
         persistedFiles: persistedCacheDetails,
         firstRunCacheWarning: indexed.cacheWarning || null,
         firstRunError: indexed.error || null

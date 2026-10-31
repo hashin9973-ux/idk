@@ -28,6 +28,7 @@ test('cache restoration rejects unsafe paths and malformed document metadata',as
    await service.start(root);const found=await service.search(root,{query:'ProjectService',kind:'symbol'});
    assert.equal(found.count,1);assert.equal(found.matches[0].path,'src/service.js');
    assert.equal(JSON.stringify(found).includes('outside.js'),false);
+   assert.match((await service.status(root)).cacheWarning,/cache rejected|invalid document metadata/i);
   }finally{await service.stop();}
  }finally{await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
 });
