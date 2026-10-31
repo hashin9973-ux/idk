@@ -706,7 +706,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
 
   async function detachSession(sessionId, reason = 'disconnected') {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required to detach task ownership.');
-    const normalizedReason = ['disconnected', 'revoked', 'expired'].includes(reason) ? reason : 'disconnected';
+    const normalizedReason = ['disconnected', 'revoked', 'evicted'].includes(reason) ? reason : 'disconnected';
     const entries = await listFolder('bridge/tasks');
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^task-[0-9]{13}-[a-f0-9]{16}\.json$/.test(name)))].sort();
