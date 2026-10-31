@@ -401,3 +401,35 @@ test('optional mailbox wipe removes only fully attributable records and preserve
   assert.equal(records.has('bridge/sessions/' + target.session_id + '.json'), true);
   assert.equal(records.has('bridge/revoked-sessions/' + target.session_id + '.json'), true);
 });
+
+
+test('the per-session publication lock orders result commits before or after revocation', async () => {
+  const { registry } = mockMailbox();
+  const session = await registry.startSession({ label: 'Serialized result publication' });
+  let markEntered;
+  let releasePublication;
+  const entered = new Promise(resolve => { markEntered = resolve; });
+  const held = new Promise(resolve => { releasePublication = resolve; });
+  let revokedDuringPublication = null;
+  const publication = registry.withSessionLock(session.session_id, async () => {
+    revokedDuringPublication = await registry.isRevoked(session.session_id);
+    markEntered();
+    await held;
+  });
+  await entered;
+
+  let revokeFinished = false;
+  const revocation = registry.revokeSession(session.session_id).then(value => {
+    revokeFinished = true;
+    return value;
+  });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(revokeFinished, false, 'revocation must wait for the in-flight result publication lock');
+  assert.equal(revokedDuringPublication, false);
+
+  releasePublication();
+  await publication;
+  const result = await revocation;
+  assert.equal(result.revoked, true);
+  assert.equal(await registry.isRevoked(session.session_id), true);
+});
