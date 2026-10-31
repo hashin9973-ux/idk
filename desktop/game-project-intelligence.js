@@ -132,7 +132,7 @@ function inspectUnity(root, files) {
   const asmdefs = files.filter(file => /\.asmdef$/i.test(file));
   const scenes = files.filter(file => /\.unity$/i.test(file));
   const scripts = files.filter(file => /\.cs$/i.test(file));
-  const package = manifests.length ? readJson(path.join(root, manifests[0])) : null;
+  const packageManifest = manifests.length ? readJson(path.join(root, manifests[0])) : null;
   const assemblies = asmdefs.map(file => {
     const json = readJson(path.join(root, file)) || {};
     return { path: file, name: json.name || path.basename(file, '.asmdef'),
@@ -151,7 +151,7 @@ function inspectUnity(root, files) {
     for (const match of source.matchAll(/guid:\s*([a-f0-9]{32})/g)) references.push({ scene, guid: match[1], asset_path: guidMap[match[1]] || null });
   }
   return { engine: 'unity', detected: manifests.length > 0 || files.some(file => /(?:^|\/)ProjectSettings\/ProjectVersion\.txt$/.test(file)),
-    package_manifest: package ? { path: manifests[0], dependencies: package.dependencies || {} } : null,
+    package_manifest: packageManifest ? { path: manifests[0], dependencies: packageManifest.dependencies || {} } : null,
     assemblies, scripts: scripts.length, scenes: scenes.length, references: references.slice(0, 5000),
     confidence: 'Assembly definitions and serialized GUID references are discovered. Runtime/editor-generated relationships and binary assets require Unity tooling.' };
 }
