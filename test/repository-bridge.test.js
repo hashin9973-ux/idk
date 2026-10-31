@@ -581,6 +581,76 @@ test('worker executes a request once, writes the actual result, claim and heartb
   }
 });
 
+
+test('stale in-flight mailbox poll is detached and recovered without an old poll clearing the new one', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-stalled-poll-recovery',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + request.request_id + '.json', request]] });
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth,
+    ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      return { ok: true, tool, call_id: id };
+    },
+    intervalMs: 5000,
+    requestReconciliationIntervalMs: 1,
+    stalledOperationRecoveryMs: 15
+  });
+
+  let releaseBlockedRead;
+  const blockedRead = new Promise(resolve => { releaseBlockedRead = resolve; });
+  const requestsTreePath = '/repos/test-owner/test-repo/git/trees/' + fake.treeRef('bridge/requests');
+  const originalRequestApi = fake.githubAuth.requestApi;
+  let blockNextTreeRead = false;
+  let blockedReadStarted = false;
+  fake.githubAuth.requestApi = async input => {
+    if (blockNextTreeRead && !blockedReadStarted &&
+        input.method === 'GET' && input.path === requestsTreePath) {
+      blockedReadStarted = true;
+      await blockedRead;
+    }
+    return originalRequestApi(input);
+  };
+
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    await waitFor(() => !bridge.getState().requestPolling.pollInFlight);
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    blockNextTreeRead = true;
+    const abandonedPoll = bridge.pollOnce();
+    await waitFor(() => blockedReadStarted && bridge.getState().requestPolling.pollInFlight);
+    const staleStartedAt = bridge.getState().requestPolling.pollStartedAt;
+    await new Promise(resolve => setTimeout(resolve, 25));
+
+    const recovery = bridge.recoverStalledPolling();
+    assert.equal(recovery.recovered, true);
+    assert.equal(recovery.stalePoll, true);
+    await waitFor(() => !bridge.getState().requestPolling.pollInFlight &&
+      bridge.getState().lastPollAt !== null &&
+      Date.parse(bridge.getState().lastPollAt) >= Date.parse(staleStartedAt));
+
+    releaseBlockedRead();
+    await abandonedPoll;
+    assert.equal(bridge.getState().requestPolling.pollInFlight, false,
+      'late completion from the detached poll must not change the recovered poll state');
+    assert.equal(executions, 1, 'poll recovery must not execute a request twice');
+  } finally {
+    releaseBlockedRead();
+    await bridge.stop();
+  }
+});
+
 test('create-only HTTP 422 without an existing result is verified and retried', async () => {
   const request = {
     protocol: PROTOCOL,
