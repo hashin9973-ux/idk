@@ -342,7 +342,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   references: { type: 'array', maxItems: 30, items: { type: 'string', maxLength: 300 } },
   assigned_to_me: { type: 'boolean', default: false },
   offset: { type: 'integer', minimum: 0, default: 0 },
-  maxFiles: { type: 'integer', minimum: 100, maximum: 25000, default: 25000 },
+  maxFiles: { type: 'integer', minimum: 100, maximum: 25000, default: 25000, description: 'Maximum project files examined by the game-engine metadata adapter. Defaults to 25,000.' },
   pattern: { type: 'string', description: 'Glob pattern relative to the workspace, for example **/*.js.', maxLength: 300, default: '**/*' },
   query: { type: 'string', description: 'Non-empty text to search for; interpreted literally unless regex=true.', minLength: 1, maxLength: 500 },
   operation: { type: 'string', description: 'Git worktree operation.', enum: ['list', 'add', 'remove', 'integrate'] },

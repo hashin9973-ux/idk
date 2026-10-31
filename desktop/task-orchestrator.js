@@ -345,6 +345,9 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const task = initial.value;
     const projectId = task.project_id;
     const timestamp = clock();
+    if (['review', 'integration', 'verification'].includes(task.status)) {
+      throw new Error('TASK_STAGE_LOCKED: This task is in ' + task.status + ' and must use its dedicated review, integration or verification gate.');
+    }
     if (task.dependencies.length) {
       for (const dependencyId of task.dependencies) {
         const dependency = await readTask(dependencyId);

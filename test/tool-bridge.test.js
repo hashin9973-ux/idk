@@ -227,7 +227,7 @@ test('tool capabilities advertise the separate upload and context-refresh contro
     assert.ok(names.includes('send_agent_message'));
     assert.ok(names.includes('read_agent_messages'));
     assert.ok(names.includes('reply_to_agent_message'));
-    assert.equal(result.result.catalog_version, 3);
+    assert.equal(result.result.catalog_version, 4);
     assert.equal(result.result.tools.find(tool => tool.name === 'upload_workspace_file').mode, 'approval-required');
     assert.equal(result.result.tools.find(tool => tool.name === 'refresh_environment_context').mode, 'repository-bridge-control');
     assert.equal(result.result.tools.find(tool => tool.name === 'session_start').mode, 'repository-bridge-control');

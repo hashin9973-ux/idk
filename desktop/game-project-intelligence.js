@@ -99,7 +99,7 @@ function inspectUnreal(root, files) {
         const kind = line.includes('UCLASS') ? 'class' : line.includes('USTRUCT') ? 'struct' : 'enum';
         let declaration = lines.slice(index + 1, Math.min(lines.length, index + 5)).join(' ');
         declaration = declaration.replace(/^\s*UCLASS[^)]*\)\s*/, '');
-        const match = declaration.match(/(?:class|struct|enum(?:\s+class)?)\s+(?:[A-Z0-9_]+\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
+        const match = declaration.match(/(?:class|struct|enum(?:\s+class)?)\s+(?:(?:[A-Z][A-Z0-9_]*_API)\s+)?([A-Za-z_][A-Za-z0-9_]*)/);
         reflectedTypes.push({ path: file, line: index + 1, kind, name: match ? match[1] : null });
       }
       if (/\bUFUNCTION\s*\(/.test(line)) reflectedFunctions.push({ path: file, line: index + 1, declaration: lines[index + 1] ? lines[index + 1].trim().slice(0, 220) : '' });

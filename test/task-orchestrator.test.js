@@ -46,7 +46,7 @@ test('project tasks enforce dependency completion and atomic overlapping scope l
   await assert.rejects(tasks.claimTask(b, { task_id: second.task_id }), /TASK_DEPENDENCY_BLOCKED/);
   await tasks.claimTask(a, { task_id: first.task_id });
   await assert.rejects(tasks.claimTask(b, { task_id: first.task_id }), /TASK_ALREADY_CLAIMED/);
-  await assert.rejects(tasks.claimTask(b, { task_id: (await tasks.createTask(a, { project_id: project.project_id, title: 'Player file', objective: 'Edit same area', acceptance_criteria: ['No conflict'], scope_paths: ['Source/Game/Player.cpp'] })).task_id }), /TASK_SCOPE_CONFLICT/);
+  await assert.rejects(tasks.claimTask(b, { task_id: (await tasks.createTask(a, { project_id: project.project_id, title: 'Player file', objective: 'Edit same area', acceptance_criteria: ['No conflict'], scope_paths: ['Source/Game/Player/Player.cpp'] })).task_id }), /TASK_SCOPE_CONFLICT/);
 });
 
 test('independent review, real worktree integration callback, and complete verification gate tasks', async () => {
