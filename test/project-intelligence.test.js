@@ -79,6 +79,27 @@ test('filesystem watcher incrementally applies edits and directory removal with 
  }finally{await service.stop();await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
 });
 
+test('watcher drops indexed descendants when a directory is replaced by a file',async t=>{
+ const root=await fixture(),storage=await fs.mkdtemp(path.join(os.tmpdir(),'project-index-replaced-directory-'));
+ const service=createProjectIntelligence({storageDirectory:storage,reconcileMs:60000});
+ try{
+  await service.start(root);const initial=await service.status(root);
+  if(!initial.watcherActive){t.skip('Recursive filesystem watcher unavailable on this runtime.');return;}
+  assert.equal(initial.filesIndexed,3);
+  await fs.rm(path.join(root,'src'),{recursive:true});
+  await fs.writeFile(path.join(root,'src'),'replacement file');
+  const deadline=Date.now()+6000;let current=initial;
+  while(Date.now()<deadline){
+   await new Promise(resolve=>setTimeout(resolve,50));
+   current=await service.status(root);
+   if(current.filesIndexed===1&&current.generatedAt!==initial.generatedAt)break;
+  }
+  assert.equal(current.filesIndexed,1);
+  const result=await service.search(root,{query:'service',kind:'file'});
+  assert.deepEqual(result.matches.map(item=>item.path),['tests/service.test.js']);
+ }finally{await service.stop();await fs.rm(root,{recursive:true,force:true});await fs.rm(storage,{recursive:true,force:true});}
+});
+
 test('indexes JavaScript and TypeScript class methods as searchable symbols',()=>{
  const js=extractSymbols('export class ProjectService { runTask() { return 1; } }','javascript');
  assert.ok(js.some(item=>item.name==='runTask'&&item.kind==='method'));
