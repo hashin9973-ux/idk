@@ -470,6 +470,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
           readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
         ]);
         if (!claim || !result || !claim.value || !result.value ||
+            claim.value.protocol !== 'chatgpt-local-repo-claim/v1' || result.value.protocol !== 'chatgpt-local-repo-result/v1' ||
             claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
             result.value.request_id !== requestId || (result.value.session_id && result.value.session_id !== sessionId) ||
             !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
