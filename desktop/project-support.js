@@ -323,11 +323,13 @@ function projectRequiredTools(project) {
   if (kinds.has('Java (Maven)')) {
     add(['java'], 'Java runtime');
     add(['javac'], 'Java compiler (JDK)');
-    if (!project.paths.some(item => item.isFile && /(?:^|\/)mvnw(?:\.cmd)?$/i.test(item.path) && path.posix.dirname(item.path) === (project.root === '.' ? '.' : project.root))) add(['mvn'], 'Maven or the project Maven wrapper');
+    const mavenWrapperPattern = process.platform === 'win32' ? /(?:^|\/)mvnw\.cmd$/i : /(?:^|\/)mvnw$/i;
+    if (!project.paths.some(item => item.isFile && mavenWrapperPattern.test(item.path) && path.posix.dirname(item.path) === (project.root === '.' ? '.' : project.root))) add(['mvn'], 'Maven or the project Maven wrapper');
   }
   if (kinds.has('Gradle')) {
     add(['java'], 'Java runtime required by Gradle');
-    if (!project.paths.some(item => item.isFile && /(?:^|\/)gradlew(?:\.bat)?$/i.test(item.path) && path.posix.dirname(item.path) === (project.root === '.' ? '.' : project.root))) add(['gradle'], 'Gradle or the project Gradle wrapper');
+    const gradleWrapperPattern = process.platform === 'win32' ? /(?:^|\/)gradlew\.bat$/i : /(?:^|\/)gradlew$/i;
+    if (!project.paths.some(item => item.isFile && gradleWrapperPattern.test(item.path) && path.posix.dirname(item.path) === (project.root === '.' ? '.' : project.root))) add(['gradle'], 'Gradle or the project Gradle wrapper');
   }
   if (kinds.has('Python')) add(['python', 'py'], 'Python interpreter');
   if (kinds.has('Go')) add(['go'], 'Go toolchain');
