@@ -683,7 +683,7 @@ async function discoverWorkspaceProjects(workspaceRoot, options = {}) {
     const mapping = Object.entries(TOOLCHAINS_BY_LANGUAGE).find(([, toolNames]) => toolNames.includes(name));
     return mapping ? [mapping[0]] : [];
   })])];
-  const toolchains = await discoverToolchains(toolchainLanguages, { ...options, cacheKey: root, requestedToolNames });
+  const toolchains = options.skipToolchainDiscovery === true ? [] : await discoverToolchains(toolchainLanguages, { ...options, cacheKey: root, requestedToolNames });
   const toolchainMap = new Map(toolchains.map(tool => [tool.name, tool]));
   for (const project of projects) {
     const required = projectRequiredTools(project);
