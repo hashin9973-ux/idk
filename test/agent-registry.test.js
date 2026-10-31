@@ -12,6 +12,7 @@ const {
 function mockMailbox(startTime = Date.now(), options = {}) {
   const records = new Map();
   let nextSha = 1;
+  let deleteCallCount = 0;
   let now = startTime;
   const registry = createAgentRegistry({
     clock: () => now,
@@ -39,8 +40,9 @@ function mockMailbox(startTime = Date.now(), options = {}) {
       return { ok: true, sha };
     },
     async deleteRemoteFiles(files) {
+      deleteCallCount++;
       if (options.failDelete === true) throw new Error('simulated temporary transport failure');
-      if (options.failDeleteResult) return structuredClone(options.failDeleteResult);
+      if (options.failDeleteResult && (!options.failDeleteAt || options.failDeleteAt === deleteCallCount)) return structuredClone(options.failDeleteResult);
       for (const item of files) {
         const current = records.get(item.path);
         if (!current || current.sha !== item.sha) throw new Error('sha conflict during test mailbox cleanup');
@@ -650,6 +652,39 @@ test('a non-conflict deletion failure aborts cap enforcement without spinning', 
   assert.equal(records.has('bridge/sessions/' + retained.session_id + '.json'), true);
   assert.equal(await registry.isEvicted(retained.session_id), false);
   assert.equal((await registry.authenticate({ session_id: retained.session_id })).session_id, retained.session_id);
+});
+
+
+test('partial over-cap cleanup reports already evicted IDs when a later deletion fails', async () => {
+  const options = { maxSessions: 2, failDeleteAt: 2, failDeleteResult: { ok: false, conflict: false } };
+  const { registry, records, advance, now } = mockMailbox(Date.now(), options);
+  const first = await registry.startSession({ label: 'First and oldest' });
+  advance(1000);
+  const second = await registry.startSession({ label: 'Second' });
+  const imported = 'session-' + 'f'.repeat(32);
+  const at = new Date(now() + 1000).toISOString();
+  records.set('bridge/sessions/' + imported + '.json', {
+    value: {
+      protocol: SESSION_RECORD_PROTOCOL, session_id: imported, agent_id: 'agent-900',
+      label: 'Imported session', status: 'active', created_at: at, updated_at: at,
+      last_activity_at: at, active_request_ids: [], recent_request_ids: []
+    }, sha: 'imported-session-sha'
+  });
+  advance(1000);
+
+  let failure;
+  try {
+    await registry.startSession({ label: 'Will fail after first eviction' });
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.match(String(failure && failure.message), /SHA-checked session deletion did not complete/);
+  assert.deepEqual(failure.evicted_sessions.map(item => item.session_id), [first.session_id]);
+  assert.equal(records.has('bridge/sessions/' + first.session_id + '.json'), false);
+  assert.equal(records.has('bridge/sessions/' + second.session_id + '.json'), true);
+  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), true);
+  assert.equal(await registry.isEvicted(first.session_id), true);
 });
 
 test('the cap removes enough oldest records to return below its hard limit', async () => {
