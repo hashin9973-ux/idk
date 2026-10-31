@@ -269,11 +269,36 @@ function runPowerShell(root,args,signal=null){
   child.stdout.on('data',chunk=>keep(out,chunk,'stdout'));
   child.stderr.on('data',chunk=>keep(err,chunk,'stderr'));
   child.once('error',error=>finish(new Error('PowerShell failed to start: '+error.message)));
-  child.once('close',(code,signal)=>{
+  child.once('close',(code,signalName)=>{
    if(finished)return;
    if(timedOut)return; // timeout handler waits for tree termination or hard deadline
-   finish(null,formatResult(code,signal));
+   if(cancelled){
+    const error=new Error(String(signal&&signal.reason&&signal.reason.message||signal&&signal.reason||'Operation cancelled.'));
+    error.name='AbortError';error.code='ABORT_ERR';
+    finish(error);
+    return;
+   }
+   finish(null,formatResult(code,signalName));
   });
+  if(signal){
+   abortListener=()=>{
+    if(finished||cancelled)return;
+    cancelled=true;
+    void terminateProcessTree().then(()=>{
+     if(finished)return;
+     const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));
+     error.name='AbortError';error.code='ABORT_ERR';
+     finish(error);
+    },()=>{
+     if(finished)return;
+     const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));
+     error.name='AbortError';error.code='ABORT_ERR';
+     finish(error);
+    });
+   };
+   signal.addEventListener('abort',abortListener,{once:true});
+   if(signal.aborted)abortListener();
+  }
   timer=setTimeout(async()=>{
    if(finished)return;
    timedOut=true;
