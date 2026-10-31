@@ -41,7 +41,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes("button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke'"));
   assert.ok(html.includes('agent-delete-dialog'));
   assert.ok(html.includes('agent-delete-wipe-mailbox'));
-  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,sessionId||null)'));
+  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,card.dataset.sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
   assert.ok(renderer.includes('Select an agent ID or choose'));
   assert.ok(renderer.includes('const newAgentId=\'agent-\'+String(highestAgentNumber+1).padStart(3,\'0\')'));
@@ -53,9 +53,18 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes("send.textContent='Sending…'"));
   assert.ok(renderer.includes('api.readAgentReplies(sessionId,ids)'));
   assert.ok(renderer.includes('agent-message-thread'));
+  assert.ok(renderer.includes('workspace_profile'));
+  assert.ok(renderer.includes('workspace_shared_with'));
+  assert.ok(renderer.includes('unread_message_count_partial'));
+  assert.ok(renderer.includes('api.setAgentWorkspaceFromRecent(agent.agent_id,card.dataset.sessionId||null,root)'));
+  assert.ok(renderer.includes('api.extendAgentAssignment(assignmentState.requestId)'));
+  assert.ok(html.includes('agent-assignment-suggestion'));
+  assert.ok(html.includes('agent-assignment-recent-workspace'));
   assert.ok(renderer.includes('updateAgentCanvasHeight'));
   assert.ok(preload.includes('selectAgentWorkspace: (agentId, sessionId = null)'));
   assert.ok(preload.includes('respondAgentAssignment: payload'));
+  assert.ok(preload.includes('setAgentWorkspaceFromRecent: (agentId, sessionId, workspaceRoot)'));
+  assert.ok(preload.includes('extendAgentAssignment: requestId'));
   assert.ok(preload.includes('onAgentAssignmentRequested(callback)'));
   assert.ok(preload.includes('sendAgentMessage: (sessionId, message)'));
   assert.ok(preload.includes('readAgentReplies: (sessionId, messageIds)'));
@@ -343,7 +352,7 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(agentRegistry, /SESSION_INACTIVE_AFTER_MS/);
   assert.match(agentRegistry, /SESSION_RECORD_PROTOCOL/);
   const toolBridge = read('desktop', 'tool-bridge.js');
-  assert.ok(toolBridge.includes("session_start: ['label']"));
+  assert.ok(toolBridge.includes("session_start: ['label', 'workspace_suggestion']"));
   assert.ok(toolBridge.includes("agent_status: ['agent_id']"));
   assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
   assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));

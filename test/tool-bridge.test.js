@@ -223,6 +223,10 @@ test('tool capabilities advertise the separate upload and context-refresh contro
     assert.ok(names.includes('upload_workspace_file'));
     assert.ok(names.includes('refresh_environment_context'));
     assert.ok(names.includes('session_start'));
+    const sessionStart = result.result.tools.find(tool => tool.name === 'session_start');
+    assert.equal(sessionStart.parameters.properties.workspace_suggestion.type, 'object');
+    assert.deepEqual(sessionStart.parameters.properties.workspace_suggestion.required, ['path', 'reason']);
+    assert.equal(sessionStart.parameters.properties.workspace_suggestion.additionalProperties, false);
     assert.ok(names.includes('agent_status'));
     assert.ok(names.includes('send_agent_message'));
     assert.ok(names.includes('read_agent_messages'));

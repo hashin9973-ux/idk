@@ -375,12 +375,31 @@ test('repository API allows only the configured mailbox contents routes', async 
     recipient_session_id: sessionId, created_at: '2026-10-30T00:00:00.000Z',
     read_at: '2026-10-30T00:00:00.000Z'
   };
-  for (const folder of ['sessions', 'agent-messages', 'agent-message-receipts']) {
+  const revocationRecord = {
+    protocol: 'chatgpt-local-agent-session-revocation/v1', session_id: sessionId,
+    agent_id: 'agent-001', revoked_at: '2026-10-30T00:00:00.000Z',
+    reason: 'operator_deleted_agent_widget', active_request_ids: []
+  };
+  for (const folder of ['sessions', 'revoked-sessions', 'agent-messages', 'agent-message-receipts']) {
     await auth.requestApi({
       method: 'GET', path: '/repos/example/private-repo/contents/bridge/' + folder,
       query: { ref: 'bridge-mailbox' }
     });
   }
+  await auth.requestApi({ method: 'GET', path: '/repos/example/private-repo/contents/bridge/revoked-sessions/' + sessionId + '.json', query: { ref: 'bridge-mailbox' } });
+  await auth.requestApi({
+    method: 'PUT', path: '/repos/example/private-repo/contents/bridge/revoked-sessions/' + sessionId + '.json',
+    body: { message: '[local bridge] revoke session', content: Buffer.from(JSON.stringify(revocationRecord)).toString('base64'), branch: 'bridge-mailbox' }
+  });
+  assert.ok(calls.some(call => call.url.endsWith('/contents/bridge/revoked-sessions/' + sessionId + '.json')));
+  await assert.rejects(auth.requestApi({
+    method: 'PUT', path: '/repos/example/private-repo/contents/bridge/revoked-sessions/' + sessionId + '.json',
+    body: { message: '[local bridge] mismatched revocation', content: Buffer.from(JSON.stringify({ ...revocationRecord, session_id: wrongSessionId })).toString('base64'), branch: 'bridge-mailbox' }
+  }), /match the session ID/i);
+  await assert.rejects(auth.requestApi({
+    method: 'PUT', path: '/repos/example/private-repo/contents/bridge/revoked-sessions/session-invalid.json',
+    body: { message: '[local bridge] invalid revocation path', content: Buffer.from(JSON.stringify(revocationRecord)).toString('base64'), branch: 'bridge-mailbox' }
+  }), /outside the supported repository mailbox folders/i);
   await auth.requestApi({
     method: 'GET',
     path: '/repos/example/private-repo/contents/bridge/agent-messages/' + sessionId,

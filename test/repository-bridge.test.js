@@ -312,6 +312,17 @@ test('request validation bootstraps sessions once and requires the session ID fo
   assert.deepEqual(validateRequest(bootstrap.request_id, bootstrap), {
     request_id: bootstrap.request_id, tool: 'session_start', args: {}
   });
+  const suggestion = { path: process.cwd(), reason: 'The active application repository is the requested implementation target.' };
+  const suggestedBootstrap = { ...base, tool: 'session_start', args: { workspace_suggestion: suggestion } };
+  assert.deepEqual(validateRequest(suggestedBootstrap.request_id, suggestedBootstrap).args.workspace_suggestion, suggestion);
+  assert.throws(() => validateRequest('bad-workspace-suggestion', {
+    ...suggestedBootstrap, request_id: 'bad-workspace-suggestion',
+    args: { workspace_suggestion: { ...suggestion, untrusted_extra: true } }
+  }), /grounded path and reason/i);
+  assert.throws(() => validateRequest('bad-workspace-path', {
+    ...suggestedBootstrap, request_id: 'bad-workspace-path',
+    args: { workspace_suggestion: { path: '', reason: 'No grounded path' } }
+  }), /grounded path and reason/i);
   assert.throws(() => validateRequest('different-id', ordinary), /does not match/i);
   assert.throws(() => validateRequest(base.request_id, { ...ordinary, protocol: 'wrong' }), /protocol/i);
   assert.throws(() => validateRequest(base.request_id, { ...ordinary, args: { arbitraryShell: 'whoami' } }), /unsupported argument/i);
@@ -370,7 +381,7 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
   const assignedWorkspaces = [];
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' }),
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: null, message: '' }),
     onSessionAssigned: async assignment => { assignedWorkspaces.push(assignment); },
     executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
     intervalMs: 5000
@@ -410,6 +421,38 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
       { agent_id: 'agent-002', workspace_root: null }
     ], 'auto-assignment leaves workspace resolution to the selected agent seat default');
     assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
+  } finally { await bridge.stop(); }
+});
+
+test('session_start forwards a grounded workspace suggestion and honors an explicit automatic-assignment workspace', async () => {
+  const suggestion = { path: process.cwd(), reason: 'The current task targets this checked-out repository.' };
+  const request = {
+    protocol: PROTOCOL, request_id: 'session-start-workspace-suggestion',
+    created_at: new Date().toISOString(), tool: 'session_start',
+    args: { workspace_suggestion: suggestion }
+  };
+  const fake = fakeGitHub({ initial: [['bridge/requests/' + request.request_id + '.json', request]] });
+  const fixture = settingsFixture();
+  let assignmentOptions = null;
+  let assigned = null;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async options => {
+      assignmentOptions = options;
+      return { autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' };
+    },
+    onSessionAssigned: async value => { assigned = value; },
+    executeTool: async () => { throw new Error('session_start must not invoke workspace tools'); },
+    intervalMs: 5000
+  });
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.deepEqual(assignmentOptions.workspaceSuggestion, suggestion);
+    assert.equal(assigned.workspace_root, process.cwd());
+    assert.equal(result.result.result.workspace_root, '<workspace>', 'the mailbox result redacts the selected local workspace path');
+    assert.equal(result.result.result.assignment_mode, 'automatic-confirmed');
   } finally { await bridge.stop(); }
 });
 

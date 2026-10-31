@@ -39,6 +39,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   const locks = new Map();
+  const unreadMessageCountCache = new Map();
+  const UNREAD_MESSAGE_SCAN_LIMIT = 25;
+  const UNREAD_MESSAGE_CACHE_TTL_MS = 60 * 60 * 1000;
 
   function timestamp() { return new Date(clock()).toISOString(); }
   function seatPath(agentId) {
@@ -713,6 +716,67 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     };
   }
 
+  async function unreadMessageSummary(sessionId) {
+    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return { count: 0, partial: false };
+    const cached = unreadMessageCountCache.get(sessionId);
+    if (cached && clock() - cached.checkedAt < UNREAD_MESSAGE_CACHE_TTL_MS) {
+      unreadMessageCountCache.delete(sessionId);
+      unreadMessageCountCache.set(sessionId, cached);
+      return { count: cached.count, partial: cached.partial };
+    }
+    let entries;
+    try { entries = await listFolder(inboxPath(sessionId)); }
+    catch (error) {
+      if (/not found|404/i.test(String(error && error.message || error))) entries = [];
+      else throw error;
+    }
+    const allNames = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))].sort();
+    const names = allNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
+    let receiptEntries = [];
+    if (names.length) {
+      try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
+      catch (error) {
+        if (!/not found|404/i.test(String(error && error.message || error))) throw error;
+      }
+    }
+    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
+      .map(name => name.slice(0, -5)));
+    let unread = 0;
+    const scannedIds = new Set(names.map(name => name.slice(0, -5)));
+    for (let start = 0; start < names.length; start += 16) {
+      const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+        const messageId = name.slice(0, -5);
+        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        if (!remote) return null;
+        const record = remote.value;
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+        }
+        return record;
+      }));
+      for (const record of rows) {
+        if (record && record.sender_agent_id !== 'user' && record.sender_type !== 'user' &&
+            !record.read_at && !receiptIds.has(record.message_id)) unread++;
+      }
+    }
+    const summary = {
+      count: unread, partial: allNames.length > names.length,
+      scannedIds, checkedAt: clock()
+    };
+    unreadMessageCountCache.set(sessionId, summary);
+    while (unreadMessageCountCache.size > 10000) {
+      unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
+    }
+    return { count: summary.count, partial: summary.partial };
+  }
+
+  async function countUnreadMessages(sessionId) {
+    return (await unreadMessageSummary(sessionId)).count;
+  }
+
   async function statuses(filterAgentId = null) {
     if (filterAgentId && !AGENT_ID_PATTERN.test(filterAgentId)) throw new Error('agent_id has an invalid format.');
     const ids = filterAgentId ? [filterAgentId] : await listSeatIds();
@@ -738,10 +802,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const busy = isBusy(seat, session);
       const active = Boolean(session && session.status === 'active' && lastActivity && clock() - lastActivity <= SESSION_INACTIVE_AFTER_MS);
       const paused = Boolean(session && session.status === 'paused');
+      const unreadSummary = session && seat.current_session_id
+        ? await unreadMessageSummary(seat.current_session_id) : { count: 0, partial: false };
       return {
         agent_id: agentId, label: seat.label || (session && session.label) || agentId,
         status: paused ? 'paused' : active ? 'active' : 'inactive', busy,
         session_id: seat.current_session_id || null, session_status: session && session.status || 'missing', paused,
+        unread_message_count: unreadSummary.count,
+        unread_message_count_partial: unreadSummary.partial,
         last_revoked_session_id: seat.last_revoked_session_id || null,
         last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
         last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
@@ -847,6 +915,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         created_at: timestamp(), read_at: null, in_reply_to: null
       };
       await writeMessage(recipientSessionId, record);
+      const cachedUnread = unreadMessageCountCache.get(recipientSessionId);
+      if (cachedUnread && clock() - cachedUnread.checkedAt < UNREAD_MESSAGE_CACHE_TTL_MS) {
+        cachedUnread.count++;
+        cachedUnread.scannedIds.add(id);
+        cachedUnread.checkedAt = clock();
+      } else if (cachedUnread) {
+        unreadMessageCountCache.delete(recipientSessionId);
+      }
       return {
         message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
         to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
@@ -893,6 +969,18 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       throw new Error('Message record is malformed or addressed to another session.');
     }
     const receiptPath = messageReceiptPath(sessionId, messageId);
+    const updateCachedUnread = () => {
+      const cached = unreadMessageCountCache.get(sessionId);
+      if (!cached) return;
+      if (clock() - cached.checkedAt >= UNREAD_MESSAGE_CACHE_TTL_MS) {
+        unreadMessageCountCache.delete(sessionId);
+        return;
+      }
+      if (!cached.scannedIds.has(messageId)) return;
+      cached.scannedIds.delete(messageId);
+      if (value.sender_agent_id !== 'user' && value.sender_type !== 'user') cached.count = Math.max(0, cached.count - 1);
+      cached.checkedAt = clock();
+    };
     for (let attempt = 0; attempt < 5; attempt++) {
       const existing = await readRemoteFile(receiptPath);
       if (existing) {
@@ -902,6 +990,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             typeof receipt.read_at !== 'string') {
           throw new Error('Message read receipt is malformed or addressed to another session.');
         }
+        updateCachedUnread();
         return { ...value, read_at: receipt.read_at };
       }
       const readAt = timestamp();
@@ -912,7 +1001,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       };
       try {
         const saved = await writeRemoteJson(receiptPath, receipt, null, true);
-        if (saved && saved.ok) return { ...value, read_at: readAt };
+        if (saved && saved.ok) {
+          updateCachedUnread();
+          return { ...value, read_at: readAt };
+        }
       } catch (error) {
         if (!isConflictError(error) || attempt === 4) throw error;
       }
@@ -1073,7 +1165,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   return {
     startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked,
     setSessionPaused, disconnectSession, enforceSessionLimit, withSessionLock, withSessionLocks,
-    sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
+    sendMessage, sendUserMessage, readMessages, countUnreadMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
 }
