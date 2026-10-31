@@ -573,9 +573,13 @@ function parameterSchema(tool) {
   const overrides = TOOL_PARAMETER_OVERRIDES[tool] || {};
   const properties = {};
   for (const name of names) {
-    const base = BASE_FIELD_SCHEMAS[name] || { type: 'string', description: 'Argument ' + name + ' for ' + tool + '.' };
+    const base = BASE_FIELD_SCHEMAS[name] || { type: 'string' };
     const override = overrides[name] || {};
-    properties[name] = { ...base, ...override };
+    const property = { ...base, ...override };
+    if (typeof property.description !== 'string' || property.description.trim().length < 10) {
+      property.description = 'Argument ' + name + ' supplied to the ' + tool + ' tool.';
+    }
+    properties[name] = property;
     if (tool === 'git_fetch' || tool === 'git_pull' || tool === 'git_push' || tool === 'git_clone') {
       if (name === 'timeoutMs' && !override.default) properties[name] = { ...properties[name], default: 60000 };
     }

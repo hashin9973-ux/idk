@@ -14,7 +14,7 @@ test('Unreal adapter extracts project modules, target types, dependencies and re
     fs.writeFileSync(path.join(root, 'Game.uproject'), JSON.stringify({ EngineAssociation: '5.5', Modules: [{ Name: 'Game', Type: 'Runtime' }], Plugins: [{ Name: 'GameplayAbilities', Enabled: true }] }));
     fs.writeFileSync(path.join(root, 'Source', 'Game', 'Game.Build.cs'), 'public class Game : ModuleRules { public Game(ReadOnlyTargetRules Target) { PublicDependencyModuleNames.AddRange(new string[] { \"Core\", \"Engine\" }); PrivateDependencyModuleNames.Add(\"GameplayTasks\"); } }');
     fs.writeFileSync(path.join(root, 'Source', 'Game', 'Game.Target.cs'), 'public class GameTarget : TargetRules { Type = TargetType.Game; ExtraModuleNames.Add(\"Game\"); }');
-    fs.writeFileSync(path.join(root, 'Source', 'Game', 'Player.h'), ['#pragma once', 'UCLASS()', 'class APlayer : public AActor { GENERATED_BODY()', ' UPROPERTY(EditAnywhere) int Health;', ' UFUNCTION(BlueprintCallable) void Attack();', '};'].join('\n'));
+    fs.writeFileSync(path.join(root, 'Source', 'Game', 'Player.h'), ['#pragma once', 'UCLASS()', 'class APlayer : public AActor { GENERATED_BODY()', ' UPROPERTY(EditAnywhere) int Health;', ' UFUNCTION(BlueprintCallable) void Attack();', '};'].join(String.fromCharCode(10)));
     const report = inspectGameProject(root);
     assert.equal(report.primary_engine, 'unreal');
     assert.equal(report.adapters.unreal.modules[0].module, 'Game');
