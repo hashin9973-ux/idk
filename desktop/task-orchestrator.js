@@ -693,7 +693,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
             summary.released_leases++;
           }
         } catch (error) {
-          summary.errors.push({ task_id: taskId, error: String(error && error.message || error).replace(/[\\r\\n\\t]+/g, ' ').slice(0, 1000) });
+          summary.errors.push({ task_id: taskId, error: String(error && error.message || error).slice(0, 1000) });
         }
       }));
     }
