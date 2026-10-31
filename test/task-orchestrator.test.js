@@ -153,9 +153,9 @@ test('task list cursor advances by scanned mailbox records without repeating row
   });
   const first = await tasks.listTasks(a, { project_id: project.project_id, limit: 30 });
   assert.equal(first.count, 30);
-  assert.equal(first.next_offset, 40);
+  assert.equal(first.next_offset, 30);
   const second = await tasks.listTasks(a, { project_id: project.project_id, limit: 30, offset: first.next_offset });
-  assert.equal(second.count, 5);
+  assert.equal(second.count, 15);
   const ids = [...first.tasks, ...second.tasks].map(item => item.task_id);
-  assert.equal(new Set(ids).size, 35);
+  assert.equal(new Set(ids).size, 45);
 });

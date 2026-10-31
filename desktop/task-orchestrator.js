@@ -296,7 +296,9 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
         const remote = await readTask(name.slice(0, -5));
         return remote && remote.value.project_id === projectId ? remote.value : null;
       }));
-      for (const task of rows) {
+      for (let index = 0; index < rows.length; index++) {
+        scanned = start + index + 1;
+        const task = rows[index];
         if (!task) continue;
         if (args.status && task.status !== args.status) continue;
         if (args.assigned_to_me === true && task.assignee_session_id !== identity.session_id) continue;
