@@ -87,6 +87,23 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     return withLock('session:' + sessionId, operation);
   }
 
+  function withSessionLocks(sessionIds, operation) {
+    if (!Array.isArray(sessionIds) || typeof operation !== 'function') {
+      throw new TypeError('Session IDs and a lock operation are required.');
+    }
+    const ordered = [...new Set(sessionIds)].sort();
+    if (!ordered.length) throw new Error('At least one session_id is required.');
+    for (const sessionId of ordered) {
+      if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) {
+        throw new Error('A valid session_id is required.');
+      }
+    }
+    const acquire = index => index >= ordered.length
+      ? operation()
+      : withSessionLock(ordered[index], () => acquire(index + 1));
+    return acquire(0);
+  }
+
   function isConflictError(error) {
     try { return Boolean(isConflict(error)); }
     catch { return /conflict|sha was not supplied|does not match|409|422/i.test(String(error && error.message || error)); }
@@ -642,11 +659,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function sendMessage(sessionId, args = {}) {
-    const sender = await currentSession(sessionId);
     const hasAgent = Boolean(args.to_agent_id);
     const hasSession = Boolean(args.to_session_id);
     if (hasAgent === hasSession) throw new Error('Specify exactly one recipient: to_agent_id or to_session_id.');
-    let recipientSessionId, recipientAgentId, recipientLabel;
+    let recipientSessionId;
     if (hasAgent) {
       if (!AGENT_ID_PATTERN.test(String(args.to_agent_id))) throw new Error('to_agent_id has an invalid format.');
       const recipientSeat = await readSeat(args.to_agent_id);
@@ -654,60 +670,73 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         throw new Error('The recipient seat has no current session.');
       }
       recipientSessionId = recipientSeat.value.current_session_id;
-      recipientAgentId = args.to_agent_id;
-      recipientLabel = recipientSeat.value.label || recipientAgentId;
     } else {
       if (!SESSION_ID_PATTERN.test(String(args.to_session_id))) throw new Error('to_session_id has an invalid format.');
       recipientSessionId = args.to_session_id;
-      const recipient = await currentSession(recipientSessionId);
-      recipientAgentId = recipient.session.agent_id;
-      recipientLabel = recipient.seat.label || recipient.session.label || recipientAgentId;
     }
     if (recipientSessionId === sessionId) throw new Error('Cannot send an agent message to your own current session.');
-    const recipient = await currentSession(recipientSessionId);
-    const last = activityTime(recipient.seat, recipient.session);
-    if (!last || clock() - last > SESSION_INACTIVE_AFTER_MS) {
-      throw new Error('Recipient is inactive. Use agent_status to choose a currently active seat/session.');
-    }
-    const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
-    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
-    const record = {
-      protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
-      sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
-      recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
-      sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
-      subject, message: formatAgentMessage(sender.session, args.message),
-      created_at: timestamp(), read_at: null, in_reply_to: null
-    };
-    await writeMessage(recipientSessionId, record);
-    return {
-      message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
-      to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
-      subject, created_at: record.created_at, status: 'sent',
-      note: 'Message delivered to that conversation session. The recipient can use read_agent_messages and reply_to_agent_message.'
-    };
+
+    return withSessionLocks([sessionId, recipientSessionId], async () => {
+      const sender = await currentSession(sessionId);
+      let recipientAgentId, recipientLabel;
+      if (hasAgent) {
+        const recipientSeat = await readSeat(args.to_agent_id);
+        if (!recipientSeat || recipientSeat.value.protocol !== AGENT_RECORD_PROTOCOL ||
+            recipientSeat.value.current_session_id !== recipientSessionId) {
+          throw new Error('RECIPIENT_SESSION_CHANGED: The selected agent seat was reassigned before the message could be sent.');
+        }
+        recipientAgentId = args.to_agent_id;
+        recipientLabel = recipientSeat.value.label || recipientAgentId;
+      }
+      const recipient = await currentSession(recipientSessionId);
+      if (!hasAgent) recipientAgentId = recipient.session.agent_id;
+      recipientLabel = recipientLabel || recipient.seat.label || recipient.session.label || recipientAgentId;
+      const last = activityTime(recipient.seat, recipient.session);
+      if (!last || clock() - last > SESSION_INACTIVE_AFTER_MS) {
+        throw new Error('Recipient is inactive. Use agent_status to choose a currently active seat/session.');
+      }
+      const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
+      const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+      const record = {
+        protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+        sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
+        recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
+        sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
+        subject, message: formatAgentMessage(sender.session, args.message),
+        created_at: timestamp(), read_at: null, in_reply_to: null
+      };
+      await writeMessage(recipientSessionId, record);
+      return {
+        message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
+        to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
+        subject, created_at: record.created_at, status: 'sent',
+        note: 'Message delivered to that conversation session. The recipient can use read_agent_messages and reply_to_agent_message.'
+      };
+    });
   }
 
   async function sendUserMessage(sessionId, args = {}) {
-    const recipient = await currentSession(sessionId);
-    const message = cleanMessage(args.message, 20000, 'message');
-    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
-    const record = {
-      protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
-      sender_session_id: null, sender_agent_id: 'user',
-      recipient_session_id: sessionId, recipient_agent_id: recipient.session.agent_id,
-      sender_label: 'Windows Bridge User',
-      recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
-      subject: 'Message from Windows Bridge User',
-      message: '[Windows Bridge User] ' + message,
-      created_at: timestamp(), read_at: null, in_reply_to: null, sender_type: 'user'
-    };
-    await writeMessage(sessionId, record);
-    return {
-      message_id: id, thread_id: id, to_agent_id: recipient.session.agent_id,
-      to_session_id: sessionId, created_at: record.created_at, status: 'sent',
-      note: 'The message was published to this exact conversation session inbox. The agent can retrieve it with read_agent_messages.'
-    };
+    return withSessionLock(sessionId, async () => {
+      const recipient = await currentSession(sessionId);
+      const message = cleanMessage(args.message, 20000, 'message');
+      const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+      const record = {
+        protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+        sender_session_id: null, sender_agent_id: 'user',
+        recipient_session_id: sessionId, recipient_agent_id: recipient.session.agent_id,
+        sender_label: 'Windows Bridge User',
+        recipient_label: recipient.seat.label || recipient.session.label || recipient.session.agent_id,
+        subject: 'Message from Windows Bridge User',
+        message: '[Windows Bridge User] ' + message,
+        created_at: timestamp(), read_at: null, in_reply_to: null, sender_type: 'user'
+      };
+      await writeMessage(sessionId, record);
+      return {
+        message_id: id, thread_id: id, to_agent_id: recipient.session.agent_id,
+        to_session_id: sessionId, created_at: record.created_at, status: 'sent',
+        note: 'The message was published to this exact conversation session inbox. The agent can retrieve it with read_agent_messages.'
+      };
+    });
   }
 
   async function markMessageRead(sessionId, messageId, knownRecord = null) {
@@ -751,6 +780,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function readMessages(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
     await currentSession(sessionId);
     const unreadOnly = args.unread_only !== false;
     const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
@@ -792,9 +822,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       scanned_recent_limit: 200, messages: read.filter(Boolean),
       note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
     };
+    });
   }
 
   async function readDashboardReplies(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
     await currentSession(sessionId);
     const suppliedIds = args.message_ids;
     if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
@@ -832,9 +864,25 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       session_id: sessionId, count: replies.length, messages: replies,
       note: 'Replies are read from the same session-scoped agent-message mailbox; no other session inbox is accessed.'
     };
+    });
   }
 
   async function replyToMessage(sessionId, args = {}) {
+    const originalId = String(args.message_id || '');
+    const initial = await readRemoteFile(messagePath(sessionId, originalId));
+    if (!initial) throw new Error('No message with this message_id exists in the current session inbox.');
+    const initialRecord = initial.value;
+    if (!initialRecord || initialRecord.protocol !== 'chatgpt-local-agent-message/v1' ||
+        initialRecord.message_id !== originalId || initialRecord.recipient_session_id !== sessionId) {
+      throw new Error('Only a message addressed to this session can be replied to.');
+    }
+    const initialIsDashboardUser = initialRecord.sender_type === 'user' && initialRecord.sender_agent_id === 'user' &&
+      initialRecord.sender_session_id === null;
+    const recipientSessionId = initialIsDashboardUser ? sessionId : initialRecord.sender_session_id;
+    if (typeof recipientSessionId !== 'string' || !SESSION_ID_PATTERN.test(recipientSessionId)) {
+      throw new Error('The original message sender session is invalid or unavailable.');
+    }
+    return withSessionLocks([sessionId, recipientSessionId], async () => {
     const sender = await currentSession(sessionId);
     const originalId = String(args.message_id || '');
     const remote = await readRemoteFile(messagePath(sessionId, originalId));
@@ -878,10 +926,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       sender_agent_id: record.sender_agent_id, to_agent_id: record.recipient_agent_id,
       to_session_id: recipientSessionId, created_at: record.created_at, status: 'sent'
     };
+    });
   }
 
   return {
-    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked, withSessionLock,
+    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked, withSessionLock, withSessionLocks,
     sendMessage, sendUserMessage, readMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
     AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, SESSION_INACTIVE_AFTER_MS
   };
