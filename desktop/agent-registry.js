@@ -373,9 +373,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
                 throw new Error('SHA-checked session deletion did not complete; the registered session remains valid.');
               }
 
-              try {
-                if (ownsSeat) {
-                  await mutateJson(seatPath(candidate.session.agent_id),
+              if (ownsSeat) {
+                await mutateJson(seatPath(candidate.session.agent_id),
                     value => validateSeatRecord(value, candidate.session.agent_id),
                     value => value.current_session_id !== candidate.sessionId ? value : ({
                       ...value,
@@ -386,7 +385,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
                       last_evicted_at: evictedAt
                     }));
                 }
-              }
               return {
                 kind: 'evicted',
                 session_id: candidate.sessionId,
