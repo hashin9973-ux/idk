@@ -41,7 +41,7 @@ const TOOL_DEFINITIONS = Object.freeze({
   msbuild: { executable: 'msbuild', args: ['-version', '-nologo'] }, cl: { executable: 'cl', args: ['/Bv'] },
   clang: { executable: 'clang', args: ['--version'] }, gcc: { executable: 'gcc', args: ['--version'] },
   'g++': { executable: 'g++', args: ['--version'] }, make: { executable: 'make', args: ['--version'] },
-  meson: { executable: 'meson', args: ['--version'] }, dotnet: { executable: 'dotnet', args: ['--version'] },
+  meson: { executable: 'meson', args: ['--version'] }, dotnet: { executable: 'dotnet', args: ['--list-sdks'] },
   rustc: { executable: 'rustc', args: ['--version'] }, cargo: { executable: 'cargo', args: ['--version'] },
   rustfmt: { executable: 'rustfmt', args: ['--version'] }, clippy: { executable: 'cargo', args: ['clippy', '--version'] },
   java: { executable: 'java', args: ['-version'] }, javac: { executable: 'javac', args: ['-version'] },
@@ -374,7 +374,7 @@ function buildCommandPlans(project, toolchains, fsApi, workspaceRoot) {
       const executable = manager;
       const aliases = { test: 'test', build: 'build', lint: 'lint', format: 'format', check: 'check' };
       for (const [kind, script] of Object.entries(aliases)) if (scripts.includes(script)) {
-        const command = manager === 'npm' ? 'npm run ' + script : manager + ' ' + script;
+        const command = manager === 'npm' ? (script === 'test' ? 'npm test' : 'npm run ' + script) : manager + ' ' + script;
         add(kind, command, executable, 'package.json scripts.' + script);
       }
     } else if (manager === 'composer' && scripts.includes('test')) add('test', 'composer test', 'composer', 'composer.json scripts.test');
