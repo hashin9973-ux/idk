@@ -73,3 +73,37 @@ test('an already-aborted signal rejects immediately without enqueuing',async()=>
   assert.equal(scheduler.getState().queued,0);assert.deepEqual(started,[]);
  }finally{await scheduler.stop();}
 });
+
+
+test('per-resource pools cap expensive work independently of global scheduler capacity', async () => {
+ const scheduler=createExecutionScheduler({maxActive:8,resourceLimits:{compilation:2,'desktop-control':1}});
+ const gates=[gate(),gate(),gate()],started=[];
+ try{
+  const jobs=gates.map((g,index)=>scheduler.run({resourcePools:['compilation']},async()=>{started.push(index);await g.promise;},{id:'compile-'+index,tool:'run_tests'}));
+  const desktop=scheduler.run({resourcePools:['desktop-control']},async()=>{started.push('desktop');},{id:'desktop',tool:'computer'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(started.length,3);
+  assert.ok(started.includes(0)&&started.includes(1)&&started.includes('desktop'));
+  const usage=scheduler.getState().resourcePools;
+  assert.equal(usage.compilation.active,2);
+  assert.equal(usage.compilation.limit,2);
+  assert.equal(usage['desktop-control'].limit,1);
+  gates[0].resolve();await jobs[0];
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.ok(started.includes(2));
+  gates[1].resolve();gates[2].resolve();
+  await Promise.all([jobs[1],jobs[2],desktop]);
+ }finally{await scheduler.stop();}
+});
+
+test('resource limits do not serialize independent resource classes', async () => {
+ const scheduler=createExecutionScheduler({maxActive:4,resourceLimits:{compilation:1,'source-analysis':2}});
+ const compile=gate(),analysis=gate(),started=[];
+ try{
+  const a=scheduler.run({resourcePools:['compilation']},async()=>{started.push('compile');await compile.promise;},{id:'compile'});
+  const b=scheduler.run({resourcePools:['source-analysis']},async()=>{started.push('analysis');await analysis.promise;},{id:'analysis'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(started,['compile','analysis']);
+  compile.resolve();analysis.resolve();await Promise.all([a,b]);
+ }finally{await scheduler.stop();}
+});
