@@ -45,21 +45,24 @@ function createProjectIntelligence(options={}){
  function abortError(reason){const error=reason instanceof Error?reason:new Error(String(reason||'Operation cancelled.'));if(!error.code)error.code='ABORT_ERR';if(error.name==='Error')error.name='AbortError';return error;}
  function throwIfAborted(signal){if(stopped)throw abortError('Project intelligence is stopping.');if(signal&&signal.aborted)throw abortError(signal.reason||'Project-index operation cancelled.');}
  function markIncomplete(s,reason){s.truncated=true;if(!s.incompleteReasons)s.incompleteReasons=new Set();s.incompleteReasons.add(reason);}
- function validCachedDocument(s,d){
-  if(!d||typeof d!=='object'||Array.isArray(d)||typeof d.path!=='string'||d.path.length>2048)return false;
+ function cachedDocumentError(s,d){
+  if(!d||typeof d!=='object'||Array.isArray(d)||typeof d.path!=='string'||d.path.length>2048)return 'invalid document shape or path';
   const p=rel(d.path),segments=p.split('/');
-  if(!p||p!==d.path||p.startsWith('/')||/^[a-z]:/i.test(p)||segments.some(part=>!part||part==='.'||part==='..')||sensitive(p))return false;
+  if(!p||p!==d.path||p.startsWith('/')||/^[a-z]:/i.test(p)||segments.some(part=>!part||part==='.'||part==='..'))return 'unsafe relative path';
+  if(sensitive(p))return 'secret-like path';
   const absolute=path.resolve(s.root,...segments);
-  if(!inside(s.root,absolute))return false;
+  if(!inside(s.root,absolute))return 'path escapes workspace';
   const extension=path.posix.extname(p).toLowerCase();
-  if(extension!==d.extension||LANG[extension]!==d.language)return false;
-  if(!Number.isSafeInteger(d.size)||d.size<0||d.size>MAX_FILE||!Number.isFinite(d.mtimeMs)||!Number.isFinite(d.ctimeMs))return false;
-  if(!Array.isArray(d.pathTerms)||d.pathTerms.length>80||d.pathTerms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return false;
-  if(!Array.isArray(d.terms)||d.terms.length>220||d.terms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return false;
-  if(!Array.isArray(d.symbols)||d.symbols.length>160||d.symbols.some(symbol=>!symbol||typeof symbol!=='object'||typeof symbol.name!=='string'||symbol.name.length<1||symbol.name.length>200||typeof symbol.kind!=='string'||symbol.kind.length>40||!Number.isSafeInteger(symbol.line)||symbol.line<1))return false;
-  if(!Array.isArray(d.imports)||d.imports.length>80||d.imports.some(item=>typeof item!=='string'||!item.length||item.length>2048||/[\\x00-\\x1f]/.test(item)))return false;
-  return true;
+  if(extension!==d.extension||LANG[extension]!==d.language)return 'extension or language mismatch';
+  if(!Number.isSafeInteger(d.size)||d.size<0||d.size>MAX_FILE)return 'invalid file size';
+  if(!Number.isFinite(d.mtimeMs)||!Number.isFinite(d.ctimeMs))return 'invalid file timestamps';
+  if(!Array.isArray(d.pathTerms)||d.pathTerms.length>80||d.pathTerms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return 'invalid path terms';
+  if(!Array.isArray(d.terms)||d.terms.length>220||d.terms.some(term=>typeof term!=='string'||term.length<2||term.length>80))return 'invalid identifier terms';
+  if(!Array.isArray(d.symbols)||d.symbols.length>160||d.symbols.some(symbol=>!symbol||typeof symbol!=='object'||typeof symbol.name!=='string'||symbol.name.length<1||symbol.name.length>200||typeof symbol.kind!=='string'||symbol.kind.length>40||!Number.isSafeInteger(symbol.line)||symbol.line<1))return 'invalid symbol metadata';
+  if(!Array.isArray(d.imports)||d.imports.length>80||d.imports.some(item=>typeof item!=='string'||!item.length||item.length>2048||/[\\x00-\\x1f]/.test(item)))return 'invalid import metadata';
+  return null;
  }
+ function validCachedDocument(s,d){return cachedDocumentError(s,d)===null;}
  function ensure(root){if(stopped)throw Error('Project intelligence is stopped.');if(typeof root!=='string'||!root.trim())throw Error('Workspace root is required.');root=path.resolve(root);const k=keyFor(root);let s=states.get(k);if(!s){s={key:k,root,drive:driveRoot(root),documents:new Map(),terms:new Map(),symbolMap:new Map(),reverse:new Map(),symbolCount:0,indexedBytes:0,edgeCount:0,loaded:false,refreshing:false,refreshPromise:null,refreshQueued:false,refreshQueuedForce:false,dirty:new Set(),watcher:null,debounce:null,reconcile:null,generatedAt:null,lastFullScanAt:null,durationMs:null,truncated:false,incompleteReasons:new Set(),lastScan:null,error:'',progress:{entries:0,files:0,bytes:0}};states.set(k,s);}return s;}
  async function persist(s){
   if(!storage)return;
@@ -86,7 +89,8 @@ function createProjectIntelligence(options={}){
    }
    const restored=new Map();let bytes=0;
    for(const d of data.documents){
-    if(!validCachedDocument(s,d))throw Error('cache contains invalid document metadata');
+    const invalidReason=cachedDocumentError(s,d);
+    if(invalidReason)throw Error('cache contains invalid document metadata for '+String(d&&d.path||'unknown').slice(0,120)+': '+invalidReason);
     const key=d.path.toLowerCase();if(restored.has(key))throw Error('cache contains duplicate paths');
     bytes+=d.size;if(bytes>maxBytes)throw Error('cache exceeds the configured byte budget');
     restored.set(key,d);
