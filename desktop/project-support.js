@@ -520,7 +520,10 @@ async function discoverToolchain(name, options) {
   let executablePath;
   try {
     const located = await execFileAsync(finder, [definition.executable], execOptions);
-    executablePath = String(located.stdout || '').split(/\r?\n/).map(value => value.trim()).find(Boolean) || null;
+    const candidates = String(located.stdout || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    executablePath = platform === 'win32'
+      ? (candidates.find(value => /\.(?:exe|com|cmd|bat)$/i.test(value)) || candidates[0] || null)
+      : (candidates[0] || null);
   } catch { /* MSVC/MSBuild commonly are not exported in a normal user PATH. */ }
   executablePath = executablePath || options.executablePaths?.[name] || null;
   if (!executablePath) return { name, available: false, path: null, version: null, usable: false, error: 'not_found' };
