@@ -255,3 +255,18 @@ html[data-theme="graphite"] .widget{border-left:2px solid rgba(199,243,107,.45)}
 .agent-autodump-actions .agent-delete-confirm{background:#8c3040;border-color:#b65363}
 .agent-autodump-actions .agent-delete-confirm:hover{background:#a43a4c}
 @media(max-width:520px){.agent-console-counts{display:none}.agent-console-header{gap:4px}}
+
+
+/* Compact shared project/task status panel. */
+.task-board-controls{display:flex;align-items:center;gap:8px;margin:8px 0 10px}
+.task-board-controls label{color:var(--muted);font-size:11px}
+.task-board-controls select{flex:1;min-width:0;max-width:none}
+.task-board-controls button{width:30px;min-width:30px;height:29px;padding:0;font-size:17px}
+.task-board-summary{padding:8px 10px;border:1px solid var(--outline);border-radius:6px;background:var(--surface-soft);color:var(--muted);font-size:10px;line-height:1.5;overflow-wrap:anywhere}
+.task-board-list{display:grid;gap:6px;margin-top:8px;max-height:310px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.task-board-row{display:grid;gap:4px;padding:8px 9px;border:1px solid var(--outline);border-radius:6px;background:var(--surface)}
+.task-board-row-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.task-board-row-head strong{min-width:0;color:var(--text);font-size:11px;overflow-wrap:anywhere}
+.task-board-state{flex:0 0 auto;padding:2px 5px;border:1px solid var(--outline);border-radius:4px;color:var(--muted);font-size:9px;text-transform:uppercase}
+.task-board-meta{color:var(--muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.task-board-row code{color:var(--muted);font-size:8px;overflow-wrap:anywhere}

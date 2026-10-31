@@ -86,6 +86,66 @@ function applyDashboardState(value){
     active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
   }finally{suppressDashboardSave=false}
 }
+let taskDashboardData=null;
+let taskDashboardLoading=false;
+function renderTaskDashboard(data){
+  taskDashboardData=data&&typeof data==='object'?data:null;
+  const select=$('task-board-project'),summary=$('task-board-summary'),host=$('task-board-list');
+  if(!select||!summary||!host)return;
+  const projects=Array.isArray(taskDashboardData&&taskDashboardData.projects)?taskDashboardData.projects:[];
+  const previous=select.value;
+  select.replaceChildren();
+  if(!projects.length){
+    const option=document.createElement('option');option.value='';option.textContent='No project boards yet';select.append(option);
+    select.disabled=true;summary.textContent=taskDashboardData&&taskDashboardData.unavailable?'Task dashboard is unavailable while the mailbox worker is offline.':'No shared projects have been created yet.';
+    host.replaceChildren();
+    const hint=document.createElement('p');hint.className='help-copy';hint.textContent='An agent can create a shared board with task_project_init, then share the returned project_id with other sessions.';
+    host.append(hint);return;
+  }
+  select.disabled=false;
+  for(const project of projects){
+    const option=document.createElement('option');option.value=String(project.project_id||'');
+    option.textContent=String(project.name||project.project_id)+' · '+Number(project.active_lease_count||0)+' active leases';
+    select.append(option);
+  }
+  select.value=projects.some(item=>item.project_id===previous)?previous:projects[0].project_id;
+  const project=projects.find(item=>item.project_id===select.value)||projects[0];
+  const counts=project.task_counts&&typeof project.task_counts==='object'?project.task_counts:{};
+  const visibleTasks=Array.isArray(project.tasks)?project.tasks:[];
+  const countParts=['ready','claimed','in_progress','blocked','review','integration','verification','needs_rework']
+    .filter(key=>Number(counts[key]||0)>0).map(key=>key.replace(/_/g,' ')+': '+counts[key]);
+  summary.textContent=String(project.project_id)+' · '+Number(project.active_lease_count||0)+' active ownership leases · latest '+visibleTasks.length+' tasks'+
+    (countParts.length?' · '+countParts.join(' · '):'');
+  host.replaceChildren();
+  if(!visibleTasks.length){
+    const empty=document.createElement('p');empty.className='help-copy';empty.textContent='This project has no task records yet.';host.append(empty);return;
+  }
+  for(const task of visibleTasks){
+    const row=document.createElement('article');row.className='task-board-row';
+    const top=document.createElement('div');top.className='task-board-row-head';
+    const title=document.createElement('strong');title.textContent=String(task.title||task.task_id);title.title=String(task.task_id||'');
+    const badge=document.createElement('span');badge.className='task-board-state';badge.textContent=String(task.status||'unknown').replace(/_/g,' ');
+    top.append(title,badge);
+    const meta=document.createElement('div');meta.className='task-board-meta';
+    const owner=task.assignee_agent_id?String(task.assignee_agent_id)+' · '+String(task.assignee_session_id||''):'unassigned';
+    const scope=Array.isArray(task.scope_paths)&&task.scope_paths.length?task.scope_paths.join(', '):'No file scope';
+    meta.textContent=owner+' · priority '+Number(task.priority||0)+' · '+Number(task.dependency_count||0)+' dependencies · '+scope;
+    const id=document.createElement('code');id.textContent=String(task.task_id||'');
+    row.append(top,meta,id);host.append(row);
+  }
+  if(project.task_list_truncated){
+    const more=document.createElement('p');more.className='help-copy';more.textContent='Additional tasks exist. Use task_list with pagination to retrieve the rest.';host.append(more);
+  }
+}
+async function loadTaskDashboard(){
+  if(taskDashboardLoading)return;
+  taskDashboardLoading=true;
+  const button=$('task-board-refresh');if(button)button.disabled=true;
+  try{renderTaskDashboard(await api.getTaskDashboard())}
+  catch(error){const status=$('task-board-summary');if(status)status.textContent='Could not load task boards: '+String(error&&error.message||error)}
+  finally{taskDashboardLoading=false;if(button)button.disabled=false}
+}
+
 function applySessionAutoExpire(value){const input=$('session-auto-expire');if(input)input.checked=value===true;const status=$('session-auto-expire-status');if(status)status.textContent=value===true?'ON · The oldest eligible inactive session is removed only when the 10,000-record limit would be exceeded.':'OFF · At the 10,000-ID limit, new session starts are refused rather than deleting active or paused sessions.';}
 function applyTtsSettings(value){
   const s=value&&typeof value==='object'?value:{};
@@ -591,7 +651,9 @@ async function refresh(){
       renderWorker(s.bridge||{});
       void api.getLocalTtsStatus().then(renderLocalTtsStatus).catch(()=>{});
       void refreshAgentReplies();
+      void loadTaskDashboard();
       renderWorkspace(s.workspace||{});
+      applySessionAutoExpire(s.settings&&s.settings.sessionAutoExpire===true);
       if(!dashboardStateLoaded){
         await applyInitialSettings(s.settings||{});
         if(Array.isArray(s.browserTabs))syncBrowserTabs(s.browserTabs);
@@ -860,6 +922,8 @@ $('agent-autodump-save').addEventListener('click',async()=>{
   catch(error){note('Could not save autodump settings: '+error.message,'error')}
   finally{button.disabled=false;autoDumpEditingAgent=''}
 });
+$('task-board-refresh').addEventListener('click',()=>void loadTaskDashboard());
+$('task-board-project').addEventListener('change',()=>renderTaskDashboard(taskDashboardData));
 $('session-auto-expire').addEventListener('change',async event=>{const input=event.currentTarget;const next=input.checked;input.disabled=true;try{const result=await api.setSessionAutoExpire(next);applySessionAutoExpire(result.enabled);note(result.enabled?'Session auto-expire enabled.':'Session auto-expire disabled.','success')}catch(error){input.checked=!next;note('Could not change session auto-expire: '+String(error&&error.message||error),'error')}finally{input.disabled=false}});
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{

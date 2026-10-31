@@ -2418,6 +2418,11 @@ function registerIpc() {
     dashboardSend('app:preferences', getUiState().settings);
     return { enabled, maxSessions: 10000, eviction: 'Least recently active non-busy and unpaused session only; active or paused sessions are preserved.' };
   });
+  ipcMain.handle('app:task-dashboard', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!repositoryBridge || typeof repositoryBridge.getTaskDashboard !== 'function') return { projects: [], project_count: 0, unavailable: true };
+    return repositoryBridge.getTaskDashboard();
+  });
   ipcMain.handle('app:agent-widget-settings', (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
     if (!payload || typeof payload !== 'object' || !/^agent-[0-9]{3,}$/.test(String(payload.agentId || ''))) {
