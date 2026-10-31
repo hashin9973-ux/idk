@@ -43,6 +43,14 @@ function mockMailbox(startTime = Date.now(), options = {}) {
       deleteCallCount++;
       if (options.failDelete === true) throw new Error('simulated temporary transport failure');
       if (options.failDeleteResult && (!options.failDeleteAt || options.failDeleteAt === deleteCallCount)) return structuredClone(options.failDeleteResult);
+      if (options.deleteThenFailResult) {
+        for (const item of files) {
+          const current = records.get(item.path);
+          if (!current || current.sha !== item.sha) throw new Error('sha conflict during test mailbox cleanup');
+        }
+        for (const item of files) records.delete(item.path);
+        return structuredClone(options.deleteThenFailResult);
+      }
       for (const item of files) {
         const current = records.get(item.path);
         if (!current || current.sha !== item.sha) throw new Error('sha conflict during test mailbox cleanup');
@@ -707,7 +715,23 @@ test('partial over-cap cleanup reports already evicted IDs when a later deletion
   assert.equal(await registry.isEvicted(first.session_id), true);
 });
 
-test('the cap removes enough oldest records to return below its hard limit', async () => {
+
+test('a delete response lost after the remote commit is reconciled as a completed eviction', async () => {
+  const { registry, records, advance } = mockMailbox(Date.now(), {
+    maxSessions: 1,
+    deleteThenFailResult: { ok: false, conflict: false }
+  });
+  const first = await registry.startSession({ label: 'Deleted despite ambiguous response' });
+  advance(1000);
+
+  const next = await registry.startSession({ label: 'Retry reconciles completed delete' });
+  assert.deepEqual(next.evicted_sessions.map(item => item.session_id), [first.session_id]);
+  assert.equal(records.has('bridge/sessions/' + first.session_id + '.json'), false);
+  assert.equal(records.has('bridge/evicted-sessions/' + first.session_id + '.json'), true);
+  await assert.rejects(registry.authenticate({ session_id: first.session_id }), /SESSION_EVICTED/);
+  assert.equal((await registry.authenticate({ session_id: next.session_id })).session_id, next.session_id);
+});
+\ntest('the cap removes enough oldest records to return below its hard limit', async () => {
   const { registry, records, advance, now } = mockMailbox(Date.now(), { maxSessions: 2 });
   const first = await registry.startSession({ label: 'First' });
   advance(1000);
