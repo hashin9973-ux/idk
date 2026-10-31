@@ -2230,7 +2230,6 @@ function getUiState() {
       browserEnabled: settings.browserEnabled === true,
       browserKeepActive: settings.browserKeepActive === true,
       browserLowMemory: settings.browserLowMemory === true,
-      sessionAutoExpire: settings.sessionAutoExpire === true,
       observeFps: [0.5, 1, 2, 4, 8].includes(settings.observeFps) ? settings.observeFps : DEFAULT_SAMPLE_FPS
     },
     dashboardState: normalizeDashboardState(settings.dashboardState || defaultDashboardState()),
@@ -2558,15 +2557,6 @@ function registerIpc() {
     persistSettings();
     broadcastBridgeState(repositoryBridge.getState());
     return result;
-  });
-  ipcMain.handle('app:session-auto-expire', (event, enabled) => {
-    assertLocalUi(event, 'dashboard.html');
-    if (typeof enabled !== 'boolean') throw new Error('Session auto-expire must be a boolean.');
-    settings.sessionAutoExpire = enabled;
-    persistSettings();
-    publishSharedState();
-    dashboardSend('app:preferences', getUiState().settings);
-    return { enabled, maxSessions: 10000, eviction: 'Least recently active non-busy and unpaused session only; active or paused sessions are preserved.' };
   });
   ipcMain.handle('app:task-dashboard', async event => {
     assertLocalUi(event, 'dashboard.html');
@@ -3139,8 +3129,7 @@ if (!hasInstanceLock) {
           onState: broadcastBridgeState,
           requestSessionAssignment,
           onSessionAssigned: persistAssignedSessionWorkspace,
-          publishContextOnStart: true,
-          isSessionAutoExpireEnabled: () => settings.sessionAutoExpire === true
+          publishContextOnStart: true
         });
         if (getLocalTtsSettings().enabled) {
           setImmediate(() => {

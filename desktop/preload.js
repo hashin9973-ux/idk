@@ -93,7 +93,6 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false) => ipcRenderer.invoke('app:agent-widget-delete', { agentId, sessionId, wipeMailbox }),
   pauseAgentSession: (agentId, sessionId, paused) => ipcRenderer.invoke('app:agent-session-pause', { agentId, sessionId, paused }),
   disconnectAgentSession: (agentId, sessionId) => ipcRenderer.invoke('app:agent-session-disconnect', { agentId, sessionId }),
-  setSessionAutoExpire: enabled => ipcRenderer.invoke('app:session-auto-expire', enabled),
   getTaskDashboard: () => ipcRenderer.invoke('app:task-dashboard'),
   getAgentWidgetSettings: agentId => ipcRenderer.invoke('app:agent-widget-settings', { agentId }),
   setAgentWidgetSettings: (agentId, value) => ipcRenderer.invoke('app:agent-widget-settings', { agentId, value }),

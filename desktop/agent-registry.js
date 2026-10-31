@@ -10,6 +10,7 @@ const REVOCATION_RECORD_PROTOCOL = 'chatgpt-local-agent-session-revocation/v1';
 const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
 const SESSION_ID_PATTERN = /^session-[a-f0-9]{32}$/;
 const MESSAGE_ID_PATTERN = /^msg-[0-9]{13}-[a-f0-9]{32}$/;
+// Recent-activity display window only; it never expires a session or releases its seat.
 const SESSION_INACTIVE_AFTER_MS = 10 * 60 * 1000;
 const AGENT_STALE_AFTER_MS = SESSION_INACTIVE_AFTER_MS;
 
@@ -32,7 +33,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), isSessionAutoExpireEnabled = () => false, maxSessions = 10000 }) {
+function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
@@ -227,14 +228,18 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     );
   }
 
-  function isInactive(seat, session) {
+  function isSeatAvailable(seat, session) {
     if (!seat) return true;
     if (isBusy(seat, session)) return false;
-    const last = activityTime(seat, session);
-    if (seat.protocol !== AGENT_RECORD_PROTOCOL) return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
+    // Legacy v1 seats have no conversation session identity to preserve. Keep their
+    // historical migration behavior, but never recycle a v2 seat because it is idle.
+    if (seat.protocol !== AGENT_RECORD_PROTOCOL) {
+      const last = activityTime(seat, null);
+      return !last || clock() - last > SESSION_INACTIVE_AFTER_MS;
+    }
     if (!seat.current_session_id) return true;
-    if (session && session.status === 'paused') return false;
-    return !session || !last || clock() - last > SESSION_INACTIVE_AFTER_MS || ['expired', 'revoked', 'disconnected'].includes(session.status);
+    if (!session || session.status === 'paused') return false;
+    return ['expired', 'revoked', 'disconnected'].includes(session.status);
   }
 
   async function readSeatAndSession(agentId) {
@@ -264,75 +269,13 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   async function enforceSessionLimit() {
     const entries = await listFolder('bridge/sessions');
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)))];
-    if (names.length < maxSessions) return { count: names.length, evicted: null };
-    let enabled = false;
-    try { enabled = typeof isSessionAutoExpireEnabled === 'function' && isSessionAutoExpireEnabled() === true; } catch {}
-    if (!enabled) throw new Error('SESSION_LIMIT_REACHED: The mailbox already contains ' + maxSessions +
-      ' session IDs. Enable session auto-expire in dashboard Settings to remove the least-recently-active inactive session.');
-    if (typeof deleteRemoteFiles !== 'function') throw new Error('SESSION_LIMIT_REACHED: Safe SHA-checked session deletion is unavailable.');
-    const candidates = [];
-    for (let start = 0; start < names.length; start += 32) {
-      const rows = await Promise.all(names.slice(start, start + 32).map(async name => {
-        const sessionId = name.slice(0, -5);
-        try {
-          const remote = await readSession(sessionId);
-          if (!remote || remote.value.status === 'paused' || isBusy(null, remote.value)) return null;
-          const seatRemote = await readSeat(remote.value.agent_id);
-          const seat = seatRemote && seatRemote.value;
-          const ownsSeat = Boolean(seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id === sessionId);
-          const terminal = ['expired', 'revoked', 'disconnected'].includes(remote.value.status);
-          if (!terminal && (!ownsSeat || !isInactive(seat, remote.value))) return null;
-          return { sessionId, remote, session: remote.value, lastActivity: activityTime(ownsSeat ? seat : null, remote.value) };
-        } catch { return null; }
-      }));
-      candidates.push(...rows.filter(Boolean));
+      .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
+    if (names.length >= maxSessions) {
+      throw new Error('SESSION_LIMIT_REACHED: The mailbox already contains ' + maxSessions +
+        ' session IDs. Session records are never automatically expired or deleted; the hard cap prevents creating another session.');
     }
-    candidates.sort((a, b) => a.lastActivity - b.lastActivity || a.sessionId.localeCompare(b.sessionId));
-    const evictedSessions = [];
-    let remaining = names.length;
-    for (const candidate of candidates) {
-      if (remaining < maxSessions) break;
-      try {
-        const evicted = await withSessionLock(candidate.sessionId, () => withLock('seat:' + candidate.session.agent_id, async () => {
-          let latest = await readSession(candidate.sessionId);
-          if (!latest || latest.sha !== candidate.remote.sha || latest.value.status === 'paused' || isBusy(null, latest.value)) return false;
-          const seat = await readSeat(latest.value.agent_id);
-          const ownsSeat = Boolean(seat && seat.value.protocol === AGENT_RECORD_PROTOCOL && seat.value.current_session_id === candidate.sessionId);
-          if (ownsSeat && !isInactive(seat.value, latest.value)) return false;
-          if (!['expired', 'revoked', 'disconnected'].includes(latest.value.status)) {
-            await mutateSession(candidate.sessionId, value => ({
-              ...value, status: 'expired', expired_at: timestamp(), ended_at: timestamp(), active_request_ids: []
-            }));
-            latest = await readSession(candidate.sessionId);
-            if (!latest || !['expired', 'revoked', 'disconnected'].includes(latest.value.status)) {
-              throw new Error('Could not persist terminal session state before retention deletion.');
-            }
-          }
-          if (ownsSeat) await mutateJson(seatPath(latest.value.agent_id),
-            value => validateSeatRecord(value, latest.value.agent_id),
-            value => ({ ...value, current_session_id: null, status: 'inactive', active_request_ids: [],
-              last_expired_session_id: candidate.sessionId, last_expired_at: timestamp() }));
-          const result = await deleteRemoteFiles([{ path: sessionPath(candidate.sessionId), sha: latest.sha }]);
-          if (!result || result.ok === false) throw new Error('SHA-checked session deletion did not complete.');
-          return true;
-        }));
-        if (evicted) {
-          remaining--;
-          evictedSessions.push({ session_id: candidate.sessionId, agent_id: candidate.session.agent_id,
-            last_activity_at: candidate.session.last_activity_at || candidate.session.created_at || null });
-        }
-      } catch (error) {
-        if (/conflict|sha|409|changed/i.test(String(error && error.message || error))) continue;
-        throw error;
-      }
-    }
-    if (remaining < maxSessions) return { count: remaining, evicted: evictedSessions };
-
-    throw new Error('SESSION_LIMIT_REACHED: All ' + maxSessions +
-      ' sessions are active, busy, paused, or otherwise unsafe to expire. No session was removed.');
+    return { count: names.length, evicted: null };
   }
-
   async function startSession(args = {}) {
     const label = safeLabel(args.label, 'ChatGPT session');
     const requestedAgentId = args.agent_id === undefined || args.agent_id === null || args.agent_id === ''
@@ -346,16 +289,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         const highest = ids.reduce((max, id) => Math.max(max, Number(id.slice(6)) || 0), 0);
         const candidate = requestedAgentId
           ? rows.find(row => row.agent_id === requestedAgentId) || null
-          : rows.find(row => !row.remote || !row.seat || isInactive(row.seat, row.session));
-        if (requestedAgentId && candidate && candidate.remote && candidate.seat && !isInactive(candidate.seat, candidate.session)) {
+          : rows.find(row => !row.remote || !row.seat || isSeatAvailable(row.seat, row.session));
+        if (requestedAgentId && candidate && candidate.remote && candidate.seat && !isSeatAvailable(candidate.seat, candidate.session)) {
           throw new Error('The selected agent seat is currently active or busy. Choose another available agent ID.');
         }
         if (requestedAgentId && !candidate && Number(requestedAgentId.slice(6)) !== highest + 1) {
           throw new Error('The selected agent ID is not an existing reusable seat or the next available seat.');
         }
         const agentId = requestedAgentId || candidate && candidate.agent_id || ('agent-' + String(highest + 1).padStart(3, '0'));
-        const priorSessionId = candidate && candidate.seat && candidate.seat.protocol === AGENT_RECORD_PROTOCOL
-          ? candidate.seat.current_session_id || null : null;
         const sessionId = 'session-' + randomBytes(16).toString('hex');
         const now = timestamp();
         const session = {
@@ -371,7 +312,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             const seat = current && current.value;
             const currentSession = seat && seat.protocol === AGENT_RECORD_PROTOCOL && seat.current_session_id
               ? (await readSession(seat.current_session_id))?.value || null : null;
-            if (seat && !isInactive(seat, currentSession)) return null;
+            if (seat && !isSeatAvailable(seat, currentSession)) return null;
             const nextSeat = {
               protocol: AGENT_RECORD_PROTOCOL, agent_id: agentId, current_session_id: sessionId,
               label, status: 'active', created_at: seat && seat.created_at || now,
@@ -380,12 +321,11 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             };
             const saved = await writeRemoteJson(seatPath(agentId), nextSeat, current ? current.sha : null, !current);
             if (!saved || !saved.ok) return null;
-            if (priorSessionId && priorSessionId !== sessionId) await expireSession(priorSessionId, sessionId);
             return {
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
-              last_activity_at: now, inactivity_after_ms: SESSION_INACTIVE_AFTER_MS, created_at: now,
-              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. The assigned agent_id is a reusable seat and may be reassigned after inactivity.',
-              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Your reusable seat may be reassigned after 10 minutes without bridge-tool activity. Pause temporarily blocks this session; disconnect releases its seat; delete permanently revokes it.'
+              last_activity_at: now, created_at: now,
+              note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. This session ID and its agent seat remain valid while idle; the seat is released only by an explicit disconnect or revoke/delete action.',
+              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Inactivity never expires this session or releases its agent seat. Pause temporarily blocks this session; disconnect explicitly releases its seat; delete/revoke permanently disables it.'
             };
           });
           if (!allocated) {
@@ -424,9 +364,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         seatRemote.value.current_session_id !== sessionId) {
       throw new Error('SESSION_EXPIRED: The reusable seat has been leased to another conversation. Call session_start for a new session_id.');
     }
-    if (!isBusy(seatRemote.value, session) && isInactive(seatRemote.value, session)) {
-      throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window. Call session_start to obtain a current session_id.');
-    }
     return { session_id: sessionId, agent_id: session.agent_id, agent_label: session.label || session.agent_id };
   }
 
@@ -444,9 +381,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         throw new Error('SESSION_EXPIRED: This conversation session has expired or disconnected. Call session_start.');
       }
       if (sessionRemote.value.status === 'paused') throw new Error('SESSION_PAUSED: This session was paused before the request could execute.');
-      if (!isBusy(seatRemote.value, sessionRemote.value) && isInactive(seatRemote.value, sessionRemote.value)) {
-        throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window before execution. Call session_start.');
-      }
       const now = timestamp();
       await mutateSession(request.session_id, current => {
         if (['expired', 'disconnected'].includes(current.status)) throw new Error('SESSION_EXPIRED: This conversation session has expired or disconnected. Call session_start.');
@@ -819,7 +753,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
           ...(Array.isArray(seat.active_request_ids) ? seat.active_request_ids : []),
           ...(Array.isArray(session && session.active_request_ids) ? session.active_request_ids : [])
         ])].slice(-50),
-        reusable: !busy && !active
+        reusable: !busy && isSeatAvailable(seat, session)
       };
     }));
     const agents = rows.filter(Boolean);
@@ -831,15 +765,15 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         busy: agents.filter(agent => agent.busy).length,
         available: agents.filter(agent => agent.reusable).length
       },
-      inactivity_after_ms: SESSION_INACTIVE_AFTER_MS,
+      activity_status_window_ms: SESSION_INACTIVE_AFTER_MS,
       status_legend: {
-        active: 'This seat has received bridge-tool activity within the inactivity window.',
+        active: 'This seat has received bridge-tool activity within the recent-activity status window.',
         paused: 'This session is temporarily invalidated, keeps its seat, and can be resumed from its dashboard widget.',
-        inactive: 'No bridge-tool activity has arrived within the inactivity window. A non-busy seat may be leased to another conversation.',
-        busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned even when activity becomes old.',
+        inactive: 'No recent bridge-tool activity is recorded. The session ID and its seat remain valid until explicit disconnect or revoke/delete.',
+        busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned.',
         session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
       },
-      note: 'The session_id is stable for one ChatGPT conversation. The agent_id is a reusable seat, recycled after inactivity. Status includes every seat record found in bridge/agents; no credentials are included.'
+      note: 'The session_id and its agent_id seat remain bound to one ChatGPT conversation until explicit disconnect or revoke/delete. active/inactive is only a recent-activity indicator; inactivity never releases the seat. Status includes every seat record found in bridge/agents; no credentials are included.'
     };
   }
 
@@ -853,9 +787,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     if (!seat || seat.value.protocol !== AGENT_RECORD_PROTOCOL ||
         seat.value.current_session_id !== sessionId) {
       throw new Error('SESSION_EXPIRED: The seat has been reassigned; start a new session before messaging.');
-    }
-    if (!isBusy(seat.value, session) && isInactive(seat.value, session)) {
-      throw new Error('SESSION_EXPIRED: This conversation session exceeded the inactivity window. Call session_start before messaging.');
     }
     return { session, seat: seat.value };
   }
@@ -900,10 +831,6 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const recipient = await currentSession(recipientSessionId);
       if (!hasAgent) recipientAgentId = recipient.session.agent_id;
       recipientLabel = recipientLabel || recipient.seat.label || recipient.session.label || recipientAgentId;
-      const last = activityTime(recipient.seat, recipient.session);
-      if (!last || clock() - last > SESSION_INACTIVE_AFTER_MS) {
-        throw new Error('Recipient is inactive. Use agent_status to choose a currently active seat/session.');
-      }
       const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
       const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
       const record = {

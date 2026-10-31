@@ -147,7 +147,6 @@ async function loadTaskDashboard(){
   finally{taskDashboardLoading=false;if(button)button.disabled=false}
 }
 
-function applySessionAutoExpire(value){const input=$('session-auto-expire');if(input)input.checked=value===true;const status=$('session-auto-expire-status');if(status)status.textContent=value===true?'ON · The oldest eligible inactive session is removed only when the 10,000-record limit would be exceeded.':'OFF · At the 10,000-ID limit, new session starts are refused rather than deleting active or paused sessions.';}
 function applyTtsSettings(value){
   const s=value&&typeof value==='object'?value:{};
   $('tts-mode').value=s.mode==='notification'?'notification':'autoplay';
@@ -402,7 +401,7 @@ function makeAgentWidget(agent,index){
     event.stopPropagation();
     const sessionId=card.dataset.sessionId||'';
     if(!sessionId||disconnectButton.disabled)return;
-    const confirmed=window.confirm('Disconnect '+sessionId+' from '+agent.agent_id+'? Its seat becomes available to another conversation. The disconnected session ID cannot be reused.');
+    const confirmed=window.confirm('Disconnect '+sessionId+' from '+agent.agent_id+'? Inactivity alone never frees the seat; disconnect explicitly releases it. The disconnected session ID cannot be reused.');
     if(!confirmed)return;
     disconnectButton.disabled=true;
     try{
@@ -674,7 +673,6 @@ async function refresh(){
       void api.getLocalTtsStatus().then(renderLocalTtsStatus).catch(()=>{});
       void refreshAgentReplies();
       renderWorkspace(s.workspace||{});
-      applySessionAutoExpire(s.settings&&s.settings.sessionAutoExpire===true);
       if(!dashboardStateLoaded){
         await applyInitialSettings(s.settings||{});
         void loadTaskDashboard();
@@ -999,7 +997,6 @@ $('agent-autodump-save').addEventListener('click',async()=>{
 });
 $('task-board-refresh').addEventListener('click',()=>void loadTaskDashboard());
 $('task-board-project').addEventListener('change',()=>renderTaskDashboard(taskDashboardData));
-$('session-auto-expire').addEventListener('change',async event=>{const input=event.currentTarget;const next=input.checked;input.disabled=true;try{const result=await api.setSessionAutoExpire(next);applySessionAutoExpire(result.enabled);note(result.enabled?'Session auto-expire enabled.':'Session auto-expire disabled.','success')}catch(error){input.checked=!next;note('Could not change session auto-expire: '+String(error&&error.message||error),'error')}finally{input.disabled=false}});
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
@@ -1007,7 +1004,7 @@ api.onPrepareForTray(async payload=>{
   try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
-api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(typeof s.sessionAutoExpire==='boolean')applySessionAutoExpire(s.sessionAutoExpire);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
+api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
 window.addEventListener('resize',()=>{
   if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
   positionControls();
@@ -1028,5 +1025,5 @@ window.addEventListener('resize',()=>{
   if(layoutChanged)scheduleSaveDashboardState();
   updateBrowserBounds()
 });window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
-applyTheme('midnight');applySessionAutoExpire(false);renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
+applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();

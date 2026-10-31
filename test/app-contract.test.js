@@ -930,7 +930,8 @@ test('session lifecycle, bounded retention, shared task coordination and game me
   const registry=read('desktop','agent-registry.js');
   const bridge=read('desktop','repository-bridge.js');
   const tools=read('desktop','tool-bridge.js');
-  assert.match(html,/id="session-auto-expire"/);
+  assert.doesNotMatch(html,/session-auto-expire/);
+  assert.match(html,/hard cap of 10,000 session records/);
   assert.match(html,/id="task-board-project"/);
   assert.match(renderer,/agent-pause-button/);
   assert.match(renderer,/agent-disconnect-button/);
@@ -939,11 +940,14 @@ test('session lifecycle, bounded retention, shared task coordination and game me
   assert.match(preload,/disconnectAgentSession:/);
   assert.match(main,/app:agent-session-pause/);
   assert.match(main,/app:agent-session-disconnect/);
-  assert.match(main,/app:session-auto-expire/);
+  assert.doesNotMatch(main,/app:session-auto-expire|sessionAutoExpire/);
   assert.match(main,/showSpeechCaption\(\{ id: 'assignment-'/);
   assert.match(registry,/context_message:/);
   assert.match(registry,/maxSessions = 10000/);
   assert.match(registry,/SESSION_LIMIT_REACHED/);
+  assert.match(registry,/function isSeatAvailable/);
+  assert.doesNotMatch(registry,/exceeded the inactivity window/);
+  assert.match(registry,/never automatically expired or deleted/);
   assert.match(bridge,/taskOrchestrator\.dashboard/);
   assert.match(tools,/task_project_init/);
   assert.match(tools,/task_review/);

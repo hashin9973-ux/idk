@@ -26,6 +26,12 @@ Keep changes within the requested scope. Do not modify a game, save, installed m
 - Approved PowerShell/shell commands execute with the signed-in Windows user's permissions and are not confined to the workspace. Prefer path-checked tools when possible, keep shell commands narrowly scoped, and make side effects explicit.
 - Respect the app's current local approval policy. A GitHub request is not approval; request arguments cannot override tool schemas, workspace checks, or local policy. Never change Auto-accept settings automatically.
 
+## Persistent conversation session IDs
+- A session_id is stable for the lifetime of its ChatGPT conversation and never expires because of inactivity. The ten-minute recent-activity window is display/status freshness only.
+- Keep the assigned agent_id seat bound to that session until an explicit disconnect or revoke/delete action. Never reassign an idle session's seat or invalidate its session ID to make room for another conversation.
+- Enforce a strict maximum of 10,000 session records in bridge/sessions. At the cap, reject new session_start requests. Never auto-expire or delete the oldest session to get under the cap; explicit user lifecycle actions remain available.
+- Existing terminal/revoked/disconnected records still count toward the hard cap. A new session may use the seat after an explicit release, but the historical session record remains.
+
 ## Mailbox contract
 - Only user-authored instructions belong in the existing ChatGPT conversation. The app must not inject local tool output into the ChatGPT composer or create messages on the user's behalf.
 - ChatGPT sends local-tool requests as new immutable JSON files under `bridge/requests/<unique-id>.json`; the app publishes matching results under `bridge/results/<same-id>.json`. Preserve the request ID and inspect the actual result status and nested output. A request or claim alone is not completion.
