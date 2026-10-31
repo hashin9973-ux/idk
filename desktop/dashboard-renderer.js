@@ -374,13 +374,14 @@ function makeAgentWidget(agent,index){
   header.append(identity,status,busy,unread,counts,actions);
   const composer=document.createElement('form');composer.className='agent-message-composer';composer.dataset.noWidgetDrag='true';
   const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='> message agent… (Enter to send)';input.setAttribute('aria-label','Message for '+agent.agent_id);input.autocomplete='off';
+  composer.append(input);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
   const messageThread=document.createElement('div');messageThread.className='agent-message-thread';
   messageThread.hidden=true;messageThread.setAttribute('aria-live','polite');messageThread.dataset.noWidgetDrag='true';
   const workspaceMenu=document.createElement('div');workspaceMenu.className='agent-workspace-menu';workspaceMenu.hidden=true;workspaceMenu.dataset.noWidgetDrag='true';
   const actionMenu=document.createElement('div');actionMenu.className='agent-action-menu';actionMenu.hidden=true;actionMenu.dataset.noWidgetDrag='true';
   const actionItems=[['Workspace',workspaceButton],['Nickname',nicknameButton],['History cleanup',dumpButton],['Pause session',pauseButton],['Disconnect session',disconnectButton],['Delete widget',deleteButton]];
-  for(const [label,target] of actionItems){const item=document.createElement('button');item.type='button';item.textContent=label;item.addEventListener('click',()=>{actionMenu.hidden=true;target.click()});actionMenu.append(item)}
+  for(const [label,target] of actionItems){const item=document.createElement('button');item.type='button';item.textContent=label;item.dataset.agentAction=label.toLowerCase().replaceAll(' ','-');item.addEventListener('click',()=>{actionMenu.hidden=true;target.click()});actionMenu.append(item)}
   document.body.append(actionMenu);agentActionMenus.set(agent.agent_id,actionMenu);
   card.addEventListener('contextmenu',event=>{if(event.target.closest('input,textarea'))return;event.preventDefault();event.stopPropagation();for(const menu of agentActionMenus.values())menu.hidden=true;actionMenu.hidden=false;actionMenu.style.left=Math.max(8,Math.min(window.innerWidth-190,event.clientX))+'px';actionMenu.style.top=Math.max(8,Math.min(window.innerHeight-240,event.clientY))+'px'});
   card.append(header,body,messageThread,composer,workspaceMenu);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
@@ -463,6 +464,12 @@ function renderAgentMailboxes(rawAgents){
   agents.forEach((agent,index)=>{
     let card=agentWidgets.get(agent.agent_id);
     if(!card)card=makeAgentWidget(agent,index);
+    const requiredWidgetParts=['.agent-console-header','.agent-console-name','.agent-console-session','.agent-console-workspace','.agent-console-unread','.agent-workspace-menu','.agent-console-status','.agent-console-busy','.agent-console-counts','.agent-workspace-button','.agent-nickname-button','.agent-dump-button','.agent-delete-button','.agent-pause-button','.agent-disconnect-button','.agent-message-composer input','.agent-console-body','.agent-message-thread'];
+    const actionMenu=agentActionMenus.get(agent.agent_id);
+    if(!card.isConnected||requiredWidgetParts.some(selector=>!card.querySelector(selector))||!actionMenu||!actionMenu.isConnected){
+      card.remove();if(actionMenu)actionMenu.remove();agentWidgets.delete(agent.agent_id);agentActionMenus.delete(agent.agent_id);
+      card=makeAgentWidget(agent,index);
+    }
     if(!savedWidgetLayout[agent.agent_id]&&!widgetMoved[agent.agent_id]){
       const layout=agentLayoutFor(agent.agent_id,index);
       Object.assign(card.style,{left:layout.x+'px',top:layout.y+'px',width:layout.width+'px',height:layout.height+'px'});
@@ -511,16 +518,18 @@ function renderAgentMailboxes(rawAgents){
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
     const messageInput=card.querySelector('.agent-message-composer input');
-    messageInput.disabled=!hasSession;
-    messageInput.placeholder=hasSession?'> message agent… (Enter to send)':'[no active session]';
+    if(messageInput){
+      messageInput.disabled=!hasSession;
+      messageInput.placeholder=hasSession?'> message agent… (Enter to send)':'[no active session]';
+    }
     const paused=agent.session_status==='paused'||agent.paused===true;
     card.dataset.paused=paused?'true':'false';
     pauseButton.disabled=!hasSession;
     pauseButton.replaceChildren(createAgentIcon(paused?'play':'pause'));
     pauseButton.title=paused?'Resume this session':'Temporarily pause this session';
     pauseButton.setAttribute('aria-label',paused?'Resume this session':'Pause this session');
-    const pauseMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('button:nth-child(4)');if(pauseMenuItem){pauseMenuItem.textContent=paused?'Resume session':'Pause session';pauseMenuItem.disabled=!hasSession;}
-    const disconnectMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('button:nth-child(5)');if(disconnectMenuItem)disconnectMenuItem.disabled=!hasSession;
+    const pauseMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('[data-agent-action="pause-session"]');if(pauseMenuItem){pauseMenuItem.textContent=paused?'Resume session':'Pause session';pauseMenuItem.disabled=!hasSession;}
+    const disconnectMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('[data-agent-action="disconnect-session"]');if(disconnectMenuItem)disconnectMenuItem.disabled=!hasSession;
     disconnectButton.disabled=!hasSession;
     disconnectButton.title=hasSession?'Disconnect '+String(agent.session_id)+' from '+agent.agent_id:'No session to disconnect';
     deleteButton.disabled=false;

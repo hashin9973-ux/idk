@@ -28,9 +28,9 @@ Keep changes within the requested scope. Do not modify a game, save, installed m
 
 ## Persistent conversation session IDs
 - A session_id is stable for the lifetime of its ChatGPT conversation and never expires because of inactivity. The ten-minute recent-activity window is display/status freshness only.
-- Keep the assigned agent_id seat bound to that session until an explicit disconnect or revoke/delete action. Never reassign an idle session's seat or invalidate its session ID to make room for another conversation.
-- Enforce a strict maximum of 10,000 session records in bridge/sessions. At the cap, reject new session_start requests. Never auto-expire or delete the oldest session to get under the cap; explicit user lifecycle actions remain available.
-- Existing terminal/revoked/disconnected records still count toward the hard cap. A new session may use the seat after an explicit release, but the historical session record remains.
+- Keep the assigned agent_id seat bound to that session until explicit disconnect or revoke/delete, unless that exact session is selected by the hard-cap retention rule below. Never recycle a seat merely because a session is idle.
+- Enforce a strict maximum of 10,000 registered session records in `bridge/sessions`. When a new session would exceed the cap, automatically evict the registered ID with the oldest `last_activity_at` timestamp using SHA-checked deletion. Busy and paused sessions are not exempt. Record a separate eviction tombstone, cancel operations for that exact session, and detach its in-progress task ownership only after cancellation has drained.
+- Inactivity must never expire an ID, release its seat, or trigger cleanup. Explicit pause, disconnect, deletion and revocation retain their separate meanings; cap eviction is a separate retention event. All session records count toward the hard cap until explicitly deleted/revoked or evicted.
 
 ## Mailbox contract
 - Only user-authored instructions belong in the existing ChatGPT conversation. The app must not inject local tool output into the ChatGPT composer or create messages on the user's behalf.

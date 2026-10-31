@@ -17,7 +17,7 @@
 <h2>Mailbox Monitor</h2>
 <div id="queue-list" class="queue-list" aria-label="Aggregate queue summary"></div>
 <div class="agent-mailbox-heading"><h3>Agent Seats</h3><div class="agent-mailbox-tools"><span id="agent-mailbox-count">0 seats</span><button id="add-agent-widget" class="small-icon-button" type="button" title="Add agent widget" aria-label="Add agent widget">＋</button></div></div>
-<p class="agent-seat-help">Each seat has its own movable terminal. Seats are reused after inactivity.</p>
+<p class="agent-seat-help">Each seat has its own movable terminal. Inactivity changes its status only; the seat stays bound until explicit disconnect or revocation.</p>
 </section>
 <section id="controls-widget" class="widget controls-widget" data-widget="controls" aria-label="Bridge controls">
 <h2>Controls</h2><div class="control-grid">
@@ -102,7 +102,7 @@
 <div class="form-foot"><button id="vision-endpoint-connect" class="action-button compact" type="button">Connect endpoint</button><button id="vision-setup-check" class="quiet-button" type="button">Setup check</button></div>
 <p id="vision-status-details" class="inline-message" role="status" aria-live="polite">Checking Colab status…</p></section>
 <section class="settings-panel"><div class="section-heading"><h2>Workspace</h2><p>The selected folder or explicitly confirmed drive is the local environment.</p></div><div class="setting-row"><div><strong id="workspace-detail">No workspace selected</strong><small id="workspace-description">Workspace paths remain local to this app.</small></div><button id="settings-workspace-button" class="action-button compact" type="button">Choose workspace</button></div></section>
-<section class="settings-panel session-retention-panel"><div class="section-heading"><h2>Agent session retention</h2><p>Session IDs never expire or get deleted automatically. The mailbox enforces a hard cap of 10,000 session records; once reached, new session starts are refused. An agent seat remains bound to its conversation until you explicitly disconnect or revoke/delete that session.</p></div></section>
+<section class="settings-panel session-retention-panel"><div class="section-heading"><h2>Agent session retention</h2><p>Session IDs do not expire from inactivity. The registry keeps at most 10,000 registered IDs and evicts the one with the oldest last-activity timestamp when the cap is reached. Pause remains temporary; disconnect explicitly releases a seat and disables that session ID; delete/revoke permanently disables it. Cap eviction is separate and can invalidate only the selected oldest ID.</p></div></section>
 <section class="settings-panel task-board-panel">
   <div class="section-heading"><h2>Shared project task board</h2><p>Projects and task lifecycle states shared by all agent sessions. Task records remain in the mailbox; task execution, builds and integrations still run on Windows under local approval.</p></div>
   <div class="task-board-controls"><label for="task-board-project">Project</label><select id="task-board-project"><option value="">No project boards yet</option></select><button id="task-board-refresh" class="action-button compact" type="button" title="Refresh shared task boards" aria-label="Refresh task boards">↻</button></div>
