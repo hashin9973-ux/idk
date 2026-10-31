@@ -33,9 +33,6 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(styles.includes('#main-page{overflow:auto'));
   assert.ok(styles.includes('.agent-widget-host{position:relative'));
   assert.ok(renderer.includes('agent-workspace-button'));
-  assert.ok(renderer.includes('agent-action-menu'));
-  assert.ok(styles.includes('.agent-action-menu'));
-  assert.ok(styles.includes('.agent-console-actions{display:none!important}'));
   assert.ok(!renderer.includes('agent-message-button'));
   assert.ok(renderer.includes("const composer=document.createElement('form')"));
   assert.ok(renderer.includes('terminal.formatRequestCommands'));

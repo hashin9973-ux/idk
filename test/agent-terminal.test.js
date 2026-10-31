@@ -36,3 +36,11 @@ test('result JSON is translated to ordinary output lines', () => {
   const result = JSON.stringify({ status: 'completed', result: { output: { stdout: '2 tests passed\nOK', stderr: '' } } });
   assert.equal(formatResultOutput(result, 'queued', ''), '# completed\n2 tests passed\nOK');
 });
+
+test('nested sensitive values are redacted in the display-only command', () => {
+  const request = JSON.stringify({ tool: 'configure', args: { options: { access_token: 'private', visible: 'yes' } } });
+  const rendered = formatRequestCommands(request, 'configure');
+  assert.match(rendered, /\[redacted\]/);
+  assert.doesNotMatch(rendered, /private/);
+  assert.match(rendered, /visible/);
+});

@@ -25,11 +25,18 @@
     return String(key).replace(/([a-z0-9])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
   }
 
+  function redactValue(value) {
+    if (Array.isArray(value)) return value.map(item => redactValue(item));
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, SECRET_KEY.test(key) ? '[redacted]' : redactValue(nested)]));
+  }
+
   function safeArgument(key, value) {
     if (SECRET_KEY.test(key)) return '--' + flagName(key) + ' [redacted]';
     if (typeof value === 'boolean') return value ? '--' + flagName(key) : '--no-' + flagName(key);
     if (value === null) return '--' + flagName(key) + ' null';
-    const rendered = typeof value === 'string' ? value : JSON.stringify(value);
+    const safe = redactValue(value);
+    const rendered = typeof safe === 'string' ? safe : JSON.stringify(safe);
     return '--' + flagName(key) + ' ' + quote(rendered);
   }
 
