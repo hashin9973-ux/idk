@@ -32,3 +32,9 @@ body{padding:8px}
 .caption-card[data-theme="graphite"]{--caption-accent:#c7f36b;--caption-button-text:#232c14;background:rgba(29,32,35,.96)}
 
 .caption-agent-label{margin-left:auto;margin-right:8px;font-size:10px;font-weight:650;color:var(--caption-muted,#a5b3c3)}.caption-actions{align-items:center;justify-content:space-between}.caption-controls{display:flex;gap:5px;opacity:0;transition:opacity .12s ease}.caption-card:hover .caption-controls,.caption-card:focus-within .caption-controls{opacity:1}.caption-controls button{width:28px;height:25px;border:1px solid var(--caption-outline,rgba(220,235,250,.25));border-radius:6px;background:rgba(30,40,52,.8);color:inherit;font-weight:700}.caption-controls button:disabled{opacity:.4}.caption-controls button:focus-visible{outline:2px solid var(--caption-accent,#72e0c6);outline-offset:2px}
+
+
+/* Assignment notifications enter like a compact toast and respect reduced motion. */
+.caption-card[data-mode="notification"]{animation:caption-notification-enter 220ms cubic-bezier(.18,.85,.25,1.15) both}
+@keyframes caption-notification-enter{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(prefers-reduced-motion:reduce){.caption-card[data-mode="notification"]{animation:none!important}}
