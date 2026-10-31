@@ -163,7 +163,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     const record = {
       protocol: PROJECT_PROTOCOL, project_id: projectId, name, description,
       created_by_session_id: identity.session_id, created_by_agent_id: identity.agent_id,
-      created_at: createdAt, updated_at: createdAt, leases: [], decisions: [],
+      created_at: createdAt, updated_at: createdAt, leases: [], decisions: [], dedupe_keys: {},
       policy: {
         lease_ms: leaseMs,
         scope_conflict: 'Workspace-relative path scopes overlap when equal or when one is a parent directory of the other.',
@@ -186,6 +186,27 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       active_lease_count: leases.length, active_leases: leases,
       decisions: project.decisions.slice(-50), policy: project.policy
     };
+  }
+
+  async function listProjects(identity, args = {}) {
+    validateIdentity(identity);
+    const entries = await listFolder('bridge/projects');
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /^project-[a-f0-9]{24}\.json$/.test(name)))].slice(0, 200);
+    const projects = [];
+    for (let start = 0; start < names.length; start += 20) {
+      const rows = await Promise.all(names.slice(start, start + 20).map(async name => {
+        const remote = await readProject(name.slice(0, -5));
+        if (!remote) return null;
+        const project = remote.value;
+        return { project_id: project.project_id, name: project.name, description: project.description,
+          updated_at: project.updated_at, active_lease_count: activeLeases(project, clock()).length,
+          decision_count: project.decisions.length };
+      }));
+      projects.push(...rows.filter(Boolean));
+    }
+    projects.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+    return { projects, count: projects.length, truncated: entries.length > names.length };
   }
 
   async function createTask(identity, args = {}) {
@@ -227,6 +248,25 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
         by_agent_id: identity.agent_id, action: 'created', status: dependencies.length ? 'proposed' : 'ready'
       }]
     };
+    if (dedupeKey) {
+      const reserved = await mutateProject(projectId, project => {
+        const keys = project.dedupe_keys && typeof project.dedupe_keys === 'object' ? project.dedupe_keys : {};
+        if (keys[dedupeKey]) return project;
+        if (Object.keys(keys).length >= 500) throw new Error('The project deduplication-key limit has been reached. Use a shorter active-task set.');
+        return { ...project, dedupe_keys: { ...keys, [dedupeKey]: taskId } };
+      });
+      const existingId = reserved.dedupe_keys && reserved.dedupe_keys[dedupeKey];
+      if (existingId && existingId !== taskId) {
+        const existing = await readTask(existingId);
+        if (existing && ACTIVE_TASK_STATES.has(existing.value.status)) return { ...taskSummary(existing.value), deduplicated: true };
+        await mutateProject(projectId, project => {
+          const keys = { ...(project.dedupe_keys || {}) };
+          if (keys[dedupeKey] === existingId) delete keys[dedupeKey];
+          return { ...project, dedupe_keys: keys };
+        });
+        return createTask(identity, { ...args, dedupe_key: '' });
+      }
+    }
     await createOnly(taskPath(taskId), record);
     return taskSummary(record);
   }
@@ -549,7 +589,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   }
 
   return {
-    initProject, getProject, createTask, listTasks, getTask, claimTask, heartbeat,
+    initProject, getProject, listProjects, createTask, listTasks, getTask, claimTask, heartbeat,
     updateTask, submitTask, reviewTask, integrateTask, verifyTask, addDecision, cancelTask,
     taskPath, projectPath, TASK_PROTOCOL, PROJECT_PROTOCOL, TASK_STATES
   };
