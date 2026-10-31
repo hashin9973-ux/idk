@@ -31,9 +31,9 @@ function detectProjectTypes(entries) {
 }
 
 /**
- * Produces a bounded, read-only workspace summary. It inspects the selected
- * directory and at most one level of child directories; it never recursively
- * walks a drive or project tree. Git is invoked with argv (no shell).
+ * Produces a bounded, read-only workspace summary and a cached, manifest-aware
+ * multi-project profile. Scanning is depth/entry/project capped and remains
+ * shallow for filesystem roots. Git is invoked with argv (no shell).
  */
 async function inspectWorkspace(workspacePath, options = {}) {
   const fsApi = options.fsApi || fs;
