@@ -1,9 +1,10 @@
 'use strict';
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync,spawn}=require('node:child_process');
+const { inspectGameProject } = require('./game-project-intelligence');
 // Keep complete tool output available for repository artifact externalization; only mark it partial at this per-stream hard ceiling.
 const MAX_FILE=1024*1024,MAX_READ_FILE_BYTES=32*1024*1024,MAX_READ_PAGE_BYTES=12*1024,MAX_PATCH=2*1024*1024,MAX_OUTPUT=8*1024*1024,MAX_RESULTS=150,MAX_MS=120000;
-const IGNORED=new Set(['.git','node_modules','.venv','venv','dist','build','coverage','.next','.cache','target','bin','obj','__pycache__']);
+const IGNORED=new Set(['.git','.bridge-worktrees','node_modules','.venv','venv','dist','build','coverage','.next','.cache','target','bin','obj','__pycache__']);
 function looksSensitiveFile(file){
  const segments=String(file).split(/[\\/]+/).filter(Boolean);
  return segments.some(segment=>{
@@ -195,7 +196,8 @@ function writeFile(root,args){const target=safePath(root,args.path,false);if(typ
 function parsePatch(text,root,approved=false){if(typeof text!=='string'||Buffer.byteLength(text)>MAX_PATCH)throw new Error('patch must be a string up to 2 MiB.');const lines=text.replace(/\r\n/g,'\n').split('\n');if(lines[0]!=='*** Begin Patch')throw new Error('patch must start with *** Begin Patch.');const plans=[];let i=1;while(i<lines.length&&lines[i]!=='*** End Patch'){const h=lines[i++];if(h.startsWith('*** Add File: ')){const rel=h.slice(14).trim(),target=safePath(root,rel,false),body=[];while(i<lines.length&&!/^\*\*\* (Add File|Update File|Delete File): /.test(lines[i])&&lines[i]!=='*** End Patch'){const line=lines[i++];if(!line.startsWith('+'))throw new Error('Add File lines must start with +.');body.push(line.slice(1));}plans.push({kind:'add',relative:path.relative(root,target).replace(/\\/g,'/'),target,text:body.join('\n')+'\n'});}else if(h.startsWith('*** Delete File: ')){const rel=h.slice(17).trim(),target=safePath(root,rel,false);plans.push({kind:'delete',relative:path.relative(root,target).replace(/\\/g,'/'),target,text:null});}else if(h.startsWith('*** Update File: ')){const rel=h.slice(17).trim(),target=safePath(root,rel,false);if(!fs.existsSync(target))throw new Error('Update target not found: '+rel);const original=readText(target,approved===true),eol=original.includes('\r\n')?'\r\n':'\n',final=original.endsWith('\n');let current=original.replace(/\r\n/g,'\n').replace(/\n$/,'').split('\n'),cursor=0,saw=false;while(i<lines.length&&!/^\*\*\* (Add File|Update File|Delete File): /.test(lines[i])&&lines[i]!=='*** End Patch'){if(!lines[i].startsWith('@@'))throw new Error('expected @@ hunk header.');const hint=lines[i++].slice(2).trim(),old=[],neu=[];while(i<lines.length&&!lines[i].startsWith('@@')&&!/^\*\*\* (Add File|Update File|Delete File): /.test(lines[i])&&lines[i]!=='*** End Patch'){const line=lines[i++];if(line==='*** End of File')continue;if(!line.length)throw new Error('blank context line must start with a space.');if(line[0]===' '){old.push(line.slice(1));neu.push(line.slice(1));}else if(line[0]==='-')old.push(line.slice(1));else if(line[0]==='+')neu.push(line.slice(1));else if(line[0]==='\\')continue;else throw new Error('invalid patch line: '+line.slice(0,80));}let at=-1;if(!old.length){at=hint?current.findIndex(line=>line.includes(hint))+1:0;if(hint&&at===0)throw new Error('patch context not found: '+hint);}else{for(let k=Math.max(0,cursor);k<=current.length-old.length;k++){if(old.every((s,j)=>current[k+j]===s)){at=k;break;}}if(at<0)for(let k=0;k<Math.min(cursor,current.length-old.length+1);k++){if(old.every((s,j)=>current[k+j]===s)){at=k;break;}}if(at<0)throw new Error('patch context did not match '+rel+'; re-read and retry.');}current.splice(at,old.length,...neu);cursor=at+neu.length;saw=true;}if(!saw)throw new Error('Update File requires a hunk.');plans.push({kind:'update',relative:path.relative(root,target).replace(/\\/g,'/'),target,text:current.join(eol)+(final?eol:'')});}else throw new Error('unsupported patch operation: '+h);}if(lines[i]!=='*** End Patch'||!plans.length)throw new Error('patch is incomplete or empty.');const seen=new Set();for(const p of plans){const k=process.platform==='win32'?p.relative.toLowerCase():p.relative;if(seen.has(k))throw new Error('duplicate path in patch: '+p.relative);seen.add(k);if(p.text!==null&&Buffer.byteLength(p.text)>MAX_FILE)throw new Error('patched file exceeds 1 MiB: '+p.relative);}return plans;}
 function applyPatch(root,args){const approved=args.approved===true,plans=parsePatch(args.patch,root,approved);return{...applyPlans(plans,approved),preview:plans.map(p=>({path:p.relative,action:p.kind}))};}
 function initWorkspace(root){const target=path.join(root,'AGENTS.md');if(fs.existsSync(target))return{initialized:false,path:'AGENTS.md',reason:'Existing AGENTS.md left untouched.'};const s=projectStatus(root),text=['# Project Instructions','','## Working rules','- Inspect relevant files before editing.','- Prefer small focused patches.','- Do not claim commands succeeded without actual results.','- Inspect diffs before overwriting user changes.','- Keep secrets and local environment files out of version control.','- Run tests after edits and report actual exit codes.','','## Environment','- Workspace: '+root.replace(String.fromCharCode(96),''),'- Git repository: '+(s.isGitRepository?'yes':'no'),'- Detected technology: '+(s.detectedTechnologies.join(', ')||'not detected'),'','Add project-specific conventions below.'].join('\n')+'\n';atomicWrite(target,Buffer.from(text,'utf8'));return{initialized:true,path:'AGENTS.md',bytesWritten:Buffer.byteLength(text)};}
-function runPowerShell(root,args){
+function runPowerShell(root,args,signal=null){
+ if(signal&&signal.aborted){const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));error.name='AbortError';error.code='ABORT_ERR';throw error;}
  if(typeof args.command!=='string'||!args.command.trim()||args.command.length>20000)throw new Error('command must be 1–20,000 characters.');
  if(process.platform!=='win32')throw new Error('PowerShell is available only on Windows.');
  const timeoutMs=Number.isInteger(args.timeoutMs)?Math.min(Math.max(args.timeoutMs,1000),MAX_MS):60000;
@@ -204,7 +206,7 @@ function runPowerShell(root,args){
  return new Promise((resolve,reject)=>{
   const child=spawn(exe,['-NoLogo','-NoProfile','-NonInteractive','-Command',args.command],{cwd:root,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});
   const out=[],err=[];
-  let outBytes=0,errBytes=0,timedOut=false,finished=false,timer=null,hardTimer=null;
+  let outBytes=0,errBytes=0,timedOut=false,cancelled=false,finished=false,timer=null,hardTimer=null,abortListener=null;
   function keep(arr,chunk,stream){
    const current=stream==='stdout'?outBytes:errBytes;
    const room=Math.max(0,MAX_OUTPUT-current);
@@ -231,6 +233,7 @@ function runPowerShell(root,args){
    finished=true;
    if(timer)clearTimeout(timer);
    if(hardTimer)clearTimeout(hardTimer);
+   if(signal&&abortListener)signal.removeEventListener('abort',abortListener);
    if(error)reject(error);else resolve(value);
   }
   function resolveTimeout(){
@@ -267,11 +270,36 @@ function runPowerShell(root,args){
   child.stdout.on('data',chunk=>keep(out,chunk,'stdout'));
   child.stderr.on('data',chunk=>keep(err,chunk,'stderr'));
   child.once('error',error=>finish(new Error('PowerShell failed to start: '+error.message)));
-  child.once('close',(code,signal)=>{
+  child.once('close',(code,signalName)=>{
    if(finished)return;
    if(timedOut)return; // timeout handler waits for tree termination or hard deadline
-   finish(null,formatResult(code,signal));
+   if(cancelled){
+    const error=new Error(String(signal&&signal.reason&&signal.reason.message||signal&&signal.reason||'Operation cancelled.'));
+    error.name='AbortError';error.code='ABORT_ERR';
+    finish(error);
+    return;
+   }
+   finish(null,formatResult(code,signalName));
   });
+  if(signal){
+   abortListener=()=>{
+    if(finished||cancelled||timedOut)return;
+    cancelled=true;
+    void terminateProcessTree().then(()=>{
+     if(finished)return;
+     const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));
+     error.name='AbortError';error.code='ABORT_ERR';
+     finish(error);
+    },()=>{
+     if(finished)return;
+     const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));
+     error.name='AbortError';error.code='ABORT_ERR';
+     finish(error);
+    });
+   };
+   signal.addEventListener('abort',abortListener,{once:true});
+   if(signal.aborted)abortListener();
+  }
   timer=setTimeout(async()=>{
    if(finished)return;
    timedOut=true;
@@ -280,7 +308,7 @@ function runPowerShell(root,args){
   },timeoutMs);
  });
 }
-async function runTests(root,args={}){if(args.command!==undefined){if(typeof args.command!=='string'||!args.command.trim())throw new Error('command must be a non-empty PowerShell command when supplied.');return runPowerShell(root,{command:args.command,...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});}const p=path.join(root,'package.json');if(fs.existsSync(p)){try{const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.scripts&&typeof j.scripts.test==='string')return runPowerShell(root,{command:'npm test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});}catch{}}if(fs.existsSync(path.join(root,'pyproject.toml'))||fs.existsSync(path.join(root,'requirements.txt'))||fs.existsSync(path.join(root,'tests')))return runPowerShell(root,{command:'python -m pytest',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});if(fs.existsSync(path.join(root,'global.json'))||fs.readdirSync(root).some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))return runPowerShell(root,{command:'dotnet test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})});throw new Error('No standard test command detected. Supply a project-native command with command if auto-detection does not apply.');}
+async function runTests(root,args={},signal=null){if(args.command!==undefined){if(typeof args.command!=='string'||!args.command.trim())throw new Error('command must be a non-empty PowerShell command when supplied.');return runPowerShell(root,{command:args.command,...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);}const p=path.join(root,'package.json');if(fs.existsSync(p)){try{const j=JSON.parse(fs.readFileSync(p,'utf8'));if(j.scripts&&typeof j.scripts.test==='string')return runPowerShell(root,{command:'npm test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);}catch{}}if(fs.existsSync(path.join(root,'pyproject.toml'))||fs.existsSync(path.join(root,'requirements.txt'))||fs.existsSync(path.join(root,'tests')))return runPowerShell(root,{command:'python -m pytest',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);if(fs.existsSync(path.join(root,'global.json'))||fs.readdirSync(root).some(n=>n.endsWith('.sln')||n.endsWith('.csproj')))return runPowerShell(root,{command:'dotnet test',...(Number.isInteger(args.timeoutMs)?{timeoutMs:args.timeoutMs}:{})},signal);throw new Error('No standard test command detected. Supply a project-native command with command if auto-detection does not apply.');}
 
 function assertGitRepo(root){if(!fs.existsSync(path.join(root,'.git')))throw new Error('workspace is not a Git repository.');}
 function boundedGit(root,args,limit=MAX_OUTPUT){assertGitRepo(root);const r=git(root,args);return{...r,stdout:r.stdout.slice(0,limit),stderr:r.stderr.slice(0,Math.min(limit,16000)),truncated:r.stdout.length>limit||r.stderr.length>Math.min(limit,16000)};}
@@ -299,26 +327,60 @@ function gitBranches(root,args={}){return boundedGit(root,['branch','--list','--
 function gitCreateBranch(root,args={}){const name=validateBranchName(root,args.name);const r=git(root,['branch',name]);if(r.exitCode!==0)throw new Error(r.stderr||'Could not create branch.');return{created:true,name};}
 function gitSwitchBranch(root,args={}){const name=validateBranchName(root,args.name);const r=git(root,['switch',name]);if(r.exitCode!==0)throw new Error(r.stderr||'Could not switch branch.');return{switched:true,name,...r};}
 function gitCommit(root,args={}){if(typeof args.message!=='string'||!args.message.trim()||args.message.length>500)throw new Error('message must be 1–500 characters.');if(args.paths!==undefined){if(!Array.isArray(args.paths)||!args.paths.length||args.paths.length>100||args.paths.some(p=>typeof p!=='string'))throw new Error('paths must be a non-empty array of relative paths.');const paths=args.paths.map(p=>path.relative(root,safePath(root,p,false)));const add=git(root,['add','--',...paths]);if(add.exitCode!==0)throw new Error(add.stderr||'git add failed.');}const r=git(root,['commit','-m',args.message]);if(r.exitCode!==0)throw new Error(r.stderr||r.stdout||'git commit failed.');return{committed:true,...r};}
+function normalizeGitWorktreePath(value){
+ let resolved=path.resolve(String(value||''));
+ try{resolved=fs.realpathSync.native(resolved);}catch{}
+ return path.normalize(resolved).replace(/[\\/]+$/,'').toLowerCase();
+}
+function gitWorktree(root,args={}){assertGitRepo(root);const operation=args.operation;if(operation==='list'){const r=git(root,['worktree','list','--porcelain']);if(r.exitCode!==0)throw new Error(r.stderr||'git worktree list failed.');const items=[];let current=null;for(const line of r.stdout.split(/\r?\n/)){if(line.startsWith('worktree ')){if(current){current.path=path.resolve(current.path);items.push(current);}current={path:path.resolve(line.slice(9))};}else if(!line&&current){current.path=path.resolve(current.path);items.push(current);current=null;}else if(current&&line.startsWith('HEAD '))current.head=line.slice(5);else if(current&&line.startsWith('branch '))current.branch=line.slice(7).replace(/^refs\/heads\//,'');else if(current&&line==='detached')current.detached=true;else if(current&&line==='bare')current.bare=true;else if(current&&line==='locked')current.locked=true;else if(current&&line.startsWith('prunable '))current.prunable=line.slice(9);}if(current){current.path=path.resolve(current.path);items.push(current);}return{operation,worktrees:items};}if(operation==='add'){const branch=validateBranchName(root,args.branch);const requested=args.path||path.join('.bridge-worktrees',branch.replace(/[\\/]/g,'-'));const target=safePath(root,requested,false);if(path.resolve(target).toLowerCase()===path.resolve(root).toLowerCase()||!inside(root,target))throw new Error('Worktree path must be a new directory inside the selected workspace.');if(fs.existsSync(target))throw new Error('Worktree destination already exists.');const parent=path.dirname(target);if(!inside(root,parent))throw new Error('Worktree parent must remain inside the selected workspace.');fs.mkdirSync(parent,{recursive:true});const command=['worktree','add'];if(args.createBranch===true)command.push('-b',branch,target);else command.push(target,branch);const r=git(root,command);if(r.exitCode!==0)throw new Error(r.stderr||r.stdout||'git worktree add failed.');return{operation,added:true,path:path.relative(root,target).replace(/\\/g,'/'),branch,createdBranch:args.createBranch===true,...r};}if(operation==='integrate'){
+ const requested=args.path,branch=validateBranchName(root,args.branch),targetBranch=validateBranchName(root,args.targetBranch);
+ if(typeof requested!=='string'||!requested.trim())throw new Error('git_worktree integrate requires the source worktree path.');
+ const sourcePath=safePath(root,requested,false),listing=gitWorktree(root,{operation:'list'});
+ const source=listing.worktrees.find(item=>normalizeGitWorktreePath(item.path)===normalizeGitWorktreePath(sourcePath));
+ if(!source||normalizeGitWorktreePath(source.path)===normalizeGitWorktreePath(root))throw new Error('The source path is not a registered linked worktree.');
+ if(source.branch!==branch)throw new Error('The registered source worktree is on '+String(source.branch||'detached')+', not '+branch+'.');
+ const primaryStatus=git(root,['status','--porcelain=v1','--untracked-files=all']);
+ if(primaryStatus.exitCode!==0||primaryStatus.stdout.trim())throw new Error('The primary worktree must be clean before integration.');
+ const sourceStatus=git(source.path,['status','--porcelain=v1','--untracked-files=all']);
+ if(sourceStatus.exitCode!==0||sourceStatus.stdout.trim())throw new Error('The source worktree must be clean before integration. Commit all task changes first.');
+ const currentBranch=git(root,['branch','--show-current']);
+ if(currentBranch.exitCode!==0||currentBranch.stdout.trim()!==targetBranch)throw new Error('The primary workspace must already be on target_branch '+targetBranch+'. No automatic branch switch is performed.');
+ const branchExists=git(root,['show-ref','--verify','--quiet','refs/heads/'+branch]);
+ if(branchExists.exitCode!==0)throw new Error('The source branch does not exist in the primary Git repository.');
+ const sourceSha=git(root,['rev-parse','--verify',branch+'^{commit}']);
+ if(sourceSha.exitCode!==0||! /^[a-f0-9]{40}$/i.test(sourceSha.stdout.trim()))throw new Error('The source branch commit could not be resolved.');
+ const targetBefore=git(root,['rev-parse','--verify','HEAD']);
+ const merge=git(root,['merge','--no-ff','--no-edit',branch]);
+ if(merge.exitCode!==0){
+  const aborted=git(root,['merge','--abort']);
+  throw new Error('Git integration failed and the attempted merge was aborted. '+(merge.stderr||merge.stdout||'Merge conflict.')+(aborted.exitCode===0?'':' Merge abort also failed; inspect git status immediately.'));
+ }
+ const merged=git(root,['rev-parse','--verify','HEAD']);
+ if(merged.exitCode!==0||! /^[a-f0-9]{40}$/i.test(merged.stdout.trim()))throw new Error('Git merge returned success but the resulting HEAD could not be verified.');
+ return{operation,integrated:true,source_branch:branch,target_branch:targetBranch,source_commit:sourceSha.stdout.trim(),
+  target_before:targetBefore.stdout.trim(),merge_commit:merged.stdout.trim(),path:path.relative(root,source.path).replace(/\\/g,'/'),...merge};
+}if(operation==='remove'){if(typeof args.path!=='string'||!args.path.trim())throw new Error('git_worktree remove requires path.');const target=safePath(root,args.path,false);if(normalizeGitWorktreePath(target)===normalizeGitWorktreePath(root))throw new Error('The selected workspace itself cannot be removed as a linked worktree.');if(!inside(root,target))throw new Error('Worktree path must remain inside the selected workspace.');const listing=gitWorktree(root,{operation:'list'});const match=listing.worktrees.find(item=>normalizeGitWorktreePath(item.path)===normalizeGitWorktreePath(target));if(!match)throw new Error('The requested directory is not a registered Git worktree. Target='+normalizeGitWorktreePath(target)+'; listed='+listing.worktrees.map(item=>normalizeGitWorktreePath(item.path)).join('; '));if(normalizeGitWorktreePath(match.path)===normalizeGitWorktreePath(root))throw new Error('The primary workspace cannot be removed.');const r=git(root,['worktree','remove',target]);if(r.exitCode!==0)throw new Error(r.stderr||r.stdout||'git worktree remove failed. No force option is used.');return{operation,removed:true,path:path.relative(root,target).replace(/\\/g,'/'),branch:match.branch||null,...r};}throw new Error('git_worktree.operation must be list, add, remove, or integrate.');}
 
 
-const READ=new Set(['project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search','git_status','git_diff','git_log','git_show','git_branches','git_changed_files','get_capabilities','discover_instructions','update_plan']);
-const WRITE=new Set(['init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone','shell','run_tests']);
+const READ=new Set(['project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search','git_status','git_diff','git_log','git_show','git_branches','git_changed_files','git_worktree','get_capabilities','discover_instructions','update_plan']);
+const WRITE=new Set(['init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone','git_worktree','shell','run_tests']);
 // Only workspace-relative file operations can run automatically. Potentially sensitive paths stay approval-gated.
 const AUTO_WORKSPACE_WRITES=new Set(['write_file','apply_patch','create_directory','move_path','delete_path']);
 function patchTouchesSensitivePath(patch){if(typeof patch!=='string')return false;const paths=[...patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File):\s*(.+)$/gm)].map(m=>m[1].trim());return paths.some(looksSensitiveFile);}
-function getToolPolicy(tool,args={}){if(!READ.has(tool)&&!WRITE.has(tool))throw new Error('unknown local tool: '+tool);let sensitive=false;if(tool==='read_file'||tool==='write_file'||tool==='delete_path')sensitive=looksSensitiveFile(String(args.path||''));else if(tool==='move_path')sensitive=looksSensitiveFile(String(args.source||''))||looksSensitiveFile(String(args.destination||''));else if(tool==='apply_patch')sensitive=patchTouchesSensitivePath(args.patch);const automatic=(AUTO_WORKSPACE_WRITES.has(tool)&&!sensitive)||(!WRITE.has(tool)&&!sensitive);return{tool,requiresApproval:(WRITE.has(tool)&&!AUTO_WORKSPACE_WRITES.has(tool))||sensitive,automatic,sensitivePath:sensitive};}
+function getToolPolicy(tool,args={}){if(!READ.has(tool)&&!WRITE.has(tool))throw new Error('unknown local tool: '+tool);let sensitive=false;if(tool==='read_file'||tool==='write_file'||tool==='delete_path')sensitive=looksSensitiveFile(String(args.path||''));else if(tool==='move_path')sensitive=looksSensitiveFile(String(args.source||''))||looksSensitiveFile(String(args.destination||''));else if(tool==='apply_patch')sensitive=patchTouchesSensitivePath(args.patch);else if(tool==='git_worktree'&&args.path)sensitive=looksSensitiveFile(String(args.path));const worktreeRead=tool==='git_worktree'&&args.operation==='list';const automatic=(AUTO_WORKSPACE_WRITES.has(tool)&&!sensitive)||(!WRITE.has(tool)&&!sensitive)||worktreeRead;return{tool,requiresApproval:(WRITE.has(tool)&&!worktreeRead&&!AUTO_WORKSPACE_WRITES.has(tool))||sensitive,automatic,sensitivePath:sensitive};}
 function getCapabilities(root){return{workspaceRoot:root,protocol:'chatgpt-local-tools-v2',tools:[
 {name:'get_capabilities',mode:'read'},{name:'project_status',mode:'read'},{name:'environment_info',mode:'read'},
 {name:'list_dir',mode:'read'},{name:'directory_tree',mode:'read'},{name:'glob_file_search',mode:'read'},
 {name:'read_file',mode:'read-or-approval-for-secret-like-paths'},{name:'file_info',mode:'read'},{name:'search',mode:'read'},
 {name:'git_status',mode:'read'},{name:'git_diff',mode:'read'},{name:'git_log',mode:'read'},{name:'git_show',mode:'read'},
-{name:'git_branches',mode:'read'},{name:'git_changed_files',mode:'read'},{name:'discover_instructions',mode:'read'},
+{name:'git_branches',mode:'read'},{name:'git_changed_files',mode:'read'},{name:'git_worktree',mode:'operation-dependent-approval'},{name:'discover_instructions',mode:'read'},
 {name:'git_fetch',mode:'approval'},{name:'git_pull',mode:'approval'},{name:'git_push',mode:'approval'},{name:'git_clone',mode:'approval'},
 {name:'init',mode:'approval'},{name:'write_file',mode:'automatic-workspace-write'},{name:'apply_patch',mode:'automatic-workspace-write'},
 {name:'create_directory',mode:'automatic-workspace-write'},{name:'move_path',mode:'automatic-workspace-write'},{name:'delete_path',mode:'automatic-workspace-write'},
 {name:'git_create_branch',mode:'approval'},{name:'git_switch_branch',mode:'approval'},{name:'git_commit',mode:'approval'},
 {name:'shell',mode:'approval'},{name:'run_tests',mode:'approval'},{name:'update_plan',mode:'local'}]};}
-async function executeTool(rootInput,tool,args={}){
+async function executeTool(rootInput,tool,args={},signal=null){
+ if(signal&&signal.aborted){const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));error.name='AbortError';error.code='ABORT_ERR';throw error;}
  if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('arguments must be a JSON object.');
  const root=path.resolve(rootInput);if(!fs.existsSync(root)||!fs.statSync(root).isDirectory())throw new Error('workspace directory is unavailable.');getToolPolicy(tool,args);
  switch(tool){
@@ -340,6 +402,8 @@ async function executeTool(rootInput,tool,args={}){
  case'git_create_branch':return gitCreateBranch(root,args);
  case'git_switch_branch':return gitSwitchBranch(root,args);
  case'git_commit':return gitCommit(root,args);
+ case'git_worktree':return gitWorktree(root,args);
+ case'game_project_intelligence':return inspectGameProject(root,{maxFiles:args.maxFiles});
  case'git_fetch':case'git_pull':case'git_push':case'git_clone':throw new Error('This operation requires the desktop app GitHub credential and must run through the native tool bridge.');
  case'discover_instructions':return discoverInstructions(root,args);
  case'init':return initWorkspace(root);
@@ -348,8 +412,8 @@ async function executeTool(rootInput,tool,args={}){
  case'create_directory':return createDirectory(root,args);
  case'move_path':return movePath(root,args);
  case'delete_path':return deletePath(root,args);
- case'shell':return runPowerShell(root,args);
- case'run_tests':return args.command?runPowerShell(root,{command:args.command,timeoutMs:args.timeoutMs}):runTests(root);
+ case'shell':return runPowerShell(root,args,signal);
+ case'run_tests':return args.command?runPowerShell(root,{command:args.command,timeoutMs:args.timeoutMs},signal):runTests(root,args,signal);
  case'update_plan':if(!Array.isArray(args.items)||args.items.length>30)throw new Error('items must contain at most 30 plan steps.');plan=args.items.map((p,i)=>typeof p==='string'?{id:i+1,step:p,status:'pending'}:{id:i+1,step:String(p.step||''),status:['pending','in_progress','completed'].includes(p.status)?p.status:'pending'});return{plan};
  default:throw new Error('unsupported tool.');
  }}

@@ -6,6 +6,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { TOOL_ARGUMENT_KEYS, getExecutionFootprint, executionFootprintsConflict } = require('./tool-bridge');
 const { createAgentRegistry } = require('./agent-registry');
+const { createTaskOrchestrator } = require('./task-orchestrator');
 
 const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
@@ -19,7 +20,7 @@ const DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS = 10_000;
 const FAST_REQUEST_COMMIT_POLL_INTERVAL_MS = 2_000;
 const DEFAULT_STALLED_OPERATION_RECOVERY_MS = 60_000;
 const MAX_RECENT_REQUEST_COMMITS = 20;
-const MAX_CONCURRENT_REQUESTS = 32;
+const MAX_CONCURRENT_REQUESTS = 64;
 const DEFAULT_CONTEXT_REFRESH_MS = 5 * 60 * 1000;
 const CLAIM_LEASE_MS = 30 * 60 * 1000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
@@ -168,6 +169,7 @@ function createRepositoryBridge(deps) {
     persistSettings,
     getWorkspaceRoot,
     executeTool,
+    cancelTool = () => false,
     onState = () => {},
     intervalMs = DEFAULT_INTERVAL_MS,
     contextRefreshIntervalMs = DEFAULT_CONTEXT_REFRESH_MS,
@@ -178,7 +180,8 @@ function createRepositoryBridge(deps) {
     requestReconciliationIntervalMs = DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
     stalledOperationRecoveryMs = DEFAULT_STALLED_OPERATION_RECOVERY_MS,
     requestSessionAssignment = async () => null,
-    onSessionAssigned = async () => {}
+    onSessionAssigned = async () => {},
+    isSessionAutoExpireEnabled = () => false
   } = deps;
 
   const workerId = randomUUID();
@@ -196,6 +199,7 @@ function createRepositoryBridge(deps) {
   const pendingRequestQueueSet = new Set();
   const inFlightRequestIds = new Set();
   const requestTasks = new Map();
+  const requestAbortControllers = new Map();
   const mailboxUiRecords = new Map();
   const mailboxRequestCache = new Map();
   const mailboxRequestReadPromises = new Map();
@@ -484,6 +488,7 @@ function createRepositoryBridge(deps) {
       activeRequestIds: [...activeRequestIds],
       activeCount: activeRequestIds.size,
       pendingCount,
+      maxConcurrentRequests: MAX_CONCURRENT_REQUESTS,
       requestPolling: {
         pollIntervalMs: Math.max(1000, Number(intervalMs) || DEFAULT_INTERVAL_MS),
         stalledOperationRecoveryMs: operationRecoveryWindowMs,
@@ -651,7 +656,9 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, isConflict });
+  const agentRegistry = createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson,
+    deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict, isSessionAutoExpireEnabled, maxSessions: 10000 });
+  const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
 
   async function publishState(force = false) {
     const now = Date.now();
@@ -1145,6 +1152,9 @@ function createRepositoryBridge(deps) {
     const parts = value.split('/');
     if (parts.length < 3 || parts[0] !== 'bridge' ||
         parts.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) return false;
+    if (parts[1] === 'sessions') {
+      return parts.length === 3 && /^session-[a-f0-9]{32}\.json$/.test(parts[2]);
+    }
     return ['requests', 'results', 'claims', 'artifacts', 'agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
       !parts.some(segment => segment === '.gitkeep');
   }
@@ -1720,6 +1730,25 @@ function createRepositoryBridge(deps) {
 
     // A completed claim now stores its result as a recovery journal. If result
     // publication was interrupted, republish that exact result, never rerun work.
+    if (prior.value.session_id && await agentRegistry.isRevoked(prior.value.session_id)) {
+      const revokedResult = {
+        protocol: RESULT_PROTOCOL, request_id: requestId, session_id: prior.value.session_id,
+        ...(prior.value.agent_id ? { agent_id: prior.value.agent_id } : {}),
+        status: 'cancelled', completed_at: new Date().toISOString(),
+        error: 'SESSION_REVOKED: The owning agent session was revoked before this mailbox result could be accepted.'
+      };
+      const completed = {
+        protocol: 'chatgpt-local-repo-claim/v1', request_id: requestId,
+        ...(prior.value.agent_id ? { agent_id: prior.value.agent_id } : {}),
+        session_id: prior.value.session_id, worker_id: workerId, tool: prior.value.tool || null,
+        status: 'completed', claimed_at: prior.value.claimed_at || new Date().toISOString(),
+        completed_at: new Date().toISOString(), result: revokedResult
+      };
+      await writeRemoteJson(claimPath, completed, prior.sha, false);
+      const published = await publishResult(requestId, revokedResult);
+      return { acquired: false, recovered: published.published, terminal: true };
+    }
+
     if (prior.value.status === 'completed' && prior.value.result) {
       const published = await publishResult(requestId, prior.value.result);
       return { acquired: false, recovered: published.published, terminal: published.published };
@@ -1822,22 +1851,36 @@ function createRepositoryBridge(deps) {
   }
 
   async function publishResult(requestId, result) {
-    const resultPath = 'bridge/results/' + requestId + '.json';
-    const agentId = result && result.agent_id || requestAgents.get(requestId) || null;
-    const record = agentId && result && !result.agent_id ? { ...result, agent_id: agentId } : result;
-    // Result files are immutable. Try create-only directly rather than making a
-    // separate GET to check existence first.
-    const written = await writeRemoteJson(resultPath, record, null, true);
-    if (written.ok || written.conflict) {
-      if (knownResultFiles) knownResultFiles.add(requestId + '.json');
-      return { published: true, alreadyExists: written.conflict === true };
-    }
-    return { published: false, conflict: false };
+    const sessionId = result && result.session_id || requestSessions.get(requestId) || null;
+    const publish = async () => {
+      let finalResult = result;
+      if (sessionId && await agentRegistry.isRevoked(sessionId)) {
+        finalResult = {
+          protocol: RESULT_PROTOCOL, request_id: requestId, session_id: sessionId,
+          ...(result && result.agent_id ? { agent_id: result.agent_id } : {}),
+          status: 'cancelled', completed_at: new Date().toISOString(),
+          error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+        };
+      }
+      const resultPath = 'bridge/results/' + requestId + '.json';
+      const agentId = finalResult && finalResult.agent_id || requestAgents.get(requestId) || null;
+      const record = agentId && finalResult && !finalResult.agent_id ? { ...finalResult, agent_id: agentId } : finalResult;
+      // Result files are immutable. Hold the session publication lock across the
+      // tombstone check and create-only write so a concurrent delete cannot slip
+      // a live result into the mailbox after revocation commits.
+      const written = await writeRemoteJson(resultPath, record, null, true);
+      if (written.ok || written.conflict) {
+        if (knownResultFiles) knownResultFiles.add(requestId + '.json');
+        return { published: true, alreadyExists: written.conflict === true };
+      }
+      return { published: false, conflict: false };
+    };
+    return sessionId ? agentRegistry.withSessionLock(sessionId, publish) : publish();
   }
 
-  async function processRequest(filename) {
+  async function processRequest(filename, signal = null) {
     const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0 };
-    return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry));
+    return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry, signal));
   }
 
   function drainExecutionWaitQueue() {
@@ -1852,6 +1895,7 @@ function createRepositoryBridge(deps) {
         continue;
       }
       executionWaitQueue.splice(index, 1);
+      if (waiting.signal && waiting.onAbort) waiting.signal.removeEventListener('abort', waiting.onAbort);
       activeExecutionFootprints.set(waiting.requestId, waiting.footprint);
       waiting.resolve(() => {
         activeExecutionFootprints.delete(waiting.requestId);
@@ -1860,15 +1904,30 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  function acquireExecutionSlot(requestId, tool, args) {
+  function acquireExecutionSlot(requestId, tool, args, signal = null) {
     const footprint = getExecutionFootprint(tool, args);
-    return new Promise(resolve => {
-      executionWaitQueue.push({ requestId, footprint, resolve });
+    return new Promise((resolve, reject) => {
+      if (signal && signal.aborted) {
+        reject(signal.reason || new Error('Operation cancelled.'));
+        return;
+      }
+      const waiting = { requestId, footprint, resolve, reject, signal, onAbort: null };
+      if (signal) {
+        waiting.onAbort = () => {
+          const index = executionWaitQueue.indexOf(waiting);
+          if (index >= 0) executionWaitQueue.splice(index, 1);
+          signal.removeEventListener('abort', waiting.onAbort);
+          reject(signal.reason || new Error('Operation cancelled.'));
+          drainExecutionWaitQueue();
+        };
+        signal.addEventListener('abort', waiting.onAbort, { once: true });
+      }
+      executionWaitQueue.push(waiting);
       drainExecutionWaitQueue();
     });
   }
 
-  async function processRequestInner(filename, telemetry) {
+  async function processRequestInner(filename, telemetry, signal = null) {
     const workerStartedAt = telemetry.startedAt;
     let requestLoadedAt = workerStartedAt;
     let claimStartedAt = workerStartedAt;
@@ -1955,9 +2014,10 @@ function createRepositoryBridge(deps) {
     let executionQueueWaitMs = 0;
     let agentActivityStarted = false;
     try {
+      if (signal && signal.aborted) throw signal.reason || new Error('Operation cancelled.');
       if (request.session_id) agentActivityStarted = await agentRegistry.requestStarted(request);
       const waitStartedAt = Date.now();
-      releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args);
+      releaseExecutionSlot = await acquireExecutionSlot(requestId, request.tool, request.args, signal);
       executionQueueWaitMs = Math.max(0, Date.now() - waitStartedAt);
       updateMailboxUiRecord(requestId, { status: 'executing', progress: 50 });
       announce();
@@ -1995,6 +2055,44 @@ function createRepositoryBridge(deps) {
         } };
       } else if (request.tool === 'agent_status') {
         report = { ok: true, result: await agentRegistry.statuses(request.args.agent_id || null) };
+      } else if (request.tool === 'task_project_init') {
+        report = { ok: true, result: await taskOrchestrator.initProject(request, request.args) };
+      } else if (request.tool === 'task_project_status') {
+        report = { ok: true, result: await taskOrchestrator.getProject(request.args.project_id) };
+      } else if (request.tool === 'task_project_list') {
+        report = { ok: true, result: await taskOrchestrator.listProjects(request, request.args) };
+      } else if (request.tool === 'task_create') {
+        report = { ok: true, result: await taskOrchestrator.createTask(request, request.args) };
+      } else if (request.tool === 'task_list') {
+        report = { ok: true, result: await taskOrchestrator.listTasks(request, request.args) };
+      } else if (request.tool === 'task_get') {
+        report = { ok: true, result: await taskOrchestrator.getTask(request, request.args) };
+      } else if (request.tool === 'task_claim') {
+        report = { ok: true, result: await taskOrchestrator.claimTask(request, request.args) };
+      } else if (request.tool === 'task_heartbeat') {
+        report = { ok: true, result: await taskOrchestrator.heartbeat(request, request.args) };
+      } else if (request.tool === 'task_update') {
+        report = { ok: true, result: await taskOrchestrator.updateTask(request, request.args) };
+      } else if (request.tool === 'task_submit') {
+        report = { ok: true, result: await taskOrchestrator.submitTask(request, request.args) };
+      } else if (request.tool === 'task_review') {
+        report = { ok: true, result: await taskOrchestrator.reviewTask(request, request.args) };
+      } else if (request.tool === 'task_integrate') {
+        report = { ok: true, result: await taskOrchestrator.integrateTask(request, request.args, async integration => {
+          const operation = await executeTool('git_worktree', integration, requestId + '-integrate', request.session_id, signal);
+          if (!operation || operation.ok !== true || !operation.result) throw new Error(String(operation && operation.error || 'Local Git worktree integration failed.'));
+          return operation.result;
+        }) };
+      } else if (request.tool === 'task_verify') {
+        report = { ok: true, result: await taskOrchestrator.verifyTask(request, request.args, async check => {
+          const operation = await executeTool('run_tests', { command: check.command, timeoutMs: check.timeoutMs }, requestId + '-verify-' + check.kind, request.session_id, signal);
+          if (!operation || operation.ok !== true || !operation.result) return operation && operation.result || { exitCode: 1, stderr: operation && operation.error || 'Verification command failed.' };
+          return operation.result;
+        }) };
+      } else if (request.tool === 'task_decision') {
+        report = { ok: true, result: await taskOrchestrator.addDecision(request, request.args) };
+      } else if (request.tool === 'task_cancel') {
+        report = { ok: true, result: await taskOrchestrator.cancelTask(request, request.args) };
       } else if (request.tool === 'send_agent_message') {
         report = { ok: true, result: await agentRegistry.sendMessage(request.session_id, request.args) };
       } else if (request.tool === 'read_agent_messages') {
@@ -2004,9 +2102,15 @@ function createRepositoryBridge(deps) {
       } else if (request.tool === CONTEXT_REQUEST_TOOL) {
         report = { ok: true, result: await publishEnvironmentContext() };
       } else {
-        report = await executeTool(request.tool, request.args, requestId, request.session_id || null);
+        report = await executeTool(request.tool, request.args, requestId, request.session_id || null, signal);
         if (request.tool === 'get_agent_context' && report && report.ok && report.result && typeof report.result === 'object') {
           report.result.agent_status = await agentRegistry.statuses();
+          report.result.task_projects = await taskOrchestrator.listProjects(request);
+          report.result.task_coordination = {
+            lifecycle: ['proposed', 'ready', 'claimed', 'in_progress', 'blocked', 'review', 'integration', 'verification', 'verified', 'needs_rework', 'failed', 'cancelled'],
+            tools: ['task_project_init', 'task_project_list', 'task_project_status', 'task_create', 'task_list', 'task_get', 'task_claim', 'task_heartbeat', 'task_update', 'task_submit', 'task_review', 'task_integrate', 'task_verify', 'task_decision', 'task_cancel'],
+            note: 'Create/share one project_id across sessions. Claiming tasks reserves path/module scopes project-wide. Submit commits and evidence, require a different session to review, integrate through an approved clean-worktree merge, and verify build, test, and runtime commands independently.'
+          };
           report.result.current_session = {
             session_id: request.session_id, agent_id: request.agent_id,
             label: request.agent_label || request.agent_id
@@ -2020,6 +2124,9 @@ function createRepositoryBridge(deps) {
     }
 
     toolFinishedAt = Date.now();
+    if (request.session_id && await agentRegistry.isRevoked(request.session_id)) {
+      report = { ok: false, cancelled: true, error: 'SESSION_REVOKED: The operation was cancelled or its result suppressed after this agent session was revoked.', tool: request.tool, call_id: requestId };
+    }
     let workspaceRootForSanitization = '';
     try { workspaceRootForSanitization = getWorkspaceRoot ? getWorkspaceRoot(request.session_id || null) : ''; } catch {}
     const sanitizedReport = sanitizeForRepository(report, workspaceRootForSanitization);
@@ -2149,6 +2256,16 @@ function createRepositoryBridge(deps) {
       }
     }
 
+    // Recheck immediately before committing the recovery journal. Revocation can
+    // happen while large output is being externalized or archived.
+    if (request.session_id && await agentRegistry.isRevoked(request.session_id)) {
+      resultRecord = {
+        protocol: RESULT_PROTOCOL, request_id: requestId, tool: request.tool,
+        session_id: request.session_id, ...(request.agent_id ? { agent_id: request.agent_id } : {}),
+        status: 'cancelled', completed_at: new Date().toISOString(),
+        error: 'SESSION_REVOKED: The result was suppressed because its owning agent session was revoked.'
+      };
+    }
     // Store the completed result in the claim journal before publishing the
     // result file. This preserves crash recovery while eliminating the old
     // result-pending PUT + claim reread + final claim PUT sequence.
@@ -2200,14 +2317,25 @@ function createRepositoryBridge(deps) {
       if (agentActivityStarted) {
         try {
           const updatedAgent = await agentRegistry.requestCompleted(request);
-          setAgentDirectoryEntry(request.agent_id, {
-            label: updatedAgent.label || request.agent_label || request.agent_id,
-            status: 'active', busy: Array.isArray(updatedAgent.active_request_ids) && updatedAgent.active_request_ids.length > 0,
-            session_id: request.session_id, last_activity_at: updatedAgent.last_activity_at || null,
-            last_seen_at: updatedAgent.last_activity_at || null,
-            last_request_id: updatedAgent.last_request_id || request.request_id,
-            active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(-50) : []
-          });
+          if (updatedAgent) {
+            setAgentDirectoryEntry(request.agent_id, {
+              label: updatedAgent.label || request.agent_label || request.agent_id,
+              status: 'active', busy: Array.isArray(updatedAgent.active_request_ids) && updatedAgent.active_request_ids.length > 0,
+              session_id: request.session_id, last_activity_at: updatedAgent.last_activity_at || null,
+              last_seen_at: updatedAgent.last_activity_at || null,
+              last_request_id: updatedAgent.last_request_id || request.request_id,
+              active_request_ids: Array.isArray(updatedAgent.active_request_ids) ? updatedAgent.active_request_ids.slice(-50) : []
+            });
+          } else {
+            // A revoked/reassigned session must not be restored by a late completion.
+            const latest = await agentRegistry.statuses(request.agent_id);
+            const current = (latest.agents || [])[0];
+            if (current) setAgentDirectoryEntry(request.agent_id, {
+              ...current, label: current.label || request.agent_label || request.agent_id,
+              session_id: current.session_id || null,
+              active_request_ids: Array.isArray(current.active_request_ids) ? current.active_request_ids.slice(-50) : []
+            });
+          }
         } catch (error) { lastError = 'Agent status update failed for ' + request.agent_id + ': ' + cleanError(error.message); }
       }
       updateMailboxUiRecord(requestId, {
@@ -2243,6 +2371,118 @@ function createRepositoryBridge(deps) {
     }
   }
 
+  async function revokeAgentSession(sessionId, options = {}) {
+    const revoked = await agentRegistry.revokeSession(sessionId);
+    try {
+      const latest = await agentRegistry.statuses(revoked.agent_id);
+      const current = (latest.agents || [])[0];
+      if (current) setAgentDirectoryEntry(revoked.agent_id, {
+        ...current, label: current.label || revoked.agent_id,
+        session_id: current.session_id || null,
+        active_request_ids: Array.isArray(current.active_request_ids) ? current.active_request_ids.slice(-50) : []
+      });
+    } catch {
+      const prior = agentDirectory.get(revoked.agent_id) || {};
+      setAgentDirectoryEntry(revoked.agent_id, {
+        ...prior, session_id: null, status: 'inactive', busy: false, active_request_ids: []
+      });
+    }
+    const requestIds = new Set(revoked.cancelled_request_ids || []);
+    for (const [requestId, ownerSessionId] of requestSessions) {
+      if (ownerSessionId === sessionId) requestIds.add(requestId);
+    }
+    const requestsToDrain = [...requestIds].map(requestId => requestTasks.get(requestId)).filter(Boolean);
+    const cancellation = [];
+    for (const requestId of requestIds) {
+      const controller = requestAbortControllers.get(requestId);
+      if (controller && !controller.signal.aborted) {
+        controller.abort(new Error('SESSION_REVOKED: The owning agent session was revoked.'));
+      }
+      let schedulerCancelled = false;
+      try { schedulerCancelled = cancelTool(requestId, 'SESSION_REVOKED: The owning agent session was revoked.') === true; }
+      catch {}
+      cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
+    }
+    let cancellationDrainTimedOut = false;
+    let mailboxCleanup = { status: 'not_requested', deleted_records: 0, deleted_files: 0 };
+    if (requestsToDrain.length) {
+      // Stop task-lease cleanup until cancelled tool executions have either
+      // drained or been reported as incomplete; never hand off a workspace
+      // scope while the old session may still be mutating it.
+      let drainTimer = null;
+      const drained = await Promise.race([
+        Promise.allSettled(requestsToDrain).then(() => true),
+        new Promise(resolve => { drainTimer = setTimeout(() => resolve(false), 3000); })
+      ]);
+      if (drainTimer) clearTimeout(drainTimer);
+      cancellationDrainTimedOut = drained !== true;
+    }
+    if (options && options.wipeMailbox === true) {
+      try { mailboxCleanup = await agentRegistry.wipeMailbox(sessionId); }
+      catch (error) {
+        mailboxCleanup = { status: 'failed', deleted_records: 0, deleted_files: 0, error: cleanError(error.message), retryable: true };
+      }
+      if (cancellationDrainTimedOut) mailboxCleanup = {
+        ...mailboxCleanup,
+        status: mailboxCleanup.status === 'completed' ? 'completed_with_preserved_records' : mailboxCleanup.status,
+        cancellation_drain_timed_out: true,
+        pending_cancellation_requests: requestsToDrain.length,
+        preservation_note: [mailboxCleanup.preservation_note, 'One or more cancelled worker requests did not settle within the 3-second cleanup drain window; cleanup is not confirmed complete. Retry mailbox cleanup after they finish.'].filter(Boolean).join(' ')
+      };
+    }
+    let taskCleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
+    if (!cancellationDrainTimedOut) {
+      try { taskCleanup = await taskOrchestrator.detachSession(sessionId, 'revoked'); }
+      catch (error) { taskCleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+    }
+    announce();
+    return { ...revoked, cancellation, cancellation_drain_timed_out: cancellationDrainTimedOut, mailbox_cleanup: mailboxCleanup, task_cleanup: taskCleanup };
+  }
+
+  async function cancelSessionOperations(sessionId, reasonCode) {
+    const requestIds = new Set();
+    for (const [requestId, ownerSessionId] of requestSessions) if (ownerSessionId === sessionId) requestIds.add(requestId);
+    const tasksToDrain = [...requestIds].map(requestId => requestTasks.get(requestId)).filter(Boolean);
+    const cancellation = [];
+    for (const requestId of requestIds) {
+      const controller = requestAbortControllers.get(requestId);
+      if (controller && !controller.signal.aborted) controller.abort(new Error(reasonCode + ': The owning agent session was paused or disconnected.'));
+      let schedulerCancelled = false;
+      try { schedulerCancelled = cancelTool(requestId, reasonCode + ': The owning agent session was paused or disconnected.') === true; } catch {}
+      cancellation.push({ request_id: requestId, abort_signalled: Boolean(controller), scheduler_cancelled: schedulerCancelled });
+    }
+    if (tasksToDrain.length) {
+      let timer = null;
+      const drained = await Promise.race([
+        Promise.allSettled(tasksToDrain).then(() => true),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), 3000); })
+      ]);
+      if (timer) clearTimeout(timer);
+      return { cancellation, drain_timed_out: drained !== true, pending_requests: tasksToDrain.length };
+    }
+    return { cancellation, drain_timed_out: false, pending_requests: 0 };
+  }
+
+  async function setAgentSessionPaused(sessionId, paused) {
+    const result = await agentRegistry.setSessionPaused(sessionId, paused);
+    if (paused) result.execution_cancellation = await cancelSessionOperations(sessionId, 'SESSION_PAUSED');
+    announce();
+    return result;
+  }
+
+  async function disconnectAgentSession(sessionId) {
+    const result = await agentRegistry.disconnectSession(sessionId);
+    result.execution_cancellation = await cancelSessionOperations(sessionId, 'SESSION_DISCONNECTED');
+    if (result.execution_cancellation.drain_timed_out) {
+      result.task_cleanup = { status: 'deferred', reason: 'Cancelled work did not drain within the 3-second safety window.' };
+    } else {
+      try { result.task_cleanup = await taskOrchestrator.detachSession(sessionId, 'disconnected'); }
+      catch (error) { result.task_cleanup = { status: 'failed', error: cleanError(error.message), retryable: true }; }
+    }
+    announce();
+    return result;
+  }
+
   function dispatchPendingRequests() {
     if (!running) return;
     while (running && requestTasks.size < MAX_CONCURRENT_REQUESTS && pendingRequestQueue.length) {
@@ -2255,7 +2495,9 @@ function createRepositoryBridge(deps) {
       // Reserve the ID before the first await so overlapping poll cycles cannot
       // start two executions of the same request.
       inFlightRequestIds.add(requestId);
-      const task = processRequest(filename)
+      const controller = new AbortController();
+      requestAbortControllers.set(requestId, controller);
+      const task = processRequest(filename, controller.signal)
         .catch(error => {
           lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
           updateMailboxUiRecord(requestId, { status: 'failed', progress: 100, error: cleanError(error.message) });
@@ -2264,6 +2506,7 @@ function createRepositoryBridge(deps) {
         .finally(() => {
           inFlightRequestIds.delete(requestId);
           requestTasks.delete(requestId);
+          requestAbortControllers.delete(requestId);
           const queued = pendingRequestQueue.filter(name => !(knownResultFiles && knownResultFiles.has(name))).length;
           const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id + '.json'))).length;
           pendingCount = queued + active;
@@ -2597,7 +2840,11 @@ function createRepositoryBridge(deps) {
     publishWorkspaceFile, publishFilesystemIndex,
     getAgentSession: sessionId => agentRegistry.authenticate({ session_id: sessionId }),
     sendDashboardMessage: (sessionId, message) => agentRegistry.sendUserMessage(sessionId, { message }),
-    readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args)
+    pauseAgentSession: (sessionId, paused) => setAgentSessionPaused(sessionId, paused),
+    disconnectAgentSession,
+    getTaskDashboard: () => taskOrchestrator.dashboard(),
+    readDashboardReplies: (sessionId, args) => agentRegistry.readDashboardReplies(sessionId, args),
+    revokeAgentSession
   };
 }
 

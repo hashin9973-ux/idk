@@ -23,10 +23,19 @@ function normalizeLocalTtsSettings(value){
   const s=value&&typeof value==='object'&&!Array.isArray(value)?value:{};
   const n=(v,d,min,max)=>Number.isFinite(Number(v))?Math.max(min,Math.min(max,Number(v))):d;
   return {enabled:s.enabled===true,resourceGuardEnabled:s.resourceGuardEnabled!==false,
+    allowModelDownload:s.allowModelDownload===true,
+    pageIdleEnabled:s.pageIdleEnabled===true,
+    pageIdleDelaySeconds:Math.round(n(s.pageIdleDelaySeconds,60,10,600)),
     maxCpuPercent:Math.round(n(s.maxCpuPercent,75,10,100)),
     minFreeRamGb:Math.round(n(s.minFreeRamGb,2,.5,32)*2)/2};
 }
 function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms))}
+function trimWindowsWorkingSet(pid){
+  if(process.platform!=='win32'||!Number.isInteger(pid)||pid<=0)return Promise.resolve(false);
+  const source='using System; using System.Runtime.InteropServices; public static class BridgeWorkingSet { [DllImport("kernel32.dll",SetLastError=true)] public static extern IntPtr OpenProcess(uint access,bool inherit,int pid); [DllImport("psapi.dll",SetLastError=true)] public static extern bool EmptyWorkingSet(IntPtr process); [DllImport("kernel32.dll",SetLastError=true)] public static extern bool CloseHandle(IntPtr handle); }';
+  const command="$src=@'\n"+source+"\n'@; Add-Type -TypeDefinition $src; $h=[BridgeWorkingSet]::OpenProcess(0x0500,$false,"+pid+"); if($h -eq [IntPtr]::Zero){exit 2}; try { if(-not [BridgeWorkingSet]::EmptyWorkingSet($h)){exit 3} } finally { [void][BridgeWorkingSet]::CloseHandle($h) }; exit 0";
+  return new Promise(resolve=>{let p;try{p=spawn('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-Command',command],{windowsHide:true,stdio:'ignore'})}catch{return resolve(false)}p.once('error',()=>resolve(false));p.once('close',code=>resolve(code===0))});
+}
 async function measureResources(){
   const cpus=()=>os.cpus().reduce((sum,c)=>{for(const n of Object.values(c.times||{}))sum+=Number(n)||0;return sum},0);
   const idle=()=>os.cpus().reduce((sum,c)=>sum+(Number(c.times&&c.times.idle)||0),0);
@@ -84,7 +93,7 @@ function createLocalPiperTts(options={}){
   const modelPath=path.join(voiceDir,VOICE_NAME+'.onnx'),configPath=path.join(voiceDir,VOICE_NAME+'.onnx.json');
   const workerPath=path.join(root,'piper-worker.py'),wheelPath=path.join(root,'piper_tts-'+PIPER_VERSION+'-cp39-abi3-win_amd64.whl');
   const pending=new Map();let python=null,child=null,readyPromise=null,stderrTail='';
-  let lastResourceCheckAt=0,lastResourceCheck=null;
+  let lastResourceCheckAt=0,lastResourceCheck=null,pageIdleTimer=null;
   let state={ready:false,status:'not_prepared',voice:VOICE_NAME,speaker_id:SPEAKER_ID};
   const getSettings=()=>normalizeLocalTtsSettings(typeof options.getSettings==='function'?options.getSettings():{});
   async function checkResourceGuard(config=getSettings(),force=false){
@@ -126,6 +135,10 @@ function createLocalPiperTts(options={}){
     if(fs.existsSync(modelPath))modelValid=await hashFile(modelPath)===VOICE_MODEL_SHA256;
     if(!modelValid){
       if(fs.existsSync(modelPath))await fs.promises.rm(modelPath,{force:true});
+      if(!getSettings().allowModelDownload){
+        const error=new Error('The Piper voice model is not installed. Enable “Allow voice-model download” in Settings to download the verified 137 MB model.');
+        error.code='LOCAL_TTS_MODEL_DOWNLOAD_DISABLED';throw error;
+      }
       state={...state,status:'downloading_voice',message:'Downloading and verifying the 137 MB Piper LibriTTS High voice.'};
       await downloadVerified(VOICE_BASE_URL+VOICE_NAME+'.onnx',modelPath,VOICE_MODEL_SHA256,MAX_VOICE_BYTES);
     }
@@ -168,7 +181,7 @@ function createLocalPiperTts(options={}){
     if(!r.ok)p.reject(new Error(r.error||'Piper synthesis failed.'));else p.resolve(r);
   }
   async function startWorker(){
-    await ensurePythonPackage();await ensureAssets();fs.writeFileSync(workerPath,PYTHON_WORKER_SOURCE,'utf8');
+    await ensureAssets();await ensurePythonPackage();fs.writeFileSync(workerPath,PYTHON_WORKER_SOURCE,'utf8');
     const env={...process.env,PYTHONPATH:pythonTarget+(process.env.PYTHONPATH?path.delimiter+process.env.PYTHONPATH:'')};
     child=spawn(python.command,[...python.prefix,'-u',workerPath,modelPath,configPath],{windowsHide:true,stdio:['pipe','pipe','pipe'],env});
     let buffer='';stderrTail='';child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
@@ -184,6 +197,16 @@ function createLocalPiperTts(options={}){
     readyPromise=startWorker().then(()=>state).catch(e=>{state={...state,ready:false,status:'error',error:String(e&&e.message||e).slice(0,1600)};throw e}).finally(()=>{readyPromise=null});
     return readyPromise;
   }
+  function scheduleIdlePageOut(){
+    if(pageIdleTimer)clearTimeout(pageIdleTimer);pageIdleTimer=null;
+    const config=getSettings();if(!config.pageIdleEnabled||!child||child.killed)return;
+    const pid=child.pid;pageIdleTimer=setTimeout(async()=>{
+      pageIdleTimer=null;if(!config.pageIdleEnabled||!child||child.killed||child.pid!==pid||pending.size)return;
+      const trimmed=await trimWindowsWorkingSet(pid);
+      state={...state,page_idle_trimmed:trimmed,page_idle_trimmed_at:new Date().toISOString(),status:state.ready?'ready':state.status};
+    },config.pageIdleDelaySeconds*1000);
+    if(typeof pageIdleTimer.unref==='function')pageIdleTimer.unref();
+  }
   async function prepare(){
     const config=getSettings();
     if(!config.enabled)throw new Error('Enable local Piper TTS in Settings before preparing the voice.');
@@ -191,9 +214,11 @@ function createLocalPiperTts(options={}){
     await checkResourceGuard(config);
     await ensureReady();
     if(!wasReady)await verifyResourcesAfterLoad(config);
+    scheduleIdlePageOut();
     return getStatus();
   }
   async function synthesize(text,requestId){
+    if(pageIdleTimer){clearTimeout(pageIdleTimer);pageIdleTimer=null;}
     const source=String(text||'').trim();if(!source||source.length>240)throw new Error('Local Piper chunks must contain 1–240 characters.');
     const config=getSettings();if(!config.enabled)throw new Error('Local Piper TTS is disabled in Settings.');
     const wasReady=Boolean(state.ready&&child&&!child.killed);
@@ -212,13 +237,14 @@ function createLocalPiperTts(options={}){
       const audio=await fs.promises.readFile(outputPath);
       if(audio.length<44||audio.subarray(0,4).toString('ascii')!=='RIFF'||audio.subarray(8,12).toString('ascii')!=='WAVE')throw new Error('Piper returned an invalid WAV file.');
       return {audio,remote:{synthesis_ms:result.synthesis_ms,duration_seconds:result.duration_seconds,sample_rate:result.sample_rate,channels:result.channels,tts_lock_wait_ms:0},engine:'local-piper'};
-    }finally{await fs.promises.unlink(outputPath).catch(()=>{})}
+    }finally{await fs.promises.unlink(outputPath).catch(()=>{});scheduleIdlePageOut()}
   }
-  function getStatus(){const s=getSettings();return {...state,enabled:s.enabled,resource_guard:s.resourceGuardEnabled,max_cpu_percent:s.maxCpuPercent,min_free_ram_gb:s.minFreeRamGb,python_available:Boolean(python),worker_running:Boolean(child&&!child.killed)}}
+  function getStatus(){const s=getSettings();return {...state,enabled:s.enabled,resource_guard:s.resourceGuardEnabled,allow_model_download:s.allowModelDownload,page_idle_enabled:s.pageIdleEnabled,page_idle_delay_seconds:s.pageIdleDelaySeconds,max_cpu_percent:s.maxCpuPercent,min_free_ram_gb:s.minFreeRamGb,python_available:Boolean(python),worker_running:Boolean(child&&!child.killed)}}
   async function dispose(){
+    if(pageIdleTimer){clearTimeout(pageIdleTimer);pageIdleTimer=null;}
     const current=child;child=null;if(current&&!current.killed){try{current.stdin.end()}catch{}try{current.kill()}catch{}}
     for(const p of pending.values()){clearTimeout(p.timer);p.reject(new Error('Local Piper is shutting down.'))}pending.clear();state={...state,ready:false,status:'stopped'};
   }
-  return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256,PIPER_WHEEL_SHA256}};
+  return {prepare,ensureReady,synthesize,getStatus,dispose,measureResources,scheduleIdlePageOut,constants:{PIPER_VERSION,VOICE_NAME,SPEAKER_ID,VOICE_MODEL_SHA256,PIPER_WHEEL_SHA256}};
 }
 module.exports={createLocalPiperTts,normalizeLocalTtsSettings,measureResources,PYTHON_WORKER_SOURCE};

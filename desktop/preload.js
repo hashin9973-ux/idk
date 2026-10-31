@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   setLocalTtsSettings: value => ipcRenderer.invoke('app:local-tts-settings', value),
   getLocalTtsStatus: () => ipcRenderer.invoke('app:local-tts-status'),
   prepareLocalTts: () => ipcRenderer.invoke('app:local-tts-prepare'),
+  testLocalTts: () => ipcRenderer.invoke('app:local-tts-test'),
   onLocalTtsStatus(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, status) => callback(status && typeof status === 'object' ? status : {});
@@ -85,7 +86,16 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
     return () => ipcRenderer.removeListener('app:browser-bounds-refresh', listener);
   },
   selectWorkspace: () => ipcRenderer.invoke('app:select-workspace'),
+  refreshProjectIndex: () => ipcRenderer.invoke('app:project-index-refresh'),
   selectAgentWorkspace: (agentId, sessionId = null) => ipcRenderer.invoke('app:agent-select-workspace', { agentId, sessionId }),
+  addAgentWidget: () => ipcRenderer.invoke('app:agent-widget-add'),
+  deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false) => ipcRenderer.invoke('app:agent-widget-delete', { agentId, sessionId, wipeMailbox }),
+  pauseAgentSession: (agentId, sessionId, paused) => ipcRenderer.invoke('app:agent-session-pause', { agentId, sessionId, paused }),
+  disconnectAgentSession: (agentId, sessionId) => ipcRenderer.invoke('app:agent-session-disconnect', { agentId, sessionId }),
+  setSessionAutoExpire: enabled => ipcRenderer.invoke('app:session-auto-expire', enabled),
+  getTaskDashboard: () => ipcRenderer.invoke('app:task-dashboard'),
+  getAgentWidgetSettings: agentId => ipcRenderer.invoke('app:agent-widget-settings', { agentId }),
+  setAgentWidgetSettings: (agentId, value) => ipcRenderer.invoke('app:agent-widget-settings', { agentId, value }),
   chooseAgentAssignmentWorkspace: () => ipcRenderer.invoke('app:agent-assignment-workspace'),
   respondAgentAssignment: payload => ipcRenderer.invoke('app:agent-assignment-response', payload),
   onAgentAssignmentRequested(callback) {

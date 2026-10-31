@@ -39,6 +39,8 @@ jobs:
         run: npm run check
       - name: Run local tool and app tests
         run: npm test
+      - name: Run synthetic project-intelligence benchmarks
+        run: npm run bench:project-intelligence
       - name: Validate package metadata
         shell: pwsh
         run: |

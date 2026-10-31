@@ -7,6 +7,7 @@ let busy={observe:false,accept:false,colab:false,workspace:false,github:false,re
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
 let browserTabData=[],dashboardStateLoaded=false,suppressDashboardSave=false,dashboardSaveTimer=null,refreshTimer=null;
+let pendingAgentDelete=null;
 let refreshInFlight=false,refreshRequested=false,lastBrowserActivation=Symbol('unset');
 let agentReplyRefreshInFlight=false;
 function dashboardSnapshot(){
@@ -85,6 +86,67 @@ function applyDashboardState(value){
     active=tabs.some(t=>t.id===source.activeTabId)?source.activeTabId:'main';renderTabs();setPage();
   }finally{suppressDashboardSave=false}
 }
+let taskDashboardData=null;
+let taskDashboardLoading=false;
+function renderTaskDashboard(data){
+  taskDashboardData=data&&typeof data==='object'?data:null;
+  const select=$('task-board-project'),summary=$('task-board-summary'),host=$('task-board-list');
+  if(!select||!summary||!host)return;
+  const projects=Array.isArray(taskDashboardData&&taskDashboardData.projects)?taskDashboardData.projects:[];
+  const previous=select.value;
+  select.replaceChildren();
+  if(!projects.length){
+    const option=document.createElement('option');option.value='';option.textContent='No project boards yet';select.append(option);
+    select.disabled=true;summary.textContent=taskDashboardData&&taskDashboardData.unavailable?'Task dashboard is unavailable while the mailbox worker is offline.':'No shared projects have been created yet.';
+    host.replaceChildren();
+    const hint=document.createElement('p');hint.className='help-copy';hint.textContent='An agent can create a shared board with task_project_init, then share the returned project_id with other sessions.';
+    host.append(hint);return;
+  }
+  select.disabled=false;
+  for(const project of projects){
+    const option=document.createElement('option');option.value=String(project.project_id||'');
+    option.textContent=String(project.name||project.project_id)+' · '+Number(project.active_lease_count||0)+' active leases';
+    select.append(option);
+  }
+  select.value=projects.some(item=>item.project_id===previous)?previous:projects[0].project_id;
+  const project=projects.find(item=>item.project_id===select.value)||projects[0];
+  const counts=project.task_counts&&typeof project.task_counts==='object'?project.task_counts:{};
+  const visibleTasks=Array.isArray(project.tasks)?project.tasks:[];
+  const countParts=['ready','claimed','in_progress','blocked','review','integration','verification','needs_rework']
+    .filter(key=>Number(counts[key]||0)>0).map(key=>key.replace(/_/g,' ')+': '+counts[key]);
+  summary.textContent=String(project.project_id)+' · '+Number(project.active_lease_count||0)+' active ownership leases · latest '+visibleTasks.length+' tasks'+
+    (countParts.length?' · '+countParts.join(' · '):'');
+  host.replaceChildren();
+  if(!visibleTasks.length){
+    const empty=document.createElement('p');empty.className='help-copy';empty.textContent='This project has no task records yet.';host.append(empty);return;
+  }
+  for(const task of visibleTasks){
+    const row=document.createElement('article');row.className='task-board-row';
+    const top=document.createElement('div');top.className='task-board-row-head';
+    const title=document.createElement('strong');title.textContent=String(task.title||task.task_id);title.title=String(task.task_id||'');
+    const badge=document.createElement('span');badge.className='task-board-state';badge.textContent=String(task.status||'unknown').replace(/_/g,' ');
+    top.append(title,badge);
+    const meta=document.createElement('div');meta.className='task-board-meta';
+    const owner=task.assignee_agent_id?String(task.assignee_agent_id)+' · '+String(task.assignee_session_id||''):'unassigned';
+    const scope=Array.isArray(task.scope_paths)&&task.scope_paths.length?task.scope_paths.join(', '):'No file scope';
+    meta.textContent=owner+' · priority '+Number(task.priority||0)+' · '+Number(task.dependency_count||0)+' dependencies · '+scope;
+    const id=document.createElement('code');id.textContent=String(task.task_id||'');
+    row.append(top,meta,id);host.append(row);
+  }
+  if(project.task_list_truncated){
+    const more=document.createElement('p');more.className='help-copy';more.textContent='Additional tasks exist. Use task_list with pagination to retrieve the rest.';host.append(more);
+  }
+}
+async function loadTaskDashboard(){
+  if(taskDashboardLoading)return;
+  taskDashboardLoading=true;
+  const button=$('task-board-refresh');if(button)button.disabled=true;
+  try{renderTaskDashboard(await api.getTaskDashboard())}
+  catch(error){const status=$('task-board-summary');if(status)status.textContent='Could not load task boards: '+String(error&&error.message||error)}
+  finally{taskDashboardLoading=false;if(button)button.disabled=false}
+}
+
+function applySessionAutoExpire(value){const input=$('session-auto-expire');if(input)input.checked=value===true;const status=$('session-auto-expire-status');if(status)status.textContent=value===true?'ON · The oldest eligible inactive session is removed only when the 10,000-record limit would be exceeded.':'OFF · At the 10,000-ID limit, new session starts are refused rather than deleting active or paused sessions.';}
 function applyTtsSettings(value){
   const s=value&&typeof value==='object'?value:{};
   $('tts-mode').value=s.mode==='notification'?'notification':'autoplay';
@@ -110,10 +172,15 @@ function renderCloudStatus(value){
   $('cloud-sync-status').textContent=detail;$('cloud-sync-status').dataset.state=s.error?'error':s.enabled&&s.state==='ready'?'success':'';
 }
 function readLocalTtsSettings(){return {enabled:$('local-tts-enabled').checked,resourceGuardEnabled:$('local-tts-resource-guard').checked,
+  allowModelDownload:$('local-tts-download').checked,pageIdleEnabled:$('local-tts-page-idle').checked,pageIdleDelaySeconds:Number($('local-tts-page-delay').value),
   maxCpuPercent:Number($('local-tts-max-cpu').value),minFreeRamGb:Number($('local-tts-min-ram').value)};}
 function applyLocalTtsSettings(value){
   const s=value&&typeof value==='object'?value:{};
   $('local-tts-enabled').checked=s.enabled===true;
+  $('local-tts-download').checked=s.allowModelDownload===true;
+  $('local-tts-page-idle').checked=s.pageIdleEnabled===true;
+  $('local-tts-page-delay').value=String(Number.isFinite(s.pageIdleDelaySeconds)?s.pageIdleDelaySeconds:60);
+  $('local-tts-page-delay-value').textContent=$('local-tts-page-delay').value+' seconds';
   $('local-tts-resource-guard').checked=s.resourceGuardEnabled!==false;
   $('local-tts-max-cpu').value=String(Number.isFinite(s.maxCpuPercent)?s.maxCpuPercent:75);
   $('local-tts-min-ram').value=String(Number.isFinite(s.minFreeRamGb)?s.minFreeRamGb:2);
@@ -121,8 +188,11 @@ function applyLocalTtsSettings(value){
   $('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB';
   const guard=$('local-tts-resource-guard').checked,enabled=$('local-tts-enabled').checked;
   $('local-tts-resource-guard').disabled=!enabled;
+  $('local-tts-download').disabled=!enabled;
+  $('local-tts-page-idle').disabled=!enabled;
+  $('local-tts-page-delay').disabled=!enabled||!$('local-tts-page-idle').checked;
   $('local-tts-max-cpu').disabled=!enabled||!guard;$('local-tts-min-ram').disabled=!enabled||!guard;
-  $('local-tts-prepare').disabled=!enabled;
+  $('local-tts-prepare').disabled=!enabled;$('local-tts-test').disabled=!enabled;
 }
 function renderLocalTtsStatus(value){
   const s=value&&typeof value==='object'?value:{},status=String(s.status||'not_prepared');
@@ -133,7 +203,7 @@ function renderLocalTtsStatus(value){
     status==='resource_guard_blocked'?'Waiting for CPU/RAM limits: '+String(s.error||'resource guard is active'):
     status==='error'?'Local Piper error: '+String(s.error||s.message||'unknown error'):
     status==='stopped'?(s.enabled?'Stopped · prepare the local voice again.':'Local Piper is off.'):
-    'Not prepared · enable local TTS to download the voice and runtime.';
+    'Not prepared · enable local TTS; permit model download only if the voice is not already installed.';
   $('local-tts-status').textContent=text;
   $('local-tts-status').dataset.state=status==='ready'?'success':status==='error'?'error':'';
 }
@@ -141,7 +211,7 @@ async function saveLocalTtsSettings(){
   try{
     const saved=await api.setLocalTtsSettings(readLocalTtsSettings());applyLocalTtsSettings(saved);
     renderLocalTtsStatus(await api.getLocalTtsStatus());
-    note(saved.enabled?'Local Piper TTS enabled. Preparing the voice if needed.':'Local Piper TTS disabled.','success');
+    note(saved.enabled?'Local Piper TTS enabled. Voice preparation remains manual.':'Local Piper TTS disabled.','success');
   }catch(error){note('Could not save local TTS settings: '+error.message,'error')}
 }
 async function applyInitialSettings(settings){
@@ -248,6 +318,12 @@ function createAgentIcon(kind){
   svg.setAttribute('viewBox','0 0 16 16');svg.setAttribute('aria-hidden','true');
   const paths=kind==='workspace'
     ? ['M2.25 1.75h7l4.5 4.5v8h-11.5z','M9.25 1.75v4.5h4.5M4.5 9h7M4.5 11.5h7']
+    : kind==='trash' ? ['M2.5 4h11M6 4V2.5h4V4M4 4.5l.7 9h6.6l.7-9M6.5 6.5v4.5M9.5 6.5v4.5']
+    : kind==='history' ? ['M2 8a6 6 0 1 0 1.76-4.24M2 2v4h4M8 4.5v4l2.5 1.5']
+    : kind==='edit' ? ['M2 11.5l-.5 3 3-.5L13 5.5 10.5 3z','M9.5 4l2.5 2.5']
+    : kind==='pause' ? ['M5 3v10M11 3v10']
+    : kind==='play' ? ['M4 2.5l9 5.5-9 5.5z']
+    : kind==='scissors' ? ['M3 3l10 10M13 3L3 13','M2.5 3a1 1 0 1 0 2 0a1 1 0 0 0-2 0','M11.5 13a1 1 0 1 0 2 0a1 1 0 0 0-2 0']
     : ['M2 2.25h12v8.5H7l-3.5 2.5v-2.5H2z','M4.5 5.25h7M4.5 7.75h5'];
   for(const d of paths){const pathElement=document.createElementNS('http://www.w3.org/2000/svg','path');pathElement.setAttribute('d',d);svg.append(pathElement)}
   return svg;
@@ -270,20 +346,53 @@ function makeAgentWidget(agent,index){
   const workspaceButton=document.createElement('button');workspaceButton.type='button';workspaceButton.className='agent-console-icon-button agent-workspace-button';
   workspaceButton.title='Configure this agent workspace';workspaceButton.setAttribute('aria-label','Configure workspace for '+agent.agent_id);
   workspaceButton.append(createAgentIcon('workspace'));
+  const nicknameButton=document.createElement('button');nicknameButton.type='button';nicknameButton.className='agent-console-icon-button agent-nickname-button';nicknameButton.title='Set agent nickname';nicknameButton.setAttribute('aria-label','Set nickname for '+agent.agent_id);nicknameButton.append(createAgentIcon('edit'));
+  const dumpButton=document.createElement('button');dumpButton.type='button';dumpButton.className='agent-console-icon-button agent-dump-button';dumpButton.title='Configure automatic widget-history cleanup';dumpButton.setAttribute('aria-label','Configure autodump for '+agent.agent_id);dumpButton.append(createAgentIcon('history'));
+  const deleteButton=document.createElement('button');deleteButton.type='button';deleteButton.className='agent-console-icon-button agent-delete-button';deleteButton.title='Revoke this session and remove its widget';deleteButton.setAttribute('aria-label','Delete agent widget for '+agent.agent_id);deleteButton.append(createAgentIcon('trash'));
+  const pauseButton=document.createElement('button');pauseButton.type='button';pauseButton.className='agent-console-icon-button agent-pause-button';pauseButton.title='Pause this session';pauseButton.setAttribute('aria-label','Pause this session');pauseButton.append(createAgentIcon('pause'));
+  const disconnectButton=document.createElement('button');disconnectButton.type='button';disconnectButton.className='agent-console-icon-button agent-disconnect-button';disconnectButton.title='Disconnect this session from its agent seat';disconnectButton.setAttribute('aria-label','Disconnect session from agent seat');disconnectButton.append(createAgentIcon('scissors'));
   const messageButton=document.createElement('button');messageButton.type='button';messageButton.className='agent-console-icon-button agent-message-button';
   messageButton.title='Send a custom message to this agent';messageButton.setAttribute('aria-label','Send a message to '+agent.agent_id);
   messageButton.append(createAgentIcon('message'));
-  actions.append(workspaceButton,messageButton);
+  actions.append(workspaceButton,messageButton,nicknameButton,dumpButton,pauseButton,disconnectButton,deleteButton);
   header.append(identity,status,busy,counts,actions);
   const composer=document.createElement('div');composer.className='agent-message-composer';composer.hidden=true;composer.dataset.noWidgetDrag='true';
   const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='Message this agent…';input.setAttribute('aria-label','Message for '+agent.agent_id);
-  const send=document.createElement('button');send.type='button';send.className='agent-message-send';send.textContent='Send';
+  const send=document.createElement('button');send.type='button';send.className='agent-message-send';send.textContent='➤';send.title='Send message';send.setAttribute('aria-label','Send message');
   const cancel=document.createElement('button');cancel.type='button';cancel.className='agent-message-cancel';cancel.textContent='×';cancel.title='Close message box';cancel.setAttribute('aria-label','Close message box');
   composer.append(input,send,cancel);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
   const messageThread=document.createElement('div');messageThread.className='agent-message-thread';
   messageThread.hidden=true;messageThread.setAttribute('aria-live','polite');messageThread.dataset.noWidgetDrag='true';
   card.append(header,composer,body,messageThread);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  pauseButton.addEventListener('click',async event=>{
+    event.stopPropagation();
+    const sessionId=card.dataset.sessionId||'';
+    if(!sessionId||pauseButton.disabled)return;
+    const wasPaused=card.dataset.paused==='true';
+    pauseButton.disabled=true;
+    try{
+      const result=await api.pauseAgentSession(agent.agent_id,sessionId,!wasPaused);
+      note(result.paused?'Session paused. New requests are rejected until it is resumed.':'Session resumed.','success');
+      await refresh();
+    }catch(error){note('Could not '+(wasPaused?'resume':'pause')+' '+agent.agent_id+': '+String(error&&error.message||error),'error')}
+    finally{pauseButton.disabled=false}
+  });
+  disconnectButton.addEventListener('click',async event=>{
+    event.stopPropagation();
+    const sessionId=card.dataset.sessionId||'';
+    if(!sessionId||disconnectButton.disabled)return;
+    const confirmed=window.confirm('Disconnect '+sessionId+' from '+agent.agent_id+'? Its seat becomes available to another conversation. The disconnected session ID cannot be reused.');
+    if(!confirmed)return;
+    disconnectButton.disabled=true;
+    try{
+      await api.disconnectAgentSession(agent.agent_id,sessionId);
+      card.dataset.pendingMessageIds='[]';
+      note('Session disconnected. '+agent.agent_id+' is available for reassignment.','success');
+      await refresh();
+    }catch(error){note('Could not disconnect '+agent.agent_id+': '+String(error&&error.message||error),'error')}
+    finally{disconnectButton.disabled=false}
+  });
   workspaceButton.addEventListener('click',async event=>{
     event.stopPropagation();const sessionId=card.dataset.sessionId||'';
     if(workspaceButton.disabled)return;
@@ -294,6 +403,21 @@ function makeAgentWidget(agent,index){
       await refresh();
     } catch(error) { note('Could not configure '+agent.agent_id+' workspace: '+error.message,'error'); }
     finally { workspaceButton.disabled=false; }
+  });
+  nicknameButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id);const value=window.prompt('Custom nickname for '+agent.agent_id+' (leave blank to reset):',current.nickname||'');if(value===null)return;await api.setAgentWidgetSettings(agent.agent_id,{...current.autoDump,nickname:value});await refresh();}catch(error){note('Could not save agent nickname: '+error.message,'error')}});
+  dumpButton.addEventListener('click',async event=>{event.stopPropagation();try{const current=await api.getAgentWidgetSettings(agent.agent_id),cfg=current.autoDump||{};autoDumpEditingAgent=agent.agent_id;$('agent-autodump-title').textContent='Auto-dump · '+agent.agent_id;$('agent-autodump-count').value=String(cfg.maxCount||0);$('agent-autodump-age').value=String(cfg.maxAgeMinutes||0);$('agent-autodump-exclusions').value=(cfg.exclusions||[]).join(', ');$('agent-autodump-dialog').showModal()}catch(error){note('Could not open autodump settings: '+error.message,'error')}});
+  deleteButton.addEventListener('click',event=>{
+    event.stopPropagation();
+    const sessionId=card.dataset.sessionId||null;
+    if(deleteButton.disabled)return;
+    pendingAgentDelete={agentId:agent.agent_id,sessionId};
+    $('agent-delete-agent-id').textContent=agent.agent_id;
+    $('agent-delete-session-id').textContent=sessionId||'No current conversation session';
+    $('agent-delete-wipe-mailbox').checked=false;
+    $('agent-delete-wipe-mailbox').disabled=!sessionId;
+    $('agent-delete-error').textContent='';
+    $('agent-delete-confirm').disabled=false;
+    $('agent-delete-dialog').showModal();
   });
   messageButton.addEventListener('click',event=>{
     event.stopPropagation();composer.hidden=!composer.hidden;
@@ -328,6 +452,8 @@ function renderAgentMailboxes(rawAgents){
   if(!agentWidgetHost)return;
   const all=Array.isArray(rawAgents)?rawAgents:[];
   const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^agent-[0-9]{3,}$/.test(agent.agent_id));
+  const visibleIds=new Set(agents.map(agent=>agent.agent_id));
+  for(const [id,card] of agentWidgets){if(!visibleIds.has(id)){card.remove();agentWidgets.delete(id);}}
   const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' seat'+(agents.length===1?'':'s');
   agents.forEach((agent,index)=>{
     let card=agentWidgets.get(agent.agent_id);
@@ -344,14 +470,31 @@ function renderAgentMailboxes(rawAgents){
     const counts=header.querySelector('.agent-console-counts');
     const workspaceButton=header.querySelector('.agent-workspace-button');
     const messageButton=header.querySelector('.agent-message-button');
+    const nicknameButton=header.querySelector('.agent-nickname-button');
+    const dumpButton=header.querySelector('.agent-dump-button');
+    const deleteButton=header.querySelector('.agent-delete-button');
+    const pauseButton=header.querySelector('.agent-pause-button');
+    const disconnectButton=header.querySelector('.agent-disconnect-button');
     // The panel belongs to the seat, not the task/session label. Individual
     // requests and their tool names remain listed in the console body below.
-    name.textContent=String(agent.agent_id);
+    name.textContent=String(agent.nickname||agent.agent_id);name.title=String(agent.agent_id)+(agent.nickname?' · '+agent.nickname:'');
+    nicknameButton.title='Set nickname for '+agent.agent_id;
+    dumpButton.title='Auto-dump: '+String((agent.auto_dump&&agent.auto_dump.maxCount)||0)+' retained requests; '+String((agent.auto_dump&&agent.auto_dump.maxAgeMinutes)||0)+' minute age limit';
     sessionLine.textContent='SESSION '+String(agent.session_id||'none');
     sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
     const hasSession=Boolean(agent.session_id);
     workspaceButton.disabled=false;
     messageButton.disabled=!hasSession;
+    const paused=agent.session_status==='paused'||agent.paused===true;
+    card.dataset.paused=paused?'true':'false';
+    pauseButton.disabled=!hasSession;
+    pauseButton.replaceChildren(createAgentIcon(paused?'play':'pause'));
+    pauseButton.title=paused?'Resume this session':'Temporarily pause this session';
+    pauseButton.setAttribute('aria-label',paused?'Resume this session':'Pause this session');
+    disconnectButton.disabled=!hasSession;
+    disconnectButton.title=hasSession?'Disconnect '+String(agent.session_id)+' from '+agent.agent_id:'No session to disconnect';
+    deleteButton.disabled=false;
+    deleteButton.title=hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'Remove this empty agent widget';
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
     workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_scope==='agent-default'?' · saved agent default':agent.workspace_scope==='session'?' · current conversation override':agent.workspace_custom?' · custom':' · global default'));
     const active=agent.status==='active';
@@ -380,7 +523,15 @@ function renderAgentMailboxes(rawAgents){
       handoff.textContent='Seat reassigned from '+previousSessionId+'; previous session history is hidden.';
       body.append(handoff);
     }
-    const requests=Array.isArray(agent.requests)?agent.requests:[];
+    let requests=Array.isArray(agent.requests)?agent.requests:[];
+    const dump=agent.auto_dump&&typeof agent.auto_dump==='object'?agent.auto_dump:{};
+    const excluded=new Set((Array.isArray(dump.exclusions)?dump.exclusions:[]).map(x=>String(x).toLowerCase()));
+    const cutoff=Number(dump.maxAgeMinutes)>0?Date.now()-Number(dump.maxAgeMinutes)*60000:0;
+    requests=requests.filter(request=>{
+      const tool=String(request.tool||'').toLowerCase();if(excluded.has(tool))return true;
+      const time=Date.parse(request.created_at||request.started_at||'');if(cutoff&&Number.isFinite(time)&&time<cutoff)return false;return true;
+    });
+    if(Number(dump.maxCount)>0){const keep=Number(dump.maxCount);let remaining=0;requests=requests.filter(request=>excluded.has(String(request.tool||'').toLowerCase())||++remaining<=keep)}
     if(!requests.length){
       const idle=document.createElement('div');idle.className='agent-console-empty';
       const last=agent.last_activity_at||agent.last_seen_at;
@@ -487,7 +638,7 @@ async function refreshAgentReplies(){
 function positionControls(){if(widgetMoved.controls)return;const width=mainPage.clientWidth||window.innerWidth||1200;controls.style.left='24px';controls.style.top=snap((queue.offsetTop||28)+(queue.offsetHeight||150)+18)+'px';controls.style.width=Math.min(360,Math.max(270,Math.round(width*0.28)))+'px'}
 function renderWorker(v){bridge=v||{};const s=String(bridge.workerStatus||bridge.status||(bridge.running?'online':'connecting')).toLowerCase();workerStatus.textContent=s==='online'?'Worker online':s==='reconnecting'?'Worker reconnecting · retrying mailbox':s==='offline'?'Worker offline':s==='attention'?'Worker needs attention':s==='setup'?'Worker setup required':'Worker connecting…';setDot(workerDot,s==='online'?'online':['offline','attention','setup'].includes(s)?'error':'waiting');renderAgentMailboxes(bridge.agentMailboxes);renderQueues(Number(bridge.activeCount||0),Number(bridge.pendingCount||0));autoAccept=bridge.autoAcceptAll===true;renderAccept()}
 function renderGitHub(v){github=v||{};githubStatus.textContent=github.authenticated?'GitHub connected':github.verificationPending?'GitHub verifying…':'GitHub not connected';$('github-detail').textContent=github.authenticated?'Signed in as '+(github.login||'GitHub user'):'GitHub not connected';$('github-connect').textContent=github.authenticated?'Reconnect':'Sign in'}
-function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root;$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root}
+function renderWorkspace(v){const root=String(v&&v.root||''),leaf=root.split(/[\\/]/).filter(Boolean).pop()||root,index=v&&v.projectIntelligence||{},scheduler=v&&v.taskScheduler||{};$('workspace-status').textContent=root?(/^[a-z]:[\\/]?$/i.test(root)?'Entire drive '+root:leaf):'Choose a folder or drive';$('workspace-detail').textContent=root||'No workspace selected';$('workspace-description').textContent=root?'Local path selected for bridge file operations.':'Choose a local folder or drive.';workspace.title=root;const status=$('project-index-status'),detail=$('project-index-detail'),queueStatus=$('task-scheduler-status');if(status)status.textContent=String(index.status||'Not started').replace(/_/g,' ');if(detail)detail.textContent=Number(index.filesIndexed||0).toLocaleString()+' files · '+Number(index.symbolsIndexed||0).toLocaleString()+' symbols · '+Number(index.dependencyEdges||0).toLocaleString()+' import edges'+(index.truncated?' · index is incomplete':'')+(index.driveRootShallow?' · drive-root scope is shallow':'')+(index.error?' · '+String(index.error):'');if(queueStatus)queueStatus.textContent=Number(scheduler.active||0)+' active · '+Number(scheduler.queued||0)+' queued · avg wait '+Number(scheduler.averageQueueWaitMs||0)+' ms';}
 function renderObserve(){obs.setAttribute('aria-pressed',String(observe.enabled===true));$('observe-status').textContent=(observe.enabled?'ON':'OFF')+' · '+Number(observe.fps||fps.value||2)+' fps';if(observe.fps)fps.value=String(observe.fps)}
 function renderAccept(){acceptBtn.setAttribute('aria-pressed',String(autoAccept));$('auto-accept-status').textContent=autoAccept?'ON':'OFF'}
 function updateBrowserMode(){keep.disabled=!browserEnabled.checked;low.disabled=!browserEnabled.checked;memory.title=!browserEnabled.checked?'In-app browser is disabled.':keep.checked&&low.checked?'Background focus is enabled for the active page; inactive tabs are unloaded.':keep.checked?'Background focus compatibility can increase CPU use.':low.checked?'Inactive tabs unload, so their page cannot run until reopened.':'Neither behavior is enabled.'}
@@ -501,8 +652,10 @@ async function refresh(){
       void api.getLocalTtsStatus().then(renderLocalTtsStatus).catch(()=>{});
       void refreshAgentReplies();
       renderWorkspace(s.workspace||{});
+      applySessionAutoExpire(s.settings&&s.settings.sessionAutoExpire===true);
       if(!dashboardStateLoaded){
         await applyInitialSettings(s.settings||{});
+        void loadTaskDashboard();
         if(Array.isArray(s.browserTabs))syncBrowserTabs(s.browserTabs);
         if(s.dashboardState)applyDashboardState(s.dashboardState);
         if(s.cloudSync)renderCloudStatus(s.cloudSync);
@@ -542,6 +695,7 @@ acceptBtn.addEventListener('click',async()=>{if(busy.accept)return;busy.accept=t
 fps.addEventListener('change',async()=>{try{observe=await api.setObserveFps(Number(fps.value));renderObserve()}catch(e){note(e.message,'error')}});
 async function chooseWorkspace(){if(busy.workspace)return;busy.workspace=true;try{const r=await api.selectWorkspace();if(!r.canceled){renderWorkspace(r.workspace);note('Workspace updated.','success')}}catch(e){note(e.message,'error')}finally{busy.workspace=false}}
 workspace.addEventListener('click',()=>void chooseWorkspace());$('settings-workspace-button').addEventListener('click',()=>void chooseWorkspace());
+$('project-index-refresh').addEventListener('click',async()=>{const button=$('project-index-refresh');button.disabled=true;try{const state=await api.refreshProjectIndex();note('Project index rebuilt: '+Number(state.filesIndexed||0).toLocaleString()+' files.','success');await refresh()}catch(error){note('Project index rebuild failed: '+error.message,'error')}finally{button.disabled=false}});
 $('minimize-to-tray').addEventListener('click',()=>void api.minimizeToTray().catch(e=>note(e.message,'error')));
 $('quit-app').addEventListener('click',()=>void api.quit().catch(e=>note(e.message,'error')));
 colab.addEventListener('click',async()=>{if(busy.colab)return;busy.colab=true;colab.disabled=true;colab.querySelector('small').textContent='Opening Colab…';try{const opened=await api.openColabTab();syncBrowserTabs(await api.getBrowserTabs());const tab=tabs.find(v=>v.kind==='browser'&&v.browserId===opened.id);if(tab){active=tab.id;setPage()}const result=await api.connectColab();const currentTabs=await api.getBrowserTabs();syncBrowserTabs(currentTabs);const colabTab=currentTabs.find(v=>v.url&&v.url.startsWith('https://colab.research.google.com/'));const activeColabTab=colabTab&&tabs.find(v=>v.kind==='browser'&&v.browserId===colabTab.id);if(activeColabTab){active=activeColabTab.id;setPage()}$('colab-status').textContent=result.message||result.status||'Connection requested';note(result.message||'Colab connection requested.',result.connected?'success':'')}catch(e){$('colab-status').textContent=e.message;note(e.message,'error')}finally{busy.colab=false;colab.disabled=false}});
@@ -550,17 +704,19 @@ repoForm.addEventListener('submit',async e=>{e.preventDefault();if(busy.repo)ret
 themeSelect.addEventListener('change',()=>void chooseTheme(themeSelect.value));themeGallery.addEventListener('click',e=>{const card=e.target.closest('[data-theme-id]');if(card&&themeIds.includes(card.dataset.themeId))void chooseTheme(card.dataset.themeId)});
 volume.addEventListener('input',()=>volumeValue.textContent=volume.value+'%');volume.addEventListener('change',async()=>{if(busy.volume)return;busy.volume=true;try{const v=await api.setTtsVolume(Number(volume.value));volumeValue.textContent=v.volume+'%';note('TTS volume saved.','success')}catch(e){note(e.message,'error')}finally{busy.volume=false}});
 
-for(const id of ['local-tts-enabled','local-tts-resource-guard','local-tts-max-cpu','local-tts-min-ram']){
+for(const id of ['local-tts-enabled','local-tts-download','local-tts-page-idle','local-tts-page-delay','local-tts-resource-guard','local-tts-max-cpu','local-tts-min-ram']){
   $(id).addEventListener('change',()=>void saveLocalTtsSettings());
 }
 $('local-tts-max-cpu').addEventListener('input',()=>{$('local-tts-max-cpu-value').textContent=$('local-tts-max-cpu').value+'%'});
 $('local-tts-min-ram').addEventListener('input',()=>{$('local-tts-min-ram-value').textContent=$('local-tts-min-ram').value+' GB'});
+$('local-tts-page-delay').addEventListener('input',()=>{$('local-tts-page-delay-value').textContent=$('local-tts-page-delay').value+' seconds'});
 $('local-tts-prepare').addEventListener('click',async()=>{
   const button=$('local-tts-prepare');button.disabled=true;
   try{renderLocalTtsStatus(await api.prepareLocalTts());note('Local Piper voice is ready.','success')}
   catch(error){renderLocalTtsStatus({status:error.code==='LOCAL_TTS_RESOURCE_GUARD'?'resource_guard_blocked':'error',error:error.message});note(error.message,'error')}
   finally{button.disabled=!$('local-tts-enabled').checked}
 });
+$('local-tts-test').addEventListener('click',async()=>{const button=$('local-tts-test');button.disabled=true;try{const result=await api.testLocalTts();note('Local Piper test playback started ('+String(result.engine||'local')+').','success')}catch(error){note('Local Piper test failed: '+error.message,'error')}finally{button.disabled=!$('local-tts-enabled').checked}});
 for(const id of ['tts-mode','tts-captions-autoplay','tts-transparent-bg','tts-caption-position','tts-caption-theme']){
   $(id).addEventListener('change',()=>{applyTtsSettings(readTtsSettings());void saveTtsSettings()});
 }
@@ -688,6 +844,87 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&assignmentS
 api.onAgentAssignmentRequested(showAgentAssignment);
 api.onAgentAssignmentDismissed(payload=>{if(assignmentState&&payload.requestId===assignmentState.requestId){closeAgentAssignment();note('Agent assignment expired. No session was created.','error')}});
 
+$('add-agent-widget').addEventListener('click',async()=>{try{const r=await api.addAgentWidget();note('Added '+r.agentId+'.','success');await refresh()}catch(error){note('Could not add agent widget: '+error.message,'error')}});
+const contextMenu=$('widget-context-menu');
+mainPage.addEventListener('contextmenu',event=>{event.preventDefault();contextMenu.hidden=false;const rect=mainPage.getBoundingClientRect();contextMenu.style.left=Math.max(8,Math.min(rect.width-200,event.clientX-rect.left))+'px';contextMenu.style.top=Math.max(8,Math.min(rect.height-100,event.clientY-rect.top))+'px'});
+document.addEventListener('pointerdown',event=>{if(!contextMenu.hidden&&!contextMenu.contains(event.target))contextMenu.hidden=true});
+contextMenu.addEventListener('click',event=>{const action=event.target.closest('[data-widget-action]')?.dataset.widgetAction;contextMenu.hidden=true;if(action==='arrange')autoArrangeWidgets();if(action==='add-agent')void api.addAgentWidget().then(refresh).catch(error=>note(error.message,'error'))});
+function autoArrangeWidgets(){
+  const width=mainPage.clientWidth||window.innerWidth||1200,gap=16,margin=24,leftWidth=Math.min(360,Math.max(270,Math.round(width*.28)));
+  const cardWidth=Math.min(360,Math.max(200,width-leftWidth-margin*2-gap)),cardHeight=320;
+  Object.assign(queue.style,{left:margin+'px',top:'28px',width:leftWidth+'px'});widgetMoved.queues=true;
+  const queueBottom=queue.offsetTop+queue.offsetHeight;
+  Object.assign(controls.style,{left:margin+'px',top:(queueBottom+gap)+'px',width:leftWidth+'px'});widgetMoved.controls=true;
+  const hasRightColumn=width>=leftWidth+cardWidth+margin*2+gap;
+  const startX=hasRightColumn?margin+leftWidth+gap:margin;
+  let x=startX,y=hasRightColumn?24:controls.offsetTop+controls.offsetHeight+gap,col=0;const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
+  for(const [id,el] of [...agentWidgets.entries()].sort((a,b)=>Number(a[0].slice(6))-Number(b[0].slice(6)))){
+    Object.assign(el.style,{left:x+'px',top:y+'px',width:cardWidth+'px',height:cardHeight+'px'});
+    savedWidgetLayout[id]={x,y,width:cardWidth,height:cardHeight};widgetMoved[id]=true;
+    if(++col>=columns){col=0;x=startX;y+=cardHeight+gap}else{x+=cardWidth+gap}
+  }
+  updateAgentCanvasHeight();scheduleSaveDashboardState();note('Widgets arranged into a compact grid.','success');
+}
+let autoDumpEditingAgent='';
+$('agent-delete-cancel').addEventListener('click',()=>{
+  pendingAgentDelete=null;
+  $('agent-delete-dialog').close();
+});
+$('agent-delete-confirm').addEventListener('click',async()=>{
+  if(!pendingAgentDelete)return;
+  const {agentId,sessionId}=pendingAgentDelete;
+  const button=$('agent-delete-confirm');
+  button.disabled=true;
+  button.textContent='Revoking…';
+  $('agent-delete-error').textContent='';
+  const wipeMailbox=$('agent-delete-wipe-mailbox').checked===true;
+  try{
+    const result=await api.deleteAgentWidget(agentId,sessionId,wipeMailbox);
+    const cleanup=result&&result.mailbox_cleanup||{};
+    if(wipeMailbox&&cleanup.status!=='completed'){
+      // The session is already revoked and the widget is hidden. Keep the
+      // confirmation open so incomplete/failed mailbox cleanup can be retried.
+      pendingAgentDelete={agentId,sessionId};
+      const detail=cleanup.status==='failed'
+        ? String(cleanup.error||'Mailbox cleanup failed.')
+        : ['Preserved '+Number(cleanup.preserved_request_records||0)+' non-terminal or incomplete request records.',
+            cleanup.preservation_note || 'The mailbox scan did not confirm that every attributable record was removed.'].filter(Boolean).join(' ');
+      $('agent-delete-error').textContent='Session revoked and widget removed. Mailbox cleanup is not complete. '+detail+' You can retry this wipe after outstanding operations settle.';
+      note('Session revoked and widget removed; mailbox cleanup needs a retry.','error');
+      button.disabled=false;
+      await refresh();
+      return;
+    }
+    pendingAgentDelete=null;
+    $('agent-delete-dialog').close();
+    if(wipeMailbox){
+      note('Session revoked, widget removed, and '+Number(cleanup.deleted_files||0)+' attributable mailbox files cleaned.','success');
+    }else if(sessionId){
+      note('Session revoked and widget removed. The agent ID remains available for reassignment.','success');
+    }else{
+      note('Empty agent widget removed. No conversation session was active.','success');
+    }
+    await refresh();
+  }catch(error){
+    $('agent-delete-error').textContent='Deletion failed: '+String(error&&error.message||error);
+    button.disabled=false;
+  }finally{
+    button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke';
+  }
+});
+$('agent-autodump-cancel').addEventListener('click',()=>$('agent-autodump-dialog').close());
+$('agent-autodump-save').addEventListener('click',async()=>{
+  const id=autoDumpEditingAgent;if(!id)return;
+  const count=$('agent-autodump-count'),age=$('agent-autodump-age');
+  if(!count.reportValidity()||!age.reportValidity())return;
+  const button=$('agent-autodump-save');button.disabled=true;
+  try{const current=await api.getAgentWidgetSettings(id);await api.setAgentWidgetSettings(id,{nickname:current.nickname,maxCount:Number(count.value),maxAgeMinutes:Number(age.value),exclusions:$('agent-autodump-exclusions').value.split(',')});$('agent-autodump-dialog').close();note('Auto-dump settings saved for '+id+'.','success');await refresh()}
+  catch(error){note('Could not save autodump settings: '+error.message,'error')}
+  finally{button.disabled=false;autoDumpEditingAgent=''}
+});
+$('task-board-refresh').addEventListener('click',()=>void loadTaskDashboard());
+$('task-board-project').addEventListener('change',()=>renderTaskDashboard(taskDashboardData));
+$('session-auto-expire').addEventListener('change',async event=>{const input=event.currentTarget;const next=input.checked;input.disabled=true;try{const result=await api.setSessionAutoExpire(next);applySessionAutoExpire(result.enabled);note(result.enabled?'Session auto-expire enabled.':'Session auto-expire disabled.','success')}catch(error){input.checked=!next;note('Could not change session auto-expire: '+String(error&&error.message||error),'error')}finally{input.disabled=false}});
 api.onBridgeState(renderWorker);api.onGitHubState(renderGitHub);
 api.onPrepareForTray(async payload=>{
   if(dashboardSaveTimer){clearTimeout(dashboardSaveTimer);dashboardSaveTimer=null}
@@ -695,7 +932,7 @@ api.onPrepareForTray(async payload=>{
   try{saved=await api.saveDashboardState(state)}catch(e){note('Saving before tray minimization failed: '+e.message,'error')}
   try{await api.acknowledgeTrayState(String(payload.requestId||''),saved)}catch(e){note('Tray state acknowledgement failed: '+e.message,'error')}
 });
-api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
+api.onBrowserTabsChanged(syncBrowserTabs);api.onBrowserTabOpened(activateOpenedBrowserTab);api.onDashboardState(applyDashboardState);api.onPreferences(s=>{if(s.dashboardTheme)applyTheme(s.dashboardTheme);if(typeof s.sessionAutoExpire==='boolean')applySessionAutoExpire(s.sessionAutoExpire);if(s.ttsSettings)applyTtsSettings(s.ttsSettings);if(s.localTts)applyLocalTtsSettings(s.localTts);if(Number.isFinite(s.ttsVolume)&&!busy.volume){volume.value=String(s.ttsVolume);volumeValue.textContent=s.ttsVolume+'%'}});api.onCloudSyncStatus(renderCloudStatus);api.onBrowserMemory(v=>{if(Number.isFinite(v.privateMb)){memory.textContent=v.privateMb.toFixed(1)+' MB';memory.title=v.privateMb>100?'Over the 100 MB target. Chromium does not guarantee a hard per-site memory limit.':'Memory used by the active embedded page renderer.'}else{memory.textContent='Unavailable';memory.title='Electron did not expose a memory metric for the active embedded renderer.'}});api.onColabHandoffResult(v=>{if(v.message)note(v.message,v.connected?'success':'error')});api.onLocalTtsStatus(renderLocalTtsStatus);
 window.addEventListener('resize',()=>{
   if(!widgetMoved.queues)queue.style.width=Math.min(360,Math.max(270,Math.round(mainPage.clientWidth*0.28)))+'px';
   positionControls();
@@ -716,5 +953,5 @@ window.addEventListener('resize',()=>{
   if(layoutChanged)scheduleSaveDashboardState();
   updateBrowserBounds()
 });window.addEventListener('beforeunload',()=>{ro.disconnect();if(dashboardSaveTimer)clearTimeout(dashboardSaveTimer);if(refreshTimer)clearInterval(refreshTimer)});
-applyTheme('midnight');renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
+applyTheme('midnight');applySessionAutoExpire(false);renderTabs();setPage();void api.getBrowserTabs().then(syncBrowserTabs).catch(()=>{});void refresh();refreshTimer=window.setInterval(()=>void refresh(),7000);
 })();

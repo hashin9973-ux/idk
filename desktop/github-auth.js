@@ -690,7 +690,15 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       .slice(0, MAX_RESPONSE_BYTES);
   }
 
-  async function runGitOperation(input = {}) {
+  async function runGitOperation(input = {}, signal = null) {
+    const throwIfAborted = () => {
+      if (!signal || !signal.aborted) return;
+      const error = new Error(String(signal.reason && signal.reason.message || signal.reason || 'Operation cancelled.'));
+      error.name = 'AbortError';
+      error.code = 'ABORT_ERR';
+      throw error;
+    };
+    throwIfAborted();
     const operation = String(input.operation || '');
     if (!['fetch', 'pull', 'push', 'clone'].includes(operation)) {
       throw new Error('Git operation must be fetch, pull, push, or clone.');
@@ -721,6 +729,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
       };
       try {
         try {
+          throwIfAborted();
           const result = await execFileAsyncImpl('git', args, {
             cwd: commandCwd,
             env: authEnvironment,
@@ -728,8 +737,10 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
             timeout: timeoutMs,
             maxBuffer: 2 * MAX_RESPONSE_BYTES,
             windowsHide: true,
-            shell: false
+            shell: false,
+            ...(signal ? { signal } : {})
           });
+          throwIfAborted();
           return {
             exitCode: 0,
             stdout: redactOutput(result.stdout, token),
@@ -737,6 +748,7 @@ function createGitHubAuth({ safeStorage, getSettings, persistSettings, fetchImpl
             timedOut: false
           };
         } catch (error) {
+          throwIfAborted();
           if (error && error.code === 'ENOENT') throw new Error('Git for Windows was not found on PATH.');
           const timedOut = Boolean(error && (error.killed || error.code === 'ETIMEDOUT'));
           return {

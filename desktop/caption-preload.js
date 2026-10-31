@@ -10,5 +10,7 @@ contextBridge.exposeInMainWorld('speechCaption', Object.freeze({
     return () => ipcRenderer.removeListener('caption:update', listener);
   },
   play: () => ipcRenderer.invoke('caption:play'),
+  navigate: direction => ipcRenderer.invoke('caption:navigate', direction),
+  togglePause: () => ipcRenderer.invoke('caption:pause-toggle'),
   dismiss: () => ipcRenderer.invoke('caption:dismiss')
 }));
