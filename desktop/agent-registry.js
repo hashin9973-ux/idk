@@ -379,7 +379,12 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
               }
               if (deletion && deletion.conflict === true) return { kind: 'changed' };
               if (!deletion || deletion.ok === false) {
-                throw new Error('SHA-checked session deletion did not complete; the registered session remains valid.');
+                // A false/empty response can also arrive after a successful remote commit.
+                // Only treat it as failure when the session record is still present.
+                if (await readSession(candidate.sessionId)) {
+                  throw new Error('SHA-checked session deletion did not complete; the registered session remains valid.');
+                }
+                deletion = { deleted: 1, recovered_after_unsuccessful_response: true };
               }
 
               let seatCleanupError = null;
