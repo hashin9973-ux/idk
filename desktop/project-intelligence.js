@@ -68,7 +68,7 @@ function createProjectIntelligence(options={}){
   const payload={version:VERSION,rootKey:s.key,generatedAt:s.generatedAt,lastFullScanAt:s.lastFullScanAt,truncated:s.truncated,incompleteReasons:[...(s.incompleteReasons||[])].sort(),lastScan:s.lastScan||null,documents:[...s.documents.values()]};
   const serialized=JSON.stringify(payload);
   if(Buffer.byteLength(serialized,'utf8')>MAX_CACHE_BYTES){s.cacheWarning='Index metadata exceeds the 256 MiB cache limit; it remains available in memory but requires a fresh scan after restart.';return;}
-  try{await fsp.writeFile(temp,serialized,{encoding:'utf8',flag:'wx'});await fsp.rename(temp,target);s.cacheWarning='';}
+  try{await fsp.writeFile(temp,serialized,{encoding:'utf8',flag:'wx'});await fsp.rename(temp,target);}
   finally{await fsp.rm(temp,{force:true}).catch(()=>{});}
  }
  async function load(s){
