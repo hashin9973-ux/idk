@@ -83,7 +83,7 @@ function formatToolResultMarkdown(tool, output, maxChars = 48000) {
     '- **Status:** ' + status];
   if (error) lines.push('- **Error:** ' + renderScalar(error, 'error'));
   if (result !== undefined && result !== null) {
-    lines.push('', '#### Result', ...renderMarkdownValue(result));
+    lines.push('', '#### Result', ...renderMarkdownValue(result, 'Result'));
   }
   let rendered = lines.join('\n').trim();
   if (rendered.length > maxChars) {
