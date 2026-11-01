@@ -1,6 +1,6 @@
 'use strict';
 
-const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key|credential)/i;
+const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key|credential|session[_-]?id)/i;
 const CODE_FIELD = /^(?:content|stdout|stderr|diff|patch|stack|trace|script|source|html|sql|command_output)$/i;
 const HIDDEN_FIELDS = new Set(['protocol']);
 
