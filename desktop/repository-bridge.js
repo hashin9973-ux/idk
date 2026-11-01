@@ -846,7 +846,7 @@ function createRepositoryBridge(deps = {}) {
     return { deleted: localResult.deleted + Number(remoteResult.deleted || 0) };
   };
   const agentRegistry = createAgentRegistry({
-    readRemoteFile: registryReadFile, listFolder: registryListFolder, writeRemoteJson: registryWriteJson,
+    readRemoteFile: registryReadFile, readRemoteContent, listFolder: registryListFolder, writeRemoteJson: registryWriteJson,
     deleteRemoteFiles: files => registryDeleteFiles(files), isConflict, maxSessions: 10000
   });
   const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
