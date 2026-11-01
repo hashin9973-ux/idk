@@ -2039,7 +2039,7 @@ function createRepositoryBridge(deps = {}) {
     if (['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
       const resultIsKnown = Boolean(knownResultFiles && knownResultFiles.has(requestId + '.json'));
       const existingResult = resultIsKnown ? true : await readRemoteFile(mailboxResultPath(requestId));
-      if (existingResult && knownResultFiles) knownResultFiles.add(requestId + '.json');
+      if (existingResult && knownResultFiles) knownResultFiles.add((requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json');
       if (!existingResult) {
         await publishResult(requestId, {
           protocol: RESULT_PROTOCOL,
@@ -2162,9 +2162,9 @@ function createRepositoryBridge(deps = {}) {
     return sessionId ? agentRegistry.withSessionLock(sessionId, publish) : publish();
   }
 
-  async function processRequest(filename, signal = null) {
+  async function processRequest(filename, mailboxAgentId, signal = null) {
     const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0, mailboxOperations: 0, mailboxOperationMs: 0 };
-    return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry, signal));
+    return requestTelemetry.run(telemetry, () => processRequestInner(filename, mailboxAgentId, telemetry, signal));
   }
 
   function drainExecutionWaitQueue() {
@@ -2211,7 +2211,7 @@ function createRepositoryBridge(deps = {}) {
     });
   }
 
-  async function processRequestInner(filename, telemetry, signal = null) {
+  async function processRequestInner(filename, mailboxAgentId, telemetry, signal = null) {
     const workerStartedAt = telemetry.startedAt;
     let requestLoadedAt = workerStartedAt;
     let claimStartedAt = workerStartedAt;
@@ -2220,7 +2220,8 @@ function createRepositoryBridge(deps = {}) {
     let toolFinishedAt = workerStartedAt;
     const requestId = filename.slice(0, -'.json'.length);
     if (!SAFE_ID.test(requestId) || inMemoryClaims.has(requestId)) return;
-    const mailboxAgentId = requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID;
+    mailboxAgentId = mailboxAgentId || requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID;
+    requestMailboxAgents.set(requestId, mailboxAgentId);
     const requestPath = mailboxRequestPath(mailboxAgentId, requestId);
     let remote;
     try {
@@ -2661,20 +2662,22 @@ function createRepositoryBridge(deps = {}) {
   }
 
 
-  function enqueuePendingRequests(entries) {
+  function enqueuePendingRequests(entries, mailboxAgentId = BOOTSTRAP_AGENT_ID) {
     for (const discovered of entries) {
       const filename = typeof discovered === 'string' ? discovered : discovered && discovered.name;
       if (typeof filename !== 'string' || !filename.endsWith('.json')) continue;
       const requestId = filename.slice(0, -'.json'.length);
       if (!SAFE_ID.test(requestId)) continue;
-      if (knownResultFiles && knownResultFiles.has(filename)) continue;
-      if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(filename)) continue;
+      const queueKey = mailboxAgentId + '/' + filename;
+      if (knownResultFiles && knownResultFiles.has(queueKey)) continue;
+      if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(queueKey)) continue;
+      requestMailboxAgents.set(requestId, mailboxAgentId);
       const blobSha = discovered && typeof discovered === 'object' ? discovered.sha : null;
       if (typeof blobSha === 'string' && /^[a-f0-9]{40}$/i.test(blobSha)) requestBlobShas.set(requestId, blobSha);
-      pendingRequestQueue.push(filename);
-      pendingRequestQueueSet.add(filename);
+      pendingRequestQueue.push({ filename, agentId: mailboxAgentId });
+      pendingRequestQueueSet.add(queueKey);
       updateMailboxUiRecord(requestId, { status: 'queued', progress: 5, tool: 'loading request' });
-      void loadMailboxRequest(requestId).catch(error => {
+      void loadMailboxRequest(requestId, blobSha, mailboxAgentId).catch(error => {
         updateMailboxUiRecord(requestId, { status: 'queued', error: cleanError(error.message), progress: 6 });
         announce();
       });
@@ -2796,18 +2799,21 @@ function createRepositoryBridge(deps = {}) {
   function dispatchPendingRequests() {
     if (!running) return;
     while (running && requestTasks.size < MAX_CONCURRENT_REQUESTS && pendingRequestQueue.length) {
-      const filename = pendingRequestQueue.shift();
-      pendingRequestQueueSet.delete(filename);
+      const queued = pendingRequestQueue.shift();
+      const filename = queued.filename;
+      const mailboxAgentId = queued.agentId;
+      const queueKey = mailboxAgentId + '/' + filename;
+      pendingRequestQueueSet.delete(queueKey);
       const requestId = filename.slice(0, -'.json'.length);
       if (!SAFE_ID.test(requestId) || inFlightRequestIds.has(requestId) ||
-          (knownResultFiles && knownResultFiles.has(filename))) continue;
+          (knownResultFiles && knownResultFiles.has(queueKey))) continue;
 
       // Reserve the ID before the first await so overlapping poll cycles cannot
       // start two executions of the same request.
       inFlightRequestIds.add(requestId);
       const controller = new AbortController();
       requestAbortControllers.set(requestId, controller);
-      const task = processRequest(filename, controller.signal)
+      const task = processRequest(filename, mailboxAgentId, controller.signal)
         .catch(error => {
           lastError = 'Could not process request ' + requestId + ': ' + cleanError(error.message);
           updateMailboxUiRecord(requestId, { status: 'failed', progress: 100, error: cleanError(error.message) });
@@ -2818,7 +2824,7 @@ function createRepositoryBridge(deps = {}) {
           requestBlobShas.delete(requestId);
           requestTasks.delete(requestId);
           requestAbortControllers.delete(requestId);
-          const queued = pendingRequestQueue.filter(name => !(knownResultFiles && knownResultFiles.has(name))).length;
+          const queued = pendingRequestQueue.filter(item => !(knownResultFiles && knownResultFiles.has(item.agentId + '/' + item.filename))).length;
           const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id + '.json'))).length;
           pendingCount = queued + active;
           announce();
