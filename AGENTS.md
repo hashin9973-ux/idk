@@ -3,6 +3,9 @@
 ## Project scope
 This repository contains the Windows desktop worker that gives the user's existing ChatGPT conversation developer-like access to the user's selected Windows workspace through a private GitHub request/result mailbox. The app is the local executor; GitHub is transport, not the actual project environment or a second chat UI.
 
+## Local model presentation
+The OpenAI-compatible and KoboldCpp direct-agent runtime must present working context, project summaries, task/status views, plans, messages and tool observations as readable Markdown. Do not serialize tool results into JSON in model conversation history. Keep structured JSON only at required API, tool-argument, validation and internal persistence boundaries. Preserve source text, diffs and command output exactly in fenced code blocks; redact secret-like fields; mark tool observations as untrusted. Maintain familiar slash aliases such as `/project`, `/ls`, `/tree`, `/find`, `/read`, `/write`, `/patch`, `/run`, `/test` and `/plan` without adding duplicate execution tools. See `docs/LOCAL-MODEL-MARKDOWN-CONTEXT.md`.
+
 Keep changes within the requested scope. Do not modify a game, save, installed mod, user project, or unrelated Windows file unless the user's request explicitly includes that target. Preserve unrelated working-tree changes and existing configuration.
 
 ## Start with evidence
