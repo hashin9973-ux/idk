@@ -192,6 +192,7 @@ function createRepositoryBridge(deps = {}) {
     getSettings,
     persistSettings,
     getWorkspaceRoot,
+    getWorkspaceMode = () => 'selected folder',
     getWorkerVersion = () => 'unknown',
     executeTool,
     cancelTool = () => false,
@@ -904,7 +905,7 @@ function createRepositoryBridge(deps = {}) {
     const tools = latestToolCatalog && Array.isArray(latestToolCatalog.tools)
       ? latestToolCatalog.tools.map(tool => tool.name).filter(Boolean) : [];
     const workspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
-    const workspaceMode = (getSettings() || {}).workspaceMode || 'selected workspace';
+    const workspaceMode = String(getWorkspaceMode() || 'unknown');
     const lines = [
       '# Windows Bridge Status',
       '',
