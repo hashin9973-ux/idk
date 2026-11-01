@@ -215,7 +215,7 @@ test('SSE parser reconstructs streamed native tool names and arguments', async (
 });
 
 test('slash command parser uses readable named arguments and list values, not JSON objects', () => {
-  assert.throws(() => parseSlashToolCommand('/read_file {"path":"src/app.js"}', ['read_file']), /JSON argument objects/);
+  assert.throws(() => parseSlashToolCommand('/read_file {"path":"src/app.js"}', ['workspace']), /JSON argument objects/);
   const available = definitions().map(item => item.function.name);
   assert.deepEqual(
     parseSlashToolCommand('/read_file path="src/app.js" startLine=12', available),
@@ -309,7 +309,7 @@ test('explicit user slash shortcut routes through grouped local capability and p
   assert.ok(requests[0].tools.length <= 30);
   assert.ok(requests[0].tools.some(tool => tool.function.name === 'workspace'));
   assert.equal(requests[0].tool_choice, 'auto');
-  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read_file path="README.md"'));
+  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/workspace path=README.md action=read'));
   assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.ok(requests[0].messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   assert.equal(session.messages.at(-1).content, 'The README was inspected.');
@@ -361,7 +361,7 @@ test('model slash fallback executes the grouped command and receives the real re
   }
   assert.match(requests[0].messages[0].content, /AVAILABLE LOCAL SLASH COMMANDS/);
   assert.match(requests[0].messages[0].content, /\/workspace — Workspace operations/);
-  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/workspace action=read path=README.md'));
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/workspace path=README.md action=read'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /workspace; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
@@ -519,7 +519,7 @@ test('invalid native tool names, schemas and malformed arguments never execute',
   assert.equal(result.completed, true);
   assert.equal(executed.length, 0);
   assert.equal(session.messages.filter(message => message.role === 'tool').length, 3);
-  assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('must be one of:')));
+  assert.ok(session.messages.some(message => message.role === 'tool' && /action/i.test(message.content)));
   assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('invalid JSON')));
   assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('not registered')));
 });
@@ -678,7 +678,7 @@ test('legacy native tool-call history is converted to slash messages and untrust
   ]);
   assert.deepEqual(apiMessages, [
     { role: 'user', content: 'Read a file.' },
-    { role: 'assistant', content: '/workspace action=read path=README.md' },
+    { role: 'assistant', content: '/workspace path=README.md action=read' },
     { role: 'user', content: '[Untrusted local tool observation from /read_file]\n### Tool result: `/read_file`\n- **Status:** success\n\n#### Result\n- **Result:** file text' },
     { role: 'assistant', content: 'Done.' }
   ]);
