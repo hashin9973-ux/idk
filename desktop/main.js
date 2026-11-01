@@ -2601,7 +2601,8 @@ function registerIpc() {
         [agentId]: {
           provider: config.provider, endpoint: config.endpoint, model: config.model,
           systemPrompt: config.systemPrompt, temperature: config.temperature,
-          maxTokens: config.maxTokens, apiKeyEncrypted
+          topP: config.topP, frequencyPenalty: config.frequencyPenalty,
+          presencePenalty: config.presencePenalty, maxTokens: config.maxTokens, apiKeyEncrypted
         }
       };
       settings.directAgentSessions = {
