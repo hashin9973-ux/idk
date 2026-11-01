@@ -663,12 +663,17 @@ function renderAgentMailboxes(rawAgents){
         if(!message||!['user','assistant','tool'].includes(message.role))continue;
         const item=document.createElement('article');item.className='agent-direct-message agent-direct-'+message.role;
         const label=document.createElement('strong');label.className='agent-direct-message-label';
-        label.textContent=message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
+        const text=typeof message.content==='string'?message.content:'';
+        const modelSlashCall=message.role==='assistant'&&text.trim().startsWith('/');
+        const toolResultMatch=message.role==='user'?text.match(/^\[Untrusted local tool result for \/([a-z0-9_]+); status=([a-z_]+)\]/i):null;
+        const slashError=message.role==='user'&&text.startsWith('[Slash-command error]');
+        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
         item.append(label);
+        if(modelSlashCall){const command=document.createElement('pre');command.className='agent-direct-tool-call';command.textContent=text.trim();item.append(command)}
         if(message.role==='assistant'&&Array.isArray(message.tool_calls)){
           for(const call of message.tool_calls){const command=document.createElement('pre');command.className='agent-direct-tool-call';let args={};try{args=JSON.parse(call.function&&call.function.arguments||'{}')}catch{}command.textContent=terminal.formatSlashCommand(call.function&&call.function.name,args);item.append(command)}
         }
-        if(typeof message.content==='string'&&message.content){const content=document.createElement('div');content.className='agent-direct-message-content';content.textContent=message.content;item.append(content)}
+        if(text&&!modelSlashCall){const content=document.createElement('div');content.className='agent-direct-message-content';content.textContent=toolResultMatch?text.slice(text.indexOf('\n')+1):text;item.append(content)}
         body.append(item);
       }
       const liveText=directLiveText.get(agent.agent_id)||'';
