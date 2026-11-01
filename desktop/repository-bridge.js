@@ -279,6 +279,7 @@ function createRepositoryBridge(deps = {}) {
   let latestFilesystemIndexSnapshot = null;
   let latestToolCatalog = null;
   let contextRefreshInFlight = false;
+  let contextRefreshPromise = null;
   let mailboxCleanupInFlight = false;
   let lastMailboxCleanupAt = 0;
   let mailboxCleanupCursor = null;
@@ -1897,7 +1898,7 @@ function createRepositoryBridge(deps = {}) {
   function scheduleContextRefresh() {
     if (!running || contextRefreshInFlight) return;
     contextRefreshInFlight = true;
-    Promise.resolve()
+    contextRefreshPromise = Promise.resolve()
       .then(() => publishEnvironmentContext())
       .catch(error => {
         lastError = 'Background context refresh failed: ' + cleanError(error.message);
@@ -1905,6 +1906,7 @@ function createRepositoryBridge(deps = {}) {
       })
       .finally(() => {
         contextRefreshInFlight = false;
+        contextRefreshPromise = null;
         announce();
       });
   }
@@ -3156,6 +3158,12 @@ function createRepositoryBridge(deps = {}) {
     // the app is not torn down while a command is running or its result is publishing.
     if (requestTasks.size) {
       await Promise.allSettled([...requestTasks.values()]);
+    }
+    // Context publication writes TOOLS.md, AGENT.md and STATUS.md. Do not let
+    // app shutdown or a mailbox-folder switch race those atomic OneDrive writes.
+    const activeContextRefresh = contextRefreshPromise;
+    if (activeContextRefresh) {
+      try { await activeContextRefresh; } catch {}
     }
     announce();
     try { await publishState(true); } catch {}
