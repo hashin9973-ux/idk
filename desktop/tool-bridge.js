@@ -964,7 +964,7 @@ function createToolBridge(deps) {
       const sensitive = localTools.looksSensitiveFile && localTools.looksSensitiveFile(rawTarget);
       return header + resultWarning + 'Upload a local workspace file to the shared OneDrive mailbox as a retrievable artifact.\nPath: ' + target +
         '\nArtifact name: ' + displayApprovalValue(args.artifactName || path.basename(rawTarget), 240) +
-        '\nThe full file bytes will be stored under Bridge/runtime/bridge/artifacts/ and can be read by accounts with access to the shared OneDrive folder. ' +
+        '\nThe full file bytes will be stored under Bridge/sandbox storage/<agent-id>/ and can be read by accounts with access to the shared OneDrive folder. ' +
         (sensitive ? '\nWARNING: This filename looks like a credential or private file; uploading it may disclose secrets.' : '') +
         '\nMaximum upload size: 8 MiB.';
     }
@@ -1075,7 +1075,7 @@ function createToolBridge(deps) {
 
   function boundedResult(value) {
     // Keep the entire local result until repository-bridge.js has a chance to publish
-    // oversized strings and full-result fallbacks under bridge/artifacts/<request_id>/.
+    // oversized strings and full-result fallbacks under sandbox storage/<agent-id>/<request_id>-*. 
     // Tool-specific output bounds remain responsible for truly unbounded processes.
     return value;
   }
@@ -1401,7 +1401,7 @@ function createToolBridge(deps) {
         'The shell runs as the signed-in Windows user and is not sandboxed.'
       ],
       development_workflow: {
-        purpose: 'Use the actual Windows environment as the working environment, through its OneDrive-synchronized Bridge/runtime mailbox.',
+        purpose: 'Use the actual Windows environment as the working environment, through its OneDrive-synchronized Bridge mailbox.',
         rules: [
           'First inspect the published context and exact schemas, then submit a real local-tool request using the mailbox JSON envelope. OneDrive file-operation names and local mailbox tool names are different interfaces; mailbox request/result files are the transport boundary.',
           'After session_start, start with get_agent_context; it returns Windows/runtime facts, project discovery, instruction metadata, a bounded directory view, every agent seat’s current status, and the local tool catalog in one result.',
