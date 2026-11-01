@@ -264,6 +264,7 @@ function createRepositoryBridge(deps = {}) {
   let publicRepository = null;
   let pendingCount = 0;
   let lastStatePublishAt = 0;
+  let lastStateSignature = '';
   const inMemoryClaims = new Set();
   let knownResultFiles = null;
   let lastRequestTreeReconcileAt = 0;
@@ -622,6 +623,7 @@ function createRepositoryBridge(deps = {}) {
 
   function announce() {
     try { onState(stateSnapshot()); } catch {}
+    void publishState().catch(() => {});
   }
 
   async function api(method, path, body, query) {
@@ -888,10 +890,7 @@ function createRepositoryBridge(deps = {}) {
     return cleanup;
   }
 
-  async function renderStatusMarkdown(snapshot) {
-    let inventory = { agents: [], count: 0 };
-    try { inventory = await agentRegistry.statuses(); }
-    catch (error) { inventory = { agents: [], count: 0, error: cleanError(error.message) }; }
+  async function renderStatusMarkdown(snapshot, inventory = { agents: [], count: 0 }) {
     const agents = (inventory.agents || []).map(agent => ({
       id: agent.agent_id,
       status: agent.status || 'unknown',
@@ -946,6 +945,9 @@ function createRepositoryBridge(deps = {}) {
 
   async function publishState(force = false) {
     const now = Date.now();
+    let inventory = { agents: [], count: 0 };
+    try { inventory = await agentRegistry.statuses(); }
+    catch (error) { inventory = { agents: [], count: 0, error: cleanError(error.message) }; }
     const snapshot = {
       worker_id: workerId,
       updated_at: new Date(now).toISOString(),
@@ -979,11 +981,23 @@ function createRepositoryBridge(deps = {}) {
         last_error: mailboxCleanupLastError
       }
     };
-    if (!force && now - lastStatePublishAt < 60 * 1000) return;
+    const signature = JSON.stringify({
+      status: snapshot.status, active_request_ids: snapshot.active_request_ids, pending_count: snapshot.pending_count,
+      last_error: snapshot.last_error, workspace_selected: snapshot.workspace_selected,
+      agents: (inventory.agents || []).map(agent => ({
+        agent_id: agent.agent_id, status: agent.status, paused: agent.paused,
+        active_request_ids: agent.active_request_ids, last_activity_at: agent.last_activity_at,
+        unread_message_count: agent.unread_message_count
+      })),
+      tools: latestToolCatalog && Array.isArray(latestToolCatalog.tools) ? latestToolCatalog.tools.map(tool => tool.name) : []
+    });
+    const changed = signature !== lastStateSignature;
+    if (!force && !changed && now - lastStatePublishAt < 60 * 1000) return;
+    lastStateSignature = signature;
     lastStatePublishAt = now;
     try {
       if (mailbox) {
-        await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
+        await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot, inventory), '[local bridge] refresh live status');
       } else if (allowLegacyGitHubMailboxForTests === true) {
         const legacyPath = 'bridge/state/windows-app.json';
         const previous = await readRemoteFile(legacyPath);
