@@ -3161,6 +3161,10 @@ if (!hasInstanceLock) {
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
+          getWorkspaceMode: () => {
+            const root = getWorkspaceRoot();
+            return root ? (isFilesystemRoot(root) ? 'whole drive' : 'selected folder') : 'not selected';
+          },
           getWorkerVersion: () => app.getVersion(),
           executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal),
           cancelTool: (requestId, reason) => toolBridge.cancelTool(requestId, reason),
