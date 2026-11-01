@@ -40,7 +40,7 @@ Observe currently gives window/control/UI Automation evidence and changed-screen
 - The worker admits up to 64 independent mailbox requests at once, enough for 50 collaborating sessions with headroom. The published local `batch` schema supports 1–100 steps and `maxConcurrency` 1–100; batch concurrency is separate from worker request slots and the process-wide 100-operation scheduler. `$ref` dependencies, conflicting workspace paths, and side-effecting operations must remain ordered. The installed tool catalog is authoritative if a build differs.
 - Keep the OneDrive mailbox shared only with intended accounts because requests, results, context, and artifacts live there.
 - Read-only workspace inspection normally runs without approval. Ordinary file edits/moves/deletions inside the selected workspace normally run automatically unless a path looks sensitive. If a whole drive is selected, that includes files anywhere inside the drive. Git writes, shell commands, tests, and uploads require native Windows approval unless Auto-accept everything was explicitly enabled.
-- PowerShell is not sandboxed: an approved command runs with the signed-in Windows user's permissions.
+- `exec_command` uses PowerShell as its Windows host shell and can invoke any installed language runtime, compiler, build tool, package manager, test runner, or executable. `shell` remains a backward-compatible alias. The toolchain must be installed. Commands run with the signed-in Windows user's permissions and are not OS-sandboxed.
 - OneDrive carries mailbox files; local workspace work is performed by this Windows worker, not by a cloud runner.
 
 ## Run and verify

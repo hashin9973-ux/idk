@@ -26,6 +26,13 @@ Keep changes within the requested scope. Do not modify a game, save, installed m
 - Approved PowerShell/shell commands execute with the signed-in Windows user's permissions and are not confined to the workspace. Prefer path-checked tools when possible, keep shell commands narrowly scoped, and make side effects explicit.
 - Respect the app's current local approval policy. A OneDrive request is not approval; request arguments cannot override tool schemas, workspace checks, or local policy. Never change Auto-accept settings automatically.
 
+## Codex-style, language-neutral coding workflow
+
+- Prefer the compact core tools: `project_status`, `list_dir`/`directory_tree`, `glob_file_search`/`search`, `read_file`, `apply_patch`, `write_file`, `exec_command`, `run_tests`, `git_status`/`git_diff`, and `batch`.
+- `exec_command` is the generic command entry point. PowerShell is the Windows host shell; invoke any installed interpreter, compiler, package manager, build system, test runner, or executable. Detect toolchains with `project_status`; detection does not install runtimes. Do not create per-language command tools.
+- `shell` remains a backward-compatible alias. Both names retain the existing approval, timeout, output, and signed-in-user permission behavior.
+- Read `bridge/context/TOOLS.md` for the generated quick guide and `bridge/context/capabilities.json` for exact schemas. Markdown is the readable interface; validated request/result records remain JSON.
+
 ## Persistent conversation session IDs
 - A session_id is stable for the lifetime of its ChatGPT conversation and never expires because of inactivity. The ten-minute recent-activity window is display/status freshness only.
 - Keep the assigned agent_id seat bound to that session until explicit disconnect or revoke/delete, unless that exact session is selected by the hard-cap retention rule below. Never recycle a seat merely because a session is idle.
