@@ -228,6 +228,52 @@ test('model invokes tools with assistant slash commands and receives local resul
   assert.ok(events.some(event => event.type === 'tool_completed' && event.source === 'model-slash'));
 });
 
+test('native function-call output is rejected and the model is guided to the slash protocol', async () => {
+  const session = { sessionId: 'session-fedcba9876543210fedcba9876543210', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  const executed = [];
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      callNumber++;
+      if (callNumber === 1) {
+        return sseResponse([
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'provider_call', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] } }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+        ]);
+      }
+      if (callNumber === 2) {
+        return sseResponse([
+          { choices: [{ index: 0, delta: { content: '/environment_info' } }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'The environment was inspected.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => config(),
+    getSession: async () => session,
+    saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args) => {
+      executed.push({ name, args });
+      return { status: 'success', result: { platform: 'Windows' } };
+    }
+  });
+
+  const result = await runtime.sendMessage('direct-agent-003', 'Inspect the environment.');
+  assert.deepEqual(result, { accepted: true, completed: true });
+  assert.deepEqual(executed, [{ name: 'environment_info', args: {} }]);
+  assert.equal(requests.length, 3);
+  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('Native API function calls are disabled')));
+  assert.ok(requests[2].messages.some(message => message.role === 'assistant' && message.content === '/environment_info'));
+  assert.ok(requests.every(request => !Object.hasOwn(request, 'tools') && !Object.hasOwn(request, 'tool_choice')));
+  assert.ok(session.messages.some(message => message.kind === 'runtime_feedback'));
+});
+
 test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
   const apiMessages = toApiMessages([
     { role: 'user', content: 'Read a file.' },
