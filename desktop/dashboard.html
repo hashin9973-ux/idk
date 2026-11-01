@@ -49,10 +49,21 @@
     <label>API key / password (optional)
       <input id="agent-create-api-key" type="password" maxlength="4096" autocomplete="new-password" placeholder="Leave empty for unauthenticated local APIs">
     </label>
-    <label>Additional agent instructions (optional)
-      <textarea id="agent-create-system-prompt" rows="4" maxlength="12000" placeholder="Extra instructions for this agent"></textarea>
+    <label>System prompt / custom instructions (optional)
+      <textarea id="agent-create-system-prompt" rows="5" maxlength="12000" placeholder="Set this agent's behavior, role, priorities, and response style"></textarea>
     </label>
-    <p class="agent-create-note">The key is encrypted with Windows-backed secure storage and is never shared by cloud sync. OpenAI-compatible and KoboldCpp providers use the Chat Completions tool-calling endpoint.</p>
+    <fieldset class="agent-sampling-settings">
+      <legend>Sampling</legend>
+      <div class="agent-sampling-grid">
+        <label>Temperature <input id="agent-create-temperature" type="number" min="0" max="2" step="0.05" value="0.2"></label>
+        <label>Top-p <input id="agent-create-top-p" type="number" min="0" max="1" step="0.05" value="1"></label>
+        <label>Frequency penalty <input id="agent-create-frequency-penalty" type="number" min="-2" max="2" step="0.1" value="0"></label>
+        <label>Presence penalty <input id="agent-create-presence-penalty" type="number" min="-2" max="2" step="0.1" value="0"></label>
+        <label>Max response tokens <input id="agent-create-max-tokens" type="number" min="256" max="32768" step="256" value="8192"></label>
+      </div>
+      <p class="agent-create-note">Standard Chat Completions sampling parameters. An endpoint may ignore or reject parameters it does not support.</p>
+    </fieldset>
+    <p class="agent-create-note">The key is encrypted with Windows-backed secure storage and is never shared by cloud sync. Direct agents use slash-command tool calls; native API function calling is not sent.</p>
   </div>
   <p id="agent-create-error" class="agent-delete-error" role="alert"></p>
   <div class="agent-autodump-actions">
