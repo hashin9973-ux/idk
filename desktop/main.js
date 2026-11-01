@@ -2811,6 +2811,30 @@ function registerIpc() {
     const handoff = colabHandoffServer ? colabHandoffServer.status() : { ready: false, lastError: 'not_initialized' };
     return { ...state, automatic_handoff_ready: handoff.ready === true, automatic_handoff_armed: colabHandoffArmed, automatic_handoff_error: handoff.lastError || '' };
   });
+  ipcMain.handle('app:vision-setup-check', async event => {
+    assertLocalUi(event, 'index.html');
+    if (visionService && typeof visionService.setupCheck === 'function') {
+      return visionService.setupCheck();
+    }
+    const oneDrive = oneDriveMailbox && typeof oneDriveMailbox.getState === 'function'
+      ? oneDriveMailbox.getState() : { configured: false };
+    return {
+      status: 'failed',
+      checked_at: new Date().toISOString(),
+      checks: {
+        onedrive: {
+          status: oneDrive.configured ? 'passed' : 'action_required',
+          message: oneDrive.configured ? 'OneDrive folder configured.' : 'Choose the local OneDrive-synced Bridge/runtime folder.'
+        },
+        mailbox: { status: 'not_verified', message: 'Vision/mailbox service is unavailable in this app session.' },
+        colab: { status: 'not_verified', message: 'Colab runtime status is unavailable.' },
+        model: { status: 'not_verified', message: 'Model readiness is unavailable.' },
+        vision: { status: 'disabled', message: 'No activation was attempted.' }
+      },
+      next_steps: [appInitializationError || 'Restart the app after resolving its initialization error.'],
+      note: 'Setup check does not enable vision or trigger model downloads.'
+    };
+  });
   ipcMain.handle('app:vision-connect-colab', async (event, endpointUrl) => {
     assertLocalUi(event, 'index.html');
     if (!visionService) {
