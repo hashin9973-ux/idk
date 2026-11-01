@@ -402,7 +402,7 @@
     }
 
     if (!visionSetupSnapshot && visionSetupDetail.textContent === 'Not checked') {
-      visionSetupDetail.title = 'Setup check tests GitHub sign-in, mailbox reads, the direct Colab tunnel, and model readiness. Successful tunnel connection activates vision and begins model loading automatically.';
+      visionSetupDetail.title = 'Setup check tests OneDrive mailbox reads, the direct Colab tunnel, and model readiness. Successful tunnel connection activates vision and begins model loading automatically.';
       visionSetupDetail.dataset.state = 'not_verified';
       visionMailboxDetail.title = 'Mailbox read access is checked by Setup check.';
       visionMailboxDetail.dataset.state = 'not_verified';
