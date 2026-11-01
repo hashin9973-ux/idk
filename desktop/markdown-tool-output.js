@@ -71,7 +71,8 @@ function renderMarkdownValue(value, key = 'Details', depth = 0) {
 function formatToolResultMarkdown(tool, output, maxChars = 48000) {
   let value = parseJsonText(output);
   const status = value && typeof value === 'object' && !Array.isArray(value)
-    ? String(value.status || 'success') : 'success';
+    ? String(value.status || (value.cancelled ? 'cancelled' : value.ok === false || value.error ? 'failed' : 'success'))
+    : 'success';
   const error = value && typeof value === 'object' && !Array.isArray(value)
     ? value.error : null;
   let result = value;
