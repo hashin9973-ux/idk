@@ -1134,7 +1134,7 @@ function createRepositoryBridge(deps = {}) {
     latestFilesystemIndexSnapshot = {
       updated_at: new Date().toISOString(),
       bytes: bytes.length,
-      lines: snapshot.content.split(/\\r?\\n/).length,
+      lines: snapshot.content.split(/\r?\n/).length,
       sha256: createHash('sha256').update(bytes).digest('hex')
     };
     if (!mailbox && allowLegacyGitHubMailboxForTests === true) {
@@ -1583,12 +1583,10 @@ function createRepositoryBridge(deps = {}) {
       const statusFile = await readRemoteFile('bridge/state/windows-app.json');
       const value = statusFile && statusFile.value;
       if (value) statusText = '# Windows Bridge Status\n- Updated: ' + value.updated_at + '\n- Active requests: ' + value.active_count + '\n- Pending requests: ' + value.pending_count + '\n- Health: ' + (value.last_error ? 'attention' : 'healthy');
-        '\\n- Active requests: ' + value.active_count + '\\n- Pending requests: ' + value.pending_count +
-        '\\n- Health: ' + (value.last_error ? 'attention' : 'healthy');
     }
     const updatedMatch = statusText.match(/^- Updated: (.+)$/m);
-    const activeMatch = statusText.match(/^- Active requests: (\\d+)$/m);
-    const pendingMatch = statusText.match(/^- Pending requests: (\\d+)$/m);
+    const activeMatch = statusText.match(/^- Active requests: (\d+)$/m);
+    const pendingMatch = statusText.match(/^- Pending requests: (\d+)$/m);
     const healthMatch = statusText.match(/^- Health: (.+)$/m);
     const statusUpdatedAt = updatedMatch ? Date.parse(updatedMatch[1]) : NaN;
     if (!statusText.startsWith('# Windows Bridge Status') || !Number.isFinite(statusUpdatedAt) ||
