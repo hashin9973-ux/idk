@@ -33,6 +33,7 @@ function safeText(value, limit = 500) {
 function createObserveService(deps = {}) {
   const {
     githubAuth,
+    mailbox = null,
     captureScreenshot,
     fingerprintScreenshot,
     getAccessibleSnapshot,
@@ -114,80 +115,6 @@ function createObserveService(deps = {}) {
       skipped_samples: skippedSamples,
       error: lastError
     };
-  }
-
-  function getMailboxConfig() {
-    const authSettings = githubAuth && typeof githubAuth.getState === 'function';
-    if (!authSettings) throw new Error('GitHub authentication is unavailable.');
-  }
-
-  async function publish(enabledValue, errorMessage = '') {
-    if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('Sign in to GitHub to publish Observe context.');
-    const payload = {
-      protocol: OBSERVE_PROTOCOL,
-      enabled: enabledValue,
-      updated_at: new Date(now()).toISOString(),
-      sample_fps: sampleFps,
-      sample_interval_ms: intervalForFps(sampleFps),
-      capture_count: enabledValue ? captureCount : 0,
-      skipped_samples: enabledValue ? skippedSamples : 0,
-      last_capture_at: enabledValue && lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
-      last_change_at: enabledValue && lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
-      last_vision_completed_at: enabledValue && lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
-      passive_vision_status: enabledValue ? latestVisionStatus : 'off',
-      passive_vision_error: enabledValue ? safeText(lastVisionError, 500) : '',
-      in_flight_frame_id: enabledValue && activeVisionFrame ? activeVisionFrame.frame_id : null,
-      last_vision_frame_id: enabledValue && lastCompletedVisionFrame ? lastCompletedVisionFrame.frame_id : null,
-      frame_count: enabledValue ? frames.length : 0,
-      frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
-      status: enabledValue ? 'observing' : 'off',
-      error: safeText(errorMessage, 500) || null
-    };
-    let content = JSON.stringify(payload);
-    if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
-      const clippedFrames = payload.frames.slice();
-      const protectedFrameIds = new Set(
-        [activeVisionFrame, lastCompletedVisionFrame].filter(Boolean).map(frame => frame.frame_id)
-      );
-      while (clippedFrames.length &&
-             Buffer.byteLength(JSON.stringify({ ...payload, frames: clippedFrames }), 'utf8') > MAX_CONTEXT_BYTES) {
-        const removableIndex = clippedFrames.findIndex(frame => !protectedFrameIds.has(frame.frame_id));
-        if (removableIndex < 0) break;
-        clippedFrames.splice(removableIndex, 1);
-      }
-      payload.frames = clippedFrames;
-      payload.frame_count = clippedFrames.length;
-      payload.truncated = true;
-      content = JSON.stringify(payload);
-    }
-    const path = '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json';
-    // The SHA is process-local. After an app restart, fetch the current blob SHA before
-    // updating an existing Contents API file; a missing file is the only create case.
-    if (!currentSha) {
-      try {
-        const existing = await githubAuth.requestApi({
-          method: 'GET', path, query: { ref: 'bridge-mailbox' }
-        });
-        const existingSha = existing && existing.result && existing.result.sha;
-        if (typeof existingSha !== 'string' || !/^[a-f0-9]{40}$/i.test(existingSha)) {
-          throw new Error('GitHub returned no valid blob SHA for the existing Observe context file.');
-        }
-        currentSha = existingSha;
-      } catch (error) {
-        if (!/GitHub HTTP 404: Not Found/i.test(String(error && error.message || error))) throw error;
-      }
-    }
-    const body = {
-      message: enabledValue ? '[observe] update live screen context' : '[observe] clear live screen context',
-      content: Buffer.from(content, 'utf8').toString('base64'),
-      branch: 'bridge-mailbox',
-      ...(currentSha ? { sha: currentSha } : {})
-    };
-    const response = await githubAuth.requestApi({ method: 'PUT', path, body });
-    if (response && response.result && response.result.content && response.result.content.sha) currentSha = response.result.content.sha;
-    else if (response && response.result && response.result.content_sha) currentSha = response.result.content_sha;
-    lastPublishedAt = now();
-    return payload;
   }
 
   async function publishLatestWhenDue() {
@@ -547,7 +474,7 @@ function createObserveService(deps = {}) {
     observeEpoch += 1;
     pendingCapture = null;
     if (value) {
-      if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('Sign in to GitHub before enabling Observe mode.');
+      if (!mailbox || typeof mailbox.writeJson !== 'function') throw new Error('Select the OneDrive-synced Bridge/runtime folder before enabling Observe mode.');
       enabled = true;
       lastFingerprint = '';
       latestAccessibilitySnapshot = null;
@@ -608,7 +535,7 @@ function createObserveService(deps = {}) {
     lastFingerprint = '';
     lastError = '';
     while (publishInFlight) await sleep(50);
-    // Clear live context on GitHub. GitHub's prior commit history may still contain old snapshots.
+    // Clear the current OneDrive Observe snapshot; this path is a mutable live-context record.
     await publish(false);
     frames = [];
     activeVisionFrame = null;
@@ -619,20 +546,12 @@ function createObserveService(deps = {}) {
   async function clearStaleContext() {
     if (startupCleanupPromise) return startupCleanupPromise;
     startupCleanupPromise = (async () => {
-      if (enabled || disposed || !githubAuth || typeof githubAuth.requestApi !== 'function') return status();
-      const path = '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json';
+      if (enabled || disposed || !mailbox || typeof mailbox.readJson !== 'function') return status();
       try {
-        const response = await githubAuth.requestApi({ method: 'GET', path, query: { ref: 'bridge-mailbox' } });
-        const record = response && response.result;
-        if (!record || typeof record.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(record.sha)) {
-          throw new Error('GitHub returned an invalid Observe context file record.');
-        }
+        const record = await mailbox.readJson('bridge/vision/observe.json');
+        if (!record) return status();
         currentSha = record.sha;
-        let payload = null;
-        try {
-          const raw = Buffer.from(String(record.content || ''), 'base64').toString('utf8');
-          payload = JSON.parse(raw);
-        } catch {}
+        const payload = record.value;
         const hasLiveContext = !payload || payload.enabled === true ||
           (Array.isArray(payload.frames) && payload.frames.length > 0) ||
           (Number(payload.frame_count) || 0) > 0;
@@ -647,8 +566,7 @@ function createObserveService(deps = {}) {
         }
         return status();
       } catch (error) {
-        if (/GitHub HTTP 404: Not Found/i.test(String(error && error.message || error))) return status();
-        lastError = safeText(error && error.message || error || 'Could not clear stale Observe context', 500);
+        lastError = safeText(error && error.message || error || 'Could not clear stale OneDrive Observe context', 500);
         throw error;
       }
     })();
