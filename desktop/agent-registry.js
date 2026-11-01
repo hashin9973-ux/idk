@@ -1099,10 +1099,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function markMessageRead(sessionId, messageId, knownRecord = null) {
-    const path = messagePath(sessionId, messageId);
+    const identity = await currentSession(sessionId);
     let value = knownRecord;
     if (!value) {
-      const remote = await readRemoteFile(path);
+      const remote = await readRemoteFile(messagePath(identity.session.agent_id, messageId));
       if (!remote) return null;
       value = remote.value;
     }
@@ -1110,7 +1110,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         value.message_id !== messageId || value.recipient_session_id !== sessionId) {
       throw new Error('Message record is malformed or addressed to another session.');
     }
-    const receiptPath = messageReceiptPath(sessionId, messageId);
+    const receiptPath = messageReceiptPath(messageOwnerAgentId(value), messageId);
     const updateCachedUnread = () => {
       const cached = unreadMessageCountCache.get(sessionId);
       if (!cached) return;
@@ -1129,24 +1129,16 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         const receipt = existing.value;
         if (!receipt || receipt.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
             receipt.message_id !== messageId || receipt.recipient_session_id !== sessionId ||
-            typeof receipt.read_at !== 'string') {
-          throw new Error('Message read receipt is malformed or addressed to another session.');
-        }
+            typeof receipt.read_at !== 'string') throw new Error('Message read receipt is malformed or addressed to another session.');
         updateCachedUnread();
         return { ...value, read_at: receipt.read_at };
       }
       const readAt = timestamp();
-      const receipt = {
-        protocol: 'chatgpt-local-agent-message-receipt/v1',
-        message_id: messageId, recipient_session_id: sessionId,
-        created_at: readAt, read_at: readAt
-      };
+      const receipt = { protocol: 'chatgpt-local-agent-message-receipt/v1',
+        message_id: messageId, recipient_session_id: sessionId, created_at: readAt, read_at: readAt };
       try {
         const saved = await writeRemoteJson(receiptPath, receipt, null, true);
-        if (saved && saved.ok) {
-          updateCachedUnread();
-          return { ...value, read_at: readAt };
-        }
+        if (saved && saved.ok) { updateCachedUnread(); return { ...value, read_at: readAt }; }
       } catch (error) {
         if (!isConflictError(error) || attempt === 4) throw error;
       }
@@ -1156,95 +1148,87 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function readMessages(sessionId, args = {}) {
     return withSessionLock(sessionId, async () => {
-    await currentSession(sessionId);
-    const unreadOnly = args.unread_only !== false;
-    const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
-    let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
-    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
-      .sort().slice(-200);
-    const found = [];
-    for (let start = 0; start < names.length; start += 16) {
-      const group = names.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
-        const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
-        if (!remote) return null;
-        const record = remote.value;
-        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
-            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
-          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
-        }
-        return record;
-      }));
-      found.push(...rows.filter(Boolean));
-    }
-    found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
-    let receiptEntries;
-    try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
-    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = []; else throw error; }
-    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
-      .map(name => name.slice(0, -5)));
-    const selected = found.filter(record => record.recipient_agent_id !== 'user' && (!unreadOnly ||
-      (!receiptIds.has(record.message_id) && !record.read_at))).slice(-limit);
-    const read = [];
-    for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
-    return {
-      session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
-      scanned_recent_limit: 200, messages: read.filter(Boolean),
-      note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
-    };
+      const identity = await currentSession(sessionId);
+      const ownerAgentId = identity.session.agent_id;
+      const unreadOnly = args.unread_only !== false;
+      const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
+      let entries;
+      try { entries = await listFolder(inboxPath(ownerAgentId)); }
+      catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+      const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\\.json$/i, '')) && /\\.json$/i.test(name) && !/\\.read\\.json$/i.test(name)))]
+        .sort().slice(-200);
+      const found = [];
+      for (let start = 0; start < names.length; start += 16) {
+        const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+          const messageId = name.slice(0, -5);
+          const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
+          if (!remote) return null;
+          const record = remote.value;
+          if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+              record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+            throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+          }
+          return record;
+        }));
+        found.push(...rows.filter(Boolean));
+      }
+      found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      const receiptIds = new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => /\\.read\\.json$/i.test(name)).map(name => name.slice(0, -10)));
+      const selected = found.filter(record => record.recipient_agent_id !== 'user' && (!unreadOnly ||
+        (!receiptIds.has(record.message_id) && !record.read_at))).slice(-limit);
+      const read = [];
+      for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
+      return { session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
+        scanned_recent_limit: 200, messages: read.filter(Boolean),
+        note: 'Messages and read receipts are stored under the recipient agent folder; exact session IDs prevent delivery to a recycled seat occupant.' };
     });
   }
 
   async function readDashboardReplies(sessionId, args = {}) {
     return withSessionLock(sessionId, async () => {
-    await currentSession(sessionId);
-    const suppliedIds = args.message_ids;
-    if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
-        suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
-      throw new Error('message_ids must contain 1–100 valid message IDs.');
-    }
-    const wanted = new Set(suppliedIds);
-    if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
-    let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
-    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
-      .sort().slice(-200);
-    const replies = [];
-    for (let start = 0; start < names.length; start += 16) {
-      const group = names.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
-        const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
-        if (!remote) return null;
-        const record = remote.value;
-        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
-            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
-          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
-        }
-        if (record.sender_session_id === sessionId && record.recipient_agent_id === 'user' &&
-            wanted.has(record.in_reply_to)) return record;
-        return null;
-      }));
-      replies.push(...rows.filter(Boolean));
-    }
-    replies.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
-    return {
-      session_id: sessionId, count: replies.length, messages: replies,
-      note: 'Replies are read from the same session-scoped agent-message mailbox; no other session inbox is accessed.'
-    };
+      const identity = await currentSession(sessionId);
+      const ownerAgentId = identity.session.agent_id;
+      const suppliedIds = args.message_ids;
+      if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
+          suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
+        throw new Error('message_ids must contain 1–100 valid message IDs.');
+      }
+      const wanted = new Set(suppliedIds);
+      if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
+      let entries;
+      try { entries = await listFolder(inboxPath(ownerAgentId)); }
+      catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+      const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\\.json$/i, '')) && /\\.json$/i.test(name) && !/\\.read\\.json$/i.test(name)))]
+        .sort().slice(-200);
+      const replies = [];
+      for (let start = 0; start < names.length; start += 16) {
+        const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+          const messageId = name.slice(0, -5);
+          const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
+          if (!remote) return null;
+          const record = remote.value;
+          if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+              record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+            throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+          }
+          return record.sender_session_id === sessionId && record.recipient_agent_id === 'user' &&
+            wanted.has(record.in_reply_to) ? record : null;
+        }));
+        replies.push(...rows.filter(Boolean));
+      }
+      replies.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      return { session_id: sessionId, count: replies.length, messages: replies,
+        note: 'Replies are read from the sender agent folder and retain their exact session routing.' };
     });
   }
 
   async function replyToMessage(sessionId, args = {}) {
     const originalId = String(args.message_id || '');
-    const initial = await readRemoteFile(messagePath(sessionId, originalId));
+    const initialIdentity = await currentSession(sessionId);
+    const initial = await readRemoteFile(messagePath(initialIdentity.session.agent_id, originalId));
     if (!initial) throw new Error('No message with this message_id exists in the current session inbox.');
     const initialRecord = initial.value;
     if (!initialRecord || initialRecord.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -1260,7 +1244,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     return withSessionLocks([sessionId, recipientSessionId], async () => {
     const sender = await currentSession(sessionId);
     const originalId = String(args.message_id || '');
-    const remote = await readRemoteFile(messagePath(sessionId, originalId));
+    const remote = await readRemoteFile(messagePath(sender.session.agent_id, originalId));
     if (!remote) throw new Error('No message with this message_id exists in the current session inbox.');
     const original = remote.value;
     if (!original || original.protocol !== 'chatgpt-local-agent-message/v1' ||
