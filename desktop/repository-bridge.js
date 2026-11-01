@@ -2097,6 +2097,7 @@ function createRepositoryBridge(deps = {}) {
       });
       if (request.tool !== 'session_start') {
         const identity = await agentRegistry.authenticate(request);
+        if (identity.agent_id !== mailboxAgentId) throw new Error('REQUEST_AGENT_MISMATCH: The request folder does not match the app-owned session assignment.');
         Object.assign(request, identity);
         requestAgents.set(requestId, request.agent_id);
         requestSessions.set(requestId, request.session_id);
@@ -2152,6 +2153,7 @@ function createRepositoryBridge(deps = {}) {
       updateMailboxUiRecord(requestId, { status: 'executing', progress: 50 });
       announce();
       if (request.tool === 'session_start') {
+        if (mailboxAgentId !== BOOTSTRAP_AGENT_ID) throw new Error('SESSION_BOOTSTRAP_PATH_INVALID: session_start requests must use the reserved request/agent-000 folder.');
         const directory = await agentRegistry.statuses();
         const assignment = await requestSessionAssignment({
           label: request.args.label || 'ChatGPT session',
@@ -2515,6 +2517,11 @@ function createRepositoryBridge(deps = {}) {
       const queueKey = mailboxAgentId + '/' + filename;
       if (knownResultFiles && knownResultFiles.has(queueKey)) continue;
       if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(queueKey)) continue;
+      const existingMailboxAgent = requestMailboxAgents.get(requestId);
+      if (existingMailboxAgent && existingMailboxAgent !== mailboxAgentId) {
+        updateMailboxUiRecord(requestId, { status: 'rejected', progress: 100, error: 'Duplicate request_id found in more than one agent folder.' });
+        continue;
+      }
       requestMailboxAgents.set(requestId, mailboxAgentId);
       const blobSha = discovered && typeof discovered === 'object' ? discovered.sha : null;
       if (typeof blobSha === 'string' && /^[a-f0-9]{40}$/i.test(blobSha)) requestBlobShas.set(requestId, blobSha);
