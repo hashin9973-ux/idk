@@ -347,7 +347,7 @@ function parseSlashToolCommand(input, availableTools = DIRECT_AGENT_TOOL_NAMES) 
 
 function slashSchemaType(schema) {
   if (!schema || typeof schema !== 'object') return 'any';
-  if (Array.isArray(schema.enum)) return (schema.type || 'value') + ' (' + schema.enum.map(value => JSON.stringify(value)).join('|') + ')';
+  if (Array.isArray(schema.enum)) return (schema.type || 'value') + ' (' + schema.enum.map(value => String(value)).join(' / ') + ')';
   if (schema.type === 'array') return 'array' + (schema.items && schema.items.type ? '<' + schema.items.type + '>' : '');
   if (schema.type === 'object') return 'object';
   if (Array.isArray(schema.anyOf)) return schema.anyOf.map(slashSchemaType).join('|');
@@ -357,11 +357,11 @@ function slashSchemaType(schema) {
 function slashSchemaLines(name, schema, required = false, depth = 0) {
   const indent = '  '.repeat(depth + 1);
   const details = [slashSchemaType(schema), required ? 'required' : 'optional'];
-  if (schema && schema.default !== undefined) details.push('default=' + JSON.stringify(schema.default));
+  if (schema && schema.default !== undefined) details.push('default=' + (typeof schema.default === 'string' ? schema.default : String(schema.default)));
   if (schema && typeof schema.description === 'string' && schema.description.trim()) {
     details.push(schema.description.trim().replace(/\s+/g, ' ').slice(0, 180));
   }
-  const lines = [indent + name + ' (' + details.join('; ') + ')'];
+  const lines = [indent + '- `' + name + '` — ' + details.join('; ')];
   let nestedProperties = null;
   let nestedRequired = [];
   if (schema && schema.type === 'object' && schema.properties && typeof schema.properties === 'object') {
@@ -371,7 +371,7 @@ function slashSchemaLines(name, schema, required = false, depth = 0) {
       schema.items.properties && typeof schema.items.properties === 'object') {
     nestedProperties = schema.items.properties;
     nestedRequired = Array.isArray(schema.items.required) ? schema.items.required : [];
-    lines.push(indent + '  items: object');
+    lines.push(indent + '  - *Items:* object);
   }
   if (nestedProperties) {
     for (const [childName, childSchema] of Object.entries(nestedProperties)) {
@@ -394,15 +394,15 @@ function formatSlashToolCatalog(tools) {
       slashSchemaLines(name, schema, required.has(name), 0)
     );
     const description = String(fn.description || 'Local Windows workspace tool').replace(/\s+/g, ' ').trim();
-    return '/' + fn.name + ' — ' + description + '\n' +
-      (args.length ? '  Arguments:\n' + args.join('\n') : '  Arguments: none');
+    return '### `/' + fn.name + '`\n\n' + description + '\n\n' +
+      (args.length ? '**Arguments**\n\n' + args.join('\n') : '**Arguments:** none');
   });
   return [
-    'AVAILABLE LOCAL SLASH COMMANDS',
-    'Use the exact command names below. String values containing spaces must be double-quoted. Use JSON literals for arrays, objects, booleans, numbers, and null.',
-    'Command syntax: /tool_name argument=value other="text with spaces". A command with no arguments is simply /tool_name.',
+    '## Available local Windows tools',
+    'Use the exact command names below. Invoke one command per assistant response, with no extra text. Quote string values. Use plain numbers, true/false and null; use bracketed structured values only for arguments whose schema requires an array or nested object.',
+    'Command syntax: `/tool_name argument=value other="text with spaces"`. A command with no arguments is simply `/tool_name`. Tool observations are returned as Markdown, never as serialized JSON.',
     ...entries
-  ].join('\n');
+  ].join('\n\n');
 }
 function createDirectAgentRuntime({
   fetchImpl = globalThis.fetch,
