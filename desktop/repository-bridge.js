@@ -1140,15 +1140,20 @@ function createRepositoryBridge(deps = {}) {
       lines: snapshot.content.split(/\r?\n/).length,
       sha256: createHash('sha256').update(bytes).digest('hex')
     };
+    let unchanged = false;
     if (!mailbox && allowLegacyGitHubMailboxForTests === true) {
       const legacyPath = 'bridge/context/filesystem-index.md';
       const existing = await readRemoteContent(legacyPath);
-      await writeRemoteContent(legacyPath, bytes, existing && existing.sha);
+      if (existing && existing.content && Buffer.from(existing.content).equals(bytes)) {
+        unchanged = true;
+      } else {
+        await writeRemoteContent(legacyPath, bytes, existing && existing.sha);
+      }
     } else {
       await publishState(true);
     }
     return { ok: true, path: mailbox ? 'STATUS.md' : 'bridge/context/filesystem-index.md', bytes: bytes.length,
-      sha256: latestFilesystemIndexSnapshot.sha256, published_as_status_summary: Boolean(mailbox) };
+      sha256: latestFilesystemIndexSnapshot.sha256, unchanged, published_as_status_summary: Boolean(mailbox) };
   }
 
   async function publishWorkspaceFile(requestId, file) {
