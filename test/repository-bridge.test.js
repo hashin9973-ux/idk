@@ -1986,6 +1986,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.files.project_commands);
     assert.ok(index.files.directory_tree);
     assert.ok(index.files.instructions);
+    assert.equal(index.files.tools, 'bridge/context/TOOLS.md');
     assert.equal(index.agent_context.protocol, 'chatgpt-local-agent-context/v1');
     assert.match(index.agent_context.tool_failure_contract.no_request, /worker has not received/i);
     assert.match(index.agent_context.tool_failure_contract.rejected, /status rejected/i);
@@ -1994,6 +1995,10 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.equal(index.agent_context.project_commands.scripts.test, 'node --test');
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
     assert.equal(index.agent_context.tool_catalog.catalog_version, 1);
+    assert.equal(index.agent_context.tool_guide.path, 'bridge/context/TOOLS.md');
+    const toolGuide = Buffer.from(fake.files.get('bridge/context/TOOLS.md').content, 'base64').toString('utf8');
+    assert.match(toolGuide, /Any programming language/);
+    assert.match(toolGuide, /Schemas and transport/);
     assert.ok(index.agent_context.operating_rules.some(rule => /request file does not exist in OneDrive.*rather than attributing the failure to Windows execution/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /not native OneDrive integration tools/i.test(rule)));
     assert.equal(index.agent_context.bridge_invocation.transport, 'onedrive-synced-folder');
