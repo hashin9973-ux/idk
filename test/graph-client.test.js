@@ -44,6 +44,23 @@ test('Graph client preserves long Retry-After values without retrying early', as
   assert.equal(calls, 1);
 });
 
+test('Graph client handles empty throttling responses and preserves Retry-After', async () => {
+  let calls = 0;
+  const client = createGraphClient({
+    getAccessToken: async () => 'token',
+    fetchImpl: async () => {
+      calls++;
+      return response('', 429, { 'retry-after': '180' });
+    }
+  });
+  await assert.rejects(client.request(GRAPH_ROOT + '/me/drive'), error => {
+    assert.equal(error.status, 429);
+    assert.equal(error.retryAfterMs, 180000);
+    return true;
+  });
+  assert.equal(calls, 1);
+});
+
 test('Graph URL validation rejects non-Graph and non-v1.0 destinations', () => {
   assert.throws(() => validateGraphUrl('https://example.com/v1.0/me'));
   assert.throws(() => validateGraphUrl('https://graph.microsoft.com/beta/me'));
