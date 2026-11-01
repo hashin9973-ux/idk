@@ -2432,6 +2432,49 @@ function registerIpc() {
     dashboardSend('app:preferences', getUiState().settings);
     return { theme };
   });
+  ipcMain.handle('app:onedrive-state', event => {
+    assertLocalUi(event, 'dashboard.html');
+    return oneDriveMailbox ? oneDriveMailbox.getState() : { configured: false, status: 'unavailable' };
+  });
+  ipcMain.handle('app:onedrive-choose-folder', async event => {
+    assertLocalUi(event, 'dashboard.html');
+    return chooseOneDriveFolder();
+  });
+  ipcMain.handle('app:repository-bridge-config', async (event, input) => {
+    assertLocalUi(event, 'dashboard.html');
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw new Error('OneDrive mailbox settings are required.');
+    }
+    const oneDrivePath = String(input.oneDrivePath || '').trim();
+    if (oneDrivePath && !path.isAbsolute(oneDrivePath)) {
+      throw new Error('Select an absolute path to the OneDrive-synced Bridge/runtime folder.');
+    }
+    const current = repositoryBridge ? repositoryBridge.getState() : {};
+    if (Number(current.activeCount) > 0 || Number(current.pendingCount) > 0) {
+      throw new Error('Cannot switch the OneDrive mailbox while requests are active or queued.');
+    }
+    const previous = { ...(settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE) };
+    const retentionDays = Number.isInteger(input.retentionDays) && input.retentionDays >= 1 && input.retentionDays <= 365
+      ? input.retentionDays : previous.retentionDays || DEFAULT_REPOSITORY_BRIDGE.retentionDays;
+    const next = { oneDrivePath, retentionDays };
+    if (repositoryBridge) await repositoryBridge.stop();
+    try {
+      if (repositoryBridge) repositoryBridge.setConfig(next);
+      else { settings.repositoryBridge = next; persistSettings(); }
+      if (oneDriveMailbox) await oneDriveMailbox.ensureReady();
+      if (repositoryBridge) await repositoryBridge.start();
+    } catch (error) {
+      if (repositoryBridge) {
+        try { repositoryBridge.setConfig(previous); } catch { settings.repositoryBridge = previous; persistSettings(); }
+        try { await repositoryBridge.start(); } catch {}
+      } else { settings.repositoryBridge = previous; persistSettings(); }
+      throw new Error('OneDrive mailbox change failed; the previous configuration was restored. ' +
+        String(error && error.message || error));
+    }
+    const oneDrive = oneDriveMailbox ? oneDriveMailbox.getState() : { configured: false };
+    broadcastOneDriveState(oneDrive);
+    return { repositoryBridge: settings.repositoryBridge, oneDrive, bridge: repositoryBridge ? repositoryBridge.getState() : null };
+  });
   ipcMain.handle('app:select-workspace', async event => {
     assertLocalUi(event, 'index.html');
     const result = await selectWorkspace();
