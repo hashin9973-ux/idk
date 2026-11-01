@@ -329,7 +329,7 @@ test('production bridge refuses to fall back to the GitHub mailbox', () => {
       getWorkspaceRoot: () => process.cwd(),
       executeTool: async () => ({ ok: true })
     }),
-    /OneDrive-synchronized Bridge\/runtime mailbox is required; GitHub is not a mailbox fallback/
+    /existing OneDrive-synchronized Bridge mailbox is required; GitHub is not a mailbox fallback/
   );
 });
 
