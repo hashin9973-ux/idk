@@ -102,7 +102,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('function updateSlashMenu()'));
   assert.ok(renderer.includes('message.split(/\\s/,1)[0]'));
   assert.ok(renderer.includes('terminal.formatSlashCommand(call.function&&call.function.name,args)'));
-  assert.ok(css.includes('.agent-slash-menu{position:absolute'));
+  assert.ok(styles.includes('.agent-slash-menu{position:absolute'));
   assert.ok(renderer.includes('showAgentCreateDialog'));
   assert.ok(html.includes('agent-create-dialog'));
   assert.ok(html.includes('agent-create-provider'));
