@@ -15,40 +15,59 @@ This is a manual test because GitHub Actions cannot prove the app can access the
 
 1. Launch Windows Bridge and wait for the full dashboard to appear. Confirm there is no separate compact overlay window.
 2. If needed, click **Choose folder** and select the locally synchronized `Bridge/runtime` folder. Confirm the app accepts the folder and reports the OneDrive mailbox ready.
-3. Verify **Worker online** appears after the OneDrive mailbox is configured; no Start Worker action should be required. Pause OneDrive sync temporarily and confirm the app reports delivery/reconnect state without crashing. Resume sync and verify it recovers.
+3. Verify **Worker online** appears after the local OneDrive folder passes mailbox initialization; no Start Worker action should be required. This status reflects local worker polling and file access, not confirmation that OneDrive cloud synchronization is connected. The paused-sync delivery test is in Section 2; do not infer cloud sync health from the local worker indicator.
 4. In the connected OneDrive integration, open `Bridge/runtime/bridge/context/latest.json`.
 5. Confirm the index points to the environment, project, capabilities, directory tree, and instruction inventory snapshots.
 6. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
 7. Minimize or close the dashboard to the tray. Verify its window disappears, the tray icon remains, and the worker keeps polling. Reopen it from the tray and verify the last selected tab and widget layout return. Confirm an embedded page can reload after the dashboard was unloaded.
 
-Expected outcome: the worker reports running, the mailbox has a fresh heartbeat, and context/index files appear in OneDrive after local sync. No GitHub sign-in or mailbox repository is required.
+Expected outcome: the local worker reports running and its heartbeat is fresh. Context/index files become visible in OneDrive only after the sync client uploads them. A local **Worker online** indicator is not proof of cloud synchronization. No GitHub sign-in or mailbox repository is required.
 
 ## 2. Test a read-only request through the existing ChatGPT conversation and OneDrive
 
-In the same ChatGPT conversation, use the connected OneDrive integration to create a new file at `Bridge/runtime/bridge/requests/req-smoke-project-status-001.json`. If you have run this test before, replace the example ID with a fresh unique ID in both the filename and `request_id`:
+First bootstrap this ChatGPT conversation's bridge session. Use the connected OneDrive integration to create `Bridge/runtime/bridge/requests/req-smoke-session-start-001.json` with this request. A `session_start` request must omit `session_id`; use a current ISO-8601 `created_at` value:
+
+```json
+{
+  "protocol": "chatgpt-local-repo-bridge/v1",
+  "request_id": "req-smoke-session-start-001",
+  "created_at": "2026-11-01T00:00:00Z",
+  "tool": "session_start",
+  "args": { "label": "OneDrive smoke test" }
+}
+```
+
+Wait for the request to synchronize to Windows and for its matching result to appear. Read `Bridge/runtime/bridge/results/req-smoke-session-start-001.json` through OneDrive and verify its request ID and completed status. Copy the exact `result.session_id` from the successful result; every ordinary request from this ChatGPT conversation must include it as a top-level `session_id` field. For a repeated test, use a fresh session-start request ID and use the matching returned session ID.
+
+Now publish the read-only project-status request. Replace the example request ID with a fresh unique ID if it already exists:
 
 ```json
 {
   "protocol": "chatgpt-local-repo-bridge/v1",
   "request_id": "req-smoke-project-status-001",
-  "created_at": "2026-10-24T00:00:00Z",
+  "session_id": "<session_id returned by session_start>",
+  "created_at": "2026-11-01T00:01:00Z",
   "tool": "project_status",
   "args": {}
 }
 ```
 
-Use a fresh request ID each time; never edit an existing request to retry it.
+To exercise delayed cloud synchronization, pause OneDrive sync before publishing this project-status request. While paused, confirm that the exact request file has not arrived in the local Windows `requests/` folder and that no matching worker claim exists. The worker may still report local polling as online. Resume sync, then verify the same request ID is claimed and completed and its result appears in OneDrive. When not running this delay test, leave OneDrive sync active.
+
+Use a fresh request ID for each new operation, never edit an existing request, and include the returned `session_id` on every ordinary request. If a write response is uncertain, inspect the exact request path and matching result first; do not publish a second ID for the same uncertain side effect.
 
 1. Wait for OneDrive to synchronize the request to Windows and for the worker to discover it (local polling is approximately 2 seconds; cloud sync can add extra delay).
 2. Read `Bridge/runtime/bridge/results/req-smoke-project-status-001.json` through the OneDrive integration.
 3. Verify the result references the same request ID and reports `completed`.
 4. Check that the result corresponds to the selected disposable workspace.
 
-Expected outcome: the request is executed locally and its result is synchronized back to OneDrive. This verifies both cloud-to-Windows and Windows-to-cloud directions. No local output is injected into the ChatGPT composer or conversation.
+Expected outcome: the request is executed locally and its matching result is synchronized back to OneDrive. The delayed-sync variant verifies that cloud-to-Windows delivery resumes for the same request ID; reading the matching cloud result verifies the Windows-to-cloud return path. No local output is injected into the ChatGPT composer or conversation.
 
 ## 3. Test refresh and large-output retrieval
 
-1. Create a second request using tool `refresh_environment_context` and `args: {}`, with a unique request ID.
+Include the same top-level `session_id` in every request in this section.
+
+1. Create a second ordinary request using tool `refresh_environment_context` and `args: {}`, with a unique request ID and the same top-level `session_id` returned by `session_start`.
 2. Read its result and confirm `bridge/context/latest.json` has a newer `generated_at` timestamp.
 3. Create a harmless text file larger than 12 KiB in the disposable workspace and request a bounded `read_file` on it.
 4. Read the matching result. If it is `partial` or has `output_truncated: true`, verify the nested tool result's `ok`, `exitCode`, `stdout_truncated`, `stderr_truncated`, and `stderr`. Treat this as incomplete output, not a safety denial unless the result explicitly says rejected/cancelled or reports an approval/policy error.
@@ -58,7 +77,7 @@ Expected outcome: large output is marked incomplete honestly, the real execution
 
 ## 4. Test automatic sandbox writes, approval-gated execution, and file upload
 
-Use only harmless disposable files.
+Use only harmless disposable files. Include the same top-level `session_id` in every request in this section.
 
 1. Submit a `write_file` request targeting a new file in the disposable workspace, using `tool: "write_file"` and `args: {"path":"sandbox-write-test.txt","content":"written inside workspace"}`.
 2. Verify the request completes without a native approval dialog and the file appears inside the selected workspace.
@@ -75,7 +94,7 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 1. Quit using the `×` control or the tray menu. Confirm the tray icon disappears and the worker publishes its stopped state.
 2. Relaunch the app and confirm it automatically reconnects without a Start Worker button.
 3. Confirm no output is injected into the ChatGPT conversation.
-4. If any request is `needs_manual_recovery`, inspect the disposable workspace and claim/result files before attempting another request. Never replay an uncertain side-effecting request with the same ID.
+4. If any request is `needs_manual_recovery`, inspect the disposable workspace and matching claim/result files before taking further action. Read the existing request/result using that exact ID; do not create a second request ID or re-execute the uncertain side effect until its outcome is understood.
 
 ## 6. Test speech captions and shared-folder synchronization
 
@@ -95,7 +114,7 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 - [ ] Workspace file edits run automatically without escaping the selected folder.
 - [ ] A declined shell command remains unexecuted and returns `cancelled`.
 - [ ] File upload requires a local approval and returns exact bytes through OneDrive.
-- [ ] Worker auto-starts with OneDrive configured and recovers when OneDrive sync pauses and resumes.
+- [ ] Worker auto-starts when the local OneDrive folder is available. While cloud sync is paused, local polling is not treated as proof of cloud delivery; a request remains unclaimed until the same file synchronizes to Windows, then completes once after sync resumes.
 - [ ] The full dashboard is the only main window; no compact overlay is launched.
 - [ ] Minimizing/closing to tray saves the current tab/widget layout, unloads the dashboard and embedded browser views, and leaves the worker alive.
 - [ ] Reopening restores the dashboard layout and browser-tab references.
