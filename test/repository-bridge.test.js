@@ -2186,3 +2186,60 @@ test('optional mailbox wipe drains a revoked in-flight worker before deleting it
     await bridge.stop();
   }
 });
+
+test('a conflicting immutable result is not mistaken for successful publication on OneDrive', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-result-conflict-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const runtime = path.join(temp, 'OneDrive', 'Bridge', 'runtime');
+  const settings = { repositoryBridge: { oneDrivePath: runtime, retentionDays: 30 } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
+
+  const requestId = 'req-onedrive-result-conflict';
+  const request = {
+    protocol: PROTOCOL,
+    request_id: requestId,
+    created_at: new Date().toISOString(),
+    tool: 'session_start',
+    args: { label: 'Result conflict test' }
+  };
+  await mailbox.writeJson('bridge/requests/' + requestId + '.json', request, null, true);
+
+  let conflictWritten = false;
+  const bridge = createRepositoryBridge({
+    mailbox,
+    ...{ settings, getSettings: () => settings, persistSettings: () => {} },
+    getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async () => {
+      await mailbox.writeJson('bridge/results/' + requestId + '.json', {
+        protocol: RESULT_PROTOCOL,
+        request_id: requestId,
+        status: 'failed',
+        completed_at: new Date().toISOString(),
+        error: 'A different immutable result was already published.'
+      }, null, true);
+      conflictWritten = true;
+      return { autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' };
+    },
+    onSessionAssigned: async () => {},
+    executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
+    intervalMs: 5000
+  });
+
+  try {
+    const started = await bridge.start();
+    assert.equal(started.transport, 'onedrive-synced-folder');
+    await waitForAsync(async () => {
+      const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
+      return conflictWritten && Boolean(claim && claim.value.status === 'completed') &&
+        bridge.getState().lastError.includes('contents do not match');
+    });
+    const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
+    const storedResult = await mailbox.readJson('bridge/results/' + requestId + '.json');
+    assert.equal(claim.value.result.status, 'completed', 'the claim retains the worker-generated result for recovery');
+    assert.equal(storedResult.value.status, 'failed', 'the worker must not overwrite an existing immutable result');
+    assert.match(bridge.getState().lastError, /contents do not match/i);
+  } finally {
+    await bridge.stop();
+  }
+});

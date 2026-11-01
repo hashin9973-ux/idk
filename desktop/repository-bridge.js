@@ -47,6 +47,18 @@ function isPlainObject(value) {
     (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 }
 
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (!isPlainObject(value)) return value;
+  const ordered = {};
+  for (const key of Object.keys(value).sort()) ordered[key] = canonicalJsonValue(value[key]);
+  return ordered;
+}
+
+function sameJsonValue(left, right) {
+  return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
+}
+
 function cleanError(value) {
   return String(value || 'Unknown bridge error').replace(/[\r\n]+/g, ' ').slice(0, 500);
 }
@@ -1961,9 +1973,23 @@ function createRepositoryBridge(deps) {
       // tombstone check and create-only write so a concurrent delete cannot slip
       // a live result into the mailbox after revocation commits.
       const written = await writeRemoteJson(resultPath, record, null, true);
-      if (written.ok || written.conflict) {
+      if (written.ok) {
         if (knownResultFiles) knownResultFiles.add(requestId + '.json');
-        return { published: true, alreadyExists: written.conflict === true };
+        return { published: true, alreadyExists: false };
+      }
+      if (written.conflict) {
+        // A create-only conflict is not proof that this request's result exists:
+        // compare the complete JSON value before treating it as an idempotent retry.
+        const existing = await readRemoteFile(resultPath);
+        if (!existing || !sameJsonValue(existing.value, record)) {
+          const error = new Error(existing
+            ? 'An immutable result already exists for this request ID, but its contents do not match the result produced by the worker.'
+            : 'An immutable result write conflicted, but the existing result could not be verified.');
+          error.code = 'MAILBOX_RESULT_CONFLICT';
+          throw error;
+        }
+        if (knownResultFiles) knownResultFiles.add(requestId + '.json');
+        return { published: true, alreadyExists: true };
       }
       return { published: false, conflict: false };
     };

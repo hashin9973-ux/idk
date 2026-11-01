@@ -95,10 +95,17 @@ function createOneDriveMailbox({
   }
 
   async function withPathLocks(targets, operation) {
-    const ordered = [...new Set(targets.map(target => {
+    const actualPathsByKey = new Map();
+    for (const target of targets) {
       const resolved = path.resolve(target);
-      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-    }))].sort();
+      const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+      if (!actualPathsByKey.has(key)) actualPathsByKey.set(key, resolved);
+    }
+    const ordered = [...actualPathsByKey.values()].sort((a, b) => {
+      const left = process.platform === 'win32' ? a.toLowerCase() : a;
+      const right = process.platform === 'win32' ? b.toLowerCase() : b;
+      return left.localeCompare(right);
+    });
     async function acquire(index) {
       if (index >= ordered.length) return operation();
       return withPathLock(ordered[index], () => acquire(index + 1));
