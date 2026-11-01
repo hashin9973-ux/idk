@@ -253,15 +253,11 @@ function createVisionService(deps) {
     return Number.isFinite(configured) ? Math.max(0, Math.min(100, configured)) : 100;
   }
 
-  async function readMailboxJson(relativePath) {
-    if (!mailbox || typeof mailbox.readJson !== 'function') {
-      throw new Error('The OneDrive mailbox is unavailable. Select the OneDrive-synced Bridge/runtime folder.');
+  async function readStatusMarkdown() {
+    if (!mailbox || typeof mailbox.readContent !== 'function') {
+      throw new Error('The OneDrive mailbox is unavailable. Select the existing OneDrive-synced Bridge folder.');
     }
-    if (typeof relativePath !== 'string' || relativePath.startsWith('/') ||
-        relativePath.split('/').some(part => !part || part === '.' || part === '..' || !/^[A-Za-z0-9_.-]+$/.test(part))) {
-      throw new Error('Unsafe internal mailbox path.');
-    }
-    return mailbox.readJson(relativePath);
+    return mailbox.readContent('STATUS.md');
   }
 
   function endpointFromClipboard(text) {
@@ -725,13 +721,13 @@ function createVisionService(deps) {
       onedrive: {
         status: oneDriveConfigured ? 'passed' : 'action_required',
         message: oneDriveConfigured
-          ? 'The Windows app has a local OneDrive-synced Bridge/runtime folder configured.'
-          : 'Choose the locally synchronized OneDrive Bridge/runtime folder in the desktop app.'
+          ? 'The Windows app has the existing local OneDrive-synced Bridge folder configured.'
+          : 'Choose the existing locally synchronized OneDrive Bridge folder in the desktop app.'
       },
       mailbox: {
         status: oneDriveConfigured ? 'not_verified' : 'action_required',
         message: oneDriveConfigured
-          ? 'Checking access to the OneDrive mailbox state record.'
+          ? 'Checking access to the consolidated STATUS.md snapshot.'
           : 'Configure OneDrive before checking mailbox access.'
       },
       colab: { status: 'not_verified', message: 'Waiting for the notebook to register its temporary HTTPS tunnel with the app.' },
@@ -740,10 +736,14 @@ function createVisionService(deps) {
     };
     if (oneDriveConfigured) {
       try {
-        const stateRecord = await readMailboxJson('bridge/state/windows-app.json');
-        checks.mailbox = stateRecord && stateRecord.value && stateRecord.value.protocol === 'chatgpt-local-repo-state/v1'
-          ? { status: 'passed', message: 'The app can read a valid Windows worker state record from the OneDrive-synced mailbox.' }
-          : { status: 'failed', message: 'The OneDrive mailbox state record is missing or has an invalid protocol.' };
+        const stateRecord = await readStatusMarkdown();
+        const statusText = stateRecord && stateRecord.content ? stateRecord.content.toString('utf8') : '';
+        const updatedLine = statusText.match(/^- Updated: (.+)$/m);
+        const updatedAt = updatedLine ? Date.parse(updatedLine[1]) : NaN;
+        const fresh = Number.isFinite(updatedAt) && now() - updatedAt <= 3 * 60 * 1000;
+        checks.mailbox = statusText.startsWith('# Windows Bridge Status') && fresh
+          ? { status: 'passed', message: 'The app can read a fresh consolidated STATUS.md snapshot from the OneDrive-synced mailbox.' }
+          : { status: 'failed', message: 'STATUS.md is missing, malformed, or its worker heartbeat is stale.' };
       } catch (error) {
         checks.mailbox = { status: 'failed', message: 'Could not read the OneDrive mailbox: ' + messageOf(error) };
       }
@@ -768,8 +768,8 @@ function createVisionService(deps) {
     const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
       checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
     const next_steps = [];
-    if (checks.onedrive.status !== 'passed') next_steps.push('Choose the local OneDrive-synced Bridge/runtime folder in the app.');
-    if (checks.mailbox.status !== 'passed') next_steps.push('Check that OneDrive has synchronized Bridge/runtime/bridge/state/windows-app.json to this Windows device.');
+    if (checks.onedrive.status !== 'passed') next_steps.push('Choose the existing local OneDrive-synced Bridge folder in the app.');
+    if (checks.mailbox.status !== 'passed') next_steps.push('Check that OneDrive has synchronized the latest Bridge/STATUS.md to this Windows device.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
     if (state.status === 'incompatible_runtime') {
       next_steps.push('Interrupt the old Colab server cell, open the current notebook from main, and run “Start the direct Colab vision server”. The app will continue to block screenshot/TTS requests until API v5 compatibility is confirmed.');
