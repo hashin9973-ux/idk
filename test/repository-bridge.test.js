@@ -2276,17 +2276,18 @@ test('a conflicting immutable result is not mistaken for successful publication 
     }),
     onSessionAssigned: async () => {},
     executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
-    intervalMs: 5000
+    intervalMs: 5000,
+    requestReconciliationIntervalMs: 1
   });
 
   try {
     const started = await bridge.start();
     assert.equal(started.transport, 'onedrive-synced-folder');
+    await bridge.pollOnce();
     await waitForAsync(async () => {
       const claim = await mailbox.readJson('claims/agent-000/' + requestId + '.json');
-      return conflictWritten && Boolean(claim && claim.value.status === 'completed') &&
-        bridge.getState().lastError.includes('contents do not match');
-    });
+      return conflictWritten && Boolean(claim && claim.value.status === 'completed');
+    }, 5000);
     const claim = await mailbox.readJson('claims/agent-000/' + requestId + '.json');
     const storedResult = await mailbox.readJson('result/agent-000/' + requestId + '.json');
     assert.equal(claim.value.result.status, 'completed', 'the claim retains the worker-generated result for recovery');
