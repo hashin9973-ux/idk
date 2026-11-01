@@ -2466,11 +2466,11 @@ function createRepositoryBridge(deps) {
       const filename = typeof discovered === 'string' ? discovered : discovered && discovered.name;
       if (typeof filename !== 'string' || !filename.endsWith('.json')) continue;
       const requestId = filename.slice(0, -'.json'.length);
-      const blobSha = discovered && typeof discovered === 'object' ? discovered.sha : null;
-      if (typeof blobSha === 'string' && /^[a-f0-9]{40}$/i.test(blobSha)) requestBlobShas.set(requestId, blobSha);
       if (!SAFE_ID.test(requestId)) continue;
       if (knownResultFiles && knownResultFiles.has(filename)) continue;
       if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(filename)) continue;
+      const blobSha = discovered && typeof discovered === 'object' ? discovered.sha : null;
+      if (typeof blobSha === 'string' && /^[a-f0-9]{40}$/i.test(blobSha)) requestBlobShas.set(requestId, blobSha);
       pendingRequestQueue.push(filename);
       pendingRequestQueueSet.add(filename);
       updateMailboxUiRecord(requestId, { status: 'queued', progress: 5, tool: 'loading request' });
