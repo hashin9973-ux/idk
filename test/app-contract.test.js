@@ -395,6 +395,7 @@ test('optional GitHub tools store an encrypted app-side credential and do not re
   const main = read('desktop', 'main.js');
   const auth = read('desktop', 'github-auth.js');
   const html = read('desktop', 'index.html');
+  const dashboardHtml = read('desktop', 'dashboard.html');
   const js = read('desktop', 'dashboard-renderer.js');
   assert.match(main, /safeStorage/);
   assert.match(auth, /safeStorage\.encryptString/);
@@ -405,7 +406,7 @@ test('optional GitHub tools store an encrypted app-side credential and do not re
   assert.doesNotMatch(html, /github-row/);
   assert.match(js, /api\.startGitHubLogin/);
   assert.match(js, /api\.pollGitHubLogin/);
-  assert.match(html, /github-connect/);
+  assert.match(dashboardHtml, /github-connect/);
   assert.match(main, /setAlwaysOnTop\(false\)/);
   assert.doesNotMatch(auth, /localStorage|github_api/);
 });
