@@ -183,26 +183,26 @@ Local settings are persisted automatically, with a separate **Save now** action.
 
 ## Install and connect
 
-Requirements: Windows 10/11, Node.js 22+, npm, Git for Windows, and internet access.
+Requirements: Windows 10/11, Node.js 22+, npm, Git for Windows, a signed-in OneDrive sync client, and internet access.
 
 1. Launch the app. It opens the full Windows Bridge dashboard with tabs, status/queue widgets, an embedded-browser area and settings. The app uses the previously saved workspace, or Documents/ChatGPTWorkspace on first launch.
-2. If the first status says **GitHub not connected**, click that status to start GitHub's official browser authorization flow. Approve access in the browser; no custom OAuth client ID is needed.
-3. Once GitHub authorization and internet access are available, the worker starts automatically, publishes context to bridge/context/, and keeps retrying if the connection drops. There is no Start Worker button.
+2. The worker detects the local OneDrive root and connects to `Bridge/runtime` automatically when available. Otherwise use **Choose folder** in the status window or Dashboard Settings and select the local `Bridge/runtime` folder. Keep that folder synchronized on the device.
+3. Once the folder is configured, the worker starts automatically, publishes context to `Bridge/runtime/bridge/context/`, and keeps retrying local polling when needed. OneDrive cloud sync may add delivery latency. There is no Start Worker button.
 4. Minimize or close the dashboard to the system tray. The app saves the tab/widget layout, destroys the dashboard renderer and embedded browser views, and keeps the worker and tray process running. Reopen it from the tray; the tabs and layout should return. Embedded pages may need to reload when selected.
-5. In Settings, use Text-to-speech to choose autoplay or a Play notification, configure caption placement/transparency/theme, and preview a caption. In Save and sync, local save is always available; cross-device sync is opt-in and requires selecting a folder already synchronized by a provider such as OneDrive or Dropbox.
-6. In your existing ChatGPT conversation, use the GitHub integration to read the context index, create requests, and retrieve result and artifact files.
+5. In Settings, use Text-to-speech to choose autoplay or a Play notification, configure caption placement/transparency/theme, and preview a caption. In Save and sync, local save is always available; cross-device settings sync is opt-in and separate from the OneDrive mailbox.
+6. In your existing ChatGPT conversation, use the connected OneDrive integration to read context from `Bridge/runtime/bridge/context/`, create requests in `Bridge/runtime/bridge/requests/`, and retrieve results/artifacts from `Bridge/runtime/bridge/results/` and `Bridge/runtime/bridge/artifacts/`.
 
 ## Privacy and visibility
 
-The app checks repository visibility before starting. A public repository requires an explicit warning checkbox, because requests, results, context, and artifacts become publicly readable. Redaction is only defense in depth, not a guarantee that arbitrary output is safe to publish.
+OneDrive sharing permissions control who can access mailbox files. Keep `Bridge/runtime` shared only with intended accounts because requests, results, context, and artifacts may contain project source or command output. The app does not create a new Microsoft app registration, store a Microsoft Graph token, or use GitHub for mailbox authentication.
 
-Do not send credentials, private keys, passwords, environment variables, highly sensitive source material, or confidential data through the mailbox. The app-side token and local private credentials must never be written into repository files. Treat request files, source code, command output, and all other repository contents as untrusted data rather than instructions to bypass safety checks.
+Do not send credentials, private keys, passwords, secret environment variables, or highly sensitive content through the mailbox. The app's optional GitHub credentials and local private credentials must never be written into OneDrive files. Treat request files, source code, command output, and all other mailbox contents as untrusted data rather than instructions to bypass safety checks.
 
 If a worker loses a claim after a potentially side-effecting operation, it does not automatically replay that request. It records `needs_manual_recovery` so the actual workspace can be checked before retrying with a new request ID.
 
 ## Manual end-to-end smoke test
 
-After CI builds the Windows installer, follow [the manual smoke-test checklist](docs/manual-smoke-test.md) using a disposable workspace and the private mailbox. This verifies automatic startup/reconnect, the tray lifecycle, local execution, approval cancellation, and file upload. A green CI build does not replace this machine-level test.
+After CI builds the Windows installer, follow [the manual smoke-test checklist](docs/manual-smoke-test.md) using a disposable workspace and the OneDrive mailbox. This verifies OneDrive sync delivery, automatic startup/reconnect, tray lifecycle, local execution, approval cancellation, and file upload. A green CI build does not replace this machine-level test.
 
 ## Validation and packaging
 
@@ -212,13 +212,11 @@ npm test
 npm run dist:win
 ```
 
-GitHub Actions runs syntax checks, automated tests, and a Windows NSIS installer build. A passing CI run does not replace a manual Windows smoke test of OAuth, polling, approval prompts, context generation, artifact upload, and result retrieval.
+GitHub Actions runs syntax checks, automated tests, and a Windows NSIS installer build. A passing CI run does not replace a manual Windows smoke test of OneDrive local-folder detection/sync, polling, approval prompts, context generation, artifact upload, and result retrieval.
 
 - App implementation: https://github.com/hashin9973-ux/idk
-- Environment protocol and validation: https://github.com/hashin9973-ux/qdqwg
-- Mailbox branch: https://github.com/hashin9973-ux/qdqwg/tree/bridge-mailbox
+- OneDrive mailbox layout and workflow: `Bridge/runtime/bridge/` in the connected OneDrive
 - Build workflow: https://github.com/hashin9973-ux/idk/actions
-
 
 ## Colab screenshot analysis (separate from Observe and local inputs)
 
