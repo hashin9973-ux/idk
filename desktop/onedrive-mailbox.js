@@ -436,7 +436,6 @@ function createOneDriveMailbox({
     return {
       configured: Boolean(root),
       rootPath: root || '',
-      runtimePath: root || '',
       mailboxPath: root || '',
       transport: 'onedrive-synced-folder',
       cloudPath: 'Bridge',
