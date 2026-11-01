@@ -63,15 +63,20 @@ function normalizeDirectAgentConfig(value) {
   if (apiKey.length > 4096) throw new Error('The API key is longer than 4,096 characters.');
   const systemPrompt = typeof value.systemPrompt === 'string' ? value.systemPrompt.trim() : '';
   if (systemPrompt.length > 12000) throw new Error('The custom agent instructions are longer than 12,000 characters.');
-  const temperature = value.temperature === undefined ? 0.2 : Number(value.temperature);
-  if (!Number.isFinite(temperature) || temperature < 0 || temperature > 2) {
-    throw new Error('Temperature must be from 0 to 2.');
-  }
+  const numberSetting = (key, fallback, min, max, label) => {
+    const number = value[key] === undefined ? fallback : Number(value[key]);
+    if (!Number.isFinite(number) || number < min || number > max) throw new Error(label + ' must be from ' + min + ' to ' + max + '.');
+    return number;
+  };
+  const temperature = numberSetting('temperature', 0.2, 0, 2, 'Temperature');
+  const topP = numberSetting('topP', 1, 0, 1, 'Top-p');
+  const frequencyPenalty = numberSetting('frequencyPenalty', 0, -2, 2, 'Frequency penalty');
+  const presencePenalty = numberSetting('presencePenalty', 0, -2, 2, 'Presence penalty');
   const maxTokens = value.maxTokens === undefined ? 8192 : Number(value.maxTokens);
   if (!Number.isInteger(maxTokens) || maxTokens < 256 || maxTokens > 32768) {
     throw new Error('Maximum response tokens must be an integer from 256 to 32,768.');
   }
-  return { provider, endpoint, model, apiKey, systemPrompt, temperature, maxTokens };
+  return { provider, endpoint, model, apiKey, systemPrompt, temperature, topP, frequencyPenalty, presencePenalty, maxTokens };
 }
 
 function safeError(value, secret = '') {
@@ -443,6 +448,9 @@ function createDirectAgentRuntime({
         messages,
         stream: true,
         temperature: config.temperature,
+        top_p: config.topP,
+        frequency_penalty: config.frequencyPenalty,
+        presence_penalty: config.presencePenalty,
         max_tokens: config.maxTokens
       })
     });
