@@ -774,45 +774,6 @@ function createVisionService(deps) {
     };
   }
 
- = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
-    else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
-    else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
-    if (state.runtime_fresh && state.status === 'incompatible_runtime') {
-      checks.model = { status: 'failed', message: state.message || 'The running Colab notebook is missing required API v5 capabilities.' };
-    } else if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The connected Colab vision model reports ready. The first real screenshot request may still need warm-up.' };
-    else if (state.runtime_fresh && ['gpu_unavailable', 'needs_authentication', 'error'].includes(state.status)) checks.model = { status: 'failed', message: state.message };
-    else if (state.runtime_fresh && state.enabled) checks.model = { status: 'in_progress', message: 'Vision is active and model setup/download is in progress. Keep the Colab cell running and check status again.' };
-    else checks.model = { status: 'not_verified', message: 'The model is not ready yet. Reconnect Colab to activate vision, or use computer(action=enable) to retry an inactive compatible runtime.' };
-    checks.vision = state.status === 'incompatible_runtime'
-      ? { status: 'disabled', message: 'The endpoint is reachable, but this app will not send screenshots or speech until the notebook advertises the required API v5 features.' }
-      : state.enabled
-        ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the connected model is ready for inference.' : 'Vision is enabled; model setup is still in progress.' }
-        : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
-    const passed = checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
-    const failed = checks.onedrive.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
-    const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
-      checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
-    const next_steps = [];
-    if (checks.onedrive.status !== 'passed') next_steps.push('Choose the local OneDrive-synced Bridge/runtime folder in the app.');
-    if (checks.mailbox.status !== 'passed') next_steps.push('Check that OneDrive has synchronized Bridge/runtime/bridge/state/windows-app.json to this Windows device.');
-    if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
-    if (state.status === 'incompatible_runtime') {
-      next_steps.push('Interrupt the old Colab server cell, open the current notebook from main, and run “Start the direct Colab vision server”. The app will continue to block screenshot/TTS requests until API v5 compatibility is confirmed.');
-    } else if (checks.model.status === 'in_progress') {
-      next_steps.push('Vision is already active. Model setup/download is still in progress; check computer(action=status) for progress.');
-    } else if (checks.model.status !== 'passed') {
-      next_steps.push('After the direct tunnel connects, vision activates and model setup starts automatically. Use computer(action=enable) only to retry activation if status shows inactive.');
-    }
-    if (checks.vision.status === 'disabled' && state.status !== 'incompatible_runtime') {
-      next_steps.push('The runtime is connected but inactive. Call computer(action=enable) to retry activation.');
-    }
-    return {
-      status: passed ? 'ready' : failed ? 'failed' : loading ? 'loading' : 'action_required',
-      checked_at: checkedAt, notebook_url: COLAB_NOTEBOOK_URL, checks, next_steps,
-      note: 'The tunnel URL and random bearer key are held only in app/notebook memory for the current runtime. Screenshot bytes and vision reports bypass GitHub; the report returns through the app’s normal bridge result.'
-    };
-  }
-
   async function status() {
     if (endpointWatch && endpointWatch.active && endpointWatchAttemptInProgress) {
       return {
