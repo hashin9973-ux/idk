@@ -467,6 +467,7 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-onedrive-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const runtime = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(runtime, { recursive: true });
   const settings = { repositoryBridge: { oneDrivePath: runtime, retentionDays: 30 } };
   const persistSettings = () => true;
   const mailbox = createOneDriveMailbox({ getSettings: () => settings });
