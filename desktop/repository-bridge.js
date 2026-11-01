@@ -1391,13 +1391,11 @@ function createRepositoryBridge(deps = {}) {
   function isSafeMailboxCleanupPath(relativePath) {
     const value = String(relativePath || '');
     const parts = value.split('/');
-    if (parts.length < 3 || parts[0] !== 'bridge' ||
-        parts.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) return false;
-    if (parts[1] === 'sessions') {
-      return parts.length === 3 && /^session-[a-f0-9]{32}\.json$/.test(parts[2]);
-    }
-    return ['requests', 'results', 'claims', 'artifacts', 'agent-messages', 'agent-message-receipts'].includes(parts[1]) &&
-      !parts.some(segment => segment === '.gitkeep');
+    if (parts.length !== 3 || !['request', 'claims', 'result', 'messages', 'sandbox storage'].includes(parts[0]) ||
+        !/^agent-[0-9]{3,}$/.test(parts[1]) ||
+        parts.some(segment => !segment || segment === '.' || segment === '..' || !/^[A-Za-z0-9_. -]+$/.test(segment))) return false;
+    if (parts[0] === 'messages') return /^msg-[0-9]{13}-[a-f0-9]{32}(?:\.read)?\.json$/.test(parts[2]);
+    return parts[2] !== '.gitkeep';
   }
 
   async function commitMailboxDeletions(files) {
