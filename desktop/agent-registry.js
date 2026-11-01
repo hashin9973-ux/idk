@@ -754,117 +754,491 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function wipeMailbox(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required for mailbox cleanup.');
-    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted session revocation first.');
+    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted local session revocation first.');
     if (typeof deleteRemoteFiles !== 'function') throw new Error('Safe mailbox deletion is unavailable; the session remains revoked.');
+    const sessionRemote = await readSession(sessionId);
+    const agentId = sessionRemote && sessionRemote.value.agent_id;
+    if (!agentId) throw new Error('The revoked session has no local agent ownership record.');
     const files = new Map();
     const addFile = (filePath, sha) => {
       if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha);
     };
-    const requestEntries = await listFolder('bridge/requests');
-    const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)))];
     let deletedRequests = 0;
-    let ownedRequestRecords = 0;
-    const requestRecords = [];
-    for (let start = 0; start < requestNames.length; start += 16) {
-      const group = requestNames.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
-        const requestId = name.slice(0, -5);
-        const requestRemote = await readRemoteFile('bridge/requests/' + name);
-        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== REQUEST_RECORD_PROTOCOL ||
-            requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
-        ownedRequestRecords++;
-        const [claim, result] = await Promise.all([
-          readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
-        ]);
-        if (!claim || !result || !claim.value || !result.value ||
-            claim.value.protocol !== 'chatgpt-local-repo-claim/v1' || result.value.protocol !== 'chatgpt-local-repo-result/v1' ||
-            claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
-            result.value.request_id !== requestId || (result.value.session_id && result.value.session_id !== sessionId) ||
-            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
-        return { requestId, requestRemote, claim, result };
-      }));
-      requestRecords.push(...rows.filter(Boolean));
-    }
-    const flatArtifacts = await listFolder('bridge/artifacts');
-    for (const record of requestRecords) {
-      const name = record.requestId + '.json';
-      addFile('bridge/requests/' + name, record.requestRemote.sha);
-      addFile('bridge/claims/' + name, record.claim.sha);
-      addFile('bridge/results/' + name, record.result.sha);
-      const manifest = Array.isArray(record.result.value.artifacts) ? record.result.value.artifacts : [];
-      const requestArtifactPrefix = 'bridge/artifacts/' + record.requestId + '/';
-      const legacyBatchArtifactPrefix = 'bridge/artifacts/' + record.requestId + '-batch-output-';
-      const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
-        typeof value === 'string' && (value.startsWith(requestArtifactPrefix) ||
-          value.startsWith(legacyBatchArtifactPrefix))));
-      const nested = await listFolder('bridge/artifacts/' + record.requestId);
-      for (const item of [...flatArtifacts, ...nested]) {
-        const itemPath = String(item && (item.path || item.name) || '');
-        // A revoked request's result journal is intentionally replaced with a
-        // compact cancellation record, so its original artifact manifest may
-        // no longer exist. The request-ID-scoped folder/legacy prefix remain
-        // authoritative ownership boundaries for orphaned request artifacts.
-        const requestScoped = itemPath.startsWith(requestArtifactPrefix) || itemPath.startsWith(legacyBatchArtifactPrefix);
-        if ((ownedPaths.has(itemPath) || requestScoped) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
+    let preservedRequests = 0;
+    const requestEntries = await listFolder('request/' + agentId);
+    for (const item of requestEntries) {
+      const name = String(item && (item.name || item.path) || '').split('/').pop();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(name)) continue;
+      const requestId = name.slice(0, -5);
+      const requestPath = 'request/' + agentId + '/' + name;
+      const [requestRemote, claim, result] = await Promise.all([
+        readRemoteFile(requestPath),
+        readRemoteFile('claims/' + agentId + '/' + name),
+        readRemoteFile('result/' + agentId + '/' + name)
+      ]);
+      if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId ||
+          requestRemote.value.session_id !== sessionId) continue;
+      if (!claim || !result || !claim.value || !result.value ||
+          claim.value.request_id !== requestId || claim.value.session_id !== sessionId ||
+          claim.value.status !== 'completed' || result.value.request_id !== requestId ||
+          (result.value.session_id && result.value.session_id !== sessionId) ||
+          !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) {
+        preservedRequests++;
+        continue;
       }
+      addFile(requestPath, requestRemote.sha);
+      addFile('claims/' + agentId + '/' + name, claim.sha);
+      addFile('result/' + agentId + '/' + name, result.sha);
       deletedRequests++;
     }
-
-    const sessionEntries = await listFolder('local/sessions');
-    const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
-    if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
     let deletedMessages = 0;
-    for (let start = 0; start < recipientSessions.length; start += 12) {
-      const group = recipientSessions.slice(start, start + 12);
-      const inboxes = await Promise.all(group.map(async recipientSessionId => {
-        let entries;
-        try { entries = await listFolder(inboxPath(recipientSessionId)); }
-        catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-        return { recipientSessionId, entries };
-      }));
-      for (const inbox of inboxes) {
-        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
-        for (let batch = 0; batch < candidates.length; batch += 16) {
-          const rows = await Promise.all(candidates.slice(batch, batch + 16).map(async item => {
-            const name = String(item.name || item.path).split('/').pop();
-            const messageId = name.slice(0, -5);
-            const messageRemote = await readRemoteFile(messagePath(inbox.recipientSessionId, messageId));
-            const record = messageRemote && messageRemote.value;
-            if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' || record.message_id !== messageId ||
-                record.recipient_session_id !== inbox.recipientSessionId ||
-                (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) return null;
-            return { recipientSessionId: inbox.recipientSessionId, messageId, messageRemote };
-          }));
-          for (const item of rows.filter(Boolean)) {
-            addFile(messagePath(item.recipientSessionId, item.messageId), item.messageRemote.sha);
-            const receiptPath = messageReceiptPath(item.recipientSessionId, item.messageId);
-            const receipt = await readRemoteFile(receiptPath);
-            if (receipt && receipt.value && receipt.value.protocol === 'chatgpt-local-agent-message-receipt/v1' &&
-                receipt.value.message_id === item.messageId && receipt.value.recipient_session_id === item.recipientSessionId) {
-              addFile(receiptPath, receipt.sha);
-            }
-            deletedMessages++;
+    const messageAgents = await listFolder('messages');
+    for (const folder of messageAgents) {
+      if (!folder || folder.type !== 'dir' || !AGENT_ID_PATTERN.test(folder.name)) continue;
+      const entries = await listFolder(inboxPath(folder.name));
+      for (const entry of entries) {
+        const name = String(entry && (entry.name || entry.path) || '').split('/').pop();
+        const receipt = name.match(/^(msg-[0-9]{13}-[a-f0-9]{32})\\.read\\.json$/);
+        if (receipt) {
+          const messageId = receipt[1];
+          const message = await readRemoteFile(messagePath(folder.name, messageId));
+          const record = message && message.value;
+          if (record && (record.sender_session_id === sessionId || record.recipient_session_id === sessionId)) {
+            addFile(messageReceiptPath(folder.name, messageId), entry.sha || (await readRemoteFile(messageReceiptPath(folder.name, messageId)))?.sha);
           }
+          continue;
         }
+        if (!/^(msg-[0-9]{13}-[a-f0-9]{32})\\.json$/.test(name)) continue;
+        const messageId = name.slice(0, -5);
+        const messageRemote = await readRemoteFile(messagePath(folder.name, messageId));
+        const record = messageRemote && messageRemote.value;
+        if (!record || record.message_id !== messageId ||
+            (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) continue;
+        addFile(messagePath(folder.name, messageId), messageRemote.sha);
+        const receiptPath = messageReceiptPath(folder.name, messageId);
+        const receipt = await readRemoteFile(receiptPath);
+        if (receipt) addFile(receiptPath, receipt.sha);
+        deletedMessages++;
       }
     }
-    const deletion = await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })));
-    const preservedRequests = Math.max(0, ownedRequestRecords - deletedRequests);
+    const deletion = files.size ? await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha }))) : { deleted: 0 };
+    unreadMessageCountCache.delete(sessionId);
     return {
       status: preservedRequests ? 'completed_with_preserved_records' : 'completed',
-      deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
-      deleted_request_records: deletedRequests, deleted_message_records: deletedMessages,
+      deleted_records: deletedRequests + deletedMessages,
+      deleted_files: deletion.deleted || files.size,
+      deleted_request_records: deletedRequests,
+      deleted_message_records: deletedMessages,
       preserved_request_records: preservedRequests,
       preservation_note: preservedRequests
-        ? 'Some requests were retained because their claim/result journal was missing, active, incomplete, or could not be proven terminal. Retry cleanup after those operations settle.'
+        ? 'Some requests were retained because their claim/result journal was missing, active, incomplete, or could not be proven terminal.'
         : null,
-      commit_sha: deletion.commitSha || null, preserved_session_and_revocation_records: true
+      preserved_local_session_registry: true
     };
   }
 
-  async function unreadMessageSummary(sessionId) {
+
+  async function countUnreadMessages(sessionId) {
+    return (await unreadMessageSummary(sessionId)).count;
+  }
+
+  async function statuses(filterAgentId = null) {
+    if (filterAgentId && !AGENT_ID_PATTERN.test(filterAgentId)) throw new Error('agent_id has an invalid format.');
+    const ids = filterAgentId ? [filterAgentId] : await listSeatIds();
+    const rows = await Promise.all(ids.map(async agentId => {
+      const row = await readSeatAndSession(agentId);
+      if (!row.remote) return null;
+      const seat = row.seat;
+      if (seat.protocol !== AGENT_RECORD_PROTOCOL) {
+        const lastActivity = activityTime(seat, null);
+        const busy = isBusy(seat, null);
+        const active = Boolean(lastActivity && clock() - lastActivity <= AGENT_ACTIVITY_RECENCY_WINDOW_MS);
+        return {
+          agent_id: agentId, label: seat.label || agentId, status: active ? 'active' : 'inactive', busy,
+          session_id: null, last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
+          last_request_id: seat.last_request_id || null, last_completed_at: seat.last_completed_at || null,
+          recent_request_ids: Array.isArray(seat.recent_request_ids) ? seat.recent_request_ids.slice(-50) : [],
+          active_request_ids: Array.isArray(seat.active_request_ids) ? seat.active_request_ids.slice(-50) : [],
+          reusable: !busy && !active, legacy_record: true
+        };
+      }
+      const session = row.session;
+      const lastActivity = activityTime(seat, session);
+      const busy = isBusy(seat, session);
+      const active = Boolean(session && session.status === 'active' && lastActivity && clock() - lastActivity <= AGENT_ACTIVITY_RECENCY_WINDOW_MS);
+      const paused = Boolean(session && session.status === 'paused');
+      const unreadSummary = session && seat.current_session_id
+        ? await unreadMessageSummary(seat.current_session_id) : { count: 0, partial: false };
+      return {
+        agent_id: agentId, label: seat.label || (session && session.label) || agentId,
+        status: paused ? 'paused' : active ? 'active' : 'inactive', busy,
+        session_id: seat.current_session_id || null, session_status: session && session.status || 'missing', paused,
+        unread_message_count: unreadSummary.count,
+        unread_message_count_partial: unreadSummary.partial,
+        last_revoked_session_id: seat.last_revoked_session_id || null,
+        last_activity_at: lastActivity ? new Date(lastActivity).toISOString() : null,
+        last_request_id: seat.last_request_id || (session && session.last_request_id) || null,
+        last_completed_at: seat.last_completed_at || (session && session.last_completed_at) || null,
+        recent_request_ids: Array.isArray(seat.recent_request_ids) ? seat.recent_request_ids.slice(-50) : [],
+        active_request_ids: [...new Set([
+          ...(Array.isArray(seat.active_request_ids) ? seat.active_request_ids : []),
+          ...(Array.isArray(session && session.active_request_ids) ? session.active_request_ids : [])
+        ])].slice(-50),
+        reusable: !busy && isSeatAvailable(seat, session)
+      };
+    }));
+    const agents = rows.filter(Boolean);
+    return {
+      agents, count: agents.length,
+      counts: {
+        active: agents.filter(agent => agent.status === 'active').length,
+        inactive: agents.filter(agent => agent.status === 'inactive').length,
+        busy: agents.filter(agent => agent.busy).length,
+        available: agents.filter(agent => agent.reusable).length
+      },
+      activity_status_window_ms: AGENT_ACTIVITY_RECENCY_WINDOW_MS,
+      status_legend: {
+        active: 'This seat has received bridge-tool activity within the recent-activity status window.',
+        paused: 'This session is temporarily invalidated, keeps its seat, and can be resumed from its dashboard widget.',
+        inactive: 'No recent bridge-tool activity is recorded. The session ID and its seat remain valid; inactivity is not expiration. The oldest ID can be evicted when the hard 10,000-ID registry cap is reached.',
+        busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned.',
+        session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
+      },
+      note: 'The session_id and its agent_id seat remain bound to one ChatGPT conversation until explicit disconnect or revoke/delete, unless that exact ID is evicted as the oldest last-activity record at the hard 10,000-ID cap. active/inactive is only a recent-activity indicator; inactivity never releases the seat. Status includes every seat record found in bridge/agents; no credentials are included.'
+    };
+  }
+
+  async function currentSession(sessionId) {
+    await assertNotRevoked(sessionId);
+    await assertNotEvicted(sessionId);
+    const remote = await readSession(sessionId);
+    if (!remote) throw new Error('SESSION_ID_NOT_FOUND: This session ID is not registered.');
+    if (remote.value.status === 'disconnected') {
+      throw new Error('SESSION_DISCONNECTED: This session was explicitly disconnected.');
+    }
+    if (remote.value.status === 'paused') throw new Error('SESSION_PAUSED: This session is temporarily paused.');
+    const session = remote.value;
+    const seatRemote = await readSeat(session.agent_id);
+    const seat = seatRemote && seatRemote.value.protocol === AGENT_RECORD_PROTOCOL &&
+      seatRemote.value.current_session_id === sessionId ? seatRemote.value : null;
+    return { session, seat };
+  }
+
+  async function writeMessage(recipientSessionId, record) {
+    const path = messagePath(messageOwnerAgentId(record), record.message_id);
+    const saved = await writeRemoteJson(path, record, null, true);
+    if (!saved || !saved.ok) throw new Error('Message publication conflicted. Do not send a duplicate until the original message path has been checked.');
+    return record;
+  }
+
+  async function sendMessage(sessionId, args = {}) {
+    const hasAgent = Boolean(args.to_agent_id);
+    const hasSession = Boolean(args.to_session_id);
+    if (hasAgent === hasSession) throw new Error('Specify exactly one recipient: to_agent_id or to_session_id.');
+    let recipientSessionId;
+    if (hasAgent) {
+      if (!AGENT_ID_PATTERN.test(String(args.to_agent_id))) throw new Error('to_agent_id has an invalid format.');
+      const recipientSeat = await readSeat(args.to_agent_id);
+      if (!recipientSeat || recipientSeat.value.protocol !== AGENT_RECORD_PROTOCOL || !recipientSeat.value.current_session_id) {
+        throw new Error('The recipient seat has no current session.');
+      }
+      recipientSessionId = recipientSeat.value.current_session_id;
+    } else {
+      if (!SESSION_ID_PATTERN.test(String(args.to_session_id))) throw new Error('to_session_id has an invalid format.');
+      recipientSessionId = args.to_session_id;
+    }
+    if (recipientSessionId === sessionId) throw new Error('Cannot send an agent message to your own current session.');
+
+    return withSessionLocks([sessionId, recipientSessionId], async () => {
+      const sender = await currentSession(sessionId);
+      let recipientAgentId, recipientLabel;
+      if (hasAgent) {
+        const recipientSeat = await readSeat(args.to_agent_id);
+        if (!recipientSeat || recipientSeat.value.protocol !== AGENT_RECORD_PROTOCOL ||
+            recipientSeat.value.current_session_id !== recipientSessionId) {
+          throw new Error('RECIPIENT_SESSION_CHANGED: The selected agent seat was reassigned before the message could be sent.');
+        }
+        recipientAgentId = args.to_agent_id;
+        recipientLabel = recipientSeat.value.label || recipientAgentId;
+      }
+      const recipient = await currentSession(recipientSessionId);
+      if (!hasAgent) recipientAgentId = recipient.session.agent_id;
+      recipientLabel = recipientLabel || (recipient.seat && recipient.seat.label) || recipient.session.label || recipientAgentId;
+      const subject = args.subject === undefined ? '' : String(args.subject).replace(/[\r\n\t]/g, ' ').trim().slice(0, 120);
+      const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+      const record = {
+        protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+        sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
+        recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
+        sender_label: sender.session.label || sender.session.agent_id, recipient_label: recipientLabel,
+        subject, message: formatAgentMessage(sender.session, args.message),
+        created_at: timestamp(), read_at: null, in_reply_to: null
+      };
+      await writeMessage(recipientSessionId, record);
+      const cachedUnread = unreadMessageCountCache.get(recipientSessionId);
+      if (cachedUnread && clock() - cachedUnread.checkedAt < UNREAD_MESSAGE_CACHE_TTL_MS) {
+        cachedUnread.count++;
+        cachedUnread.scannedIds.add(id);
+        cachedUnread.checkedAt = clock();
+      } else if (cachedUnread) {
+        unreadMessageCountCache.delete(recipientSessionId);
+      }
+      return {
+        message_id: id, thread_id: id, sender_agent_id: record.sender_agent_id,
+        to_agent_id: recipientAgentId, to_session_id: recipientSessionId,
+        subject, created_at: record.created_at, status: 'sent',
+        note: 'Message delivered to that conversation session. The recipient can use read_agent_messages and reply_to_agent_message.'
+      };
+    });
+  }
+
+  async function sendUserMessage(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
+      const recipient = await currentSession(sessionId);
+      const message = cleanMessage(args.message, 20000, 'message');
+      const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+      const record = {
+        protocol: 'chatgpt-local-agent-message/v1', message_id: id, thread_id: id,
+        sender_session_id: null, sender_agent_id: 'user',
+        recipient_session_id: sessionId, recipient_agent_id: recipient.session.agent_id,
+        sender_label: 'Windows Bridge User',
+        recipient_label: (recipient.seat && recipient.seat.label) || recipient.session.label || recipient.session.agent_id,
+        subject: 'Message from Windows Bridge User',
+        message: '[Windows Bridge User] ' + message,
+        created_at: timestamp(), read_at: null, in_reply_to: null, sender_type: 'user'
+      };
+      await writeMessage(sessionId, record);
+      return {
+        message_id: id, thread_id: id, to_agent_id: recipient.session.agent_id,
+        to_session_id: sessionId, created_at: record.created_at, status: 'sent',
+        note: 'The message was published to this exact conversation session inbox. The agent can retrieve it with read_agent_messages.'
+      };
+    });
+  }
+
+  async function markMessageRead(sessionId, messageId, knownRecord = null) {
+    let value = knownRecord;
+    if (!value) {
+      const identity = await currentSession(sessionId);
+      const remote = await readRemoteFile(messagePath(identity.session.agent_id, messageId));
+      if (!remote) return null;
+      value = remote.value;
+    }
+    if (!value || value.protocol !== 'chatgpt-local-agent-message/v1' ||
+        value.message_id !== messageId || value.recipient_session_id !== sessionId) {
+      throw new Error('Message record is malformed or addressed to another session.');
+    }
+    const ownerAgentId = messageOwnerAgentId(value);
+    const receiptPath = messageReceiptPath(ownerAgentId, messageId);
+    const updateCachedUnread = () => {
+      const cached = unreadMessageCountCache.get(sessionId);
+      if (!cached) return;
+      if (clock() - cached.checkedAt >= UNREAD_MESSAGE_CACHE_TTL_MS) {
+        unreadMessageCountCache.delete(sessionId);
+        return;
+      }
+      if (!cached.scannedIds.has(messageId)) return;
+      cached.scannedIds.delete(messageId);
+      if (value.sender_agent_id !== 'user' && value.sender_type !== 'user') cached.count = Math.max(0, cached.count - 1);
+      cached.checkedAt = clock();
+    };
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const existing = await readRemoteFile(receiptPath);
+      if (existing) {
+        const receipt = existing.value;
+        if (!receipt || receipt.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
+            receipt.message_id !== messageId || receipt.recipient_session_id !== sessionId ||
+            typeof receipt.read_at !== 'string') {
+          throw new Error('Message read receipt is malformed or addressed to another session.');
+        }
+        updateCachedUnread();
+        return { ...value, read_at: receipt.read_at };
+      }
+      const readAt = timestamp();
+      const receipt = {
+        protocol: 'chatgpt-local-agent-message-receipt/v1',
+        message_id: messageId, recipient_session_id: sessionId,
+        created_at: readAt, read_at: readAt
+      };
+      try {
+        const saved = await writeRemoteJson(receiptPath, receipt, null, true);
+        if (saved && saved.ok) {
+          updateCachedUnread();
+          return { ...value, read_at: readAt };
+        }
+      } catch (error) {
+        if (!isConflictError(error) || attempt === 4) throw error;
+      }
+    }
+    throw new Error('Could not publish a read receipt after repeated mailbox conflicts.');
+  }
+
+  async function readMessages(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
+    const identity = await currentSession(sessionId);
+    const ownerAgentId = identity.session.agent_id;
+    const unreadOnly = args.unread_only !== false;
+    const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
+    let entries;
+    try { entries = await listFolder(inboxPath(ownerAgentId));
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
+      .sort().slice(-200);
+    const found = [];
+    for (let start = 0; start < names.length; start += 16) {
+      const group = names.slice(start, start + 16);
+      const rows = await Promise.all(group.map(async name => {
+        const messageId = name.slice(0, -5);
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
+        if (!remote) return null;
+        const record = remote.value;
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+        }
+        return record;
+      }));
+      found.push(...rows.filter(Boolean));
+    }
+    found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    let receiptEntries;
+    try { receiptEntries = await listFolder(inboxPath(ownerAgentId));
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = []; else throw error; }
+    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
+      .map(name => name.slice(0, -5)));
+    const selected = found.filter(record => record.recipient_agent_id !== 'user' && (!unreadOnly ||
+      (!receiptIds.has(record.message_id) && !record.read_at))).slice(-limit);
+    const read = [];
+    for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
+    return {
+      session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
+      scanned_recent_limit: 200, messages: read.filter(Boolean),
+      note: 'Messages and read receipts are stored under the recipient agent folder; records retain exact sender and recipient session IDs to prevent delivery to a recycled seat occupant.'
+    };
+    });
+  }
+
+  async function readDashboardReplies(sessionId, args = {}) {
+    return withSessionLock(sessionId, async () => {
+    const identity = await currentSession(sessionId);
+    const ownerAgentId = identity.session.agent_id;
+    const suppliedIds = args.message_ids;
+    if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
+        suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
+      throw new Error('message_ids must contain 1–100 valid message IDs.');
+    }
+    const wanted = new Set(suppliedIds);
+    if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
+    let entries;
+    try { entries = await listFolder(inboxPath(ownerAgentId)); }
+    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
+      .sort().slice(-200);
+    const replies = [];
+    for (let start = 0; start < names.length; start += 16) {
+      const group = names.slice(start, start + 16);
+      const rows = await Promise.all(group.map(async name => {
+        const messageId = name.slice(0, -5);
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
+        if (!remote) return null;
+        const record = remote.value;
+        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+        }
+        if (record.sender_session_id === sessionId && record.recipient_agent_id === 'user' &&
+            wanted.has(record.in_reply_to)) return record;
+        return null;
+      }));
+      replies.push(...rows.filter(Boolean));
+    }
+    replies.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+    return {
+      session_id: sessionId, count: replies.length, messages: replies,
+      note: 'Replies are read from the same session-scoped agent-message mailbox; no other session inbox is accessed.'
+    };
+    });
+  }
+
+  async function replyToMessage(sessionId, args = {}) {
+    const originalId = String(args.message_id || '');
+    const initialIdentity = await currentSession(sessionId);
+    const initial = await readRemoteFile(messagePath(initialIdentity.session.agent_id, originalId));
+    if (!initial) throw new Error('No message with this message_id exists in the current session inbox.');
+    const initialRecord = initial.value;
+    if (!initialRecord || initialRecord.protocol !== 'chatgpt-local-agent-message/v1' ||
+        initialRecord.message_id !== originalId || initialRecord.recipient_session_id !== sessionId) {
+      throw new Error('Only a message addressed to this session can be replied to.');
+    }
+    const initialIsDashboardUser = initialRecord.sender_type === 'user' && initialRecord.sender_agent_id === 'user' &&
+      initialRecord.sender_session_id === null;
+    const recipientSessionId = initialIsDashboardUser ? sessionId : initialRecord.sender_session_id;
+    if (typeof recipientSessionId !== 'string' || !SESSION_ID_PATTERN.test(recipientSessionId)) {
+      throw new Error('The original message sender session is invalid or unavailable.');
+    }
+    return withSessionLocks([sessionId, recipientSessionId], async () => {
+    const sender = await currentSession(sessionId);
+    const originalId = String(args.message_id || '');
+    const remote = await readRemoteFile(messagePath(sender.session.agent_id, originalId));
+    if (!remote) throw new Error('No message with this message_id exists in the current session inbox.');
+    const original = remote.value;
+    if (!original || original.protocol !== 'chatgpt-local-agent-message/v1' ||
+        original.message_id !== originalId || original.recipient_session_id !== sessionId) {
+      throw new Error('Only a message addressed to this session can be replied to.');
+    }
+    const isDashboardUser = original.sender_type === 'user' && original.sender_agent_id === 'user' &&
+      original.sender_session_id === null;
+    let recipientSessionId;
+    let recipientAgentId;
+    let recipientLabel;
+    if (isDashboardUser) {
+      recipientSessionId = sessionId;
+      recipientAgentId = 'user';
+      recipientLabel = 'Windows Bridge User';
+    } else {
+      recipientSessionId = original.sender_session_id;
+      const recipient = await currentSession(recipientSessionId);
+      recipientAgentId = recipient.session.agent_id;
+      recipientLabel = (recipient.seat && recipient.seat.label) || recipient.session.label || recipientAgentId;
+    }
+    const id = 'msg-' + String(clock()).padStart(13, '0') + '-' + randomBytes(16).toString('hex');
+    const record = {
+      protocol: 'chatgpt-local-agent-message/v1', message_id: id,
+      thread_id: original.thread_id || original.message_id,
+      sender_session_id: sessionId, sender_agent_id: sender.session.agent_id,
+      recipient_session_id: recipientSessionId, recipient_agent_id: recipientAgentId,
+      sender_label: sender.session.label || sender.session.agent_id,
+      recipient_label: recipientLabel,
+      subject: original.subject || '', message: formatAgentMessage(sender.session, args.message),
+      created_at: timestamp(), read_at: null, in_reply_to: original.message_id,
+      ...(isDashboardUser ? { sender_type: 'agent', recipient_type: 'user' } : {})
+    };
+    await writeMessage(recipientSessionId, record);
+    await markMessageRead(sessionId, original.message_id, original);
+    return {
+      message_id: id, thread_id: record.thread_id, in_reply_to: original.message_id,
+      sender_agent_id: record.sender_agent_id, to_agent_id: record.recipient_agent_id,
+      to_session_id: recipientSessionId, created_at: record.created_at, status: 'sent'
+    };
+    });
+  }
+
+  return {
+    startSession, authenticate, requestStarted, requestCompleted, statuses, revokeSession, wipeMailbox, isRevoked, isEvicted,
+    setSessionPaused, disconnectSession, enforceSessionLimit, withSessionLock, withSessionLocks,
+    sendMessage, sendUserMessage, readMessages, countUnreadMessages, readDashboardReplies, replyToMessage, seatPath, sessionPath, messagePath,
+    AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REQUEST_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, EVICTION_RECORD_PROTOCOL, AGENT_ACTIVITY_RECENCY_WINDOW_MS
+  };
+}
+
+module.exports = {
+  createAgentRegistry, AGENT_RECORD_PROTOCOL, SESSION_RECORD_PROTOCOL, REVOCATION_RECORD_PROTOCOL, EVICTION_RECORD_PROTOCOL,
+  AGENT_ID_PATTERN, SESSION_ID_PATTERN, MESSAGE_ID_PATTERN,
+  AGENT_ACTIVITY_RECENCY_WINDOW_MS, AGENT_STALE_AFTER_MS
+};  async function unreadMessageSummary(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) return { count: 0, partial: false };
     const cached = unreadMessageCountCache.get(sessionId);
     if (cached && clock() - cached.checkedAt < UNREAD_MESSAGE_CACHE_TTL_MS) {
@@ -872,6 +1246,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       unreadMessageCountCache.set(sessionId, cached);
       return { count: cached.count, partial: cached.partial };
     }
+    const sessionRemote = await readSession(sessionId);
+    if (!sessionRemote) return { count: 0, partial: false };
+    const ownerAgentId = sessionRemote.value.agent_id;
     let entries;
     try { entries = await listFolder(inboxPath(ownerAgentId)); }
     catch (error) {
@@ -879,22 +1256,14 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       else throw error;
     }
     const allNames = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))].sort();
-    const names = allNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
-    let receiptEntries = [];
-    if (names.length) {
-      try { receiptEntries = await listFolder(inboxPath(ownerAgentId)); }
-      catch (error) {
-        if (!/not found|404/i.test(String(error && error.message || error))) throw error;
-      }
-    }
-    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
-      .map(name => name.slice(0, -5)));
+      .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\\.json$/i, '')) && /\\.json$/i.test(name)))].sort();
+    const messageNames = allNames.filter(name => MESSAGE_ID_PATTERN.test(name.slice(0, -5))).slice(-UNREAD_MESSAGE_SCAN_LIMIT);
+    const receiptIds = new Set(allNames.filter(name => /\\.read\\.json$/i.test(name))
+      .map(name => name.slice(0, -10)).filter(id => MESSAGE_ID_PATTERN.test(id)));
     let unread = 0;
-    const scannedIds = new Set(names.map(name => name.slice(0, -5)));
-    for (let start = 0; start < names.length; start += 16) {
-      const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+    const scannedIds = new Set(messageNames.map(name => name.slice(0, -5)));
+    for (let start = 0; start < messageNames.length; start += 16) {
+      const rows = await Promise.all(messageNames.slice(start, start + 16).map(async name => {
         const messageId = name.slice(0, -5);
         const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
         if (!remote) return null;
@@ -910,14 +1279,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             !record.read_at && !receiptIds.has(record.message_id)) unread++;
       }
     }
-    const summary = {
-      count: unread, partial: allNames.length > names.length,
-      scannedIds, checkedAt: clock()
-    };
+    const summary = { count: unread, partial: allNames.filter(name => MESSAGE_ID_PATTERN.test(name.slice(0, -5))).length > messageNames.length,
+      scannedIds, checkedAt: clock() };
     unreadMessageCountCache.set(sessionId, summary);
-    while (unreadMessageCountCache.size > 10000) {
-      unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
-    }
+    while (unreadMessageCountCache.size > 10000) unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
     return { count: summary.count, partial: summary.partial };
   }
 
@@ -1219,7 +1584,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     const wanted = new Set(suppliedIds);
     if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
     let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
+    try { entries = await listFolder(inboxPath(ownerAgentId)); }
     catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
@@ -1229,7 +1594,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const group = names.slice(start, start + 16);
       const rows = await Promise.all(group.map(async name => {
         const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
         if (!remote) return null;
         const record = remote.value;
         if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
