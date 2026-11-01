@@ -471,7 +471,7 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
     }
   }
   async function startSession(args = {}) {
-  const label = String(value || '').replace(/[\r\n\t]/g, ' ').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
+    const label = safeLabel(args.label, 'ChatGPT session');
     const requestedAgentId = args.agent_id === undefined || args.agent_id === null || args.agent_id === ''
       ? null : String(args.agent_id);
     if (requestedAgentId && !AGENT_ID_PATTERN.test(requestedAgentId)) throw new Error('The selected agent ID is invalid.');
