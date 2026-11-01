@@ -3,7 +3,7 @@
 function isNetworkError(message) {
   // Network, sharing, synchronization, and server errors are transient mailbox
   // transport conditions, not proof that the user must repair configuration.
-  return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused|temporarily unavailable|connection reset|bad gateway|service unavailable|gateway timeout|OneDrive sync|OneDrive synchronization|(?:EAGAIN|EBUSY|EIO|ENODATA|ESTALE)|GitHub HTTP (?:408|425|429|5\\d\\d):|GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked)/i.test(String(message || ''));
+  return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused|temporarily unavailable|connection reset|bad gateway|service unavailable|gateway timeout|OneDrive sync|OneDrive synchronization|(?:EAGAIN|EBUSY|EIO|ENODATA|ESTALE)|GitHub HTTP (?:408|425|429|5[0-9]{2}):|GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked)/i.test(String(message || ''));
 }
 
 function timestampFresh(value, now, windowMs) {
