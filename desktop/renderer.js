@@ -50,6 +50,26 @@
     dot.className = 'status-dot ' + status;
   }
 
+  function renderOneDrive(state) {
+    const value = state || {};
+    const configured = value.configured === true;
+    const bridge = currentBridgeState || {};
+    oneDriveButton.disabled = false;
+    oneDriveButton.textContent = configured ? 'Change folder' : 'Choose folder';
+    oneDriveButton.setAttribute('aria-label', configured ? 'Change OneDrive mailbox folder' : 'Choose OneDrive mailbox folder');
+    if (configured) {
+      oneDriveLabel.textContent = bridge.running ? 'OneDrive mailbox connected' : 'OneDrive folder ready';
+      oneDriveLabel.title = (value.runtimePath || 'Bridge/runtime') +
+        (bridge.running ? ' · The Windows worker is polling the synchronized mailbox.' : ' · The Windows worker will connect automatically.');
+      setDot(oneDriveDot, bridge.running ? 'online' : 'waiting');
+    } else {
+      oneDriveLabel.textContent = 'OneDrive folder not configured';
+      oneDriveLabel.title = value.error || 'Choose the local OneDrive-synced Bridge/runtime folder.';
+      setDot(oneDriveDot, 'waiting');
+    }
+    oneDriveRow.title = oneDriveLabel.title;
+  }
+
   function renderWorker(state) {
     currentBridgeState = state || {};
     const status = String(currentBridgeState.workerStatus || (currentBridgeState.running ? 'online' : 'connecting'));
@@ -616,7 +636,7 @@
           colab: { status: 'not_verified', message: 'Setup check failed before Colab could be verified.' },
           model: { status: 'not_verified', message: 'Setup check failed before model readiness could be verified.' }
         },
-        next_steps: ['Check that the app is connected to GitHub, then run Setup check again.']
+        next_steps: ['Choose the local OneDrive-synced Bridge/runtime folder, then run Setup check again.']
       });
     } finally {
       visionBusy = false;
@@ -642,6 +662,26 @@
     }
     await refreshVisionStatus();
   }
+
+  oneDriveButton.addEventListener('click', async () => {
+    if (oneDriveButton.disabled) return;
+    oneDriveButton.disabled = true;
+    oneDriveLabel.textContent = 'Select OneDrive folder…';
+    try {
+      const result = await window.windowsBridge.chooseOneDriveFolder();
+      if (result && !result.canceled) {
+        renderOneDrive(result.status || {});
+        if (result.bridge) renderWorker(result.bridge);
+        await refreshState();
+      }
+    } catch (error) {
+      oneDriveLabel.textContent = 'OneDrive setup failed';
+      oneDriveLabel.title = String(error && error.message || error);
+      setDot(oneDriveDot, 'error');
+    } finally {
+      oneDriveButton.disabled = false;
+    }
+  });
 
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
