@@ -290,7 +290,7 @@ test('explicit user slash command executes locally and does not send native API 
   assert.equal(requests.length, 1);
   assert.ok(!Object.hasOwn(requests[0], 'tools'));
   assert.ok(!Object.hasOwn(requests[0], 'tool_choice'));
-  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read_file path="README.md"'));
+  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read path="README.md"'));
   assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.ok(requests[0].messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   assert.equal(session.messages.at(-1).content, 'The README was inspected.');
@@ -342,7 +342,7 @@ test('model invokes tools with assistant slash commands and receives local resul
   }
   assert.match(requests[0].messages[0].content, /Available local Windows tools/);
   assert.match(requests[0].messages[0].content, /### `\/read` · `\/read_file`/);
-  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path="README.md"'));
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read path="README.md"'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
@@ -416,7 +416,7 @@ test('tool results are rendered as readable Markdown rather than serialized JSON
   assert.match(rendered, /\*\*Status:\*\* success/);
   assert.match(rendered, /\*\*Detected Technologies\*\*/);
   assert.match(rendered, /- Node\.js/);
-  assert.match(rendered, /\*\*Project Support:\*\*/);
+  assert.match(rendered, /\*\*Project Support\*\*/);
   assert.match(rendered, /npm run build/);
   assert.doesNotMatch(rendered, /"protocol"|\{\s*"isGitRepository"/);
 });
