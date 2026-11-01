@@ -452,10 +452,10 @@ test('canonical Markdown mailbox files and agent sandbox artifacts are published
   assert.ok(bridge.includes('refresh_environment_context'));
   assert.ok(bridge.includes('externalizeLargeText'));
   assert.ok(bridge.includes('sandbox storage/'));
-  assert.match(bridge, /mailbox\\.readJson\\(relativePath\\)/);
-  assert.match(bridge, /mailbox\\.writeJson\\(relativePath/);
-  assert.match(bridge, /mailbox\\.writeContent\\(relativePath/);
-  assert.match(bridge, /mailbox\\.deleteFiles/);
+  assert.match(bridge, /mailbox\.readJson\(relativePath\)/);
+  assert.match(bridge, /mailbox\.writeJson\(relativePath/);
+  assert.match(bridge, /mailbox\.writeContent\(relativePath/);
+  assert.match(bridge, /mailbox\.deleteFiles/);
   assert.ok(toolBridge.includes('upload_workspace_file'));
   assert.ok(toolBridge.includes('requiresApproval: true'));
   assert.match(readme, /OneDrive is file storage and message transport only/i);
@@ -466,13 +466,13 @@ test('canonical Markdown mailbox files and agent sandbox artifacts are published
 test('manual smoke-test documentation covers app-local sessions and flat OneDrive round-trip', () => {
   const guide = read('docs', 'manual-smoke-test.md');
   assert.match(guide, /existing local OneDrive-synchronized folder named Bridge/i);
-  assert.match(guide, /request\\/agent-000/);
-  assert.match(guide, /result\\/agent-000/);
+  assert.match(guide, /request\/agent-000/);
+  assert.match(guide, /result\/agent-000/);
   assert.match(guide, /app-generated session_id/);
-  assert.match(guide, /sandbox storage\\/<agent-id>/);
+  assert.match(guide, /sandbox storage\/<agent-id>/);
   assert.match(guide, /SCREEN.md/);
   assert.match(guide, /no execution occurred in OneDrive or on GitHub Actions/i);
-  assert.doesNotMatch(guide, /Bridge\\/runtime|bridge\\/context|bridge\\/state/);
+  assert.doesNotMatch(guide, /Bridge\/runtime|bridge\/context|bridge\/state/);
 });
 
 
