@@ -35,7 +35,7 @@ Native approval is authoritative. Auto-accept everything is off by default and a
 
 ## Slash-style shortcuts
 
-ChatGPT can use familiar aliases such as /help, /status, /tools, /screen, /agents, /messages, /workspace, /plan, /tasks <project-id>, /inspect <path> and /test <command>. AGENT.md maps these to the existing mailbox files and registered Windows tools. They are ChatGPT-facing shorthand only; the app does not add a second command parser or runtime.
+ChatGPT can use familiar aliases such as `/help`, `/status`, `/tools`, `/screen`, `/agents`, `/messages`, `/workspace`, `/plan`, `/ls <path>`, `/tree <path>`, `/find <pattern>`, `/read <path>`, `/search <query>`, `/write <path>`, `/patch <patch>`, `/run <command>`, `/test <command>`, `/git status`, `/git diff`, `/git log`, `/git show <ref>`, `/git branches`, `/git changed`, `/commit <message>` and `/tasks <project-id>`. AGENT.md maps these to existing mailbox files and registered Windows tools, preserving each tool's exact schema and native approval policy. They are ChatGPT-facing shorthand only; the app does not add a second command parser or runtime.
 
 ## Coding tools and multi-agent work
 

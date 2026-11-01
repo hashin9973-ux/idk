@@ -21,7 +21,7 @@ Ordinary requests go to request/<agent-id>/<request-id>.json and carry the exact
 
 ## Slash-style shortcuts
 
-Use familiar slash-style aliases in the ChatGPT conversation: /help reads AGENT.md and TOOLS.md; /status reads STATUS.md; /tools reads TOOLS.md; /screen reads SCREEN.md; /agents calls agent_status; /messages calls read_agent_messages; /workspace calls get_agent_context; /plan calls update_plan; /tasks <project-id> calls task_project_status and task_list; /inspect <path> calls read_file; and /test <command> calls run_tests. These are conversational aliases resolved by ChatGPT, not new Windows tools, a slash-command parser, or extra mailbox files. The complete live tool names and argument schemas remain in TOOLS.md.
+Use familiar slash-style aliases in the ChatGPT conversation: `/help`, `/status`, `/tools`, `/screen`, `/agents`, `/messages`, `/workspace` and `/plan` map to the corresponding mailbox files or registered tools. Coding shortcuts include `/ls <path>`, `/tree <path>`, `/find <pattern>`, `/read <path>`, `/search <query>`, `/write <path>`, `/patch <patch>`, `/run <command>` and `/test <command>`. Git shortcuts include `/git status`, `/git diff`, `/git log`, `/git show <ref>`, `/git branches`, `/git changed` and `/commit <message>`. `/tasks <project-id>`, `/inspect <path>`, `/send <agent-id> <message>` and `/reply <message-id> <message>` cover collaboration. ChatGPT resolves each alias to the existing registered Windows tool and its exact TOOLS.md schema; no new tool or slash-command parser is added.
 
 ## Coding loop
 
