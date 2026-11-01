@@ -32,6 +32,9 @@ function config() {
     apiKey: '',
     systemPrompt: '',
     temperature: 0.2,
+    topP: 1,
+    frequencyPenalty: 0,
+    presencePenalty: 0,
     maxTokens: 1024
   };
 }
@@ -132,6 +135,23 @@ test('ordinary chat turn completes after SSE [DONE] even if the server keeps the
   assert.equal(runtime.isRunning('direct-agent-004'), false);
 });
 
+test('direct API configuration validates and preserves sampling parameters', () => {
+  const normalized = normalizeDirectAgentConfig({
+    provider: 'openai-compatible', endpoint: 'http://127.0.0.1:8000/v1', model: 'test-model',
+    temperature: 0.8, topP: 0.9, frequencyPenalty: 0.4, presencePenalty: -0.2, maxTokens: 2048
+  });
+  assert.deepEqual({
+    temperature: normalized.temperature, topP: normalized.topP,
+    frequencyPenalty: normalized.frequencyPenalty, presencePenalty: normalized.presencePenalty,
+    maxTokens: normalized.maxTokens
+  }, { temperature: 0.8, topP: 0.9, frequencyPenalty: 0.4, presencePenalty: -0.2, maxTokens: 2048 });
+  for (const invalid of [{ topP: 1.1 }, { frequencyPenalty: 2.1 }, { presencePenalty: -2.1 }, { temperature: 2.1 }, { maxTokens: 255 }]) {
+    assert.throws(() => normalizeDirectAgentConfig({
+      provider: 'openai-compatible', endpoint: 'http://127.0.0.1:8000/v1', model: 'test-model', ...invalid
+    }));
+  }
+});
+
 test('direct API configuration validates provider, endpoint and model', () => {
   const normalized = normalizeDirectAgentConfig({
     provider: 'koboldcpp',
@@ -168,6 +188,28 @@ test('slash catalog includes command names, descriptions and argument requiremen
   assert.match(catalog, /path \(string; required; Workspace-relative file path\.\)/);
   assert.match(catalog, /start_line \(integer; optional/);
   assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
+});
+
+test('Chat Completions request includes configured standard sampling parameters', async () => {
+  const session = { sessionId: 'session-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', messages: [], status: 'idle', error: '' };
+  let requestBody;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return sseResponse([{ choices: [{ index: 0, delta: { content: 'Ready.' }, finish_reason: 'stop' }] }]);
+    },
+    getConfig: async () => ({ ...config(), temperature: 0.7, topP: 0.85, frequencyPenalty: 0.3, presencePenalty: 0.2 }),
+    getSession: async () => session, saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async () => { throw new Error('No tool expected.'); }
+  });
+  const result = await runtime.sendMessage('direct-agent-004', 'hello');
+  assert.equal(result.completed, true);
+  assert.equal(requestBody.temperature, 0.7);
+  assert.equal(requestBody.top_p, 0.85);
+  assert.equal(requestBody.frequency_penalty, 0.3);
+  assert.equal(requestBody.presence_penalty, 0.2);
+  assert.equal(requestBody.max_tokens, 1024);
 });
 
 test('SSE parser streams assistant text and detects disabled native tool-call output', async () => {
