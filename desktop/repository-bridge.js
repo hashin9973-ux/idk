@@ -906,6 +906,7 @@ function createRepositoryBridge(deps = {}) {
       '- Last poll: ' + (snapshot.last_poll_at || 'not yet polled'),
       '- Last error: ' + (snapshot.last_error || 'none'),
       '- Tool catalog: ' + tools.length + ' registered tools',
+      '- Workspace index: ' + (latestFilesystemIndexSnapshot ? latestFilesystemIndexSnapshot.lines + ' lines / ' + latestFilesystemIndexSnapshot.bytes + ' bytes' : 'not published'),
       '',
       '## Agent inventory',
       '',
@@ -921,7 +922,8 @@ function createRepositoryBridge(deps = {}) {
       '- Polling: ' + (snapshot.request_polling.poll_in_flight ? 'in progress' : 'idle'),
       '- Last poll duration: ' + (snapshot.request_polling.last_poll_duration_ms ?? 'unknown') + ' ms',
       '', '## Observe', '', '- Observe context: see SCREEN.md',
-      '- Filesystem index: available through local workspace tools; not published as a separate mailbox file.', '');
+      '- Filesystem index: ' + (latestFilesystemIndexSnapshot ? 'updated ' + latestFilesystemIndexSnapshot.updated_at + '; SHA-256 ' + latestFilesystemIndexSnapshot.sha256 : 'not yet published'),
+      '- Full names-only index remains local; use workspace tools to inspect it.', '');
     return lines.join('\n');
   }
 
