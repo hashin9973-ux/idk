@@ -185,7 +185,7 @@ test('direct agent catalog includes local tools but excludes mailbox controls', 
 
 test('slash catalog includes command names, descriptions and argument requirements', () => {
   const catalog = formatSlashToolCatalog(definitions());
-  assert.match(catalog, /### `\/read_file`/);
+  assert.match(catalog, /### `\/read` · `\/read_file`/);
   assert.match(catalog, /Workspace-relative file path/);
   assert.match(catalog, /- `path` — string; required/);
   assert.match(catalog, /- `start_line` — integer; optional/);
@@ -242,7 +242,15 @@ test('slash command parser supports JSON objects and concise named arguments', (
   );
   assert.deepEqual(
     parseSlashToolCommand('/environment_info', ['environment_info']),
-    { name: 'environment_info', args: {} }
+    { name: 'environment_info', alias: null, args: {} }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/project', ['project_status']),
+    { name: 'project_status', alias: 'project', args: {} }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/read path=README.md', ['read_file']),
+    { name: 'read_file', alias: 'read', args: { path: 'README.md' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/batch steps=[{"tool":"read_file","args":{"path":"README.md"}},{"tool":"git_status","args":{}}]', ['batch']),
