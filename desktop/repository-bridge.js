@@ -1477,180 +1477,127 @@ function createRepositoryBridge(deps = {}) {
 
   async function cleanupAgentMessageRecords() {
     const cutoff = Date.now() - currentConfig().retentionDays * 24 * 60 * 60 * 1000;
-    const sessionEntries = await listFolder('bridge/sessions');
-    const sessions = [...new Set(sessionEntries
-      .map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name))
-      .map(name => name.slice(0, -5)))].sort();
-    if (!sessions.length) {
-      mailboxMessageRetentionCursor = null;
-      return { deletedRecords: 0, deletedFiles: 0 };
-    }
-
-    let start = mailboxMessageRetentionCursor
-      ? sessions.findIndex(sessionId => sessionId > mailboxMessageRetentionCursor)
-      : 0;
+    const folders = (await listFolder('messages'))
+      .filter(item => item && item.type === 'dir' && /^agent-[0-9]{3,}$/.test(item.name))
+      .map(item => item.name).sort();
+    if (!folders.length) { mailboxMessageRetentionCursor = null; return { deletedRecords: 0, deletedFiles: 0 }; }
+    let start = mailboxMessageRetentionCursor ? folders.findIndex(agentId => agentId > mailboxMessageRetentionCursor) : 0;
     if (start < 0) start = 0;
-    const selectedSessions = sessions.slice(start, start + 10);
-    mailboxMessageRetentionCursor = start + selectedSessions.length < sessions.length
-      ? selectedSessions[selectedSessions.length - 1] : null;
-
+    const selectedAgents = folders.slice(start, start + 10);
+    mailboxMessageRetentionCursor = start + selectedAgents.length < folders.length ? selectedAgents[selectedAgents.length - 1] : null;
     const deletions = [];
     let deletedRecords = 0;
     const perPassLimit = 20;
-    for (const sessionId of selectedSessions) {
+    for (const agentId of selectedAgents) {
       if (deletedRecords >= perPassLimit) break;
-      const inboxPath = 'bridge/agent-messages/' + sessionId;
-      const receiptFolder = 'bridge/agent-message-receipts/' + sessionId;
-      let entries;
-      try { entries = await listFolder(inboxPath); }
-      catch (error) {
-        if (/not found|404/i.test(String(error && error.message || error))) continue;
-        throw error;
-      }
-      const candidates = entries.map(item => ({
-        name: String(item && (item.name || item.path) || '').split('/').pop(),
-        sha: item && item.sha
-      })).filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(item.name))
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .slice(-200);
-      if (!candidates.length) continue;
-
-      let receipts;
-      try { receipts = await listFolder(receiptFolder); }
-      catch (error) {
-        if (/not found|404/i.test(String(error && error.message || error))) receipts = [];
-        else throw error;
-      }
-      const receiptNames = new Set(receipts.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-        .filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(name)));
-
-      // Never prune unread/pending messages. A valid receipt proves the recipient read it.
-      for (const item of candidates) {
+      const inbox = 'messages/' + agentId;
+      const entries = await listFolder(inbox);
+      const names = entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\\.json$/.test(name)).sort().slice(-200);
+      for (const name of names) {
         if (deletedRecords >= perPassLimit) break;
-        if (!receiptNames.has(item.name)) continue;
-        const messageId = item.name.slice(0, -5);
-        const messagePath = inboxPath + '/' + item.name;
+        const messageId = name.slice(0, -5);
+        const messagePath = inbox + '/' + name;
         const remote = await readRemoteFile(messagePath);
-        if (!remote || (item.sha && remote.sha !== item.sha)) continue;
+        if (!remote || !remote.value || remote.value.message_id !== messageId) continue;
         const record = remote.value;
-        const createdAt = Date.parse(String(record && record.created_at || ''));
-        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
-            record.message_id !== messageId || record.recipient_session_id !== sessionId ||
-            !Number.isFinite(createdAt) || createdAt >= cutoff) continue;
-
-        const receiptPath = receiptFolder + '/' + item.name;
+        const createdAt = Date.parse(String(record.created_at || ''));
+        if (record.protocol !== 'chatgpt-local-agent-message/v1' || !Number.isFinite(createdAt) || createdAt >= cutoff) continue;
+        const receiptPath = inbox + '/' + messageId + '.read.json';
         const receipt = await readRemoteFile(receiptPath);
-        if (!receipt || !receipt.value ||
-            receipt.value.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
-            receipt.value.message_id !== messageId ||
-            receipt.value.recipient_session_id !== sessionId ||
-            typeof receipt.value.read_at !== 'string') continue;
-
+        if (!receipt || !receipt.value || receipt.value.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
+            receipt.value.message_id !== messageId || typeof receipt.value.read_at !== 'string') continue;
         deletions.push({ path: messagePath, sha: remote.sha }, { path: receiptPath, sha: receipt.sha });
         deletedRecords++;
       }
     }
-
     if (!deletions.length) return { deletedRecords: 0, deletedFiles: 0 };
     const outcome = await commitMailboxDeletions(deletions);
     return { deletedRecords, deletedFiles: outcome.deleted, commitSha: outcome.commitSha || null };
   }
 
+
   async function cleanupMailboxRecords() {
     if (!running || activeRequestIds.size || requestTasks.size || pendingRequestQueue.length) {
       return { skipped: true, reason: 'worker_not_idle' };
     }
-    const stateFile = await readRemoteFile('bridge/state/windows-app.json');
-    const sharedState = stateFile && stateFile.value;
-    const stateUpdatedAt = sharedState && Date.parse(sharedState.updated_at);
-    if (!sharedState || !Number.isFinite(stateUpdatedAt) || Date.now() - stateUpdatedAt > 5 * 60 * 1000 ||
-        sharedState.status !== 'idle' || Number(sharedState.active_count || 0) !== 0 || Number(sharedState.pending_count || 0) !== 0 ||
-        (Array.isArray(sharedState.active_request_ids) && sharedState.active_request_ids.length > 0)) {
-      return { skipped: true, reason: 'shared_worker_state_not_fresh_and_idle' };
+    const statusFile = await readRemoteContent('STATUS.md');
+    const statusText = statusFile && statusFile.content ? statusFile.content.toString('utf8') : '';
+    const updatedMatch = statusText.match(/^- Updated: (.+)$/m);
+    const activeMatch = statusText.match(/^- Active requests: (\\d+)$/m);
+    const pendingMatch = statusText.match(/^- Pending requests: (\\d+)$/m);
+    const healthMatch = statusText.match(/^- Health: (.+)$/m);
+    const statusUpdatedAt = updatedMatch ? Date.parse(updatedMatch[1]) : NaN;
+    if (!statusText.startsWith('# Windows Bridge Status') || !Number.isFinite(statusUpdatedAt) ||
+        Date.now() - statusUpdatedAt > 5 * 60 * 1000 || !activeMatch || !pendingMatch ||
+        Number(activeMatch[1]) !== 0 || Number(pendingMatch[1]) !== 0 || !healthMatch || healthMatch[1] !== 'healthy') {
+      return { skipped: true, reason: 'STATUS.md is not fresh and idle' };
     }
-
-    const results = (await listFolder('bridge/results'))
-      .filter(item => item && item.type === 'file' && typeof item.name === 'string' && item.name.endsWith('.json') &&
-        SAFE_ID.test(item.name.slice(0, -5)))
-      .sort((left, right) => left.name.localeCompare(right.name));
-    if (!results.length) {
-      mailboxCleanupCursor = null;
-      return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
-    }
-    // Fetch the artifact root once per maintenance pass. Nested request-scoped files
-    // are listed only for candidates that satisfy the age/status/claim checks.
-    const flatArtifactEntries = await listFolder('bridge/artifacts');
+    const results = (await listAgentMailboxFiles('result'))
+      .filter(item => item.name.endsWith('.json') && SAFE_ID.test(item.name.slice(0, -5)))
+      .sort((a, b) => (a.agent_id + '/' + a.name).localeCompare(b.agent_id + '/' + b.name));
+    if (!results.length) { mailboxCleanupCursor = null; return { skipped: false, deletedRecords: 0, deletedFiles: 0 }; }
     let startIndex = 0;
     if (mailboxCleanupCursor) {
-      startIndex = results.findIndex(item => item.name > mailboxCleanupCursor);
+      startIndex = results.findIndex(item => item.agent_id + '/' + item.name > mailboxCleanupCursor);
       if (startIndex < 0) startIndex = 0;
     }
     const scanLimit = Math.max(1, Math.min(MAX_MAILBOX_CLEANUP_SCAN, Number(cleanupScanLimit) || MAX_MAILBOX_CLEANUP_SCAN));
     const recordLimit = Math.max(1, Math.min(MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS, Number(cleanupRecordLimit) || MAX_MAILBOX_CLEANUP_RECORDS_PER_PASS));
     const cutoff = Date.now() - currentConfig().retentionDays * 24 * 60 * 60 * 1000;
     const selected = [];
-    let examined = 0;
-    let lastExaminedName = null;
-
+    let examined = 0, lastExaminedKey = null;
     for (let index = startIndex; index < results.length && examined < scanLimit && selected.length < recordLimit; index++) {
       const entry = results[index];
       examined++;
-      lastExaminedName = entry.name;
       const requestId = entry.name.slice(0, -5);
-      if (activeRequestIds.has(requestId) || inFlightRequestIds.has(requestId) ||
-          requestTasks.has(requestId) || pendingRequestQueueSet.has(requestId + '.json')) continue;
-      const resultRemote = await readRemoteFile('result/' + entry.agent_id + '/' + entry.name);
+      const key = entry.agent_id + '/' + entry.name;
+      lastExaminedKey = key;
+      if (activeRequestIds.has(requestId) || inFlightRequestIds.has(requestId) || requestTasks.has(requestId) ||
+          pendingRequestQueueSet.has(key)) continue;
+      const resultPath = 'result/' + key;
+      const resultRemote = await readRemoteFile(resultPath);
       if (!resultRemote || (entry.sha && resultRemote.sha !== entry.sha)) continue;
       const resultRecord = resultRemote.value;
       if (!resultRecord || resultRecord.request_id !== requestId ||
           !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(resultRecord.status)) continue;
       const completedAt = Date.parse(resultRecord.completed_at || '');
       if (!Number.isFinite(completedAt) || completedAt >= cutoff) continue;
-
-      const requestRemote = await readRemoteFile('request/' + entry.agent_id + '/' + entry.name);
+      const requestPath = 'request/' + key;
+      const claimPath = 'claims/' + key;
+      const [requestRemote, claimRemote] = await Promise.all([readRemoteFile(requestPath), readRemoteFile(claimPath)]);
       if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId) continue;
-      const claimRemote = await readRemoteFile('claims/' + entry.agent_id + '/' + entry.name);
-      if (claimRemote && (!claimRemote.value || claimRemote.value.status !== 'completed')) continue;
-
-      const legacyArtifactPrefix = requestId + '-batch-output-';
-      const flatArtifacts = flatArtifactEntries.filter(item => item && item.type === 'file' &&
-        typeof item.name === 'string' && item.name.startsWith(legacyArtifactPrefix) &&
-        /^\d{3}\.json$/.test(item.name.slice(legacyArtifactPrefix.length)));
-      const nestedArtifacts = await listFolder('bridge/artifacts/' + requestId);
-      const artifactsByPath = new Map();
-      for (const artifact of [...flatArtifacts, ...nestedArtifacts]) {
-        if (artifact && isSafeMailboxCleanupPath(artifact.path) && typeof artifact.sha === 'string') {
-          artifactsByPath.set(artifact.path, { path: artifact.path, sha: artifact.sha });
-        }
-      }
-      if (artifactsByPath.size > MAX_MAILBOX_ARTIFACTS_PER_RECORD) continue;
-
+      if (claimRemote && (!claimRemote.value || claimRemote.value.request_id !== requestId ||
+          !['completed', 'failed', 'cancelled', 'rejected', 'needs_manual_recovery'].includes(claimRemote.value.status))) continue;
       const files = [
-        { path: 'bridge/requests/' + entry.name, sha: requestRemote.sha },
-        { path: 'bridge/results/' + entry.name, sha: resultRemote.sha },
-        ...(claimRemote ? [{ path: 'bridge/claims/' + entry.name, sha: claimRemote.sha }] : []),
-        ...artifactsByPath.values()
+        { path: requestPath, sha: requestRemote.sha },
+        { path: resultPath, sha: resultRemote.sha },
+        ...(claimRemote ? [{ path: claimPath, sha: claimRemote.sha }] : [])
       ];
+      const artifactPrefix = 'sandbox storage/' + entry.agent_id + '/' + requestId + '-';
+      const artifactPaths = new Set((Array.isArray(resultRecord.artifacts) ? resultRecord.artifacts : [])
+        .map(item => item && item.path).filter(pathValue => typeof pathValue === 'string' && pathValue.startsWith(artifactPrefix) && isSafeMailboxCleanupPath(pathValue)));
+      const artifactEntries = await listFolder('sandbox storage/' + entry.agent_id);
+      for (const artifact of artifactEntries) {
+        const artifactPath = 'sandbox storage/' + entry.agent_id + '/' + artifact.name;
+        if (artifact.name.startsWith(requestId + '-') && isSafeMailboxCleanupPath(artifactPath)) artifactPaths.add(artifactPath);
+      }
+      if (artifactPaths.size > MAX_MAILBOX_ARTIFACTS_PER_RECORD) continue;
+      for (const artifactPath of artifactPaths) {
+        const artifact = await readRemoteContent(artifactPath);
+        if (artifact && artifact.sha) files.push({ path: artifactPath, sha: artifact.sha });
+      }
       if (files.some(item => !item.sha)) continue;
-      const remoteActiveIds = Array.isArray(sharedState.active_request_ids) ? sharedState.active_request_ids : [];
-      if (remoteActiveIds.includes(requestId)) continue;
-      selected.push({ requestId, files });
+      selected.push({ requestId, key, files });
     }
-    mailboxCleanupCursor = lastExaminedName && results.some(item => item.name > lastExaminedName)
-      ? lastExaminedName
-      : null;
-
+    mailboxCleanupCursor = lastExaminedKey && results.some(item => item.agent_id + '/' + item.name > lastExaminedKey)
+      ? lastExaminedKey : null;
     const allFiles = selected.flatMap(item => item.files);
     if (!allFiles.length) return { skipped: false, deletedRecords: 0, deletedFiles: 0 };
     const deletion = await commitMailboxDeletions(allFiles);
-    return {
-      skipped: false,
-      deletedRecords: selected.length,
-      deletedFiles: deletion.deleted,
-      commitSha: deletion.commitSha || null
-    };
+    return { skipped: false, deletedRecords: selected.length, deletedFiles: deletion.deleted, commitSha: deletion.commitSha || null };
   }
+
 
   async function maybeRunMailboxCleanup() {
     if (!running || mailboxCleanupInFlight || Date.now() - lastMailboxCleanupAt < Math.max(1000, cleanupIntervalMs)) return;
