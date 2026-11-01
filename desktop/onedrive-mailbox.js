@@ -79,8 +79,16 @@ function createOneDriveMailbox({
     if (selected) {
       if (!path.isAbsolute(selected)) return '';
       const resolved = path.resolve(selected);
-      if (path.basename(resolved).toLowerCase() !== 'bridge') return '';
-      return resolved;
+      if (path.basename(resolved).toLowerCase() === 'bridge') return resolved;
+      if (path.basename(resolved).toLowerCase() === 'runtime' &&
+          path.basename(path.dirname(resolved)).toLowerCase() === 'bridge') {
+        const bridgeRoot = path.dirname(resolved);
+        try {
+          const stat = fsSync.lstatSync(bridgeRoot);
+          if (stat.isDirectory() && !stat.isSymbolicLink()) return bridgeRoot;
+        } catch {}
+      }
+      return '';
     }
     const detectedRoot = detectOneDriveSyncRoot(env, fsSync);
     return detectedRoot ? path.join(detectedRoot, 'Bridge') : '';
