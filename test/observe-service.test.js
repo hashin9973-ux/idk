@@ -479,7 +479,7 @@ test('Observe keeps full-resolution pixels local and publishes matching passive 
   assert.equal(service.status().last_vision_frame_id, latest.frame_id);
   assert.match(mailbox.content, new RegExp('Frame ID: ' + latest.frame_id));
   assert.ok(mailbox.content.includes('SmolVLM2-2.2B-Instruct'));
-  assert.match(mailbox.content, /A full-resolution desktop frame was analyzed\\./);
+  assert.ok(mailbox.content.includes('A full-resolution desktop frame was analyzed.'));
   assert.match(mailbox.content, /desktop icon/);
   assert.match(mailbox.content, /300.*200/);
   assert.doesNotMatch(mailbox.content, /private-full-resolution-pixel-buffer/);
