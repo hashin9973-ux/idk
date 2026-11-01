@@ -186,7 +186,7 @@ test('dashboard custom messages are written to the exact active session inbox', 
   });
   assert.equal(sent.status, 'sent');
   assert.equal(sent.to_agent_id, recipient.agent_id);
-  const record = records.get(registry.messagePath(recipient.session_id, sent.message_id)).value;
+  const record = records.get(registry.messagePath(recipient.agent_id, sent.message_id)).value;
   assert.equal(record.sender_type, 'user');
   assert.equal(record.sender_session_id, null);
   assert.equal(record.sender_agent_id, 'user');
@@ -213,7 +213,7 @@ test('agents can reply to dashboard messages and the dashboard reads replies in 
   assert.equal(reply.status, 'sent');
   assert.equal(reply.to_agent_id, 'user');
   assert.equal(reply.in_reply_to, sent.message_id);
-  const replyRecord = records.get(registry.messagePath(recipient.session_id, reply.message_id)).value;
+  const replyRecord = records.get(registry.messagePath(recipient.agent_id, reply.message_id)).value;
   assert.equal(replyRecord.sender_session_id, recipient.session_id);
   assert.equal(replyRecord.recipient_session_id, recipient.session_id);
   assert.equal(replyRecord.sender_type, 'agent');
@@ -244,7 +244,7 @@ test('agent-to-agent messages and replies use exact session inboxes even when se
   assert.equal(sent.to_agent_id, recipient.agent_id);
   assert.ok(sent.message_id);
   assert.equal(sent.thread_id, sent.message_id);
-  const immutablePath = registry.messagePath(recipient.session_id, sent.message_id);
+  const immutablePath = registry.messagePath(recipient.agent_id, sent.message_id);
   const immutableBeforeRead = structuredClone(records.get(immutablePath).value);
   assert.equal(immutableBeforeRead.read_at, null);
 
