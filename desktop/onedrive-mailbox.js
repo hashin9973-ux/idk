@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -17,7 +18,7 @@ function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
 }
 
-function detectOneDriveSyncRoot(env = process.env, fsImpl = fs) {
+function detectOneDriveSyncRoot(env = process.env, fsImpl = fsSync) {
   for (const key of ['OneDriveConsumer', 'OneDriveCommercial', 'OneDrive']) {
     const candidate = env && typeof env[key] === 'string' ? env[key].trim() : '';
     if (!candidate || !path.isAbsolute(candidate)) continue;
@@ -57,11 +58,7 @@ function createOneDriveMailbox({
       ? settings.repositoryBridge : {};
     const selected = typeof config.oneDrivePath === 'string' ? config.oneDrivePath.trim() : '';
     if (selected) return path.resolve(selected);
-    const detectedRoot = detectOneDriveSyncRoot(env, fsImpl === fs ? fs : {
-      statSync: candidate => {
-        try { return require('node:fs').statSync(candidate); } catch { return null; }
-      }
-    });
+    const detectedRoot = detectOneDriveSyncRoot(env, fsSync);
     return detectedRoot ? path.join(detectedRoot, 'Bridge', 'runtime') : '';
   }
 
