@@ -2240,9 +2240,9 @@ test('a conflicting immutable result is not mistaken for successful publication 
       if (conflictWritten || !Array.isArray(state.agentMailboxes)) return;
       const row = state.agentMailboxes.flatMap(agent => Array.isArray(agent.requests) ? agent.requests : [])
         .find(item => item && item.request_id === requestId && item.status === 'publishing' &&
-          typeof item.resultJson === 'string');
+          typeof item.result_json === 'string');
       if (!row) return;
-      const conflictingResult = JSON.parse(row.resultJson);
+      const conflictingResult = JSON.parse(row.result_json);
       Object.defineProperty(conflictingResult, '__proto__', {
         value: { unexpected: true }, enumerable: true, configurable: true, writable: true
       });
