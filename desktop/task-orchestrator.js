@@ -198,7 +198,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       }
     };
     await createOnly(projectPath(projectId), record);
-    return { project_id: projectId, name, protocol: PROJECT_PROTOCOL, created_at: createdAt, note: 'Share this project_id with every collaborating session. Task records and file/module ownership are shared through the Windows app's persistent local registry.' };
+    return { project_id: projectId, name, protocol: PROJECT_PROTOCOL, created_at: createdAt, note: "Share this project_id with every collaborating session. Task records and file/module ownership are shared through the Windows app's persistent local registry." };
   }
 
   async function getProject(projectId) {
