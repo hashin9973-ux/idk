@@ -3076,6 +3076,16 @@ if (!hasInstanceLock) {
 
     oneDriveMailbox = createOneDriveMailbox({ getSettings: () => settings });
     if (oneDriveMailbox) {
+      const mailboxState = oneDriveMailbox.getState();
+      const savedMailboxPath = String(settings.repositoryBridge && settings.repositoryBridge.oneDrivePath || '');
+      if (mailboxState.configured && mailboxState.mailboxPath &&
+          savedMailboxPath !== mailboxState.mailboxPath) {
+        settings.repositoryBridge.oneDrivePath = mailboxState.mailboxPath;
+        if (!persistSettings()) {
+          appendDiagnosticLog('onedrive-mailbox-path-normalization-failed',
+            'Could not persist the canonical Bridge mailbox root in app settings.');
+        }
+      }
       try {
         windowsInputController = createWindowsInputController({
           platform: process.platform,
