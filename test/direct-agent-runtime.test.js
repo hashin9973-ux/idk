@@ -185,9 +185,10 @@ test('direct agent catalog includes local tools but excludes mailbox controls', 
 
 test('slash catalog includes command names, descriptions and argument requirements', () => {
   const catalog = formatSlashToolCatalog(definitions());
-  assert.match(catalog, /\/read_file — Read a workspace file/);
-  assert.match(catalog, /path \(string; required; Workspace-relative file path\.\)/);
-  assert.match(catalog, /start_line \(integer; optional/);
+  assert.match(catalog, /### `\/read_file`/);
+  assert.match(catalog, /Workspace-relative file path/);
+  assert.match(catalog, /- `path` — string; required/);
+  assert.match(catalog, /- `start_line` — integer; optional/);
   assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
 });
 
@@ -331,7 +332,7 @@ test('model invokes tools with assistant slash commands and receives local resul
     assert.ok(!Object.hasOwn(request, 'tool_choice'));
     assert.ok(request.messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   }
-  assert.match(requests[0].messages[0].content, /AVAILABLE LOCAL SLASH COMMANDS/);
+  assert.match(requests[0].messages[0].content, /Available local Windows tools/);
   assert.match(requests[0].messages[0].content, /\/read_file — Read a workspace file/);
   assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path="README.md"'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
