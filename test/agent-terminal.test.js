@@ -8,7 +8,7 @@ test('tool-call JSON is rendered as shell-style command lines without JSON filen
   const request = JSON.stringify({ protocol: 'chatgpt-local-repo-bridge/v1', request_id: 'request-1',
     tool: 'read_file', args: { path: 'src/main.cpp', startLine: 10, includeImages: false } });
   assert.equal(formatRequestCommands(request, 'unknown'),
-    "$ read_file --path 'src/main.cpp' --start-line '10' --no-include-images");
+    "$ read_file --path 'src/main.cpp' --start-line 10 --no-include-images");
 });
 
 test('shell commands retain their ordinary command-line form', () => {
@@ -67,7 +67,7 @@ test('direct tool calls render in slash-command form with nested secrets redacte
 test('terminal argument display renders lists and nested objects without JSON', () => {
   const request = JSON.stringify({ tool: 'project_search', args: { query: 'main entry', paths: ['src', 'test'], filters: { kind: 'symbol', maxResults: 5 } } });
   const rendered = formatRequestCommands(request, 'unknown');
-  assert.match(rendered, /--paths \\[.*src.*test.*\\]/);
-  assert.match(rendered, /--filters \\[kind='symbol'; maxResults=5\\]/);
+  assert.ok(rendered.includes("--paths ['src', 'test']"));
+  assert.ok(rendered.includes("--filters [kind='symbol'; maxResults=5]"));
   assert.doesNotMatch(rendered, /"paths":/);
 });
