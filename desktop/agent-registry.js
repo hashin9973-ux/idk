@@ -784,12 +784,16 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
       addFile('result/' + agentId + '/' + name, result.sha);
       const manifest = Array.isArray(result.value.artifacts) ? result.value.artifacts : [];
       const allowedPrefix = 'sandbox storage/' + agentId + '/';
-      for (const artifact of manifest) {
-        if (!artifact || typeof artifact.path !== 'string' || !artifact.path.startsWith(allowedPrefix)) continue;
-        if (typeof readRemoteContent === 'function') {
-          const stored = await readRemoteContent(artifact.path).catch(() => null);
-          if (stored && stored.sha) addFile(artifact.path, stored.sha);
-        }
+      const artifactPaths = new Set(manifest.map(artifact => artifact && artifact.path)
+        .filter(artifactPath => typeof artifactPath === 'string' && artifactPath.startsWith(allowedPrefix)));
+      for (const artifact of await listFolder('sandbox storage/' + agentId)) {
+        if (artifact && artifact.type === 'file' && typeof artifact.name === 'string' &&
+            artifact.name.startsWith(requestId + '-')) artifactPaths.add(allowedPrefix + artifact.name);
+      }
+      for (const artifactPath of artifactPaths) {
+        if (typeof readRemoteContent !== 'function') continue;
+        const stored = await readRemoteContent(artifactPath).catch(() => null);
+        if (stored && stored.sha) addFile(artifactPath, stored.sha);
       }
       deletedRequests++;
     }
