@@ -1562,7 +1562,7 @@ function createRepositoryBridge(deps = {}) {
       const inbox = 'messages/' + agentId;
       const entries = await listFolder(inbox);
       const names = entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-        .filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\\.json$/.test(name)).sort().slice(-200);
+        .filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(name)).sort().slice(-200);
       for (const name of names) {
         if (deletedRecords >= perPassLimit) break;
         const messageId = name.slice(0, -5);

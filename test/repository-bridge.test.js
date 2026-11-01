@@ -2000,7 +2000,7 @@ test('OneDrive mailbox polling dispatches requests while a background context re
     await bridge.start();
     await waitForAsync(async () =>
       (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json'))?.value?.status === 'completed', 5000);
-    await waitFor(() => bridge.getState().active_count === 0, 1500);
+    await waitFor(() => bridge.getState().activeCount === 0, 1500);
     await bridge.pollOnce();
     await waitFor(() => contextStarted, 1500);
     const session = (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json')).value.result.result;
@@ -2081,7 +2081,7 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
     await bridge.start();
     await waitForAsync(async () =>
       (await mailbox.readJson('result/agent-000/' + requestId + '.json'))?.value?.status === 'completed', 5000);
-    await waitFor(() => bridge.getState().active_count === 0, 1500);
+    await waitFor(() => bridge.getState().activeCount === 0, 1500);
     await bridge.pollOnce();
     await waitForAsync(async () => {
       const [agent, tools] = await Promise.all([
