@@ -385,7 +385,7 @@ function makeAgentWidget(agent,index){
   actions.append(workspaceButton,nicknameButton,dumpButton,pauseButton,disconnectButton,deleteButton);
   header.append(identity,status,busy,unread,counts,actions);
   const composer=document.createElement('form');composer.className='agent-message-composer';composer.dataset.noWidgetDrag='true';
-  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder=agent.connection_mode==='direct'?'> message or /tool {"arg":"value"}':'> message agent… (Enter to send)';input.setAttribute('aria-label','Message for '+agent.agent_id);input.autocomplete='off';
+  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder=agent.connection_mode==='direct'?'> message or /tool key=value':'> message agent… (Enter to send)';input.setAttribute('aria-label','Message for '+agent.agent_id);input.autocomplete='off';
   const slashMenu=document.createElement('div');slashMenu.className='agent-slash-menu';slashMenu.hidden=true;slashMenu.setAttribute('role','listbox');slashMenu.setAttribute('aria-label','Available local tools');slashMenu.dataset.noWidgetDrag='true';
   let slashMenuItems=[],slashActiveIndex=0;
   function selectSlashTool(index){
@@ -524,7 +524,7 @@ function makeAgentWidget(agent,index){
         await refresh();
       }
     } catch(error) { note('Could not message '+agent.agent_id+': '+error.message,'error'); }
-    finally { input.disabled=card.dataset.directBusy==='true';input.placeholder=direct?'> message or /tool {"arg":"value"}':'> message agent… (Enter to send)'; }
+    finally { input.disabled=card.dataset.directBusy==='true';input.placeholder=direct?'> message or /tool key=value':'> message agent… (Enter to send)'; }
   };
   composer.addEventListener('submit',event=>{event.preventDefault();event.stopPropagation();void sendMessage();});
   input.addEventListener('keydown',event=>{
@@ -604,7 +604,7 @@ function renderAgentMailboxes(rawAgents){
     const directBusy=isDirect&&agent.direct_status==='running';
     if(messageInput){
       messageInput.disabled=isDirect?directBusy:!hasSession;
-      messageInput.placeholder=isDirect?'> message or /tool {"arg":"value"}':hasSession?'> message agent… (Enter to send)':'[no active session]';
+      messageInput.placeholder=isDirect?'> message or /tool key=value':hasSession?'> message agent… (Enter to send)':'[no active session]';
     }
     const directStop=card.querySelector('.agent-direct-stop');
     if(directStop)directStop.hidden=!directBusy;
