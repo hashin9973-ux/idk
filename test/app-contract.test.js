@@ -144,7 +144,7 @@ test('dashboard is a minimal OneDrive and worker status window', () => {
   assert.ok(renderer.includes("active > 0 ? 'Worker online · ' + active + ' active'"));
   assert.ok(renderer.includes("pending > 0 ? 'Worker online · ' + pending + ' queued'"));
   assert.ok(renderer.includes(": 'Worker online · idle'"));
-  assert.match(renderer, /Worker cannot reach the GitHub mailbox/);
+  assert.match(renderer, /Worker cannot reach the OneDrive mailbox/);
   assert.match(renderer, /Last successful request scan:/);
   assert.match(renderer, /Mailbox transport error:/);
   assert.match(renderer, /Recent tool\/result issue \(worker still reachable\):/);
@@ -199,7 +199,7 @@ test('dashboard is a minimal OneDrive and worker status window', () => {
   assert.doesNotMatch(renderer, /windowsBridge\.(startBridge|stopBridge|saveBridgeConfig|openChatGPT)/);
 });
 
-test('main process opens login in the system browser and returns focus after GitHub approval', () => {
+test('main process preserves optional GitHub login separately from OneDrive worker connection', () => {
   const main = read('desktop', 'main.js');
   assert.match(main, /require\('\.\/repository-bridge'\)/);
   assert.match(main, /createRepositoryBridge/);
@@ -215,8 +215,9 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:retry-connection'/);
   assert.ok(main.includes("ipcMain.handle('app:github-state'"));
   assert.ok(main.includes("ipcMain.handle('app:onedrive-state'"));
-  assert.ok(main.includes('if (!state.running) void attemptAutoConnect();'),
-    'a successful explicit auth retry restarts the mailbox worker immediately');
+  assert.match(main, /if \(!initial\.configured\)/);
+  assert.match(main, /async function attemptAutoConnect\(\)/);
+  assert.match(main, /function retryConnectionNow\(\)/);
   assert.match(main, /AUTO_CONNECT_INTERVAL_MS = 5000/);
   assert.match(main, /ready-to-show/);
   assert.match(main, /did-fail-load/);
@@ -323,7 +324,7 @@ test('embedded browser memory telemetry uses supported Electron APIs and cannot 
 
 test('preload exposes the single-dashboard, caption, persistence, sync and bridge APIs', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'openDashboard', 'saveDashboardState', 'saveNow', 'getTtsSettings', 'setTtsSettings', 'previewCaptions', 'getCloudSyncStatus', 'chooseCloudFolder', 'configureCloudSync', 'syncCloudNow', 'acknowledgeTrayState', 'onPrepareForTray', 'onDashboardState', 'onPreferences', 'onCloudSyncStatus', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
+  for (const action of ['getState', 'getOneDriveState', 'chooseOneDriveFolder', 'onOneDriveState', 'openDashboard', 'saveDashboardState', 'saveNow', 'getTtsSettings', 'setTtsSettings', 'previewCaptions', 'getCloudSyncStatus', 'chooseCloudFolder', 'configureCloudSync', 'syncCloudNow', 'acknowledgeTrayState', 'onPrepareForTray', 'onDashboardState', 'onPreferences', 'onCloudSyncStatus', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
@@ -388,11 +389,11 @@ test('mailbox execution stays separate from ChatGPT messaging transport', () => 
   assert.doesNotMatch(main, /submitMessageToChat|insertAndSubmitToolMessage|assistant-tool:/);
 });
 
-test('inline GitHub auth stores an encrypted app-side credential and does not require ChatGPT login', () => {
+test('optional GitHub tools store an encrypted app-side credential and do not require ChatGPT login', () => {
   const main = read('desktop', 'main.js');
   const auth = read('desktop', 'github-auth.js');
   const html = read('desktop', 'index.html');
-  const js = read('desktop', 'renderer.js');
+  const js = read('desktop', 'dashboard-renderer.js');
   assert.match(main, /safeStorage/);
   assert.match(auth, /safeStorage\.encryptString/);
   assert.match(auth, /safeStorage\.decryptString/);
@@ -400,8 +401,9 @@ test('inline GitHub auth stores an encrypted app-side credential and does not re
   assert.doesNotMatch(html, /github-client-id/);
   assert.match(html, /onedrive-row/);
   assert.doesNotMatch(html, /github-row/);
-  assert.match(js, /windowsBridge\.startGitHubLogin/);
-  assert.match(js, /scheduleAuthPoll/);
+  assert.match(js, /api\.startGitHubLogin/);
+  assert.match(js, /api\.pollGitHubLogin/);
+  assert.match(html, /github-connect/);
   assert.match(main, /setAlwaysOnTop\(false\)/);
   assert.doesNotMatch(auth, /localStorage|github_api/);
 });
@@ -443,8 +445,10 @@ test('environment snapshots and result artifacts stay in the repository channel'
   assert.ok(bridge.includes('refresh_environment_context'));
   assert.ok(bridge.includes('externalizeLargeText'));
   assert.ok(bridge.includes('bridge/artifacts/'));
-  assert.ok(auth.includes('bridge/context'));
-  assert.ok(auth.includes('bridge/artifacts'));
+  assert.match(bridge, /mailbox\.readJson\(relativePath\)/);
+  assert.match(bridge, /mailbox\.writeJson\(relativePath/);
+  assert.match(bridge, /mailbox\.writeContent\(relativePath/);
+  assert.match(bridge, /mailbox\.deleteFiles/);
   assert.ok(toolBridge.includes('upload_workspace_file'));
   assert.ok(toolBridge.includes('requiresApproval: true'));
   assert.match(readme, /The conversation stays human-facing/i);
@@ -856,7 +860,7 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   assert.doesNotMatch(connect, /auth\.authenticated|GitHub/);
   assert.match(connect, /repositoryBridge\.start\(\)/);
   assert.match(connect, /oneDriveMailbox\.getState\(\)/);
-  assert.ok(main.includes("return resolveMailboxWorkerStatus(current, autoConnectionStatus);"));
+  assert.ok(main.includes("resolveMailboxWorkerStatus(current, autoConnectionStatus)"));
   assert.ok(main.includes("const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');"));
   assert.ok(read('desktop', 'worker-status.js').includes("return 'reconnecting'"));
 
