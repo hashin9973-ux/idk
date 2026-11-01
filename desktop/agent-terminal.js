@@ -60,7 +60,7 @@
       return /[\\s,;=\\[\\]"']/.test(value) ? JSON.stringify(value) : value;
     }
     if (Array.isArray(value)) return '[' + value.map(formatSlashValue).join(', ') + ']';
-    return JSON.stringify(value);
+    return '[structured value]';
   }
 
   function formatSlashCommand(tool, args) {
