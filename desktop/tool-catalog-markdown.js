@@ -77,7 +77,7 @@ function renderToolCatalogMarkdown(capabilityData) {
     '',
     ...sections,
     ''
-  ].join('\\n');
+  ].join('\n');
 }
 
 module.exports = { CORE_TOOLS, renderToolCatalogMarkdown };
