@@ -215,9 +215,15 @@ function createRepositoryBridge(deps = {}) {
 
   const workerId = randomUUID();
   const BOOTSTRAP_AGENT_ID = 'agent-000';
-  const mailboxRequestPath = (agentId, requestId) => 'request/' + agentId + '/' + requestId + '.json';
-  const mailboxClaimPath = requestId => 'claims/' + (requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json';
-  const mailboxResultPath = requestId => 'result/' + (requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json';
+  const mailboxRequestPath = (agentId, requestId) => mailbox
+    ? 'request/' + agentId + '/' + requestId + '.json'
+    : 'bridge/requests/' + requestId + '.json';
+  const mailboxClaimPath = requestId => mailbox
+    ? 'claims/' + (requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json'
+    : 'bridge/claims/' + requestId + '.json';
+  const mailboxResultPath = requestId => mailbox
+    ? 'result/' + (requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json'
+    : 'bridge/results/' + requestId + '.json';
   const operationRecoveryWindowMs = Number.isFinite(Number(stalledOperationRecoveryMs)) && Number(stalledOperationRecoveryMs) > 0
     ? Number(stalledOperationRecoveryMs) : DEFAULT_STALLED_OPERATION_RECOVERY_MS;
   let running = false;
@@ -832,16 +838,26 @@ function createRepositoryBridge(deps = {}) {
     }
     return { deleted: entries.length };
   }
+  function legacyRegistryPath(relativePath) {
+    const match = String(relativePath || '').match(/^local\\/(agents|sessions|revoked-sessions|evicted-sessions)\\/(.+)$/);
+    if (!match) throw new Error('Invalid legacy test registry path.');
+    return 'bridge/' + match[1] + '/' + match[2];
+  }
   const registryReadFile = relativePath => relativePath.startsWith(LOCAL_REGISTRY_PREFIX)
-    ? readLocalRegistryFile(relativePath) : readRemoteFile(relativePath);
+    ? (mailbox ? readLocalRegistryFile(relativePath) : readRemoteFile(legacyRegistryPath(relativePath)))
+    : readRemoteFile(relativePath);
   const registryListFolder = relativePath => relativePath.startsWith(LOCAL_REGISTRY_PREFIX)
-    ? listLocalRegistryFolder(relativePath) : listFolder(relativePath);
+    ? (mailbox ? listLocalRegistryFolder(relativePath) : listFolder('bridge/' + relativePath.slice('local/'.length)))
+    : listFolder(relativePath);
   const registryWriteJson = (relativePath, value, sha, createOnly) => relativePath.startsWith(LOCAL_REGISTRY_PREFIX)
-    ? writeLocalRegistryJson(relativePath, value, sha, createOnly) : writeRemoteJson(relativePath, value, sha, createOnly);
+    ? (mailbox ? writeLocalRegistryJson(relativePath, value, sha, createOnly) : writeRemoteJson(legacyRegistryPath(relativePath), value, sha, createOnly))
+    : writeRemoteJson(relativePath, value, sha, createOnly);
   const registryDeleteFiles = async files => {
     const local = (files || []).filter(item => item && String(item.path || '').startsWith(LOCAL_REGISTRY_PREFIX));
     const remote = (files || []).filter(item => !item || !String(item.path || '').startsWith(LOCAL_REGISTRY_PREFIX));
-    const localResult = local.length ? await deleteLocalRegistryFiles(local) : { deleted: 0 };
+    const localResult = local.length
+      ? (mailbox ? await deleteLocalRegistryFiles(local) : await commitMailboxDeletions(local.map(item => ({ ...item, path: legacyRegistryPath(item.path) }))))
+      : { deleted: 0 };
     const remoteResult = remote.length ? await commitMailboxDeletions(remote) : { deleted: 0 };
     return { deleted: localResult.deleted + Number(remoteResult.deleted || 0) };
   };
