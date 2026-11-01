@@ -57,7 +57,14 @@ function createOneDriveMailbox({
     const config = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
       ? settings.repositoryBridge : {};
     const selected = typeof config.oneDrivePath === 'string' ? config.oneDrivePath.trim() : '';
-    if (selected) return path.resolve(selected);
+    if (selected) {
+      if (!path.isAbsolute(selected)) return '';
+      const resolved = path.resolve(selected);
+      const parts = resolved.split(path.sep).filter(Boolean);
+      if (parts.length < 2 || parts[parts.length - 1].toLowerCase() !== 'runtime' ||
+          parts[parts.length - 2].toLowerCase() !== 'bridge') return '';
+      return resolved;
+    }
     const detectedRoot = detectOneDriveSyncRoot(env, fsSync);
     return detectedRoot ? path.join(detectedRoot, 'Bridge', 'runtime') : '';
   }
