@@ -1586,7 +1586,7 @@ async function attemptAutoConnect() {
   if (!repositoryBridge || !oneDriveMailbox || autoConnectInFlight) return;
   const initial = repositoryBridge.getState();
   if (!initial.configured) {
-    setAutoConnectionStatus('setup', 'Select the local OneDrive-synced Bridge/runtime folder in the app settings.');
+    setAutoConnectionStatus('setup', 'Select the existing local OneDrive-synced Bridge folder in the app settings.');
     return;
   }
   if (initial.running) {
@@ -2248,7 +2248,7 @@ function saveDashboardState(value) {
 
 async function chooseOneDriveFolder() {
   const options = {
-    title: 'Select the OneDrive-synced Bridge/runtime folder',
+    title: 'Select the existing OneDrive-synced Bridge folder',
     properties: ['openDirectory']
   };
   const result = mainWindow && !mainWindow.isDestroyed()
@@ -2259,9 +2259,8 @@ async function chooseOneDriveFolder() {
   }
   const selected = path.resolve(result.filePaths[0]);
   const parts = selected.split(path.sep).filter(Boolean);
-  if (parts.length < 2 || parts[parts.length - 1].toLowerCase() !== 'runtime' ||
-      parts[parts.length - 2].toLowerCase() !== 'bridge') {
-    throw new Error('Select the existing Bridge/runtime folder inside your OneDrive folder, not the OneDrive root or the raw archive.');
+  if (path.basename(selected).toLowerCase() !== 'bridge') {
+    throw new Error('Select the existing Bridge folder inside your OneDrive folder, not the OneDrive root or the raw archive.');
   }
   const before = repositoryBridge ? repositoryBridge.getState() : {};
   if (Number(before.activeCount) > 0 || Number(before.pendingCount) > 0) {
@@ -2273,7 +2272,7 @@ async function chooseOneDriveFolder() {
     const next = { ...previous, oneDrivePath: selected };
     if (repositoryBridge) repositoryBridge.setConfig(next);
     else { settings.repositoryBridge = next; persistSettings(); }
-    const status = oneDriveMailbox ? await oneDriveMailbox.ensureReady() : { configured: true, runtimePath: selected };
+    const status = oneDriveMailbox ? await oneDriveMailbox.ensureReady() : { configured: true, mailboxPath: selected };
     if (repositoryBridge) await repositoryBridge.start();
     broadcastOneDriveState(status);
     return { canceled: false, folder: selected, status, bridge: repositoryBridge ? repositoryBridge.getState() : null };
@@ -2447,7 +2446,7 @@ function registerIpc() {
     }
     const oneDrivePath = String(input.oneDrivePath || '').trim();
     if (oneDrivePath && !path.isAbsolute(oneDrivePath)) {
-      throw new Error('Select an absolute path to the OneDrive-synced Bridge/runtime folder.');
+      throw new Error('Select an absolute path to the OneDrive-synced Bridge folder.');
     }
     const current = repositoryBridge ? repositoryBridge.getState() : {};
     if (Number(current.activeCount) > 0 || Number(current.pendingCount) > 0) {
@@ -2771,7 +2770,7 @@ function registerIpc() {
     if (typeof enabled !== 'boolean') throw new Error('Observe toggle must be a boolean.');
     if (!observeService) throw new Error('Observe service is unavailable.');
     if (enabled && (!oneDriveMailbox || oneDriveMailbox.getState().configured !== true)) {
-      throw new Error('Select the local OneDrive-synced Bridge/runtime folder before enabling Observe mode.');
+      throw new Error('Select the local OneDrive-synced Bridge folder before enabling Observe mode.');
     }
     return observeService.setEnabled(enabled);
   });
@@ -2824,7 +2823,7 @@ function registerIpc() {
       checks: {
         onedrive: {
           status: oneDrive.configured ? 'passed' : 'action_required',
-          message: oneDrive.configured ? 'OneDrive folder configured.' : 'Choose the local OneDrive-synced Bridge/runtime folder.'
+          message: oneDrive.configured ? 'OneDrive folder configured.' : 'Choose the local OneDrive-synced Bridge folder.'
         },
         mailbox: { status: 'not_verified', message: 'Vision/mailbox service is unavailable in this app session.' },
         colab: { status: 'not_verified', message: 'Colab runtime status is unavailable.' },
