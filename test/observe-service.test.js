@@ -170,7 +170,7 @@ test('Observe writes explicit disabled context at startup when stale context may
   });
   await service.clearStaleContext();
   assert.match(mailbox.content, /Observe: disabled/);
-  assert.match(mailbox.content, /No current frame/);
+  assert.match(mailbox.content, /No screen content is currently published/);
   assert.equal(published.length, 1);
   await service.dispose();
 });
