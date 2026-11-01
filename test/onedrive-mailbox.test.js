@@ -112,6 +112,28 @@ test('cleanup verifies every SHA before deleting any mailbox record', async t =>
   assert.equal(await mailbox.readJson('bridge/results/a.json'), null);
 });
 
+test('mailbox rejects symbolic-link ancestor directories before reading or writing outside the runtime root', async t => {
+  const { mailbox, runtime, temp } = await makeMailbox(t);
+  await mailbox.ensureReady();
+  const outside = path.join(temp, 'outside-mailbox');
+  await fs.mkdir(outside, { recursive: true });
+  await fs.writeFile(path.join(outside, 'request.json'), JSON.stringify({ tool: 'shell' }));
+  const bridgePath = path.join(runtime, 'bridge');
+  const backupPath = path.join(runtime, 'bridge-original');
+  await fs.rename(bridgePath, backupPath);
+  try {
+    await fs.symlink(outside, bridgePath, 'junction');
+  } catch (error) {
+    await fs.rename(backupPath, bridgePath);
+    if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return;
+    throw error;
+  }
+  await assert.rejects(mailbox.readJson('bridge/requests/request.json'), /symbolic link/i);
+  await assert.rejects(mailbox.writeJson('bridge/requests/new.json', { tool: 'safe' }, null, true), /symbolic link/i);
+  await fs.unlink(bridgePath);
+  await fs.rename(backupPath, bridgePath);
+});
+
 test('mailbox refuses symbolic links and non-file entries instead of following them', async t => {
   const { mailbox, runtime, temp } = await makeMailbox(t);
   await mailbox.ensureReady();
