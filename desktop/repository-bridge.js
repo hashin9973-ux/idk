@@ -923,6 +923,7 @@ function createRepositoryBridge(deps = {}) {
       '- Last poll: ' + (snapshot.last_poll_at || 'not yet polled'),
       '- Last error: ' + (snapshot.last_error || 'none'),
       '- Tool catalog: ' + tools.length + ' registered tools',
+      '- Tool availability: ' + (tools.length ? 'all listed tools registered; approval modes are in TOOLS.md' : 'no tools reported'),
       '- Workspace index: ' + (latestFilesystemIndexSnapshot ? latestFilesystemIndexSnapshot.lines + ' lines / ' + latestFilesystemIndexSnapshot.bytes + ' bytes' : 'not published'),
       '',
       '## Agent inventory',
