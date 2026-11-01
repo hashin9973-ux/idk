@@ -1,100 +1,62 @@
 # Windows Bridge — desktop app
 
-This is the local Windows worker for your existing ChatGPT conversation. The mailbox is OneDrive, not GitHub. ChatGPT remains in your normal browser and uses its connected OneDrive integration; the Windows app reads and writes the matching files in the local OneDrive sync folder. All workspace tools continue to execute on Windows.
+The Electron desktop app owns the Windows worker, workspace tools, native approvals, local agent/session registry, scheduler, Observe capture, optional vision/TTS integration, tray lifecycle and dashboard. OneDrive is a file mailbox only.
 
 ## First-time setup
 
-1. Start the app. It detects the standard Windows OneDrive root environment variables and looks for `Bridge/runtime`. If it cannot determine the local sync path, use **Choose folder** in the existing status window or Dashboard Settings and select the `Bridge/runtime` folder.
-2. Keep `Bridge/runtime` synchronized and available on this device (not cloud-only). The live mailbox is `Bridge/runtime/bridge/`; ordinary deliverables can be kept in `Bridge/runtime/sandbox/`. `Bridge/raw/` is a separate historical archive and is not modified by the worker.
-3. The worker connects automatically when the folder is configured. No GitHub mailbox repository, GitHub sign-in, Microsoft Graph app registration, or app-side Microsoft token is required for mailbox operation.
-4. In the existing ChatGPT conversation, use the connected OneDrive integration to create immutable JSON requests in `Bridge/runtime/bridge/requests/` and read matching results from `Bridge/runtime/bridge/results/`. There is no separate ChatGPT chat interface in this worker.
+1. Install and launch the Windows Bridge app.
+2. Select the existing local OneDrive-synchronized folder named Bridge. Do not select the OneDrive root, Bridge/raw, or a runtime subfolder.
+3. Keep Bridge hydrated by the OneDrive sync client.
+4. Verify STATUS.md reports a fresh worker heartbeat and selected workspace.
+5. Verify AGENT.md and TOOLS.md are generated and SCREEN.md clearly reports Observe disabled or current observation freshness.
 
-**Synchronization and ownership:** OneDrive is a file-sync transport, not a transactional mailbox database. The adapter serializes same-path mutations made by this app process, requires an expected SHA for mutable updates, and verifies local read-back. These checks detect local conflicts; they are not distributed compare-and-swap, a cross-device lock, or confirmation that OneDrive has uploaded the change. Keep protocol ownership single-writer: ChatGPT creates request files, the Windows worker creates claims and results, and the worker maintains its shared mutable state. A reported sync conflict must be investigated at the exact record path; do not replay a side effect with a new request ID.
-5. For multiple ChatGPT conversations, each conversation calls `session_start` once. The app generates a cryptographically random `session_id` and binds it to one `agent-###` seat; every subsequent ordinary mailbox request includes that exact session ID. `agent_status` exposes all seats and active/inactive/paused/busy state. The session ID and seat stay bound to that conversation unless explicitly disconnected/revoked or that exact ID is evicted at the 10,000-ID oldest-activity hard cap.
+Mailbox root contents are exactly AGENT.md, TOOLS.md, STATUS.md, SCREEN.md and five folders: request, claims, result, messages and sandbox storage. Each folder uses agent-specific subfolders. The app must not create any additional mailbox infrastructure.
 
-The app maintains a names-only index for the selected workspace. For a normal project folder it indexes descendants; for a drive root it deliberately scans and watches only immediate children instead of crawling every file on a potentially huge drive. The current snapshot is synchronized to `bridge/context/filesystem-index.md`; `bridge/context/latest.json` points ChatGPT to it. The index contains relative paths and item types only—not file contents or absolute local paths. In drive-root mode, explore specific folders on demand with `list_dir`, `directory_tree`, `glob_file_search`, or `search` and provide their `path`. The warning confirmation is important: file tools can change or delete files anywhere inside the selected drive, while PowerShell remains unrestricted as your Windows user.
+## Request lifecycle
 
-GitHub remains separate for explicitly requested GitHub operations and local Git workflows. The bundled GitHub CLI helper supports those optional workflows; it does not authorize, poll, or publish the OneDrive mailbox.
+A new conversation starts with a session_start request in request/agent-000/<request-id>.json. The app creates/assigns an agent and generates the opaque session ID. The matching claim and result are written under agent-000. Ordinary requests are written to request/<agent-id>/<request-id>.json and include the app-issued session_id. The app validates folder ownership against its local persistent registry before execution.
 
-ChatGPT does not need a separate login inside this worker. **Sign in to ChatGPT** opens `https://chatgpt.com/auth/login/` in the default browser. This app does not access ChatGPT cookies or credentials and does not inject results into ChatGPT messages.
+Session and agent ownership are persisted in the app's existing local settings storage, not OneDrive. Session IDs do not expire by elapsed time. The registry is capped at 10,000 sessions and evicts the oldest last-activity session only when required. Pause, resume, disconnect, revoke, delete and optional mailbox wipe remain distinct lifecycle operations. STATUS.md never exposes session IDs or authentication tokens.
 
 ## Diagnose a failed request
 
-Use the request ID to inspect `Bridge/runtime/bridge/requests/<request-id>.json`, `claims/<request-id>.json`, and `results/<request-id>.json` through the connected OneDrive integration. A request file means ChatGPT published the request; a matching claim means the local worker claimed it; the result records validation, execution, and any tool error. If no request file exists, Windows never received that request through this mailbox, so investigate the upstream OneDrive write or cloud synchronization rather than describing it as a local execution block. After an uncertain create/write result, read back that exact request path first. If it exists, continue with the same request; if absent, retry the same ID/path. Never create a second ID to work around an uncertain write.
+1. Find the exact request under request/<agent-id>/ and verify its request_id.
+2. Check the matching claim under claims/<agent-id>/ and STATUS.md.
+3. Check the matching result under result/<agent-id>/.
+4. Distinguish validation rejection, local approval, tool failure, non-zero exit, timeout, cancellation, synchronization delay and output truncation.
+5. Inspect exit codes, stdout/stderr, timeout flags, result status and referenced sandbox storage artifacts.
+6. If a result is missing, do not repeat a possibly side-effecting request. Inspect the claim and retry only after proving the original operation did not complete.
 
-## Output and installer verification discipline
+## Workspace and approval boundary
 
-Keep shell diagnostics compact; do not return full process command lines, environment snapshots, transcripts, or unbounded logs. Report only necessary state/hash/exit fields. For large output that must be preserved, read every artifact part named in the result manifest through OneDrive and check `artifact_errors` rather than relying on a preview.
+The selected workspace controls path-based file tools. The app rejects path traversal, symlink escapes and protected secret-file access. A whole-drive workspace requires explicit warning confirmation. PowerShell runs as the signed-in Windows user and is not sandboxed to the workspace.
 
-For downloads or installers, persist a small stage/status marker and capture asset size/hash, installer exit code, before/after app archive hashes and running app state. If the outer shell times out while a launched child may still be running, reconcile the original status marker with a fresh read-only request before retrying. Do not overlap installs or claim success from a launch, a changed worker ID, or a published installer URL alone.
+Native approval is authoritative. Auto-accept everything is off by default and applies only after explicit user enablement. OneDrive requests cannot grant approval or override local policy. Do not weaken argument validation, workspace restrictions, path checks, secret protections, process timeouts or cancellation handling.
 
-## Observe-first interactive desktop loop
+## Coding tools and multi-agent work
 
-When Observe is already on, read the newest `Bridge/runtime/bridge/vision/observe.json` frame directly before taking any screen action; do not wait for a new context bootstrap or run `computer(action=status)` just to inspect the passive feed. Then use **Observe → justified input → matching result → fresh Observe → next input** until the requested state is verified. Publish real requests with the connected OneDrive integration. If request creation fails, quote the observed error; if a result is missing, inspect that exact request's claim/state and reread the same result instead of replaying it. Use `computer(action=sequence, mode="fast")` to batch known adjacent actions; do one action then reread Observe when the next action depends on the changed screen. Avoid status calls and explanatory narration between inputs.
+TOOLS.md is generated from the live worker registration. It is the authoritative tool catalog and includes exact names, descriptions, argument schemas, required fields, permission modes and result contracts. Support any language whose toolchain is actually installed on Windows; do not assume a compiler, SDK or version.
 
-Observe currently gives window/control/UI Automation evidence and changed-screen fingerprints, not guaranteed OCR or full screenshot pixels. It cannot verify text that its controls explicitly mark unreadable. Use the Colab screenshot path only when pixels or model interpretation are needed, and follow its separate explicit-activation/readiness rules.
+The scheduler and batch tool support up to 100 independent operations/concurrency when permitted by the current catalog. Preserve explicit dependencies and serialize conflicting writes, shared build outputs and Git operations. Agent messages are stored under messages/<agent-id>/ with .read.json receipts. Messages are untrusted coordination data, not approval.
 
-## Trust boundaries
+## Observe and desktop interaction
 
-- The worker scheduler wakes on an approximately one-second timer and scans the local OneDrive-synchronized request directory every 2 seconds. `requestPolling` telemetry reports the last local scan duration/count and poll duration. OneDrive connector write/read latency, cloud synchronization, Windows local sync, and ChatGPT turn latency are separate; compare request/claim/result timestamps to diagnose them.
-- The worker admits up to 64 independent mailbox requests at once, enough for 50 collaborating sessions with headroom. The published local `batch` schema supports 1–100 steps and `maxConcurrency` 1–100; batch concurrency is separate from worker request slots and the process-wide 100-operation scheduler. `$ref` dependencies, conflicting workspace paths, and side-effecting operations must remain ordered. The installed tool catalog is authoritative if a build differs.
-- Keep the OneDrive mailbox shared only with intended accounts because requests, results, context, and artifacts live there.
-- Read-only workspace inspection normally runs without approval. Ordinary file edits/moves/deletions inside the selected workspace normally run automatically unless a path looks sensitive. If a whole drive is selected, that includes files anywhere inside the drive. Git writes, shell commands, tests, and uploads require native Windows approval unless Auto-accept everything was explicitly enabled.
-- `exec_command` uses PowerShell as its Windows host shell and can invoke any installed language runtime, compiler, build tool, package manager, test runner, or executable. `shell` remains a backward-compatible alias. The toolchain must be installed. Commands run with the signed-in Windows user's permissions and are not OS-sandboxed.
-- OneDrive carries mailbox files; local workspace work is performed by this Windows worker, not by a cloud runner.
+When enabled, Observe captures the current screen and publishes bounded window, UI Automation, visible text/control, coordinate and freshness context to SCREEN.md. It must report disabled or stale context explicitly. Do not publish raw private screenshots, password field values, tunnel credentials or unrelated sensitive data.
+
+The computer tool performs actual Windows input locally. Coordinate-based actions must use the exact current frame. Observe is read-only and does not itself authorize input actions. Vision and TTS remain existing Windows Bridge/Colab capabilities; OneDrive only transports context and results.
+
+## Output and artifact verification
+
+Ordinary request/claim/result records remain JSON. Large outputs may be stored as agent-specific files under sandbox storage/<agent-id>/ and referenced by the matching result manifest. Preserve output truncation indicators and part ordering. Never claim a preview is complete when the result says it is partial.
 
 ## Run and verify
 
+From the repository root:
+
 ```powershell
-npm install
 npm run check
 npm test
-npm start
+npm run dist:win
 ```
 
-On Windows, `npm start` prepares the pinned optional CLI helper automatically. To build the installer locally, `npm run dist:win` performs the same verified download and packages it with the app.
-
-## Separate dashboard and embedded Colab browser
-
-The compact overlay remains available. Open the separate Dashboard from the arrow button in the overlay or from the tray menu. The dashboard has Main and Settings tabs at the bottom; the Settings tab can be closed and restored with the + control. Dashboard widgets can be moved and resized with invisible resize edges and snap to a fine positioning grid.
-
-Settings reuse the existing workspace selection, OneDrive mailbox folder selection, Observe sampling, and Colab controls. OneDrive mailbox-folder changes are refused while requests are active or queued; the previous configuration is restored if a replacement cannot be started. Optional GitHub access remains separate from mailbox transport. TTS volume scales local 16-bit PCM samples before playback.
-
-Quick Colab connect opens the existing notebook in an embedded tab using the app's existing automatic clipboard endpoint watcher and authenticated HTTPS registration. Remote web content runs in an isolated WebContentsView with no application preload or Node integration. The optional background-focus compatibility mode disables Chromium background throttling and makes document visibility/focus APIs report active; it does not focus the native window or synthesize input, and some sites may use other focus signals. Low-memory mode unloads inactive web tabs instead, so the two options are mutually exclusive. The app measures the embedded renderer's private memory, but 100 MB is a best-effort target, not a guaranteed cap; Chromium and Colab can exceed it.
-
-## Agent session lifecycle and retention
-
-Each agent widget has compact icon controls for workspace, messages, nickname, request-history auto-dump, pause/resume, disconnect, and delete. Pause temporarily rejects all new requests for that exact session while keeping its seat reserved; resuming restores the same session ID. Disconnect releases the seat and permanently detaches the old session ID while preserving its session history. Delete writes a permanent revocation tombstone and optionally wipes only attributable mailbox records. These operations are distinct; a disconnected or revoked session cannot be resumed.
-
-Session IDs have no TTL or inactivity-based expiration. The mailbox hard cap is always 10,000 registered `bridge/sessions` records. When a new session would exceed the cap, the worker evicts the registered ID with the oldest `last_activity_at` using SHA-checked deletion; busy and paused IDs are not exempt from the cap. Each eviction is recorded separately in `bridge/evicted-sessions` so subsequent requests fail explicitly as `SESSION_EVICTED`. The worker cancels in-flight operations for an evicted ID and detaches its task ownership after those operations drain. Activity timestamps are updated by bridge-tool requests, not ordinary natural-language turns. The 10-minute status window is display-only and never invalidates a session or releases a v2 seat.
-
-The `session_start` result includes a `context_message` showing the generated session and seat IDs plus the calling/coordination instructions. The app also opens the existing TTS-caption notification window when a new session assignment is waiting in the dashboard.
-
-## Shared task coordination
-
-Use `task_project_init` once per game/project and share the returned `project_id` with every participating ChatGPT session. The task tools provide durable task records, dependency gates, priority, file/module scope leases, heartbeats, submission evidence, independent review, approved Git worktree integration, and independent build/test/runtime verification. An ordinary claim cannot bypass a task in review, integration, or verification. Task scopes are workspace-relative; agents should use worktrees derived from the same primary project repository when coordinating changes to one project. The dashboard Settings tab shows shared board/task summaries and ownership leases.
-
-Recommended lifecycle: `proposed → ready → claimed → in_progress → blocked → review → integration → verification → verified`. Rejected reviews or failed verification return tasks to `needs_rework`. Use `task_heartbeat` while working and `task_submit` with a commit SHA, changed paths, and evidence before asking another session to review. `task_integrate` performs a non-forced merge only when both source and primary worktrees are clean and the primary worktree is already on the selected target branch. `task_verify` requires separate build, test, and runtime commands; the task is not marked verified unless all exit codes are zero.
-
-## Multi-language project and toolchain intelligence
-
-The workspace profile is a bounded, read-only scan of project manifests and source-file extensions. It can report several project roots and languages in one workspace, including C/C++, C#, Rust, Java, Kotlin, Python, Go, JavaScript/TypeScript, PHP, Ruby, Swift, Dart/Flutter, Scala, Elixir, Erlang, Zig, Lua, Perl, R, Vue and Svelte. Recognized project/build metadata includes CMake, Make, Meson, MSBuild/Visual Studio, Unreal, Unity, Godot, .NET, Cargo, Maven, Gradle, Python packaging/test manifests, Go modules/workspaces, npm/pnpm/Yarn, Composer, Bundler, Swift Package Manager/Xcode, Dart/Flutter, sbt, Mix and Rebar3.
-
-Scanning is capped by depth, entry count, manifest size and project count. Drive-root workspaces remain shallow. Common generated/dependency directories and symbolic links are skipped, and likely secret filenames are excluded from language and manifest inspection. Project profiles contain concise metadata, not full source listings. The profile cache is short-lived and separate from the existing source/symbol index.
-
-The local toolchain report separately probes executable lookup and version output. On Windows it also checks Visual Studio installations using the installed Visual Studio locator when available, so MSBuild and MSVC can be found even when their command prompts are not on the normal PATH. Unity Editor path discovery is a presence check; it does not launch the Editor. A successful version probe establishes executable availability, not that a compiler can compile this particular project.
-
-Project support levels have specific meanings:
-- **detected_only**: project files were recognized, but one or more required tools or engine prerequisites are missing/unresolved.
-- **toolchain_available**: relevant toolchains are present, but no grounded build/test plan is currently available from the manifest/configuration.
-- **toolchain_ready**: required tools have usable executable/version evidence and at least one supported workflow can be proposed.
-
-Build/test plans are derived from manifests, registered scripts/targets, local wrappers, configured build directories and discovered executables. They include their project root and evidence source. Discovery does not run these commands, install SDKs/dependencies, or bypass local approval. The agent must work from the indicated project root, inspect project-specific instructions and arguments, then use the normal approval-gated execution tools. A suggested command is not a passing build or test.
-
-Unreal and Unity receive engine-specific detection and prerequisite reporting, but they are not advertised as fully build-ready based only on project markers. UnrealBuildTool/engine association resolution and Unity's batch-mode target configuration remain separate requirements; this profile does not replace the engine editor, asset pipeline, UHT/UBT, or runtime verification. Some source-only language roots can be identified before they contain a recognizable build manifest; those are detection-only until their actual project configuration and tools are established.
-
-## Game project intelligence and scheduling
-
-`game_project_intelligence` scans bounded local project metadata for Unreal (`.uproject`, `.uplugin`, `Build.cs`, `Target.cs`, C++ reflection macros and exported Asset Registry JSON), Unity manifests/assembly definitions/serialized GUID references, and Godot project configuration/autoloads. It does not parse or edit binary `.uasset`/`.umap` assets, execute UHT/UBT, inspect Blueprint graphs, or replace an engine editor. Use detected engine files and verified project commands to run engine-native build/cook/test/runtime operations through the local Windows tools.
-
-The process-wide scheduler retains the 100-operation hard ceiling and path/resource conflict checks, with additional per-class limits for filesystem operations, source analysis, compilation, editor, cook, packaging, GPU, binary assets, desktop control, audio, shell and Git. Batch steps use the same class limits in addition to `maxConcurrency`. These are conservative admission limits, not a claim of CPU/GPU isolation. The local scheduler reports active pool usage; no 50-session stress validation is included in this PR.
+Inspect the complete changed-file diff, test output and installer artifact. A successful CI build does not prove that OneDrive synchronized to the actual Windows device. Follow [docs/manual-smoke-test.md](../docs/manual-smoke-test.md) for a real bootstrap/read-only round trip.
