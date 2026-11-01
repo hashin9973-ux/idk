@@ -31,13 +31,22 @@
     return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, SECRET_KEY.test(key) ? '[redacted]' : redactValue(nested)]));
   }
 
+  function formatPlainValue(value) {
+    if (value === null) return 'null';
+    if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+    if (typeof value === 'string') return quote(value);
+    if (Array.isArray(value)) return '[' + value.map(formatPlainValue).join(', ') + ']';
+    if (value && typeof value === 'object') {
+      return '[' + Object.entries(value).map(([name, nested]) => name + '=' + formatPlainValue(nested)).join('; ') + ']';
+    }
+    return String(value);
+  }
+
   function safeArgument(key, value) {
     if (SECRET_KEY.test(key)) return '--' + flagName(key) + ' [redacted]';
     if (typeof value === 'boolean') return value ? '--' + flagName(key) : '--no-' + flagName(key);
     if (value === null) return '--' + flagName(key) + ' null';
-    const safe = redactValue(value);
-    const rendered = typeof safe === 'string' ? safe : JSON.stringify(safe);
-    return '--' + flagName(key) + ' ' + quote(rendered);
+    return '--' + flagName(key) + ' ' + formatPlainValue(redactValue(value));
   }
 
   function formatSingle(tool, args) {
