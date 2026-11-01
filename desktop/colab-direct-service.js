@@ -211,6 +211,7 @@ function scaleWavVolume(audio, requestedVolume = 100) {
 function createVisionService(deps) {
   const {
     githubAuth,
+    mailbox = null,
     getSettings,
     getWorkspaceRoot,
     captureScreenshot,
@@ -248,49 +249,6 @@ function createVisionService(deps) {
   const jobs = new Map();
   const speechJobs = new Map();
   let activeSpeechJobId = null;
-
-  function mailboxConfig() {
-    const settings = typeof getSettings === 'function' ? getSettings() || {} : {};
-    const configured = settings.repositoryBridge || {};
-    const result = {
-      owner: String(configured.owner || DEFAULT_MAILBOX.owner),
-      repo: String(configured.repo || DEFAULT_MAILBOX.repo),
-      branch: String(configured.branch || DEFAULT_MAILBOX.branch)
-    };
-    return result;
-  }
-
-  function currentTtsVolume() {
-    const configured = typeof getTtsVolume === 'function' ? Number(getTtsVolume()) : 100;
-    return Number.isFinite(configured) ? Math.max(0, Math.min(100, configured)) : 100;
-  }
-
-  async function readMailboxJson(relativePath) {
-    if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('The app GitHub connection is unavailable.');
-    if (typeof relativePath !== 'string' || relativePath.startsWith('/') ||
-        relativePath.split('/').some(part => !part || part === '.' || part === '..' || !/^[A-Za-z0-9_.-]+$/.test(part))) {
-      throw new Error('Unsafe internal mailbox path.');
-    }
-    const cfg = mailboxConfig();
-    let response;
-    try {
-      response = await githubAuth.requestApi({
-        method: 'GET',
-        path: '/repos/' + cfg.owner + '/' + cfg.repo + '/contents/' + relativePath,
-        query: { ref: cfg.branch }
-      });
-    } catch (error) {
-      if (/(^|\D)404(\D|$)|not found|does not exist/i.test(messageOf(error))) return null;
-      throw error;
-    }
-    const entry = response && response.result;
-    if (!entry || typeof entry.content !== 'string' || entry.encoding !== 'base64') return null;
-    try {
-      return { value: JSON.parse(Buffer.from(entry.content.replace(/\s/g, ''), 'base64').toString('utf8')), sha: entry.sha || null };
-    } catch {
-      throw new Error('Malformed JSON in mailbox path ' + relativePath + '.');
-    }
-  }
 
   function endpointFromClipboard(text) {
     if (typeof text !== 'string' || text.length > 4096) return null;
@@ -745,31 +703,6 @@ function createVisionService(deps) {
     }
   }
 
-  async function setupCheck(githubState = {}) {
-    const checkedAt = new Date(now()).toISOString();
-    const githubConnected = githubState && githubState.authenticated === true;
-    const checks = {
-      github: {
-        status: githubConnected ? 'passed' : 'action_required',
-        message: githubConnected
-          ? (githubState.login ? 'Signed in to GitHub as @' + String(githubState.login).slice(0, 80) + '.' : 'The app has a saved GitHub sign-in.')
-          : 'Sign in to GitHub in the desktop app so normal tool results can be written to the mailbox.'
-      },
-      mailbox: { status: githubConnected ? 'not_verified' : 'action_required', message: githubConnected ? 'Checking access to the configured private mailbox.' : 'Sign in to GitHub before checking mailbox access.' },
-      colab: { status: 'not_verified', message: 'Waiting for the notebook to register its temporary HTTPS tunnel with the app.' },
-      model: { status: 'not_verified', message: 'Model readiness has not been confirmed by a live Colab runtime.' },
-      vision: { status: 'disabled', message: 'Setup check does not enable vision or download model weights.' }
-    };
-    if (githubConnected) {
-      try {
-        const mailbox = await readMailboxJson('bridge/state/windows-app.json');
-        checks.mailbox = mailbox && mailbox.value && mailbox.value.protocol === 'chatgpt-local-repo-state/v1'
-          ? { status: 'passed', message: 'The app can read a valid Windows worker state record from the configured mailbox branch.' }
-          : { status: 'failed', message: 'The mailbox state record is missing or has an invalid protocol.' };
-      } catch (error) {
-        checks.mailbox = { status: 'failed', message: 'Could not read the configured GitHub mailbox: ' + messageOf(error) };
-      }
-    }
     const state = await queryRuntime();
     if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
     else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
@@ -785,13 +718,13 @@ function createVisionService(deps) {
       : state.enabled
         ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the connected model is ready for inference.' : 'Vision is enabled; model setup is still in progress.' }
         : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
-    const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
-    const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
+    const passed = checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
+    const failed = checks.onedrive.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
     const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
-      checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
+      checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
     const next_steps = [];
-    if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
-    if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
+    if (checks.onedrive.status !== 'passed') next_steps.push('Choose the local OneDrive-synced Bridge/runtime folder in the app.');
+    if (checks.mailbox.status !== 'passed') next_steps.push('Check that OneDrive has synchronized Bridge/runtime/bridge/state/windows-app.json to this Windows device.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
     if (state.status === 'incompatible_runtime') {
       next_steps.push('Interrupt the old Colab server cell, open the current notebook from main, and run “Start the direct Colab vision server”. The app will continue to block screenshot/TTS requests until API v5 compatibility is confirmed.');
@@ -1699,7 +1632,7 @@ function createVisionService(deps) {
           speaker_id: TTS_SPEAKER_ID, sample_rate: state.tts_sample_rate || 22050, channels: 1,
           duration_seconds: duration, audio_bytes: audio.length, audio_sha256: hash,
           local_file: filePath, played: false, playback_error: null, chunks_total: chunks.length,
-          chunks_completed: chunks.length, audio_transport: 'Audio is saved to Windows temporary storage; raw audio is not published to the GitHub mailbox.' };
+          chunks_completed: chunks.length, audio_transport: 'Audio is saved to Windows temporary storage; raw audio is not published to the OneDrive mailbox.' };
       } catch (error) {
         job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
         return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
