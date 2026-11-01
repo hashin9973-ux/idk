@@ -88,7 +88,7 @@ Agent-to-agent and user-to-agent communication uses send_agent_message, read_age
 
 When Observe is enabled, the app continuously captures screen context and publishes useful current window, UI Automation, text/control and coordinate information to SCREEN.md. It includes timestamps and freshness indicators and explicitly reports disabled or stale state. Private screenshots, password values and tunnel credentials must not be published.
 
-The computer tool performs requested desktop actions locally and requires a fresh matching frame when coordinates depend on Observe. Vision and TTS remain existing Windows Bridge/Colab capabilities. The Colab integration retains its prebuilt Ollama runtime and existing model-loading flow; OneDrive transports status and results only and does not host or execute models.
+The computer tool performs requested desktop actions locally and requires a fresh matching frame when coordinates depend on Observe. Vision and TTS remain existing Windows Bridge/Colab capabilities. The Colab integration retains its prebuilt Ollama runtime and existing model-loading flow. It does not compile llama.cpp; the existing Ollama runtime handles model loading. OneDrive transports status and results only and does not host or execute models.
 
 ## Setup
 
