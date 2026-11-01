@@ -361,7 +361,8 @@ test('OneDrive mailbox uses flat agent-partitioned paths and four root Markdown 
   assert.ok(bridge.includes("'claims/' + (requestMailboxAgents.get(requestId)"));
   assert.ok(bridge.includes("'result/' + (requestMailboxAgents.get(requestId)"));
   assert.ok(bridge.includes('requestMailboxAgents'));
-  assert.ok(bridge.includes('local/sessions/'));
+  assert.ok(bridge.includes("const LOCAL_REGISTRY_PREFIX = 'local/'"));
+  assert.ok(bridge.includes("return 'local/sessions/' + sessionId + '.json'"));
   assert.ok(bridge.includes("upsertRemoteContent('AGENT.md'"));
   assert.ok(bridge.includes("upsertRemoteContent('TOOLS.md'"));
   assert.ok(bridge.includes("upsertRemoteContent('STATUS.md'"));
@@ -462,7 +463,8 @@ test('canonical Markdown mailbox files and agent sandbox artifacts are published
 
 test('manual smoke-test documentation covers app-local sessions and flat OneDrive round-trip', () => {
   const guide = read('docs', 'manual-smoke-test.md');
-  assert.match(guide, /existing local OneDrive-synchronized folder named Bridge/i);
+  assert.match(guide, /existing Bridge folder is hydrated locally/i);
+  assert.match(guide, /existing local OneDrive-synchronized Bridge folder/i);
   assert.match(guide, /request\/agent-000/);
   assert.match(guide, /result\/agent-000/);
   assert.match(guide, /app-generated session_id/);
