@@ -1603,7 +1603,9 @@ function createRepositoryBridge(deps = {}) {
       lastExaminedKey = key;
       if (activeRequestIds.has(requestId) || inFlightRequestIds.has(requestId) || requestTasks.has(requestId) ||
           pendingRequestQueueSet.has(key)) continue;
-      const resultPath = 'result/' + key;
+      const resultPath = mailbox ? 'result/' + key : 'bridge/results/' + entry.name;
+      const requestPath = mailbox ? 'request/' + key : 'bridge/requests/' + entry.name;
+      const claimPath = mailbox ? 'claims/' + key : 'bridge/claims/' + entry.name;
       const resultRemote = await readRemoteFile(resultPath);
       if (!resultRemote || (entry.sha && resultRemote.sha !== entry.sha)) continue;
       const resultRecord = resultRemote.value;
@@ -1611,8 +1613,6 @@ function createRepositoryBridge(deps = {}) {
           !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(resultRecord.status)) continue;
       const completedAt = Date.parse(resultRecord.completed_at || '');
       if (!Number.isFinite(completedAt) || completedAt >= cutoff) continue;
-      const requestPath = 'request/' + key;
-      const claimPath = 'claims/' + key;
       const [requestRemote, claimRemote] = await Promise.all([readRemoteFile(requestPath), readRemoteFile(claimPath)]);
       if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId) continue;
       if (claimRemote && (!claimRemote.value || claimRemote.value.request_id !== requestId ||
@@ -1622,10 +1622,10 @@ function createRepositoryBridge(deps = {}) {
         { path: resultPath, sha: resultRemote.sha },
         ...(claimRemote ? [{ path: claimPath, sha: claimRemote.sha }] : [])
       ];
-      const artifactPrefix = 'sandbox storage/' + entry.agent_id + '/' + requestId + '-';
+      const artifactPrefix = mailbox ? 'sandbox storage/' + entry.agent_id + '/' + requestId + '-' : 'bridge/artifacts/' + requestId + '/';
       const artifactPaths = new Set((Array.isArray(resultRecord.artifacts) ? resultRecord.artifacts : [])
         .map(item => item && item.path).filter(pathValue => typeof pathValue === 'string' && pathValue.startsWith(artifactPrefix) && isSafeMailboxCleanupPath(pathValue)));
-      const artifactEntries = await listFolder('sandbox storage/' + entry.agent_id);
+      const artifactEntries = mailbox ? await listFolder('sandbox storage/' + entry.agent_id) : [];
       for (const artifact of artifactEntries) {
         const artifactPath = 'sandbox storage/' + entry.agent_id + '/' + artifact.name;
         if (artifact.name.startsWith(requestId + '-') && isSafeMailboxCleanupPath(artifactPath)) artifactPaths.add(artifactPath);
