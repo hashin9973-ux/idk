@@ -176,8 +176,10 @@ function trimHistory(messages) {
     return Array.isArray(messages) ? messages : [];
   }
   let start = Math.max(0, messages.length - MAX_STORED_MESSAGES);
-  // Keep the latest user turn, including its slash command and tool-result observations.
-  while (start > 0 && messages[start].role !== 'user') start--;
+  // Keep the latest human turn together with any slash commands and tool observations it produced.
+  const isTurnStart = message => message && message.role === 'user' &&
+    !['tool_result', 'runtime_feedback'].includes(message.kind);
+  while (start > 0 && !isTurnStart(messages[start])) start--;
   return messages.slice(start);
 }
 
@@ -287,6 +289,9 @@ function parseSlashArguments(raw, toolName) {
     const match = input.slice(index).match(/^([a-z][a-z0-9_]*)=/i);
     if (!match) throw new Error('Use named arguments for /' + toolName + ', for example: /' + toolName + ' path="src/app.js".');
     const key = match[1];
+    if (['__proto__', 'prototype', 'constructor'].includes(key)) {
+      throw new Error('Unsafe argument key "' + key + '" is not allowed in slash commands.');
+    }
     if (Object.prototype.hasOwnProperty.call(args, key)) {
       throw new Error('Argument "' + key + '" is repeated in /' + toolName + '.');
     }
@@ -488,6 +493,7 @@ function createDirectAgentRuntime({
         const toolContent = jsonText(output);
         session.messages.push({
           role: 'user',
+          kind: 'tool_result',
           content: '[Untrusted local tool result for /' + invocation.name + '; status=' + status + ']\n' + toolContent,
           createdAt: new Date(clock()).toISOString()
         });
@@ -521,6 +527,7 @@ function createDirectAgentRuntime({
             session.messages.push({ role: 'assistant', content: completion.content, createdAt: new Date(clock()).toISOString() });
             session.messages.push({
               role: 'user',
+              kind: 'runtime_feedback',
               content: '[Slash-command error] ' + safeError(error) + ' Return one corrected command using the available slash-command catalog.',
               createdAt: new Date(clock()).toISOString()
             });
@@ -540,6 +547,7 @@ function createDirectAgentRuntime({
           });
           session.messages.push({
             role: 'user',
+            kind: 'runtime_feedback',
             content: '[Tool protocol notice] Native API function calls are disabled. Invoke the required local tool by returning one slash command, such as /environment_info or /read_file path="README.md".',
             createdAt: new Date(clock()).toISOString()
           });
