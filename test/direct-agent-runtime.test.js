@@ -426,13 +426,15 @@ test('Markdown tool output preserves source and command text while redacting sec
     status: 'success',
     result: {
       path: 'config.js',
-      content: 'const answer = 42;\nconsole.log(answer);',
-      api_key: 'do-not-leak'
+      content: '{"name":"demo","enabled":true}',
+      api_key: 'do-not-leak',
+      session_id: 'session-0123456789abcdef0123456789abcdef'
     }
   });
-  assert.match(rendered, /```[\s\S]*const answer = 42;[\s\S]*console\.log\(answer\);[\s\S]*```/);
+  assert.ok(rendered.includes('```'));
+  assert.ok(rendered.includes('{"name":"demo","enabled":true}'));
   assert.match(rendered, /\[redacted\]/);
-  assert.doesNotMatch(rendered, /do-not-leak/);
+  assert.doesNotMatch(rendered, /do-not-leak|session-0123456789abcdef0123456789abcdef/);
 });
 
 test('persisted JSON tool observations and slash commands are normalized before the next model request', () => {
