@@ -53,6 +53,20 @@ test('mailbox paths allow only root Markdown files and agent-partitioned records
   ]) assert.throws(() => validateRelativePath(value));
 });
 
+test('saved legacy Bridge/runtime setting resolves to the existing Bridge root without recreating runtime', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'onedrive-mailbox-legacy-setting-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const settings = { repositoryBridge: { oneDrivePath: path.join(bridgeRoot, 'runtime') } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  const state = await mailbox.ensureReady();
+  assert.equal(state.mailboxPath, bridgeRoot);
+  assert.equal(await fs.stat(bridgeRoot).then(stat => stat.isDirectory()), true);
+  await assert.rejects(fs.stat(path.join(bridgeRoot, 'runtime')), { code: 'ENOENT' });
+  assert.deepEqual((await fs.readdir(bridgeRoot)).sort(), [...BRIDGE_DIRECTORIES].sort());
+});
+
 test('OneDrive sync root detection finds the local OneDrive root for Bridge resolution', async t => {
   const { temp } = await makeMailbox(t);
   const consumer = path.join(temp, 'OneDriveConsumer');
