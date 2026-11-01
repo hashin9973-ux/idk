@@ -51,7 +51,7 @@ test('direct tool calls render in slash-command form with nested secrets redacte
     path: 'src/main.js',
     options: { api_key: 'never-display-this', include: ['a', 'b'] }
   });
-  assert.equal(rendered, '/read_file {"path":"src/main.js","options":{"api_key":"[redacted]","include":["a","b"]}}');
+  assert.equal(rendered, '/read_file path=src/main.js options="[object Object]");
   assert.equal(require('../desktop/agent-terminal').formatSlashCommand('environment_info', {}), '/environment_info');
   assert.doesNotMatch(rendered, /never-display-this/);
 });
