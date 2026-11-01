@@ -326,7 +326,7 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
       candidates.sort((a, b) =>
         a.lastActivity - b.lastActivity || a.sessionId.localeCompare(b.sessionId));
       if (!candidates.length) {
-        throw new Error('SESSION_LIMIT_REACHED: The mailbox is at its ' + maxSessions +
+        throw new Error('SESSION_LIMIT_REACHED: The app-local session registry is at its ' + maxSessions +
           '-ID cap, but no session record could be read safely for oldest-activity eviction.');
       }
 
@@ -521,7 +521,7 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
               last_activity_at: now, created_at: now,
               note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. This session ID and its agent seat remain valid while idle; at the hard 10,000-ID cap, the oldest last-activity ID may be evicted. Explicit disconnect or revoke/delete also releases the seat.',
-              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Inactivity never expires this session or releases its agent seat. At the hard 10,000-ID cap, the ID with the oldest last_activity_at is evicted. Pause temporarily blocks this session; disconnect explicitly releases its seat; delete/revoke permanently disables it.'
+              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the agent inventory in STATUS.md and use agent messaging tools to coordinate. Inactivity never expires this session or releases its agent seat. At the hard 10,000-ID cap, the ID with the oldest last_activity_at is evicted. Pause temporarily blocks this session; disconnect explicitly releases its seat; delete/revoke permanently disables it.'
             };
           });
           if (!allocated) {
