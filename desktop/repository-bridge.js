@@ -1984,7 +1984,7 @@ function createRepositoryBridge(deps = {}) {
       // a live result into the mailbox after revocation commits.
       const written = await writeRemoteJson(resultPath, record, null, true);
       if (written.ok) {
-        if (knownResultFiles) knownResultFiles.add((requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json');
+        if (knownResultFiles) knownResultFiles.add(requestId);
         return { published: true, alreadyExists: false };
       }
       if (written.conflict) {
@@ -1998,7 +1998,7 @@ function createRepositoryBridge(deps = {}) {
           error.code = 'MAILBOX_RESULT_CONFLICT';
           throw error;
         }
-        if (knownResultFiles) knownResultFiles.add(requestId + '.json');
+        if (knownResultFiles) knownResultFiles.add(requestId);
         return { published: true, alreadyExists: true };
       }
       return { published: false, conflict: false };
@@ -2657,7 +2657,7 @@ function createRepositoryBridge(deps = {}) {
       pendingRequestQueueSet.delete(queueKey);
       const requestId = filename.slice(0, -'.json'.length);
       if (!SAFE_ID.test(requestId) || inFlightRequestIds.has(requestId) ||
-          (knownResultFiles && knownResultFiles.has(queueKey))) continue;
+          (knownResultFiles && knownResultFiles.has(requestId))) continue;
 
       // Reserve the ID before the first await so overlapping poll cycles cannot
       // start two executions of the same request.
@@ -2686,8 +2686,8 @@ function createRepositoryBridge(deps = {}) {
         });
       requestTasks.set(requestId, task);
     }
-    const queued = pendingRequestQueue.filter(item => !(knownResultFiles && knownResultFiles.has(item.agentId + '/' + item.filename))).length;
-    const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id + '.json'))).length;
+    const queued = pendingRequestQueue.filter(item => !(knownResultFiles && knownResultFiles.has(item.filename.slice(0, -5)))).length;
+    const active = [...requestTasks.keys()].filter(id => !(knownResultFiles && knownResultFiles.has(id))).length;
     pendingCount = queued + active;
     announce();
   }
