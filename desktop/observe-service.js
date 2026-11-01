@@ -133,7 +133,12 @@ function createObserveService(deps = {}) {
   function renderScreenMarkdown(payload) {
     const latest = payload.frames && payload.frames.length ? payload.frames[payload.frames.length - 1] : null;
     const capturedAt = latest && Date.parse(latest.captured_at);
-    const ageMs = Number.isFinite(capturedAt) ? Math.max(0, now() - capturedAt) : null;
+    const frameAgeMs = Number.isFinite(capturedAt) ? Math.max(0, now() - capturedAt) : null;
+    const lastSampleAt = Date.parse(payload.last_capture_at || '');
+    const sampleAgeMs = Number.isFinite(lastSampleAt) ? Math.max(0, now() - lastSampleAt) : null;
+    const staleAfterMs = Math.max(5000, Number(payload.sample_interval_ms) * 4 || 5000);
+    const freshness = !payload.enabled ? 'disabled' : sampleAgeMs === null ? 'no current sample' :
+      sampleAgeMs > staleAfterMs ? 'stale (' + sampleAgeMs + ' ms since last sample)' : 'fresh (' + sampleAgeMs + ' ms since last sample)';
     const controls = latest && Array.isArray(latest.controls) ? latest.controls.slice(0, 120) : [];
     const safeControls = controls.map(control => {
       const item = control && typeof control === 'object' ? control : {};
@@ -152,7 +157,8 @@ function createObserveService(deps = {}) {
       '- Observe: ' + (payload.enabled ? 'enabled' : 'disabled'),
       '- Status: ' + payload.status,
       '- Updated: ' + payload.updated_at,
-      '- Freshness: ' + (payload.enabled && ageMs !== null ? ageMs + ' ms old' : 'no current frame'),
+      '- Freshness: ' + freshness,
+      '- Last changed frame age: ' + (frameAgeMs === null ? 'unknown' : frameAgeMs + ' ms'),
       '- Sample rate: ' + payload.sample_fps + ' fps (' + payload.sample_interval_ms + ' ms interval)',
       '- Captures: ' + payload.capture_count,
       '- Skipped samples: ' + payload.skipped_samples,
