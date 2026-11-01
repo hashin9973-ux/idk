@@ -201,7 +201,7 @@ function createObserveService(deps = {}) {
       for (const control of safeControls) lines.push('- ' + JSON.stringify(control));
     } else lines.push('No UI Automation controls were captured.');
     if (latest.vision) lines.push('', '### Passive visual analysis', '', JSON.stringify(screenSafeValue(latest.vision), null, 2));
-    if (latest.vision_error) lines.push('', '### Vision error', '', safeText(latest.vision_error, 500));
+    if (latest.vision_error) lines.push('', '### Vision error', '', redactScreenText(latest.vision_error, 500));
     lines.push('', '### Coordinate frame', '', JSON.stringify(screenSafeValue(latest.coordinate_system || {}), null, 2), '');
     return lines.join('\n');
   }
@@ -221,11 +221,11 @@ function createObserveService(deps = {}) {
       last_change_at: enabledValue && lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
       last_vision_completed_at: enabledValue && lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
       passive_vision_status: enabledValue ? latestVisionStatus : 'off',
-      passive_vision_error: enabledValue ? safeText(lastVisionError, 500) : '',
+      passive_vision_error: enabledValue ? redactScreenText(lastVisionError, 500) : '',
       frame_count: enabledValue ? frames.length : 0,
       frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
       status: enabledValue ? 'observing' : 'disabled',
-      error: safeText(errorMessage, 500) || null
+      error: redactScreenText(errorMessage, 500) || null
     };
     let content = renderScreenMarkdown(payload);
     if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
