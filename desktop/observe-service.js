@@ -671,28 +671,23 @@ function createObserveService(deps = {}) {
   async function clearStaleContext() {
     if (startupCleanupPromise) return startupCleanupPromise;
     startupCleanupPromise = (async () => {
-      if (enabled || disposed || !mailbox || typeof mailbox.readJson !== 'function') return status();
+      if (enabled || disposed || !mailbox || typeof mailbox.writeContent !== 'function') return status();
       try {
-        const record = await mailbox.readJson('bridge/vision/observe.json');
-        if (!record) return status();
-        currentSha = record.sha;
-        const payload = record.value;
-        const hasLiveContext = !payload || payload.enabled === true ||
-          (Array.isArray(payload.frames) && payload.frames.length > 0) ||
-          (Number(payload.frame_count) || 0) > 0;
-        if (hasLiveContext) {
-          frames = [];
-          activeVisionFrame = null;
-          lastCompletedVisionFrame = null;
-          pendingCapture = null;
-          lastFingerprint = '';
-          await publish(false);
-          lastError = '';
-        }
+        frames = [];
+        activeVisionFrame = null;
+        lastCompletedVisionFrame = null;
+        pendingCapture = null;
+        pendingVisionFrame = null;
+        lastFingerprint = '';
+        latestVisionStatus = 'off';
+        lastVisionError = '';
+        currentSha = null;
+        await publish(false, 'Observe is disabled. No current desktop frame is being published.');
+        lastError = '';
         return status();
       } catch (error) {
-        lastError = safeText(error && error.message || error || 'Could not clear stale OneDrive Observe context', 500);
-        throw error;
+        lastError = safeText(error && error.message || error || 'Could not publish disabled SCREEN.md context', 500);
+        return status();
       }
     })();
     return startupCleanupPromise;
