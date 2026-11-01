@@ -1066,6 +1066,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
     await bridge.start();
     const initialTreeScanCount = bridge.getState().requestPolling.requestTreeScanCount;
     const requestPath = 'bridge/requests/' + initial.request_id + '.json';
+    const discoveredBlobSha = 'd'.repeat(40);
     fake.seedSession(initial.session_id);
     fake.files.set(requestPath, {
       name: initial.request_id + '.json',
@@ -1073,7 +1074,7 @@ test('fast request-commit probe executes a new request before full-tree reconcil
       type: 'file',
       encoding: 'base64',
       content: encode(initial),
-      sha: 'sha-fast-probe-request'
+      sha: discoveredBlobSha
     });
 
     await waitFor(() => fake.files.has('bridge/results/' + initial.request_id + '.json'), 3500);
@@ -1083,6 +1084,9 @@ test('fast request-commit probe executes a new request before full-tree reconcil
     assert.ok(fake.calls.some(call => call.method === 'GET' &&
       call.path === '/repos/test-owner/test-repo/commits/' + String(1).padStart(40, '0')),
     'the fast path should inspect the changed commit file list');
+    assert.ok(fake.calls.some(call => call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/git/blobs/' + discoveredBlobSha),
+    'the commit fast path must forward the immutable request blob SHA into dispatch');
     assert.equal(decode(fake.files.get('bridge/results/' + initial.request_id + '.json')).status, 'completed');
   } finally {
     await bridge.stop();
