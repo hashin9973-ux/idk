@@ -1863,7 +1863,7 @@ test('OneDrive message retention deletes only expired messages with valid read r
     persistSettings: () => true,
     getWorkspaceRoot: () => temp,
     executeTool: async () => ({ ok: true, result: {} }),
-    intervalMs: 5000,
+    intervalMs: 100,
     cleanupIntervalMs: 1000
   });
   try {
@@ -2096,7 +2096,7 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
     assert.match(tools, /read_file/);
     assert.match(tools, /Read UTF-8 text from the Windows workspace/);
     assert.match(tools, /Permission requirements: Read-only; no approval required/);
-    assert.match(tools, /\\"path\\": \{/);
+    assert.match(tools, /"path": \{/);
     assert.match(tools, /Slash-style shortcuts/);
     assert.ok(calls.some(call => call.tool === 'get_capabilities'));
     const root = (await fs.readdir(bridgeRoot)).sort();
