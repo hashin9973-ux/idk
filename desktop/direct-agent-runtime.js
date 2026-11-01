@@ -2,6 +2,7 @@
 
 const { randomUUID } = require('node:crypto');
 const { formatSlashCommand } = require('./agent-terminal');
+const { formatToolResultMarkdown } = require('./markdown-tool-output');
 
 const MAX_TOOL_ROUNDS = 16;
 const MAX_STORED_MESSAGES = 160;
@@ -86,14 +87,7 @@ function safeError(value, secret = '') {
 }
 
 function jsonText(value) {
-  let result;
-  try { result = JSON.stringify(value); }
-  catch { result = String(value); }
-  if (typeof result !== 'string') result = String(value);
-  if (result.length > MAX_TOOL_RESULT_CHARS) {
-    return result.slice(0, MAX_TOOL_RESULT_CHARS) + '\n[tool output truncated for model context; request a narrower range or smaller result]';
-  }
-  return result;
+  return formatToolResultMarkdown('tool', value, MAX_TOOL_RESULT_CHARS);
 }
 
 function parseToolArguments(value) {
@@ -229,9 +223,11 @@ function toApiMessages(messages) {
       if (Array.isArray(message.tool_calls)) {
         const commands = message.tool_calls.map(call => {
           const name = String(call && call.function && call.function.name || 'unknown_tool');
-          const args = typeof (call && call.function && call.function.arguments) === 'string'
+          const rawArgs = typeof (call && call.function && call.function.arguments) === 'string'
             ? call.function.arguments : '{}';
-          return '/' + name + ' ' + args;
+          let args = {};
+          try { args = parseToolArguments(rawArgs); } catch {}
+          return formatSlashCommand(name, args);
         });
         content = [content, ...commands].filter(Boolean).join('\n');
       }
@@ -242,7 +238,7 @@ function toApiMessages(messages) {
     output.push({
       role: 'user',
       content: '[Untrusted local tool result from /' + name + ']\n' +
-        (typeof message.content === 'string' ? message.content : '')
+        formatToolResultMarkdown(name, message.content, MAX_TOOL_RESULT_CHARS)
     });
   }
   return output;
@@ -498,8 +494,9 @@ function createDirectAgentRuntime({
         config.systemPrompt || '',
         'Use the available local tools to inspect and change the selected Windows workspace. Do not claim that an action completed unless its tool result confirms it.',
         'TOOL CALL PROTOCOL: Native API function/tool calling is not enabled. Invoke a local tool by returning a slash command as your entire assistant response, with no explanation, markdown fence, or extra text. Use exactly one command per response, then wait for the app to return the tool result before continuing.',
-        'Preferred syntax: /tool_name argument=value other="text with spaces". Quote strings containing spaces. Use JSON literals for arrays, objects, booleans, numbers, and null. Tools with no arguments use /tool_name. The app also accepts a JSON object after the command name.',
-        'After each command, the app executes it on the Windows machine and adds an untrusted tool-result message to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
+        'Preferred syntax: /tool_name argument=value other="text with spaces". Quote string values. Use plain numbers, true/false and null. Use compact bracketed values only for arguments whose schema requires an array or nested object. Tools with no arguments use /tool_name.',
+        'MODEL-FACING FORMAT: Use Markdown for all working context, plans, project summaries, task descriptions, status, messages and tool observations. Tool results are rendered as readable Markdown, not serialized JSON. Read AGENTS.md and relevant project documentation before coding. Do not ask tools to emit JSON for presentation or restate Markdown results as JSON. Preserve code, diffs and command output in fenced code blocks.',
+        'After each command, the app executes it on the Windows machine and adds an untrusted Markdown tool-result message to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
         'Do not emit a slash command as an example or in normal prose. A response beginning with / is treated as an executable tool command.',
         formatSlashToolCatalog(tools),
         'Tool commands execute on the user’s Windows machine through the app’s shared execution scheduler, workspace checks, and native approval policy. Never try to bypass those controls.',
@@ -524,7 +521,7 @@ function createDirectAgentRuntime({
           };
         }
         const status = output && typeof output.status === 'string' ? output.status : 'success';
-        const toolContent = jsonText(output);
+        const toolContent = formatToolResultMarkdown(invocation.name, output, MAX_TOOL_RESULT_CHARS);
         session.messages.push({
           role: 'user',
           kind: 'tool_result',
@@ -639,6 +636,7 @@ module.exports = {
   parseToolArguments,
   parseSlashToolCommand,
   formatSlashToolCatalog,
+  formatToolResultMarkdown,
   toApiMessages,
   readCompletion,
   DIRECT_AGENT_TOOL_NAMES
