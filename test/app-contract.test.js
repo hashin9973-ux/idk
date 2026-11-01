@@ -35,7 +35,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('agent-workspace-button'));
   assert.ok(!renderer.includes('agent-message-button'));
   assert.ok(renderer.includes("const composer=document.createElement('form')"));
-  assert.ok(renderer.includes('composer.append(input)'));
+  assert.ok(renderer.includes('composer.append(input,stopButton)'));
   assert.ok(renderer.includes('if(messageInput)'));
   assert.ok(renderer.includes("event.key==='Enter'"));
   assert.ok(renderer.includes('terminal.formatRequestCommands'));
