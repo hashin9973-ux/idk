@@ -777,7 +777,7 @@ function createRepositoryBridge(deps = {}) {
     return createHash('sha256').update(JSON.stringify(value, null, 2) + '\n', 'utf8').digest('hex');
   }
   function localRegistryPath(value) {
-    if (typeof value !== 'string' || !/^local\/(?:agents|sessions|revoked-sessions|evicted-sessions)\/[A-Za-z0-9_.-]+\.json$/.test(value)) {
+    if (typeof value !== 'string' || !/^local\/(?:agents|sessions|revoked-sessions|evicted-sessions|tasks|projects)\/[A-Za-z0-9_.-]+\.json$/.test(value)) {
       throw new Error('Invalid app-local agent registry key.');
     }
     return value;
@@ -790,7 +790,7 @@ function createRepositoryBridge(deps = {}) {
     return { value, sha: localRecordSha(value), entry: { type: 'file', sha: localRecordSha(value) } };
   }
   async function listLocalRegistryFolder(relativePath) {
-    if (!/^local\/(?:agents|sessions|revoked-sessions|evicted-sessions)$/.test(String(relativePath || ''))) {
+    if (!/^local\/(?:agents|sessions|revoked-sessions|evicted-sessions|tasks|projects)$/.test(String(relativePath || ''))) {
       throw new Error('Invalid app-local agent registry folder.');
     }
     const prefix = relativePath + '/';
@@ -844,7 +844,7 @@ function createRepositoryBridge(deps = {}) {
     return { deleted: entries.length };
   }
   function legacyRegistryPath(relativePath) {
-    const match = String(relativePath || '').match(/^local\/(agents|sessions|revoked-sessions|evicted-sessions)\/(.+)$/);
+    const match = String(relativePath || '').match(/^local\/(agents|sessions|revoked-sessions|evicted-sessions|tasks|projects)\/(.+)$/);
     if (!match) throw new Error('Invalid legacy test registry path.');
     return 'bridge/' + match[1] + '/' + match[2];
   }
@@ -870,7 +870,7 @@ function createRepositoryBridge(deps = {}) {
     readRemoteFile: registryReadFile, readRemoteContent, listFolder: registryListFolder, writeRemoteJson: registryWriteJson,
     deleteRemoteFiles: files => registryDeleteFiles(files), isConflict, maxSessions: 10000
   });
-  const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
+  const taskOrchestrator = createTaskOrchestrator({ readRemoteFile: registryReadFile, listFolder: registryListFolder, writeRemoteJson: registryWriteJson });
 
   async function getSessionInvalidation(sessionId) {
     if (await agentRegistry.isRevoked(sessionId)) return 'revoked';
