@@ -416,7 +416,7 @@ test('legacy native tool-call history is converted to slash messages and untrust
   assert.deepEqual(apiMessages, [
     { role: 'user', content: 'Read a file.' },
     { role: 'assistant', content: '/read_file path=README.md' },
-    { role: 'user', content: '[Untrusted local tool result from /read_file]\n- **Status:** success\n- **Result:** file text' },
+    { role: 'user', content: '[Untrusted local tool observation from /read_file]\n- **Status:** success\n- **Result:** file text' },
     { role: 'assistant', content: 'Done.' }
   ]);
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_calls')));
