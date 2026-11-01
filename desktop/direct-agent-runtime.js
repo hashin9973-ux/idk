@@ -86,15 +86,15 @@ function safeError(value, secret = '') {
 }
 
 function markdownKey(value) {
-  return String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim()
-    .replace(/\\b\\w/g, character => character.toUpperCase());
+  return String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+    .replace(/\b\w/g, character => character.toUpperCase());
 }
 
 function markdownFence(value) {
   const text = String(value);
   const runs = text.match(/`{3,}/g) || [];
   const fence = '`'.repeat(Math.max(3, ...runs.map(run => run.length + 1)));
-  return fence + '\\n' + text.replace(/\\r\\n/g, '\\n') + '\\n' + fence;
+  return fence + '\n' + text.replace(/\r\n/g, '\n') + '\n' + fence;
 }
 
 function formatMarkdownValue(value, depth = 0) {
@@ -104,7 +104,7 @@ function formatMarkdownValue(value, depth = 0) {
   if (typeof value === 'number') return String(value);
   if (typeof value === 'string') {
     if (!value.trim()) return '—';
-    if (value.includes('\\n') || value.length > 500 || /^\\s/.test(value)) return markdownFence(value);
+    if (value.includes('\n') || value.length > 500 || /^\s/.test(value)) return markdownFence(value);
     return value;
   }
   if (Array.isArray(value)) {
@@ -113,20 +113,20 @@ function formatMarkdownValue(value, depth = 0) {
       if (item && typeof item === 'object') {
         const heading = item.name || item.title || item.path || item.id || ('Item ' + (index + 1));
         const rest = Object.entries(item).filter(([key]) => !['name','title','path','id'].includes(key));
-        return indent + '- **' + String(heading).replace(/\\n/g, ' ') + '**' +
-          (rest.length ? '\\n' + rest.map(([key, nested]) => indent + '  - **' + markdownKey(key) + ':** ' + formatMarkdownValue(nested, depth + 2)).join('\\n') : '');
+        return indent + '- **' + String(heading).replace(/\n/g, ' ') + '**' +
+          (rest.length ? '\n' + rest.map(([key, nested]) => indent + '  - **' + markdownKey(key) + ':** ' + formatMarkdownValue(nested, depth + 2)).join('\n') : '');
       }
       return indent + '- ' + formatMarkdownValue(item, depth + 1);
-    }).join('\\n');
+    }).join('\n');
   }
   if (typeof value === 'object') {
     const entries = Object.entries(value);
     if (!entries.length) return '—';
     return entries.map(([key, nested]) => {
       const rendered = formatMarkdownValue(nested, depth + 1);
-      const block = rendered.includes('\\n') || rendered.startsWith('```');
-      return indent + '- **' + markdownKey(key) + ':**' + (block ? '\\n' + rendered.split('\\n').map(line => indent + '  ' + line).join('\\n') : ' ' + rendered);
-    }).join('\\n');
+      const block = rendered.includes('\n') || rendered.startsWith('```');
+      return indent + '- **' + markdownKey(key) + ':**' + (block ? '\n' + rendered.split('\n').map(line => indent + '  ' + line).join('\n') : ' ' + rendered);
+    }).join('\n');
   }
   return String(value);
 }
@@ -134,7 +134,7 @@ function formatMarkdownValue(value, depth = 0) {
 function formatToolResultMarkdown(value) {
   const rendered = formatMarkdownValue(value);
   return rendered.length > MAX_TOOL_RESULT_CHARS
-    ? rendered.slice(0, MAX_TOOL_RESULT_CHARS) + '\\n\\n[Tool observation truncated. Request a narrower result or smaller page.]'
+    ? rendered.slice(0, MAX_TOOL_RESULT_CHARS) + '\n\n[Tool observation truncated. Request a narrower result or smaller page.]'
     : rendered;
 }
 
@@ -294,10 +294,10 @@ function toApiMessages(messages) {
 function parseSlashListItem(token) {
   const value = String(token).trim();
   if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1).replace(/\\\\(["'\\\\])/g, '$1');
+    return value.slice(1, -1).replace(/\\(["'\\])/g, '$1');
   }
   if (/^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
-  if (/^-?\\d+(?:\\.\\d+)?$/.test(value)) return Number(value);
+  if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
   if (/^(null|none)$/i.test(value)) return null;
   return value;
 }
@@ -310,7 +310,7 @@ function parseSlashArgumentValue(raw, start) {
     for (; index < raw.length; index++) {
       const char = raw[index];
       if (escaped) escaped = false;
-      else if (char === '\\\\') escaped = true;
+      else if (char === '\\') escaped = true;
       else if (char === first) break;
     }
     if (index >= raw.length) throw new Error('A quoted command value is missing its closing quote.');
@@ -322,7 +322,7 @@ function parseSlashArgumentValue(raw, start) {
       const char = raw[index];
       if (quote) {
         if (escaped) escaped = false;
-        else if (char === '\\\\') escaped = true;
+        else if (char === '\\') escaped = true;
         else if (char === quote) quote = '';
       } else if (char === '"' || char === "'") quote = char;
       else if (char === ']') break;
@@ -335,7 +335,7 @@ function parseSlashArgumentValue(raw, start) {
       if (quote) {
         token += char;
         if (escaped) escaped = false;
-        else if (char === '\\\\') escaped = true;
+        else if (char === '\\') escaped = true;
         else if (char === quote) quote = '';
       } else if (char === '"' || char === "'") { quote = char; token += char; }
       else if (char === ',') { if (token.trim()) values.push(parseSlashListItem(token)); token = ''; }
@@ -345,7 +345,7 @@ function parseSlashArgumentValue(raw, start) {
     return { value: values, next: index + 1 };
   }
   let index = start;
-  while (index < raw.length && !/\\s/.test(raw[index])) index++;
+  while (index < raw.length && !/\s/.test(raw[index])) index++;
   if (index === start) throw new Error('Every command argument needs a value after "=".');
   return { value: parseSlashListItem(raw.slice(start, index)), next: index };
 }
@@ -359,7 +359,7 @@ function parseSlashArguments(raw, toolName) {
   const args = {};
   let index = 0;
   while (index < input.length) {
-    while (index < input.length && /\\s/.test(input[index])) index++;
+    while (index < input.length && /\s/.test(input[index])) index++;
     if (index >= input.length) break;
     const match = input.slice(index).match(/^([a-z][a-z0-9_]*)=/i);
     if (!match) throw new Error('Use named arguments for /' + toolName + ', for example: /' + toolName + ' path="src/app.js".');
@@ -377,7 +377,7 @@ function parseSlashArguments(raw, toolName) {
       });
     } else args[key] = parsed.value;
     index = parsed.next;
-    if (index < input.length && !/\\s/.test(input[index])) throw new Error('Separate command arguments with spaces.');
+    if (index < input.length && !/\s/.test(input[index])) throw new Error('Separate command arguments with spaces.');
   }
   return args;
 }
