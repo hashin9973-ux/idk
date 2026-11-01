@@ -249,6 +249,22 @@ function createVisionService(deps) {
   const speechJobs = new Map();
   let activeSpeechJobId = null;
 
+  function currentTtsVolume() {
+    const configured = typeof getTtsVolume === 'function' ? Number(getTtsVolume()) : 100;
+    return Number.isFinite(configured) ? Math.max(0, Math.min(100, configured)) : 100;
+  }
+
+  async function readMailboxJson(relativePath) {
+    if (!mailbox || typeof mailbox.readJson !== 'function') {
+      throw new Error('The OneDrive mailbox is unavailable. Select the OneDrive-synced Bridge/runtime folder.');
+    }
+    if (typeof relativePath !== 'string' || relativePath.startsWith('/') ||
+        relativePath.split('/').some(part => !part || part === '.' || part === '..' || !/^[A-Za-z0-9_.-]+$/.test(part))) {
+      throw new Error('Unsafe internal mailbox path.');
+    }
+    return mailbox.readJson(relativePath);
+  }
+
   function endpointFromClipboard(text) {
     if (typeof text !== 'string' || text.length > 4096) return null;
     const match = text.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com\/[A-Za-z0-9_-]{40,100}(?![A-Za-z0-9_-])/i);
