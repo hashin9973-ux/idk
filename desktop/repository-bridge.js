@@ -210,6 +210,7 @@ function createRepositoryBridge(deps) {
   const mailboxUiRecords = new Map();
   const mailboxRequestCache = new Map();
   const mailboxRequestReadPromises = new Map();
+  const requestBlobShas = new Map();
   const agentDirectory = new Map();
   let agentDirectoryRefreshInFlight = false;
   let lastAgentDirectoryRefreshAt = 0;
@@ -272,6 +273,13 @@ function createRepositoryBridge(deps) {
       throw new Error('Unsafe Git tree reference.');
     }
     return '/repos/' + config.owner + '/' + config.repo + '/git/trees/' + value;
+  }
+
+  function apiBlobPath(blobSha) {
+    const config = currentConfig();
+    const value = String(blobSha || '');
+    if (!/^[a-f0-9]{40}$/i.test(value)) throw new Error('Unsafe Git blob SHA.');
+    return '/repos/' + config.owner + '/' + config.repo + '/git/blobs/' + value;
   }
 
   function sanitizeConsoleValue(value, key = '', depth = 0) {
@@ -440,32 +448,72 @@ function createRepositoryBridge(deps) {
     }
   }
 
-  async function loadMailboxRequest(requestId) {
+  async function readRemoteBlob(blobSha) {
+    if (!/^[a-f0-9]{40}$/i.test(String(blobSha || ''))) {
+      throw new Error('A valid immutable Git blob SHA is required.');
+    }
+    const response = await api('GET', apiBlobPath(blobSha));
+    const blob = response && response.result;
+    if (!blob || typeof blob.content !== 'string' || blob.encoding !== 'base64' ||
+        typeof blob.sha !== 'string' || blob.sha.toLowerCase() !== String(blobSha).toLowerCase()) {
+      throw new Error('GitHub returned an unexpected Git blob response for the discovered request SHA.');
+    }
+    const entry = { type: 'file', encoding: blob.encoding, content: blob.content, sha: blob.sha };
+    return { value: parseRemoteJson(entry), sha: blob.sha, entry };
+  }
+
+  async function loadMailboxRequest(requestId, discoveredBlobSha = requestBlobShas.get(requestId)) {
     if (mailboxRequestCache.has(requestId)) return mailboxRequestCache.get(requestId);
     if (mailboxRequestReadPromises.has(requestId)) return mailboxRequestReadPromises.get(requestId);
-    const promise = readRemoteFile('bridge/requests/' + requestId + '.json')
-      .then(remote => {
-        if (!remote || !remote.value) return null;
-        mailboxRequestCache.set(requestId, remote);
-        const request = remote.value;
-        const existing = mailboxUiRecords.get(requestId) || {};
-        const agentId = typeof request.agent_id === 'string' ? request.agent_id : existing.agentId || null;
-        const label = request.tool === 'session_start' && request.args && request.args.label
-          ? String(request.args.label).slice(0, 80) : existing.agentLabel;
-        updateMailboxUiRecord(requestId, {
-          tool: typeof request.tool === 'string' ? request.tool : 'invalid request',
-          agentId,
-          agentLabel: label,
-          sessionId: typeof request.session_id === 'string' ? request.session_id : existing.sessionId || null,
-          status: existing.status || 'queued',
-          progress: Number.isFinite(existing.progress) ? existing.progress : 5,
-          created_at: typeof request.created_at === 'string' ? request.created_at : existing.created_at,
-          requestJson: consoleJson(request)
-        });
-        announce();
-        return remote;
-      })
-      .finally(() => mailboxRequestReadPromises.delete(requestId));
+    const promise = (async () => {
+      let remote = null;
+      let blobReadError = null;
+      if (typeof discoveredBlobSha === 'string' && /^[a-f0-9]{40}$/i.test(discoveredBlobSha)) {
+        try {
+          // A request tree/commit entry identifies immutable bytes. Prefer that SHA
+          // over a Contents path read, which can briefly return 404 while the branch
+          // ref and directory listing are already visible to the worker.
+          remote = await readRemoteBlob(discoveredBlobSha);
+        } catch (error) {
+          blobReadError = error;
+        }
+      }
+      if (!remote) {
+        try {
+          remote = await readRemoteFile('bridge/requests/' + requestId + '.json');
+        } catch (error) {
+          if (isCorruptMailboxFile(error)) throw error;
+          if (!blobReadError) throw error;
+          if (isCorruptMailboxFile(blobReadError)) throw blobReadError;
+          throw new Error('REQUEST_FILE_UNAVAILABLE: Could not read the discovered Git blob (' +
+            cleanError(blobReadError.message) + ') or its Contents path (' + cleanError(error.message) + ').');
+        }
+      }
+      if (!remote || !remote.value) {
+        if (blobReadError && isCorruptMailboxFile(blobReadError)) throw blobReadError;
+        const detail = blobReadError ? ' Git blob read: ' + cleanError(blobReadError.message) + '.' : '';
+        throw new Error('REQUEST_FILE_UNAVAILABLE: Request ' + requestId +
+          ' was discovered in the mailbox tree but neither its immutable blob nor its Contents path could be read.' + detail);
+      }
+      mailboxRequestCache.set(requestId, remote);
+      const request = remote.value;
+      const existing = mailboxUiRecords.get(requestId) || {};
+      const agentId = typeof request.agent_id === 'string' ? request.agent_id : existing.agentId || null;
+      const label = request.tool === 'session_start' && request.args && request.args.label
+        ? String(request.args.label).slice(0, 80) : existing.agentLabel;
+      updateMailboxUiRecord(requestId, {
+        tool: typeof request.tool === 'string' ? request.tool : 'invalid request',
+        agentId,
+        agentLabel: label,
+        sessionId: typeof request.session_id === 'string' ? request.session_id : existing.sessionId || null,
+        status: existing.status || 'queued',
+        progress: Number.isFinite(existing.progress) ? existing.progress : 5,
+        created_at: typeof request.created_at === 'string' ? request.created_at : existing.created_at,
+        requestJson: consoleJson(request)
+      });
+      announce();
+      return remote;
+    })().finally(() => mailboxRequestReadPromises.delete(requestId));
     mailboxRequestReadPromises.set(requestId, promise);
     return promise;
   }
@@ -1991,7 +2039,7 @@ function createRepositoryBridge(deps) {
       });
       return;
     }
-    if (!remote) return;
+    if (!remote) throw new Error('REQUEST_FILE_UNAVAILABLE: The discovered request could not be read; it was not silently discarded.');
     let request;
     try {
       const raw = JSON.stringify(remote.value);
@@ -2413,12 +2461,16 @@ function createRepositoryBridge(deps) {
   }
 
 
-  function enqueuePendingRequests(filenames) {
-    for (const filename of filenames) {
+  function enqueuePendingRequests(entries) {
+    for (const discovered of entries) {
+      const filename = typeof discovered === 'string' ? discovered : discovered && discovered.name;
+      if (typeof filename !== 'string' || !filename.endsWith('.json')) continue;
       const requestId = filename.slice(0, -'.json'.length);
       if (!SAFE_ID.test(requestId)) continue;
       if (knownResultFiles && knownResultFiles.has(filename)) continue;
       if (inFlightRequestIds.has(requestId) || requestTasks.has(requestId) || pendingRequestQueueSet.has(filename)) continue;
+      const blobSha = discovered && typeof discovered === 'object' ? discovered.sha : null;
+      if (typeof blobSha === 'string' && /^[a-f0-9]{40}$/i.test(blobSha)) requestBlobShas.set(requestId, blobSha);
       pendingRequestQueue.push(filename);
       pendingRequestQueueSet.add(filename);
       updateMailboxUiRecord(requestId, { status: 'queued', progress: 5, tool: 'loading request' });
@@ -2563,6 +2615,7 @@ function createRepositoryBridge(deps) {
         })
         .finally(() => {
           inFlightRequestIds.delete(requestId);
+          requestBlobShas.delete(requestId);
           requestTasks.delete(requestId);
           requestAbortControllers.delete(requestId);
           const queued = pendingRequestQueue.filter(name => !(knownResultFiles && knownResultFiles.has(name))).length;
@@ -2641,18 +2694,18 @@ function createRepositoryBridge(deps) {
           (failedDetail.error || 'GitHub did not return a files array.'));
       }
 
-      const requestFilenames = new Set();
+      const requestFiles = new Map();
       for (const detail of details) {
         for (const file of detail.files) {
           if (!file || !['added', 'modified', 'renamed'].includes(file.status) ||
               typeof file.filename !== 'string' || !file.filename.startsWith('bridge/requests/')) continue;
           const filename = file.filename.slice('bridge/requests/'.length);
           if (!filename.endsWith('.json') || !SAFE_ID.test(filename.slice(0, -5))) continue;
-          requestFilenames.add(filename);
+          requestFiles.set(filename, file.sha || null);
         }
       }
-      if (requestFilenames.size) {
-        enqueuePendingRequests([...requestFilenames]);
+      if (requestFiles.size) {
+        enqueuePendingRequests([...requestFiles].map(([name, sha]) => ({ name, sha })));
         dispatchPendingRequests();
       }
       lastRequestCommitSha = commits[0].sha;
@@ -2736,10 +2789,10 @@ function createRepositoryBridge(deps) {
         }
         if (!running || pollPromise !== task) return;
         const sorted = files
-          .map(file => file.name)
-          .filter(name => name.endsWith('.json') && SAFE_ID.test(name.slice(0, -5)))
-          .sort();
-        const pending = sorted.filter(filename => !knownResultFiles.has(filename));
+          .filter(file => file && typeof file.name === 'string' &&
+            file.name.endsWith('.json') && SAFE_ID.test(file.name.slice(0, -5)))
+          .sort((a, b) => a.name.localeCompare(b.name));
+        const pending = sorted.filter(file => !knownResultFiles.has(file.name));
         enqueuePendingRequests(pending);
         const firstPoll = !lastPollAt;
         if (requestScanSucceeded) {
