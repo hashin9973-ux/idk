@@ -1135,7 +1135,7 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
       try { entries = await listFolder(inboxPath(ownerAgentId)); }
       catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
       const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\.json$/i, '')) && /\.json$/i.test(name) && !/\.read\.json$/i.test(name)))
+        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\.json$/i, '')) && /\.json$/i.test(name) && !/\.read\.json$/i.test(name)))]
         .sort().slice(-200);
       const found = [];
       for (let start = 0; start < names.length; start += 16) {
@@ -1180,7 +1180,7 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
       try { entries = await listFolder(inboxPath(ownerAgentId)); }
       catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
       const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\.json$/i, '')) && /\.json$/i.test(name) && !/\.read\.json$/i.test(name)))
+        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\.json$/i, '')) && /\.json$/i.test(name) && !/\.read\.json$/i.test(name)))]
         .sort().slice(-200);
       const replies = [];
       for (let start = 0; start < names.length; start += 16) {
