@@ -462,8 +462,9 @@ function formatSlashToolCatalog(tools) {
   });
   return [
     'AVAILABLE LOCAL SLASH COMMANDS',
-    'Use the exact command names below. String values containing spaces must be double-quoted. Use JSON literals for arrays, objects, booleans, numbers, and null.',
-    'Command syntax: /tool_name argument=value other="text with spaces". A command with no arguments is simply /tool_name.',
+    'Use the exact command names below. Values containing spaces must be double-quoted; use [one, two, three] for simple lists.',
+    'Command syntax: /tool_name argument=value other="text with spaces". A command with no arguments is simply /tool_name. For independent work use /batch steps="read_file path=README.md; git_status". Do not send JSON objects or arrays.',
+    'Aliases: /project and /status map to /project_status; /ls, /tree, /read, /write, /patch, /run and /test map to their matching workspace tools.',
     ...entries
   ].join('\n');
 }
