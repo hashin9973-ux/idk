@@ -193,8 +193,10 @@ function persistSettings() {
     const temp = getSettingsPath() + '.tmp';
     fs.writeFileSync(temp, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
     fs.renameSync(temp, getSettingsPath());
+    return true;
   } catch (error) {
     console.error('Could not save settings:', error.message);
+    return false;
   }
 }
 
