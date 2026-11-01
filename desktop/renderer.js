@@ -59,12 +59,12 @@
     oneDriveButton.setAttribute('aria-label', configured ? 'Change OneDrive mailbox folder' : 'Choose OneDrive mailbox folder');
     if (configured) {
       oneDriveLabel.textContent = bridge.running ? 'OneDrive mailbox connected' : 'OneDrive folder ready';
-      oneDriveLabel.title = (value.runtimePath || 'Bridge/runtime') +
+      oneDriveLabel.title = (value.mailboxPath || value.runtimePath || 'Bridge') +
         (bridge.running ? ' · The Windows worker is polling the synchronized mailbox.' : ' · The Windows worker will connect automatically.');
       setDot(oneDriveDot, bridge.running ? 'online' : 'waiting');
     } else {
       oneDriveLabel.textContent = 'OneDrive folder not configured';
-      oneDriveLabel.title = value.error || 'Choose the local OneDrive-synced Bridge/runtime folder.';
+      oneDriveLabel.title = value.error || 'Choose the local OneDrive-synced Bridge folder.';
       setDot(oneDriveDot, 'waiting');
     }
     oneDriveRow.title = oneDriveLabel.title;
@@ -636,7 +636,7 @@
           colab: { status: 'not_verified', message: 'Setup check failed before Colab could be verified.' },
           model: { status: 'not_verified', message: 'Setup check failed before model readiness could be verified.' }
         },
-        next_steps: ['Choose the local OneDrive-synced Bridge/runtime folder, then run Setup check again.']
+        next_steps: ['Choose the local OneDrive-synced Bridge folder, then run Setup check again.']
       });
     } finally {
       visionBusy = false;
