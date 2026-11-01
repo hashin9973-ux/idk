@@ -188,6 +188,7 @@ test('slash catalog includes command names, descriptions and argument requiremen
   assert.match(catalog, /path \(string; required; Workspace-relative file path\.\)/);
   assert.match(catalog, /start_line \(integer; optional/);
   assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
+  assert.doesNotMatch(catalog, /JSON literals/);
 });
 
 test('Chat Completions request includes configured standard sampling parameters', async () => {
@@ -223,7 +224,6 @@ test('SSE parser streams assistant text and detects disabled native tool-call ou
   assert.equal(result.content, 'Checking the workspace.');
   assert.equal(streamed, 'Checking the workspace.');
   assert.equal(result.nativeToolCalls, true);
-  assert.doesNotMatch(catalog, /JSON literals/);
 });
 
 test('slash command parser uses readable named arguments and list values, not JSON objects', () => {
