@@ -482,12 +482,15 @@ function createRepositoryBridge(deps) {
         try {
           remote = await readRemoteFile('bridge/requests/' + requestId + '.json');
         } catch (error) {
+          if (isCorruptMailboxFile(error)) throw error;
           if (!blobReadError) throw error;
+          if (isCorruptMailboxFile(blobReadError)) throw blobReadError;
           throw new Error('REQUEST_FILE_UNAVAILABLE: Could not read the discovered Git blob (' +
             cleanError(blobReadError.message) + ') or its Contents path (' + cleanError(error.message) + ').');
         }
       }
       if (!remote || !remote.value) {
+        if (blobReadError && isCorruptMailboxFile(blobReadError)) throw blobReadError;
         const detail = blobReadError ? ' Git blob read: ' + cleanError(blobReadError.message) + '.' : '';
         throw new Error('REQUEST_FILE_UNAVAILABLE: Request ' + requestId +
           ' was discovered in the mailbox tree but neither its immutable blob nor its Contents path could be read.' + detail);
