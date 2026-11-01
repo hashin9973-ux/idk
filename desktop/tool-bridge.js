@@ -1381,13 +1381,13 @@ function createToolBridge(deps) {
       instruction_files: instructionFiles,
       tool_catalog: {
         protocol: capabilities.protocol,
-        catalog_version: 2,
+        catalog_version: capabilities.catalog_version,
         tools: capabilities.tools,
         tool_calling: capabilities.tool_calling
       },
       retrieval_rules: [
         'The connected OneDrive integration provides mailbox files, not native Windows local tools. Read AGENT.md, TOOLS.md, STATUS.md and SCREEN.md at the Bridge root. Start a conversation with request/agent-000/<request_id>.json using session_start; the app returns agent_id and session_id. Then create ordinary requests in request/<agent-id>/<request_id>.json with the app-issued session_id and read matching claims/<agent-id>/ and result/<agent-id>/ records.',
-        'At the start of every ChatGPT conversation, call session_start once without session_id and preserve its result. Every subsequent ordinary mailbox request must include that exact top-level session_id; missing, evicted, revoked, disconnected or paused IDs are rejected before local execution. Session IDs have no TTL or inactivity expiration; only oldest-activity eviction at the 10,000-ID hard cap or explicit lifecycle actions invalidate an ID. Never supply agent_id or agent_token as caller identity. Read the all-seat inventory from the context and generate a new request_id per call.',
+        'At the start of every ChatGPT conversation, call session_start once without session_id and preserve its result. Every subsequent ordinary mailbox request must include that exact top-level session_id; missing, evicted, revoked, disconnected or paused IDs are rejected before local execution. Session IDs have no TTL or inactivity expiration; only oldest-activity eviction at the 10,000-ID hard cap or explicit lifecycle actions invalidate an ID. Never supply agent_id or agent_token as caller identity. Read the agent inventory from STATUS.md and generate a new request_id per call.',
         'After session_start, use the returned identifiers for this conversation: use the returned agent_id to select request/<agent-id>/ and prefix visible progress/status messages with [session_id][agent_id] when the bridge is in use. Never invent identifiers. The agent_id remains assigned until explicit disconnect, revoke/delete, or automatic eviction of this exact session ID at the 10,000-ID hard cap; inactivity only changes the recent-activity status. Tool requests enforce session_id; natural-language prefixes are a coordination convention.',
         'Discover installed software, games, versions, paths, project files and configuration with targeted local tools before asking for machine facts. Ask only for genuinely missing intent after discovery.',
         'If a matching result is absent, inspect the matching claim and worker state and re-read the same result. Do not replay an uncertain side effect or create a duplicate request.',
