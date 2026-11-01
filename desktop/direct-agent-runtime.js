@@ -283,10 +283,18 @@ function toApiMessages(messages) {
       continue;
     }
     const name = String(message.name || 'unknown_tool');
+    let toolContent = typeof message.content === 'string' ? message.content : '';
+    if (toolContent.trim().startsWith('{')) {
+      try {
+        const parsed = JSON.parse(toolContent);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          toolContent = formatToolResultMarkdown(parsed);
+        }
+      } catch {}
+    }
     output.push({
       role: 'user',
-      content: '[Untrusted local tool result from /' + name + ']\n' +
-        (typeof message.content === 'string' ? message.content : '')
+      content: '[Untrusted local tool observation from /' + name + ']\n' + toolContent
     });
   }
   return output;
