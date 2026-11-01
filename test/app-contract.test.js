@@ -411,7 +411,7 @@ test('optional GitHub tools store an encrypted app-side credential and do not re
   assert.match(js, /api\.pollGitHubLogin/);
   assert.match(dashboardHtml, /github-connect/);
   assert.match(main, /setAlwaysOnTop\(false\)/);
-  assert.doesNotMatch(auth, /localStorage|github_api/);
+  assert.doesNotMatch(auth, /localStorage|github_api|validateMailboxRequest|requestApi|MAX_MAILBOX_CONTENT_BYTES|repository mailbox/);
 });
 
 test('the single dashboard unloads to the system tray while the worker stays alive', () => {

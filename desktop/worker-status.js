@@ -3,7 +3,7 @@
 function isNetworkError(message) {
   // API timeouts, rate limits, and server failures are transient mailbox
   // transport conditions, not proof that the user must repair configuration.
-  return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused|temporarily unavailable|connection reset|bad gateway|service unavailable|gateway timeout|GitHub HTTP (?:408|425|429|5\d\d):|GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked)/i.test(String(message || ''));
+  return /network|offline|internet|fetch failed|failed to fetch|enotfound|eai_again|econn|etimedout|timed out|socket|dns|unable to connect|connection refused|temporarily unavailable|connection reset|bad gateway|service unavailable|gateway timeout|OneDrive sync|OneDrive synchronization|\\b(?:EAGAIN|EBUSY|EIO|ENODATA|ESTALE)\\b|GitHub HTTP (?:408|425|429|5\d\d):|GitHub HTTP 403:.*(?:rate.?limit|secondary rate|abuse detection|temporarily blocked)/i.test(String(message || ''));
 }
 
 function timestampFresh(value, now, windowMs) {
@@ -23,12 +23,12 @@ function resolveWorkerStatus(state, fallbackStatus = 'connecting', now = Date.no
   const scanFreshnessWindowMs = Math.max(15000, scanInterval * 3);
   const scanFresh = timestampFresh(current.lastPollAt, now, scanFreshnessWindowMs);
 
-  // The fast request-commit probe checks the same authenticated GitHub mailbox
-  // independently of full-tree reconciliation. A successful probe is evidence
-  // of reachability even when a tree scan is temporarily slow or rate-limited.
+  // The fast commit probe belongs only to the legacy test transport. The
+  // OneDrive worker uses its successful local poll timestamp as its live signal.
   const probeInterval = Math.max(1000, Number(polling.requestCommitProbeIntervalMs) || 2000);
   const probeFreshnessWindowMs = Math.max(10000, probeInterval * 4);
-  const probeFresh = timestampFresh(polling.lastRequestCommitProbeAt, now, probeFreshnessWindowMs) &&
+  const probeFresh = current.transport !== 'onedrive-synced-folder' &&
+    timestampFresh(polling.lastRequestCommitProbeAt, now, probeFreshnessWindowMs) &&
     !String(polling.lastRequestCommitProbeError || '').trim();
   if (scanFresh || probeFresh) return 'online';
 
