@@ -322,6 +322,33 @@ function slashSchemaType(schema) {
   return schema.type || 'any';
 }
 
+function slashSchemaLines(name, schema, required = false, depth = 0) {
+  const indent = '  '.repeat(depth + 1);
+  const details = [slashSchemaType(schema), required ? 'required' : 'optional'];
+  if (schema && schema.default !== undefined) details.push('default=' + JSON.stringify(schema.default));
+  if (schema && typeof schema.description === 'string' && schema.description.trim()) {
+    details.push(schema.description.trim().replace(/\s+/g, ' ').slice(0, 180));
+  }
+  const lines = [indent + name + ' (' + details.join('; ') + ')'];
+  let nestedProperties = null;
+  let nestedRequired = [];
+  if (schema && schema.type === 'object' && schema.properties && typeof schema.properties === 'object') {
+    nestedProperties = schema.properties;
+    nestedRequired = Array.isArray(schema.required) ? schema.required : [];
+  } else if (schema && schema.type === 'array' && schema.items && schema.items.type === 'object' &&
+      schema.items.properties && typeof schema.items.properties === 'object') {
+    nestedProperties = schema.items.properties;
+    nestedRequired = Array.isArray(schema.items.required) ? schema.items.required : [];
+    lines.push(indent + '  items: object');
+  }
+  if (nestedProperties) {
+    for (const [childName, childSchema] of Object.entries(nestedProperties)) {
+      lines.push(...slashSchemaLines(childName, childSchema, nestedRequired.includes(childName), depth + 1));
+    }
+  }
+  return lines;
+}
+
 function formatSlashToolCatalog(tools) {
   const entries = (Array.isArray(tools) ? tools : []).filter(item =>
     item && item.type === 'function' && item.function &&
@@ -331,15 +358,12 @@ function formatSlashToolCatalog(tools) {
     const parameters = fn.parameters && typeof fn.parameters === 'object' ? fn.parameters : {};
     const properties = parameters.properties && typeof parameters.properties === 'object' ? parameters.properties : {};
     const required = new Set(Array.isArray(parameters.required) ? parameters.required : []);
-    const args = Object.entries(properties).map(([name, schema]) => {
-      const details = [slashSchemaType(schema), required.has(name) ? 'required' : 'optional'];
-      if (schema && typeof schema.description === 'string' && schema.description.trim()) {
-        details.push(schema.description.trim().replace(/\s+/g, ' ').slice(0, 180));
-      }
-      return name + ' (' + details.join('; ') + ')';
-    });
+    const args = Object.entries(properties).flatMap(([name, schema]) =>
+      slashSchemaLines(name, schema, required.has(name), 0)
+    );
     const description = String(fn.description || 'Local Windows workspace tool').replace(/\s+/g, ' ').trim();
-    return '/' + fn.name + ' — ' + description + '\n  Arguments: ' + (args.length ? args.join('; ') : 'none');
+    return '/' + fn.name + ' — ' + description + '\n' +
+      (args.length ? '  Arguments:\n' + args.join('\n') : '  Arguments: none');
   });
   return [
     'AVAILABLE LOCAL SLASH COMMANDS',
@@ -348,7 +372,6 @@ function formatSlashToolCatalog(tools) {
     ...entries
   ].join('\n');
 }
-
 function createDirectAgentRuntime({
   fetchImpl = globalThis.fetch,
   getConfig,
