@@ -657,13 +657,14 @@ test('Markdown tool observations redact secrets and preserve code/output structu
     apiKey: 'secret-value',
     warnings: []
   } });
-  assert.match(rendered, /\\*\\*Project Root:\\*\\* C:\\/work\\/demo/);
-  assert.match(rendered, /- Node.js/);
-  assert.match(rendered, /npm run build/);
-  assert.match(rendered, /\\[redacted\\]/);
-  assert.doesNotMatch(rendered, /"projectRoot"|private-protocol|secret-value/);
+  assert.ok(rendered.includes('**Project Root:** C:/work/demo'));
+  assert.ok(rendered.includes('- Node.js'));
+  assert.ok(rendered.includes('npm run build'));
+  assert.ok(rendered.includes('[redacted]'));
+  assert.ok(!rendered.includes('"projectRoot"'));
+  assert.ok(!rendered.includes('private-protocol'));
+  assert.ok(!rendered.includes('secret-value'));
 });
-
 test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
   const apiMessages = toApiMessages([
     { role: 'user', content: 'Read a file.' },
