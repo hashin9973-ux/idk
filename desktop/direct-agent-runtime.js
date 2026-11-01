@@ -384,7 +384,7 @@ function parseSlashArguments(raw, toolName) {
     const parsed = parseSlashArgumentValue(input, index);
     if (key === 'steps' && typeof parsed.value === 'string' && toolName === 'computer') {
       args[key] = parsed.value.split(';').map(part => part.trim()).filter(Boolean).map(part => {
-        const match = part.match(/^([a-z][a-z0-9_-]*)(?:\\s+([\\s\\S]*))?$/i);
+        const match = part.match(/^([a-z][a-z0-9_-]*)(?:\s+([\s\S]*))?$/i);
         if (!match) throw new Error('Each computer step needs an action name and named arguments.');
         return { action: match[1], ...parseSlashArguments(match[2] || '', 'computer-step') };
       });
