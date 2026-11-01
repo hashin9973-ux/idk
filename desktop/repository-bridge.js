@@ -1977,13 +1977,15 @@ function createRepositoryBridge(deps = {}) {
       // Recover only after the mailbox state proves the current worker is alive
       // and its heartbeat postdates the original claim. Never replay the operation:
       // its child process may still have side effects in progress.
-      const workerState = await readRemoteFile('bridge/state/windows-app.json').catch(() => null);
-      const stateValue = workerState && isPlainObject(workerState.value) ? workerState.value : null;
-      const stateUpdatedAt = Date.parse(stateValue && stateValue.updated_at || '');
+      const workerState = await readRemoteContent('STATUS.md').catch(() => null);
+      const stateText = workerState && workerState.content ? workerState.content.toString('utf8') : '';
+      const workerIdMatch = stateText.match(/^- Worker ID: (.+)$/m);
+      const updatedMatch = stateText.match(/^- Updated: (.+)$/m);
+      const stateUpdatedAt = updatedMatch ? Date.parse(updatedMatch[1]) : NaN;
       const claimStartedAt = Date.parse(prior.value.claimed_at || '');
       previousWorkerRestartConfirmed = Boolean(
-        stateValue &&
-        stateValue.worker_id === workerId &&
+        stateText.startsWith('# Windows Bridge Status') &&
+        workerIdMatch && workerIdMatch[1] === workerId &&
         Number.isFinite(stateUpdatedAt) &&
         (!Number.isFinite(claimStartedAt) || stateUpdatedAt >= claimStartedAt)
       );
