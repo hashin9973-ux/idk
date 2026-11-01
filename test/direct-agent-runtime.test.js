@@ -189,7 +189,7 @@ test('slash catalog includes command names, descriptions and argument requiremen
   assert.match(catalog, /Workspace-relative file path/);
   assert.match(catalog, /- `path` — string; required/);
   assert.match(catalog, /- `start_line` — integer; optional/);
-  assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
+  assert.match(catalog, /### `\/environment_info`[\s\S]*Inspect the local Windows environment/);
 });
 
 test('Chat Completions request includes configured standard sampling parameters', async () => {
@@ -230,15 +230,15 @@ test('SSE parser streams assistant text and detects disabled native tool-call ou
 test('slash command parser supports JSON objects and concise named arguments', () => {
   assert.deepEqual(
     parseSlashToolCommand('/read_file {"path":"src/app.js"}', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js' } }
+    { name: 'read_file', alias: null, args: { path: 'src/app.js' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/read_file path="src/app.js" start_line=12', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js', start_line: 12 } }
+    { name: 'read_file', alias: null, args: { path: 'src/app.js', start_line: 12 } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/read_file path=src/app.js', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js' } }
+    { name: 'read_file', alias: null, args: { path: 'src/app.js' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/environment_info', ['environment_info']),
@@ -254,7 +254,7 @@ test('slash command parser supports JSON objects and concise named arguments', (
   );
   assert.deepEqual(
     parseSlashToolCommand('/batch steps=[{"tool":"read_file","args":{"path":"README.md"}},{"tool":"git_status","args":{}}]', ['batch']),
-    { name: 'batch', args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
+    { name: 'batch', alias: null, args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
   );
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
