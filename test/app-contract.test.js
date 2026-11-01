@@ -381,7 +381,8 @@ test('OneDrive mailbox has explicit request, result, claim and heartbeat paths',
   assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
   assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));
   assert.ok(toolBridge.includes("reply_to_agent_message: ['message_id', 'message']"));
-  assert.match(toolBridge, /catalog_version = 4/);
+  assert.match(toolBridge, /catalog_version = 5/);
+  assert.match(toolBridge, /exec_command/);
 });
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
