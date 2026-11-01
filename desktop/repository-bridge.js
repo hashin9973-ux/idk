@@ -795,9 +795,11 @@ function createRepositoryBridge(deps = {}) {
       error.code = 'MAILBOX_CONFLICT';
       throw error;
     }
+    const previousValue = exists ? records[key] : undefined;
     records[key] = value;
     if (typeof persistSettings === 'function' && persistSettings() === false) {
-      delete records[key];
+      if (exists) records[key] = previousValue;
+      else delete records[key];
       throw new Error('Could not persist the app-local agent registry.');
     }
     return { ok: true, sha: localRecordSha(value) };
