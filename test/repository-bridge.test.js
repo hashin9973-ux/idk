@@ -2036,6 +2036,9 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
     assert.match(agent, /app persistent local settings store/);
     assert.match(agent, /10,000 sessions/);
     assert.match(agent, /SCREEN.md/);
+    assert.match(agent, /Slash-style shortcuts/);
+    assert.match(agent, /\/status/);
+    assert.match(agent, /\/agents/);
     assert.doesNotMatch(agent, /Bridge\/runtime|bridge\/context|capabilities\.json/);
     assert.match(tools, /Windows Bridge tool reference/);
     assert.match(tools, /Catalog version: 7/);
@@ -2267,7 +2270,7 @@ test('a conflicting immutable result is not mistaken for successful publication 
       return conflictWritten && Boolean(claim && claim.value.status === 'completed') &&
         bridge.getState().lastError.includes('contents do not match');
     });
-    const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
+    const claim = await mailbox.readJson('claims/agent-000/' + requestId + '.json');
     const storedResult = await mailbox.readJson('result/agent-000/' + requestId + '.json');
     assert.equal(claim.value.result.status, 'completed', 'the claim retains the worker-generated result for recovery');
     assert.ok(Number.isInteger(claim.value.result.timing_ms.mailbox_operations_before_result_publish));
