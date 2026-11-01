@@ -34,7 +34,6 @@ function renderScalar(value, key = '') {
 function renderMarkdownValue(value, key = 'Details', depth = 0) {
   const indent = '  '.repeat(Math.min(depth, 8));
   if (SECRET_KEY.test(key)) return [indent + '- **' + titleCase(key) + ':** [redacted]'];
-  value = parseJsonText(value);
   if (value === null || ['string', 'number', 'boolean'].includes(typeof value)) {
     const text = renderScalar(value, key);
     if (typeof value === 'string' && (CODE_FIELD.test(key) || /[\r\n]/.test(value))) {
