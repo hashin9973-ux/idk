@@ -458,13 +458,20 @@ function createOneDriveMailbox({
 
   function getState() {
     const root = configuredPath();
+    let exists = false;
+    if (root) {
+      try {
+        const stat = fsSync.lstatSync(root);
+        exists = stat.isDirectory() && !stat.isSymbolicLink();
+      } catch {}
+    }
     return {
-      configured: Boolean(root),
+      configured: exists,
       rootPath: root || '',
       mailboxPath: root || '',
       transport: 'onedrive-synced-folder',
       cloudPath: 'Bridge',
-      status: root ? 'configured' : 'not_configured'
+      status: exists ? 'configured' : root ? 'missing' : 'not_configured'
     };
   }
 
