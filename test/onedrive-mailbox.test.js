@@ -99,7 +99,8 @@ test('create-only agent requests are immutable and partitioned by agent', async 
   assert.equal(second.ok, false);
   assert.equal(second.conflict, true);
   assert.deepEqual((await mailbox.readJson('request/agent-001/req-1.json')).value, request);
-  assert.deepEqual((await mailbox.listFolder('request')).map(x => x.name), ['agent-001']);
+  assert.deepEqual((await mailbox.listFolder('request')).map(x => x.name).sort(), ['agent-000', 'agent-001']);
+  assert.equal((await mailbox.listFolder('request')).every(item => item.type === 'dir'), true);
 });
 
 test('claims and results use the same request ID inside the owning agent folder', async t => {
