@@ -373,7 +373,9 @@ function createOneDriveMailbox({
         throw new Error('OneDrive cleanup requires a safe path and expected content hash for each file.');
       }
       const parts = validateRelativePath(item.path);
-      if (!['request', 'claims', 'result', 'messages', 'sandbox storage'].includes(parts[0])) {\n        throw new Error('OneDrive cleanup refused a protected mailbox path: ' + item.path);\n      }
+      if (!['request', 'claims', 'result', 'messages', 'sandbox storage'].includes(parts[0])) {
+        throw new Error('OneDrive cleanup refused a protected mailbox path: ' + item.path);
+      }
       unique.set(item.path, item.sha);
     }
     const entries = [...unique].map(([relativePath, expectedSha]) => ({
