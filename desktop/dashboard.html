@@ -8,7 +8,7 @@
 <body>
 <header class="app-header">
 <div class="brand-mark" aria-hidden="true">WB</div><div class="brand-copy"><h1>Windows Bridge</h1><p>Desktop workspace</p></div>
-<div class="header-status"><span id="worker-dot" class="status-dot waiting"></span><span id="worker-status">Worker connecting…</span><span class="status-separator">·</span><span id="github-status">GitHub checking…</span></div>
+<div class="header-status"><span id="worker-dot" class="status-dot waiting"></span><span id="worker-status">Worker connecting…</span><span class="status-separator">·</span><span id="onedrive-status">OneDrive checking…</span></div>
 <div class="window-actions"><button id="minimize-to-tray" class="quiet-button" type="button" title="Unload the window and keep the bridge running">Minimize to tray</button><button id="quit-app" class="quiet-button" type="button">Quit</button></div>
 </header>
 <main id="page-stage">
@@ -93,7 +93,7 @@
 <div class="setting-row"><div><strong>Local settings</strong><small id="save-status">Saved automatically to this device.</small></div><button id="save-now" class="action-button compact" type="button">Save now</button></div>
 <div class="setting-row cloud-folder-row"><div class="folder-copy"><strong>Shared cloud folder</strong><small id="cloud-folder-path">Not configured. Choose a Google Drive, OneDrive or other synchronized local folder.</small></div><button id="cloud-folder-choose" class="action-button compact" type="button">Choose folder</button></div>
 <label class="checkbox-row"><input id="cloud-sync-enabled" type="checkbox"> Enable live cloud sync</label>
-<div class="cloud-sync-categories"><span>Shared: theme, TTS preferences, tabs, web-tab references, widgets and layout.</span><span>Not shared: GitHub credentials, worker state, local workspace paths, repository tokens or temporary Colab endpoints.</span></div>
+<div class="cloud-sync-categories"><span>Shared here: theme, TTS preferences, tabs, web-tab references, widgets and layout.</span><span>Separate from the OneDrive mailbox: worker state, requests, results, local workspace paths, tokens and temporary Colab endpoints.</span></div>
 <div class="form-foot"><span id="cloud-sync-status" class="inline-message" role="status" aria-live="polite">Cloud sync is off.</span><button id="cloud-sync-now" class="action-button compact" type="button" disabled>Sync now</button></div>
 </section>
 <section class="settings-panel"><div class="section-heading"><h2>Observe mode</h2><p>Sampling rate for passive desktop context.</p></div><div class="setting-row"><label for="observe-fps">Observe FPS</label><select id="observe-fps"><option value="0.5">0.5 fps</option><option value="1">1 fps</option><option value="2">2 fps</option><option value="4">4 fps</option><option value="8">8 fps</option></select></div></section>
