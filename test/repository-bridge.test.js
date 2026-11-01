@@ -676,7 +676,7 @@ test('worker reads a tree-discovered request by immutable Git blob SHA when Cont
       call.method === 'GET' &&
       call.path === '/repos/test-owner/test-repo/git/blobs/' + discoveredBlobSha
     ), 'the worker should fetch the immutable blob identified by the request tree');
-    assert.ok(fake.calls.some(call =>
+    assert.equal(fake.calls.some(call =>
       call.method === 'GET' &&
       call.path === '/repos/test-owner/test-repo/contents/' + requestPath
     ), false, 'the successful immutable blob path should not depend on the stale Contents endpoint');
