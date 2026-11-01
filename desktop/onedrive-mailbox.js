@@ -116,13 +116,13 @@ function createOneDriveMailbox({
   function resolvePath(relativePath) {
     const root = configuredPath();
     if (!root || !path.isAbsolute(root)) {
-      throw new Error('Choose the OneDrive-synced Bridge/runtime folder in the app settings before connecting.');
+      throw new Error('Choose the OneDrive-synced Bridge folder in the app settings before connecting.');
     }
     const parts = validateRelativePath(relativePath);
     const target = path.resolve(root, ...parts);
     const relation = path.relative(root, target);
     if (!relation || relation.startsWith('..' + path.sep) || relation === '..' || path.isAbsolute(relation)) {
-      throw new Error('OneDrive mailbox path escaped its configured runtime folder.');
+      throw new Error('OneDrive mailbox path escaped its configured Bridge folder.');
     }
     return { root, target, parts };
   }
@@ -433,9 +433,9 @@ function createOneDriveMailbox({
     return {
       configured: Boolean(root),
       rootPath: root || '',
-      runtimePath: root || '',
+      mailboxPath: root || '',
       transport: 'onedrive-synced-folder',
-      cloudPath: 'Bridge/runtime',
+      cloudPath: 'Bridge',
       status: root ? 'configured' : 'not_configured'
     };
   }
