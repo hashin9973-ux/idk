@@ -27,6 +27,7 @@ Use readable named arguments, not JSON objects:
 - Use bracketed lists for simple arrays: `paths=[src, test, docs]`.
 - Do not send JSON objects or JSON arrays as command arguments.
 - For independent operations, use a readable sequence: `/batch steps="read_file path=README.md; git_status"`.
+- For desktop input sequences, use `/computer action=sequence steps="click x=400 y=300; type text=Hello; press key=ENTER"`.
 - A command with no arguments is simply `/tool_name`.
 - Never emit a slash command as an example in normal prose. A response beginning with `/` is executable.
 
