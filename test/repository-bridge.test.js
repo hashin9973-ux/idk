@@ -1620,7 +1620,7 @@ test('a started worker can be stopped cleanly', async () => {
 
 
 test('large textual tool output is preserved in retrievable text artifacts with an inline preview', async () => {
-  const longText = 'Header line\\n' + 'A'.repeat(1500000) + '\\n' + 'λ🙂'.repeat(8000);
+  const longText = 'Header line\n' + 'A'.repeat(1500000) + '\n' + 'λ🙂'.repeat(8000);
   assert.ok(Buffer.byteLength(longText, 'utf8') > 128 * 1024, 'fixture must exceed the former 128 KiB capture ceiling');
   const request = {
     protocol: PROTOCOL,
