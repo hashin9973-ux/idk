@@ -238,6 +238,14 @@ test('slash command parser uses readable named arguments and list values, not JS
     { name: 'project', args: { action: 'index_status' } }
   );
   assert.deepEqual(
+    parseSlashToolCommand('/find path="src" pattern="**/*.js"', available),
+    { name: 'workspace', args: { path: 'src', pattern: '**/*.js', action: 'glob' } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/plan items=[Inspect, Test]', available),
+    { name: 'update_plan', args: { items: ['Inspect', 'Test'] } }
+  );
+  assert.deepEqual(
     parseSlashToolCommand('/run command="npm test"', available),
     { name: 'shell', args: { command: 'npm test' } }
   );
@@ -254,8 +262,16 @@ test('slash command parser uses readable named arguments and list values, not JS
     { name: 'batch', args: { steps: [{ tool: 'workspace', args: { path: 'README.md', action: 'read' } }, { tool: 'git', args: { action: 'status' } }] } }
   );
   assert.deepEqual(
+    parseSlashToolCommand("/batch steps=\"shell command='Write-Output one; two'; git_status\"", available),
+    { name: 'batch', args: { steps: [{ tool: 'shell', args: { command: 'Write-Output one; two' } }, { tool: 'git', args: { action: 'status' } }] } }
+  );
+  assert.deepEqual(
     parseSlashToolCommand('/computer action=sequence steps="click x=400 y=300; type text=Hello; press key=ENTER"', ['computer']),
     { name: 'computer', args: { action: 'sequence', steps: [{ action: 'click', x: 400, y: 300 }, { action: 'type', text: 'Hello' }, { action: 'press', key: 'ENTER' }] } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand("/computer action=sequence steps=\"type text='a; b'; press key=ENTER\"", available),
+    { name: 'computer', args: { action: 'sequence', steps: [{ action: 'type', text: 'a; b' }, { action: 'press', key: 'ENTER' }] } }
   );
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
   assert.deepEqual(parseSlashToolCommand('/project', available), { name: 'project', args: { action: 'status' } });
@@ -632,13 +648,20 @@ test('repeated native side effects with identical arguments are blocked inside o
   assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('Repeated identical side effect blocked')));
 });
 
-test('Markdown tool observations render project, arrays and command output as readable sections', () => {
-  const { formatToolResultMarkdown } = require('../desktop/direct-agent-runtime');
-  const rendered = formatToolResultMarkdown({ status: 'success', result: { projectRoot: 'C:/work/demo', detectedTechnologies: ['Node.js', 'TypeScript'], buildCommands: [{ name: 'build', command: 'npm run build' }], warnings: [] } });
-  assert.match(rendered, /\*\*Project Root:\*\* C:\/work\/demo/);
+test('Markdown tool observations redact secrets and preserve code/output structure', () => {
+  const { formatToolResultMarkdown } = require('../desktop/markdown-tool-output');
+  const rendered = formatToolResultMarkdown('workspace', { protocol: 'private-protocol', status: 'success', result: {
+    projectRoot: 'C:/work/demo',
+    detectedTechnologies: ['Node.js', 'TypeScript'],
+    buildCommands: [{ name: 'build', command: 'npm run build' }],
+    apiKey: 'secret-value',
+    warnings: []
+  } });
+  assert.match(rendered, /\\*\\*Project Root:\\*\\* C:\\/work\\/demo/);
   assert.match(rendered, /- Node.js/);
-  assert.match(rendered, /\*\*build\*\*/);
-  assert.doesNotMatch(rendered, /"projectRoot"/);
+  assert.match(rendered, /npm run build/);
+  assert.match(rendered, /\\[redacted\\]/);
+  assert.doesNotMatch(rendered, /"projectRoot"|private-protocol|secret-value/);
 });
 
 test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
@@ -654,12 +677,17 @@ test('legacy native tool-call history is converted to slash messages and untrust
   ]);
   assert.deepEqual(apiMessages, [
     { role: 'user', content: 'Read a file.' },
-    { role: 'assistant', content: '/read_file path=README.md' },
-    { role: 'user', content: '[Untrusted local tool observation from /read_file]\n- **Status:** success\n- **Result:** file text' },
+    { role: 'assistant', content: '/workspace action=read path=README.md' },
+    { role: 'user', content: '[Untrusted local tool observation from /read_file]\n### Tool result: `/read_file`\n- **Status:** success\n\n#### Result\n- **Result:** file text' },
     { role: 'assistant', content: 'Done.' }
   ]);
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_calls')));
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_call_id')));
+  assert.deepEqual(toApiMessages([
+    { role: 'user', content: '/read_file {"path":"README.md"}' }
+  ]), [
+    { role: 'user', content: '/workspace action=read path=README.md' }
+  ]);
   const nativeMessages = toApiMessages([
     { role: 'assistant', content: null, tool_calls: [{ id: 'native_1', type: 'function', function: { name: 'workspace', arguments: '{"action":"read","path":"README.md"}' } }] },
     { role: 'tool', tool_call_id: 'native_1', name: 'workspace', content: 'actual result' }

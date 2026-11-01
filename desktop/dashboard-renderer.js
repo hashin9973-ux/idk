@@ -664,10 +664,11 @@ function renderAgentMailboxes(rawAgents){
         const label=document.createElement('strong');label.className='agent-direct-message-label';
         const text=typeof message.content==='string'?message.content:'';
         const modelSlashCall=message.role==='assistant'&&text.trim().startsWith('/');
+        const nativeToolCall=message.role==='assistant'&&Array.isArray(message.tool_calls)&&message.tool_calls.length>0;
         const toolResultMatch=['user','tool'].includes(message.role)?text.match(/^\[Untrusted local tool result for \/([a-z0-9_]+); status=([a-z_]+)\]/i):null;
         const slashError=message.role==='user'&&text.startsWith('[Slash-command error]');
         const runtimeFeedback=message.kind==='runtime_feedback';
-        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):runtimeFeedback?'SYSTEM · TOOL PROTOCOL':toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
+        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):nativeToolCall?'TOOL CALL · NATIVE ('+message.tool_calls.length+')':runtimeFeedback?'SYSTEM · TOOL PROTOCOL':toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
         item.append(label);
         if(modelSlashCall){const command=document.createElement('pre');command.className='agent-direct-tool-call';command.textContent=text.trim();item.append(command)}
         if(message.role==='assistant'&&Array.isArray(message.tool_calls)){

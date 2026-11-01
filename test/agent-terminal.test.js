@@ -26,10 +26,15 @@ test('batch requests render each step as a separate terminal command', () => {
 });
 
 test('potential credentials are redacted from the display-only command', () => {
-  const request = JSON.stringify({ tool: 'connect', args: { endpoint: 'https://example.invalid', api_key: 'never-display-this' } });
+  const request = JSON.stringify({ tool: 'connect', args: {
+    endpoint: 'https://example.invalid',
+    api_key: 'never-display-this',
+    session_id: 'session-abcdef0123456789abcdef0123456789'
+  } });
   const rendered = formatRequestCommands(request, 'connect');
   assert.match(rendered, /\[redacted\]/);
   assert.doesNotMatch(rendered, /never-display-this/);
+  assert.doesNotMatch(rendered, /session-abcdef0123456789abcdef0123456789/);
 });
 
 test('terminal argument display renders lists and nested objects without JSON', () => {
@@ -57,17 +62,11 @@ test('nested sensitive values are redacted in the display-only command', () => {
 test('direct tool calls render in slash-command form with nested secrets redacted', () => {
   const rendered = require('../desktop/agent-terminal').formatSlashCommand('read_file', {
     path: 'src/main.js',
-    options: { api_key: 'never-display-this', include: ['a', 'b'] }
+    options: { api_key: 'never-display-this', session_id: 'session-0123456789abcdef0123456789abcdef', include: ['a', 'b'] }
   });
   assert.equal(rendered, '/read_file path=src/main.js options=[structured value]');
   assert.equal(require('../desktop/agent-terminal').formatSlashCommand('environment_info', {}), '/environment_info');
   assert.doesNotMatch(rendered, /never-display-this/);
+  assert.doesNotMatch(rendered, /session-0123456789abcdef0123456789abcdef/);
 });
 
-test('terminal argument display renders lists and nested objects without JSON', () => {
-  const request = JSON.stringify({ tool: 'project_search', args: { query: 'main entry', paths: ['src', 'test'], filters: { kind: 'symbol', maxResults: 5 } } });
-  const rendered = formatRequestCommands(request, 'unknown');
-  assert.ok(rendered.includes("--paths ['src', 'test']"));
-  assert.ok(rendered.includes("--filters [kind='symbol'; maxResults=5]"));
-  assert.doesNotMatch(rendered, /"paths":/);
-});

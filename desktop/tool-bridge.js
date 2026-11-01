@@ -705,6 +705,17 @@ const DIRECT_AGENT_ACTIONS = Object.freeze({
 const DIRECT_AGENT_TOOL_NAMES = Object.freeze([
   'workspace', 'project', 'git', 'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch'
 ]);
+const DIRECT_AGENT_ACTION_REQUIRED_ARGS = Object.freeze({
+  workspace: Object.freeze({
+    read: ['path'], info: ['path'], search: ['query'], write: ['path', 'content'],
+    patch: ['patch'], mkdir: ['path'], move: ['source', 'destination'], delete: ['path']
+  }),
+  project: Object.freeze({ search: ['query'] }),
+  git: Object.freeze({
+    worktree: ['operation'], create_branch: ['name'], switch_branch: ['name'],
+    commit: ['message'], clone: ['repository', 'path']
+  })
+});
 
 function resolveDirectAgentTool(tool, inputArgs = {}) {
   const actions = DIRECT_AGENT_ACTIONS[tool];
@@ -715,6 +726,12 @@ function resolveDirectAgentTool(tool, inputArgs = {}) {
   if (!routedTool) throw new Error('Unsupported ' + tool + ' action: ' + String(action || '(missing)') + '.');
   const args = { ...inputArgs };
   delete args.action;
+  const required = DIRECT_AGENT_ACTION_REQUIRED_ARGS[tool] && DIRECT_AGENT_ACTION_REQUIRED_ARGS[tool][action] || [];
+  const missing = required.filter(key => !Object.hasOwn(args, key));
+  if (missing.length) throw new Error(tool + ' action=' + action + ' requires: ' + missing.join(', ') + '.');
+  if (tool === 'project' && action === 'impact' && !args.path && !args.symbol) {
+    throw new Error('project action=impact requires path or symbol.');
+  }
   return { tool: routedTool, args };
 }
 
@@ -1662,6 +1679,7 @@ module.exports = {
   getDirectAgentToolDefinitions,
   DIRECT_AGENT_TOOL_NAMES,
   DIRECT_AGENT_ACTIONS,
+  DIRECT_AGENT_ACTION_REQUIRED_ARGS,
   resolveDirectAgentTool,
   TOOL_ARGUMENT_KEYS,
   getExecutionFootprint,

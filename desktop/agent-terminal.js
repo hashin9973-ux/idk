@@ -5,7 +5,7 @@
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   if (root) root.AgentTerminal = api;
 })(typeof globalThis === 'object' ? globalThis : this, function createAgentTerminal() {
-  const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key)/i;
+  const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key|session[_-]?id|credential)/i;
 
   function parseRecord(value) {
     if (value && typeof value === 'object' && !Array.isArray(value)) return value;

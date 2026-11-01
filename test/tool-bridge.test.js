@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const localTools = require('../desktop/tool-runner');
-const { createToolBridge, getDirectAgentToolDefinitions, resolveDirectAgentTool } = require('../desktop/tool-bridge');
+const { createToolBridge, getDirectAgentToolDefinitions, DIRECT_AGENT_ACTIONS, resolveDirectAgentTool } = require('../desktop/tool-bridge');
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-tool-bridge-'));
@@ -783,6 +783,17 @@ test('direct-agent grouped capabilities stay below 30 and route to existing work
     const names = definitions.map(item => item.function.name);
     assert.ok(names.length <= 30);
     assert.deepEqual(names, ['workspace', 'project', 'git', 'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch']);
+    const routedCapabilities = [
+      ...Object.values(DIRECT_AGENT_ACTIONS).flatMap(actions => Object.values(actions)),
+      'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch'
+    ].sort();
+    assert.deepEqual(routedCapabilities, [
+      'project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search',
+      'git_status','git_diff','git_log','git_show','git_branches','git_changed_files','git_worktree','discover_instructions',
+      'init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch',
+      'git_commit','git_fetch','git_pull','git_push','git_clone','project_index_status','project_index_refresh','project_search',
+      'project_overview','project_impact','game_project_intelligence','computer','tts','shell','run_tests','update_plan','batch'
+    ].sort(), 'every previously exposed direct-agent capability remains routed');
     assert.deepEqual(resolveDirectAgentTool('workspace', { action: 'read', path: 'artifact.txt', startLine: 1 }), {
       tool: 'read_file', args: { path: 'artifact.txt', startLine: 1 }
     });
@@ -792,7 +803,12 @@ test('direct-agent grouped capabilities stay below 30 and route to existing work
     assert.deepEqual(resolveDirectAgentTool('git', { action: 'status' }), {
       tool: 'git_status', args: {}
     });
+    assert.deepEqual(resolveDirectAgentTool('workspace', { action: 'glob', path: 'src', pattern: '**/*.js' }), {
+      tool: 'glob_file_search', args: { path: 'src', pattern: '**/*.js' }
+    });
     assert.throws(() => resolveDirectAgentTool('workspace', { action: 'execute_anything', command: 'whoami' }), /Unsupported workspace action/);
+    assert.throws(() => resolveDirectAgentTool('workspace', { action: 'read' }), /requires: path/);
+    assert.throws(() => resolveDirectAgentTool('project', { action: 'impact' }), /requires path or symbol/);
 
     const bridge = createToolBridge({
       dialog: { showMessageBox: async () => { throw new Error('ordinary workspace file operations must not prompt'); } },

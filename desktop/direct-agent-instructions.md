@@ -59,7 +59,7 @@ The grouped tools also have readable aliases. Use the live schemas for available
 /batch steps="workspace action=read path=package.json; git action=status"
 ```
 
-Legacy shortcuts remain supported: `/status`, `/ls`, `/tree`, `/read`, `/write`, `/patch`, `/run`, `/test`, and former individual command names such as `/read_file`, `/project_search`, and `/git_status`. They are normalized to the grouped tools; they are not additional exposed tools.
+Legacy shortcuts remain supported: `/status`, `/ls`, `/tree`, `/find`, `/read`, `/write`, `/patch`, `/run`, `/test`, `/plan`, and former individual command names such as `/read_file`, `/project_search`, and `/git_status`. They are normalized to the grouped tools; they are not additional exposed tools.
 
 - Use `key=value` named arguments.
 - Quote string values containing spaces, commas, semicolons, equals signs or brackets.
