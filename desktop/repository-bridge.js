@@ -1129,7 +1129,9 @@ function createRepositoryBridge(deps = {}) {
       throw new Error('Workspace file exceeds the 8 MiB upload limit.');
     }
     const fileName = safeArtifactName(file.artifactName, path.basename(String(file.path || 'artifact.bin')));
-    const relativePath = 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-' + fileName;
+    const relativePath = mailbox
+      ? 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-' + fileName
+      : 'bridge/artifacts/' + requestId + '/' + fileName;
     const stored = await writeRemoteContent(relativePath, file.bytes, '[local bridge] upload ' + fileName);
     const config = currentConfig();
     const extension = path.extname(fileName).toLowerCase();
@@ -1227,7 +1229,9 @@ function createRepositoryBridge(deps = {}) {
     const parts = [];
     for (let index = 0; index < groups.length; index++) {
       const partNumber = index + 1;
-      const relativePath = 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-batch-output-' + String(partNumber).padStart(3, '0') + '.json';
+      const relativePath = mailbox
+      ? 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-batch-output-' + String(partNumber).padStart(3, '0') + '.json'
+      : 'bridge/artifacts/' + requestId + '/batch-output-' + String(partNumber).padStart(3, '0') + '.json';
       const payload = {
         protocol: 'chatgpt-local-batch-output/v1',
         request_id: requestId,
@@ -1406,6 +1410,12 @@ function createRepositoryBridge(deps = {}) {
   }
   function isSafeMailboxCleanupPath(relativePath) {
     const value = String(relativePath || '');
+    if (!mailbox && allowLegacyGitHubMailboxForTests === true) {
+      const legacy = value.split('/');
+      return legacy.length >= 3 && legacy[0] === 'bridge' &&
+        ['requests', 'claims', 'results', 'artifacts', 'agent-messages', 'agent-message-receipts'].includes(legacy[1]) &&
+        legacy.every(part => part && part !== '.' && part !== '..' && /^[A-Za-z0-9_.-]+$/.test(part));
+    }
     const parts = value.split('/');
     if (parts.length !== 3 || !['request', 'claims', 'result', 'messages', 'sandbox storage'].includes(parts[0]) ||
         !/^agent-[0-9]{3,}$/.test(parts[1]) ||
@@ -2813,15 +2823,30 @@ function createRepositoryBridge(deps = {}) {
   }
 
   async function listAgentMailboxFiles(folderName) {
+    if (!mailbox && allowLegacyGitHubMailboxForTests === true) {
+      const legacyFolder = folderName === 'request' ? 'bridge/requests' : 'bridge/results';
+      const entries = await listFolder(legacyFolder);
+      const output = [];
+      for (const entry of entries) {
+        if (!entry || entry.type !== 'file' || typeof entry.name !== 'string' || !entry.name.endsWith('.json')) continue;
+        let agentId = BOOTSTRAP_AGENT_ID;
+        const remote = await readRemoteFile(legacyFolder + '/' + entry.name).catch(() => null);
+        const record = remote && remote.value;
+        if (record && record.tool !== 'session_start' && record.session_id) {
+          try { agentId = (await agentRegistry.authenticate({ session_id: record.session_id })).agent_id; }
+          catch { agentId = 'agent-001'; }
+        } else if (record && record.agent_id) agentId = record.agent_id;
+        output.push({ ...entry, agent_id: agentId });
+      }
+      return output;
+    }
     const folders = await listFolder(folderName);
     const output = [];
     for (const folder of folders) {
       if (!folder || folder.type !== 'dir' || !/^agent-[0-9]{3,}$/.test(String(folder.name || ''))) continue;
       const entries = await listFolder(folderName + '/' + folder.name);
       for (const entry of entries) {
-        if (entry && entry.type === 'file' && typeof entry.name === 'string') {
-          output.push({ ...entry, agent_id: folder.name });
-        }
+        if (entry && entry.type === 'file' && typeof entry.name === 'string') output.push({ ...entry, agent_id: folder.name });
       }
     }
     return output;
