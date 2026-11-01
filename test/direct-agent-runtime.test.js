@@ -253,6 +253,7 @@ test('slash command parser uses readable named arguments and list values, not JS
     { name: 'batch', args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
   );
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
+  assert.deepEqual(parseSlashToolCommand('/project', ['project_status']), { name: 'project_status', args: {} });
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
   assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['read_file']), /JSON argument objects/);
   assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', ['read_file']), /repeated/);
@@ -395,9 +396,9 @@ test('native function-call output is rejected and the model is guided to the sla
 test('Markdown tool observations render project, arrays and command output as readable sections', () => {
   const { formatToolResultMarkdown } = require('../desktop/direct-agent-runtime');
   const rendered = formatToolResultMarkdown({ status: 'success', result: { projectRoot: 'C:/work/demo', detectedTechnologies: ['Node.js', 'TypeScript'], buildCommands: [{ name: 'build', command: 'npm run build' }], warnings: [] } });
-  assert.match(rendered, /\\*\\*Project Root:\\*\\* C:\\/work\\/demo/);
+  assert.match(rendered, /\*\*Project Root:\*\* C:\/work\/demo/);
   assert.match(rendered, /- Node.js/);
-  assert.match(rendered, /\\*\\*build\\*\\*/);
+  assert.match(rendered, /\*\*build\*\*/);
   assert.doesNotMatch(rendered, /"projectRoot"/);
 });
 
