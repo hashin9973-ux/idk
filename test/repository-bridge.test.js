@@ -404,33 +404,49 @@ test('repository sanitization strips local identity fields and redacts credentia
   assert.match(json, /REDACTED_GITHUB_TOKEN/);
 });
 
-test('concurrent session bootstrap allocates distinct conversation IDs and reusable seats', async () => {
+test('concurrent OneDrive session bootstrap allocates distinct app-local IDs and reusable seats', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-session-concurrency-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const settings = { repositoryBridge: { oneDrivePath: bridgeRoot, retentionDays: 30 } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
   const makeBootstrap = requestId => ({
     protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(),
     tool: 'session_start', args: {}
   });
   const first = makeBootstrap('session-start-first');
   const second = makeBootstrap('session-start-second');
-  const fake = fakeGitHub({ initial: [
-    ['bridge/requests/' + first.request_id + '.json', first],
-    ['bridge/requests/' + second.request_id + '.json', second]
-  ] });
-  const fixture = settingsFixture();
-  let localExecutions = 0;
+  for (const request of [first, second]) {
+    await mailbox.writeJson('request/agent-000/' + request.request_id + '.json', request, null, true);
+  }
   const assignedWorkspaces = [];
+  let localExecutions = 0;
   const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
+    mailbox,
+    githubAuth: async () => { throw new Error('GitHub must not be used for OneDrive mailbox transport.'); },
+    getSettings: () => settings,
+    persistSettings: () => true,
+    getWorkspaceRoot: () => temp,
     requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: null, message: '' }),
     onSessionAssigned: async assignment => { assignedWorkspaces.push(assignment); },
     executeTool: async (tool, args, id) => { localExecutions++; return { ok: true, tool, call_id: id }; },
-    intervalMs: 5000
+    intervalMs: 5000,
+    requestReconciliationIntervalMs: 1
   });
   try {
     await bridge.start();
-    await waitFor(() => fake.files.has('bridge/results/' + first.request_id + '.json') &&
-      fake.files.has('bridge/results/' + second.request_id + '.json'));
-    const resultA = decode(fake.files.get('bridge/results/' + first.request_id + '.json'));
-    const resultB = decode(fake.files.get('bridge/results/' + second.request_id + '.json'));
+    await waitForAsync(async () => {
+      const [a, b] = await Promise.all([
+        mailbox.readJson('result/agent-000/' + first.request_id + '.json'),
+        mailbox.readJson('result/agent-000/' + second.request_id + '.json')
+      ]);
+      return Boolean(a && b && ['completed', 'failed', 'rejected'].includes(a.value.status) &&
+        ['completed', 'failed', 'rejected'].includes(b.value.status));
+    }, 5000);
+    const resultA = (await mailbox.readJson('result/agent-000/' + first.request_id + '.json')).value;
+    const resultB = (await mailbox.readJson('result/agent-000/' + second.request_id + '.json')).value;
     assert.equal(resultA.status, 'completed', 'first bootstrap result: ' + JSON.stringify(resultA));
     assert.equal(resultB.status, 'completed', 'second bootstrap result: ' + JSON.stringify(resultB));
     const sessionA = resultA.result.result;
@@ -444,25 +460,30 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
     assert.equal(resultA.agent_id, sessionA.agent_id);
     assert.equal(resultB.agent_id, sessionB.agent_id);
     for (const session of [sessionA, sessionB]) {
-      const seat = decode(fake.files.get('bridge/agents/' + session.agent_id + '.json'));
-      const sessionRecord = decode(fake.files.get('bridge/sessions/' + session.session_id + '.json'));
+      const seat = settings.agentRegistryRecords['local/agents/' + session.agent_id + '.json'];
+      const sessionRecord = settings.agentRegistryRecords['local/sessions/' + session.session_id + '.json'];
       assert.equal(seat.protocol, 'chatgpt-local-agent-seat/v2');
       assert.equal(seat.current_session_id, session.session_id);
       assert.equal(seat.status, 'active');
       assert.equal(sessionRecord.protocol, 'chatgpt-local-agent-session/v1');
       assert.equal(sessionRecord.session_id, session.session_id);
       assert.equal('token_hash' in seat, false);
+      assert.ok(await mailbox.readJson('claims/agent-000/' +
+        (session === sessionA ? first.request_id : second.request_id) + '.json'));
     }
-    const claimA = decode(fake.files.get('bridge/claims/' + first.request_id + '.json'));
-    const claimB = decode(fake.files.get('bridge/claims/' + second.request_id + '.json'));
-    assert.equal(claimA.agent_id, sessionA.agent_id);
-    assert.equal(claimB.agent_id, sessionB.agent_id);
-    assert.deepEqual(assignedWorkspaces.map(item => ({ agent_id: item.agent_id, workspace_root: item.workspace_root })).sort((a, b) => a.agent_id.localeCompare(b.agent_id)), [
+    assert.deepEqual(assignedWorkspaces.map(item => ({ agent_id: item.agent_id, workspace_root: item.workspace_root }))
+      .sort((a, b) => a.agent_id.localeCompare(b.agent_id)), [
       { agent_id: 'agent-001', workspace_root: null },
       { agent_id: 'agent-002', workspace_root: null }
-    ], 'auto-assignment leaves workspace resolution to the selected agent seat default');
-    assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
-  } finally { await bridge.stop(); }
+    ]);
+    assert.equal(localExecutions, 0, 'session_start is handled by the app registry, not by a project tool');
+    const rootEntries = await fs.readdir(bridgeRoot);
+    assert.equal(rootEntries.some(name => ['runtime', 'bridge', 'context', 'state', 'agents', 'sessions',
+      'tasks', 'projects', 'vision', 'artifacts', 'docs'].includes(name)), false);
+    assert.equal(rootEntries.some(name => ['claims', 'messages', 'request', 'result', 'sandbox storage'].includes(name)), true);
+  } finally {
+    await bridge.stop();
+  }
 });
 
 test('OneDrive mailbox bootstraps app-local sessions and routes ordinary requests by agent', async t => {
