@@ -276,7 +276,7 @@ test('slash command parser uses readable named arguments and list values, not JS
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
   assert.deepEqual(parseSlashToolCommand('/project', available), { name: 'project', args: { action: 'status' } });
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
-  assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['read_file']), /JSON argument objects/);
+  assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['workspace']), /JSON argument objects/);
   assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', ['read_file']), /repeated/);
   assert.throws(() => parseSlashToolCommand('/read_file []', ['read_file']), /Use named arguments/);
 });
@@ -519,7 +519,7 @@ test('invalid native tool names, schemas and malformed arguments never execute',
   assert.equal(result.completed, true);
   assert.equal(executed.length, 0);
   assert.equal(session.messages.filter(message => message.role === 'tool').length, 3);
-  assert.ok(session.messages.some(message => message.role === 'tool' && /action/i.test(message.content)));
+  assert.ok(session.messages.some(message => message.role === 'tool' && /unsupported field.*command/i.test(message.content)));
   assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('invalid JSON')));
   assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('not registered')));
 });
