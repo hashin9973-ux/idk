@@ -99,18 +99,18 @@ function fixture(options = {}) {
     dispose: async () => {}
   };
   const mailbox = {
-    getState: () => ({ configured: true, runtimePath: 'C:\\OneDrive\\Bridge\\runtime', transport: 'onedrive-synced-folder' }),
-    async readJson(relativePath) {
-      if (relativePath !== 'bridge/state/windows-app.json') return null;
+    getState: () => ({ configured: true, runtimePath: 'C:\\OneDrive\\Bridge', mailboxPath: 'C:\\OneDrive\\Bridge', transport: 'onedrive-synced-folder' }),
+    async readContent(relativePath) {
+      if (relativePath !== 'STATUS.md') return null;
       return {
-        value: { protocol: 'chatgpt-local-repo-state/v1', status: 'idle' },
+        content: Buffer.from('# Windows Bridge Status\\n- Updated: ' + new Date().toISOString() + '\\n- Worker: online', 'utf8'),
         sha: 'state-sha256'
       };
     }
   };
   const service = createVisionService({
     mailbox,
-    getSettings: () => ({ repositoryBridge: { oneDrivePath: 'C:\\OneDrive\\Bridge\\runtime' } }),
+    getSettings: () => ({ repositoryBridge: { oneDrivePath: 'C:\\OneDrive\\Bridge' } }),
     getWorkspaceRoot: () => '',
     captureScreenshot: async () => ({
       bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png',
