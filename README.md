@@ -1,35 +1,41 @@
-# Windows Repository Bridge
+# Windows Bridge
 
-A Windows desktop worker that lets your **existing ChatGPT conversation** inspect and operate on a selected local workspace through a shared GitHub repository.
+A Windows desktop worker that lets your **existing ChatGPT conversation** inspect and operate on a selected local workspace through the user's connected OneDrive.
 
-**The conversation stays human-facing. The only input placed into ChatGPT is what you type yourself.** The app never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer or conversation. Regular local tools use the repository mailbox; optional vision screenshots and analysis travel directly between the app and Colab over a temporary authenticated HTTPS tunnel.
+**The conversation stays human-facing.** The app never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer. ChatGPT and Windows exchange mailbox files in OneDrive. The Windows worker runs tools locally; optional vision screenshots travel directly between the app and Colab over the temporary authenticated HTTPS tunnel.
 
 ## Architecture
 
 ```text
 You ──instructions──> Existing ChatGPT conversation
-                            │ reads/writes
-                            ▼
-                  Private GitHub mailbox repo
-                  requests / results / context / artifacts
-                            ▲
-                            │ polls / publishes
-                            ▼
-                  Windows desktop worker
-                            │
-                            ▼
-                  Actual Windows workspace
+                             │ reads/writes
+                             ▼
+                 Connected OneDrive: Bridge/runtime
+                 requests / claims / results / state
+                 agents / sessions / messages / context
+                 projects / tasks / artifacts / vision
+                             ▲
+                             │ OneDrive sync client
+                             ▼
+                 Windows Bridge local sync folder
+                             │ executes locally
+                             ▼
+                   Actual Windows workspace
 ```
 
-The ChatGPT GitHub integration and the app's GitHub authorization are separate. The app launches the official GitHub CLI browser flow (bundled and hash-verified by the Windows build), then stores the validated token with Electron's OS-backed `safeStorage`. No custom OAuth App registration or pasted token is required. The app does not host a second AI agent or mirror the ChatGPT conversation.
+There is no app-side Microsoft Graph client, Graph app registration, or second sign-in flow for the mailbox. ChatGPT uses the connected OneDrive integration to create immutable request files and read matching results. The Windows app uses the local OneDrive-synchronized `Bridge/runtime` folder and does not call GitHub for mailbox operations. OneDrive synchronization is the cloud transport between those two sides.
 
-## Recommended connection
+## OneDrive mailbox setup
 
-- **Repository:** `hashin9973-ux/qdqwg` (private)
-- **Mailbox branch:** `bridge-mailbox`
-- **Worker scheduling timer:** approximately 1 second; mailbox request discovery scans the bounded request-directory Git tree every 1.5 seconds. The discovery path no longer waits on the path-filtered commits endpoint, which previously could stall the poll loop. GitHub still transports requests/results asynchronously.
+- **Cloud folder:** `OneDrive/Bridge/runtime`
+- **Mailbox root:** `Bridge/runtime/bridge/`
+- **Archive:** `Bridge/raw/` remains separate and is not modified by the live worker.
+- **Local discovery:** the app detects standard OneDrive root environment variables when available. Otherwise, choose the local `Bridge/runtime` folder in the existing status window or dashboard Settings.
+- **Polling:** the worker scans the local synchronized request directory on a 2-second reconciliation interval. End-to-end delivery also depends on OneDrive uploading ChatGPT's request and downloading the resulting Windows claim/result.
 
-The app defaults to `hashin9973-ux/qdqwg`, branch `bridge-mailbox`, and reuses any previously saved mailbox configuration. There is no configuration screen in the minimal status UI. Use the same repository and branch in your existing ChatGPT conversation's GitHub integration. A private repository is strongly recommended because tool results and uploaded artifacts may contain project source or command output.
+Keep the `Bridge/runtime` folder synchronized on the Windows device (not cloud-only). Do not select `Bridge/raw` or the OneDrive root as the mailbox. The app only reads/writes supported files under `Bridge/runtime/bridge/`; ordinary ChatGPT-authored deliverables may be stored separately under `Bridge/runtime/sandbox/`.
+
+GitHub remains available only for separately requested GitHub operations and local Git workflows. It is not the request/result mailbox and is not required to start the Windows worker.
 
 ## Conversation sessions and agent collaboration
 
@@ -43,37 +49,37 @@ The dashboard presents one independent black-and-gray terminal widget per seat. 
 
 ## Sandbox and approval boundary
 
-The shared mailbox repository uses `sandbox/` for ordinary ChatGPT-authored work files. Keep normal files, drafts, project notes, and deliverables there. The `bridge/` directory is the transport layer: create new immutable requests only in `bridge/requests/<id>.json`, read results from `bridge/results/`, and retrieve context from `bridge/context/`. Do not edit or delete other bridge files.
+Use `Bridge/runtime/sandbox/` in OneDrive for ordinary ChatGPT-authored work files such as drafts, project notes, and deliverables. The `Bridge/runtime/bridge/` directory is the transport layer: create new immutable requests only in `bridge/requests/<id>.json`, read results from `bridge/results/`, and retrieve context from `bridge/context/`. Do not edit or delete existing bridge files other than the exact records required by a requested operation.
 
 On Windows, the **selected workspace defines the boundary for path-based file tools**. Select a project folder for a narrow workspace, or select a complete drive root such as `C:\` in the folder picker to make the whole drive available. Whole-drive selection requires a warning confirmation because ordinary file tools can read, create, edit, move, and delete files anywhere inside that drive; these routine workspace writes normally do not ask for each operation. Absolute Windows paths are supported when they resolve inside the selected workspace; paths outside the boundary and symlink escapes are rejected. In drive-root mode the background index lists only top-level names and explores deeper folders on demand rather than crawling the entire drive. PowerShell runs as your Windows user and is not limited to the workspace. By default, it and tests, Git writes, file uploads, workspace initialization, and sensitive-file operations still require native approval.
 
 The status window includes **Auto-accept everything**, off by default. Turning it on requires one explicit confirmation, then skips per-operation approval dialogs for protected tool calls, including PowerShell, Git operations, uploads, and secret-like file reads. This is intentionally broad: PowerShell runs as your signed-in Windows user, can access files outside the workspace, and can change or delete data. Use the mode only while you trust the instructions arriving through your private mailbox. Path validation, supported-tool checks, and mailbox restrictions still apply. Turn it off from the same status row at any time.
 
-Important distinction: `sandbox/` is an operating convention for ChatGPT's GitHub work area, not a GitHub-enforced path permission. GitHub repository access is granted at repository level. Keep the mailbox private and protect the app source in its separate repository. Local path validation is enforced by the desktop app; it does not constrain actions performed directly through the GitHub integration.
+Important distinction: OneDrive access is granted by the connected account and its sharing permissions; it is not a Windows workspace permission boundary. Local path validation is enforced by the desktop app for Windows tools. It does not constrain what ChatGPT can do directly through the OneDrive connector, so keep the OneDrive folder shared only with intended accounts.
 
-A GitHub request is never approval to execute a command. The local app's policy cannot be overridden by request arguments. If the GitHub create-file operation returns HTTP 409 for a branch-head conflict, first read the exact request path: if it exists, use the same request and result; if absent, refresh the branch and retry the same ID/path. Do not blindly create a second ID for an uncertain write.
+A OneDrive request is never approval to execute a command. The local app's policy cannot be overridden by request arguments. After an uncertain OneDrive create/write result, read the exact request path first. If it exists, continue with that request and matching result; only retry the same immutable ID/path when the file is confirmed absent. Do not blindly create a second ID for an uncertain write.
 
 ## Diagnosing end-to-end latency
 
-Each worker result includes a `timing_ms` object. It separates the time from request creation to worker start, request fetch, claim acquisition, tool wall time, result preparation, and mailbox API time/calls before the final result publication. `tool_wall_time` includes any native approval wait. These numbers describe the local worker segment only; they do not measure time ChatGPT spends planning or calling its GitHub integration before/after the worker. If worker timings are small while the user's total wait is large, investigate the ChatGPT/GitHub request-and-read sequence rather than optimizing the local file operation alone. Note that `created_to_worker_start` begins at the request envelope's `created_at`, which is set before the GitHub write commits; use the request file's actual commit timestamp plus claim `claimed_at` to estimate commit-to-pickup delay. The worker's request-tree scan interval is 1.5 seconds in the updated build, without a preceding commit-cursor query. This is not an end-to-end SLA.
+Each worker result includes a `timing_ms` object for local request fetch, claim acquisition, tool wall time, and result preparation. `tool_wall_time` includes native approval wait. These timings do not measure ChatGPT planning, OneDrive connector calls, or OneDrive cloud synchronization. Compare the OneDrive request's creation/modified time, matching claim `claimed_at`, local scan metrics and result modification time to distinguish cloud sync delay from local worker delay. The local request-directory reconciliation interval is 2 seconds; it is not an end-to-end SLA.
 
 ## Compact diagnostics and long-running installs
 
-Use deliberately small diagnostic outputs: stage, exit code, timings, asset size/hash, installed hash comparisons, app-process status and only a few PIDs. Avoid complete process/command-line dumps, full transcripts, complete environment snapshots and unbounded log tails. Oversized output may be externalized into many artifact parts and add dozens of GitHub writes; retrieve all parts only when the full result matters.
+Use deliberately small diagnostic outputs: stage, exit code, timings, asset size/hash, installed hash comparisons, app-process status and only a few PIDs. Avoid complete process/command-line dumps, full transcripts, complete environment snapshots and unbounded log tails. Oversized output may be externalized into multiple OneDrive artifact parts; retrieve all parts only when the full result matters.
 
 If a long-running installer wrapper times out, do not immediately label the install failed or start it again. Use a new read-only request to inspect the same operation's status marker, expected/actual installer hash and size, installed `app.asar`/executable hashes and worker state. A changed worker ID suggests restart; the matching install status and actual installed hashes establish the postcondition.
 
 ## Observe-first desktop interaction
 
-For a live screen task, read `hashin9973-ux/qdqwg` → `bridge-mailbox` → `bridge/vision/observe.json` **first**, when Observe is already enabled. Do not block that read on `get_agent_context`, a tool-catalog refresh, or `computer(action=status)`. The feed is separate from Colab vision. Read the newest frame and validate `enabled`, `updated_at`, and `captured_at`; stale or disabled data is not live evidence.
+For a live screen task, read OneDrive `Bridge/runtime/bridge/vision/observe.json` **first**, when Observe is already enabled. Do not block that read on `get_agent_context`, a tool-catalog refresh, or `computer(action=status)`. The feed is separate from Colab vision. Read the newest frame and validate `enabled`, `updated_at`, and `captured_at`; stale or disabled data is not live evidence.
 
-Use an adaptive loop: **read current state → choose the next justified input → publish it through the connected GitHub integration → verify its matching result → read the latest Observe state → adapt**. Keep looping until the requested outcome is verified. Do not stop after merely publishing a request. Use a new immutable request ID for every input request. A GitHub request-file creation failure means the request never reached Windows; report its exact integration error. If a result is delayed, inspect that same request's claim and worker state, then reread its result—never replay uncertain input.
+Use an adaptive loop: **read current state → choose the next justified input → publish it through the connected OneDrive integration → verify its matching result → read the latest Observe state → adapt**. Keep looping until the requested outcome is verified. Do not stop after merely publishing a request. Use a new immutable request ID for every input request. A OneDrive request-file creation failure means the request never reached Windows; report its exact integration error. If a result is delayed, inspect that same request's claim and worker state, then reread its result—never replay uncertain input.
 
 Minimize latency: skip unrelated status/context calls and per-step narration; issue the integration write immediately after deciding the next action. Batch only already-known adjacent inputs in one `computer(action=sequence, mode="fast", steps=[...])` request (up to the catalog's maximum). If the next action depends on the post-input screen, do one action, then read Observe before deciding again. Do not invoke the Colab screenshot path merely to read an already-available Observe frame. Use Colab screenshots only when actual pixels/OCR/model interpretation are needed and the user has authorized that workflow and its readiness requirements are met.
 
 Observe retains full-resolution screenshot pixels locally and publishes bounded UI Automation plus passive SmolVLM2 scene/text/control evidence when inference completes. Each visual result is attached only to its matching frame ID; a frame can still be pending, unavailable, or uncertain. Raw pixels are not written to the mailbox. Never claim typed text was read when the focused control value is withheld; never invent screen text or coordinates. Use coordinates from the exact fresh frame and pass its frame_id for coordinate input. After each state-changing input, refresh Observe when the changed state affects the next decision.
 
-The worker discovers requests by scanning the bounded request-directory Git tree every 1.5 seconds and no longer waits on a path-filtered commits query before discovery. This is not an end-to-end latency guarantee. If the GitHub create-file operation returns a 409 branch-head conflict, read the exact request path before retrying. If it exists, follow that request; if absent, refresh the branch and retry the same ID/path. Do not blindly publish a second ID for an uncertain write. GitHub MCP publication/read latency and ChatGPT turn latency remain separate. Compare the request commit timestamp, claim time, result timing fields, and exact errors before attributing delay to the worker. `created_to_worker_start` is measured from the request envelope's `created_at`, which ChatGPT sets before publishing; it includes pre-publication time and is not the same as commit-to-claim pickup latency.
+The worker discovers requests by scanning the local synchronized request directory every 2 seconds. This is not an end-to-end latency guarantee: OneDrive connector publication, OneDrive cloud synchronization, Windows hydration/download, local discovery, execution, and result upload are separate stages. After an uncertain write, read the exact request path before retrying; if it exists, follow that request. Do not blindly publish a second ID for an uncertain write. Compare OneDrive creation/modified timestamps, claim time, result timing fields, and exact errors before attributing delay to the worker.
 
 ## ChatGPT development workflow
 
@@ -81,7 +87,7 @@ For compact, paste-ready custom instructions and a detailed procedure for discov
 
 ## Request → tool result → next action
 
-Create one uniquely named JSON file on the configured branch at `bridge/requests/<request_id>.json`.
+Create one uniquely named JSON file in OneDrive at `Bridge/runtime/bridge/requests/<request_id>.json`.
 
 Example:
 
@@ -95,11 +101,11 @@ Example:
 }
 ```
 
-The worker validates the request, claims it, runs the requested local tool according to its approval policy, and writes the result to `bridge/results/<request_id>.json`. Read the result through the GitHub integration in the **same ChatGPT conversation**, then decide whether another request is needed. The app does not send that result to ChatGPT chat automatically.
+The worker validates the request, claims it, runs the requested local tool according to its approval policy, and writes the result to `Bridge/runtime/bridge/results/<request_id>.json`. Read the result through the connected OneDrive integration in the **same ChatGPT conversation**, then decide whether another request is needed. The app does not send that result to ChatGPT chat automatically.
 
 ### Batch local operations
 
-Use `tool: "get_agent_context"` when the current workspace overview or registered schemas are unknown/stale; do not delay a live-screen read from an already-enabled `bridge/vision/observe.json` feed while fetching context. The main performance target is the **whole task**, not just file listings: every separate request/result cycle crosses GitHub's asynchronous mailbox, so avoid one bridge call per small step. Use `tool: "batch"` for up to 100 planned operations in one request. The current catalog allows `maxConcurrency` from 1 to 100 (default 32); the worker dispatches up to 32 independent mailbox requests. The installed catalog is authoritative for the running build; dependent steps should use explicit result references. Use result references to pass outputs between steps. Structure complex work as a few task-level cycles: (1) inspect project state and relevant files together, (2) apply a focused multi-file change, and (3) run relevant tests plus Git status/diff together. Do another cycle only when findings require a new decision. Prefer targeted search/ranged reads over dumping all content, but apply the same batching rule to all tool types—not just listings. Use a shell script only when it safely consolidates several known operations; shell commands run with the user's Windows permissions and are not workspace-sandboxed. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted. With Auto-accept everything enabled, the worker skips native approval prompts but continues enforcing tool validation and workspace path restrictions.
+Use `tool: "get_agent_context"` when the current workspace overview or registered schemas are unknown/stale; do not delay a live-screen read from an already-enabled `bridge/vision/observe.json` feed while fetching context. The main performance target is the **whole task**, not just file listings: every separate request/result cycle crosses OneDrive's asynchronous mailbox, so avoid one bridge call per small step. Use `tool: "batch"` for up to 100 planned operations in one request. The current catalog allows `maxConcurrency` from 1 to 100 (default 32); the worker dispatches up to 32 independent mailbox requests. The installed catalog is authoritative for the running build; dependent steps should use explicit result references. Use result references to pass outputs between steps. Structure complex work as a few task-level cycles: (1) inspect project state and relevant files together, (2) apply a focused multi-file change, and (3) run relevant tests plus Git status/diff together. Do another cycle only when findings require a new decision. Prefer targeted search/ranged reads over dumping all content, but apply the same batching rule to all tool types—not just listings. Use a shell script only when it safely consolidates several known operations; shell commands run with the user's Windows permissions and are not workspace-sandboxed. Steps execute in order; by default, the batch stops after the first failure. Nested batches and transport-control calls are not permitted. With Auto-accept everything enabled, the worker skips native approval prompts but continues enforcing tool validation and workspace path restrictions.
 
 ```json
 {
@@ -144,7 +150,7 @@ For ordinary Windows tasks, use `get_agent_context` when the installed app suppo
 
 Results use `chatgpt-local-repo-result/v1`. Common statuses are `completed`, `partial`, `failed`, `cancelled`, `rejected`, and `needs_manual_recovery`.
 
-Keep ordinary tool interactions to two GitHub operations: create one request file, then read its matching result file. Tool output is kept inline in that one result. Very large text fields are shortened and oversized structured results are marked `partial`; that means the output is incomplete, not that safety blocked execution. Check the nested tool result's `ok`, `exitCode`, timeout/truncation flags, `stderr`, and any explicit cancellation/rejection reason before describing failure. For large listings, automatically retrieve stable sorted pages with new request IDs (e.g. PowerShell `Select-Object -Skip <offset> -First 50`) until the total is covered. Reduce page size if needed; don't send the user to a manual command while the bridge can recover the data. Explicitly approved `upload_workspace_file` operations remain a separate file-sharing workflow.
+Keep ordinary tool interactions to two OneDrive operations: create one request file, then read its matching result file. Tool output is kept inline in that one result. Very large text fields are shortened and oversized structured results are marked `partial`; that means the output is incomplete, not that safety blocked execution. Check the nested tool result's `ok`, `exitCode`, timeout/truncation flags, `stderr`, and any explicit cancellation/rejection reason before describing failure. For large listings, automatically retrieve stable sorted pages with new request IDs (e.g. PowerShell `Select-Object -Skip <offset> -First 50`) until the total is covered. Reduce page size if needed; don't send the user to a manual command while the bridge can recover the data. Explicitly approved `upload_workspace_file` operations remain a separate file-sharing workflow.
 
 For a local file that you explicitly want to share, request the `upload_workspace_file` tool with its workspace-relative `path` and optional `artifactName`. It **always requires a native Windows approval prompt** before reading/uploading the file and is limited to 8 MiB. The uploaded bytes are stored at `bridge/artifacts/<request_id>/<filename>`. A repository path or URL is returned for retrieval. Do not upload secrets, credentials, private keys, personal data, or files you do not intend to share with everyone who can read the repository.
 
@@ -160,7 +166,7 @@ For a local file that you explicitly want to share, request the `upload_workspac
 
 **Execution and planning:** `shell`, `run_tests`, `update_plan`, and the mailbox control request `refresh_environment_context`.
 
-Read-only inspection and path-checked file operations inside the selected workspace run automatically. Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like operations, and file uploads require per-operation native approval. A request stored in GitHub is **not** approval to execute it. ChatGPT cannot bypass the local approval policy through request arguments.
+Read-only inspection and path-checked file operations inside the selected workspace run automatically. Git writes, authenticated Git operations, tests, shell commands, workspace initialization, secret-like operations, and file uploads require per-operation native approval. A request stored in OneDrive is **not** approval to execute it. ChatGPT cannot bypass the local approval policy through request arguments.
 
 **PowerShell is not sandboxed.** An approved command runs as the signed-in Windows user and may access files outside the selected workspace. Workspace path checks reject traversal and symlink escapes for workspace file tools, but they do not sandbox an approved shell command.
 
@@ -173,7 +179,7 @@ Text-to-speech supports:
 - **Notification:** show the text and a **Play** button without synthesizing audio until the user activates playback.
 - Caption placement (top/center/bottom/custom), transparent background, and app/system/light/dark caption themes.
 
-Local settings are persisted automatically, with a separate **Save now** action. Cross-device settings sync is opt-in and uses a directory that the user selects inside an already synchronized local folder (for example, OneDrive or Dropbox). Each device writes its own .windows-repository-bridge/device-UUID.json record; file watching and a short polling fallback reconcile tabs, widgets and allowlisted preferences. This does not create a hosted cloud service or require a cloud API key. Sync deliberately excludes GitHub tokens, workspace paths, worker state and temporary Colab tunnel endpoints. Only HTTPS browser URLs that pass the safety filter may be shared; do not use URLs with credentials or sensitive query parameters.
+Local settings are persisted automatically, with a separate **Save now** action. Cross-device settings sync is opt-in and uses a directory that the user selects inside an already synchronized local folder (for example, OneDrive or Dropbox). Each device writes its own .windows-repository-bridge/device-UUID.json record; file watching and a short polling fallback reconcile tabs, widgets and allowlisted preferences. This does not create a hosted cloud service or require a cloud API key. Sync deliberately excludes GitHub tokens, OneDrive mailbox state, workspace paths, and temporary Colab tunnel endpoints. Only HTTPS browser URLs that pass the safety filter may be shared; do not use URLs with credentials or sensitive query parameters.
 
 ## Install and connect
 
@@ -216,7 +222,7 @@ GitHub Actions runs syntax checks, automated tests, and a Windows NSIS installer
 
 ## Colab screenshot analysis (separate from Observe and local inputs)
 
-The status window's **Connect Colab** button opens `vision/vision_worker.ipynb`. In Colab, select a GPU runtime and run **Start the direct Colab vision server**. The existing authenticated HTTPS tunnel and GitHub request/result mailbox remain unchanged; the notebook never executes Windows input or needs a GitHub token. The worker uses the prebuilt Ollama runtime and does not compile llama.cpp from source.
+The status window's **Connect Colab** button opens `vision/vision_worker.ipynb`. In Colab, select a GPU runtime and run **Start the direct Colab vision server**. The existing authenticated HTTPS tunnel and OneDrive request/result mailbox remain in use; the notebook never executes Windows input or needs a GitHub token. The worker uses the prebuilt Ollama runtime and does not compile llama.cpp from source.
 
 The worker uses two models with separate roles:
 
@@ -225,7 +231,7 @@ The worker uses two models with separate roles:
 
 The vision worker API is versioned and rejects old notebook sessions before sending a screenshot. The current runtime validates each model tag through Ollama `/api/show` and requires its reported `vision` capability; if the cached tag is stale, the worker refreshes it and checks again. After updating the app and notebook source, interrupt the old Colab cell and run the updated cell again.
 
-The same authenticated Colab worker also loads Piper with the en_US-libritts-high voice for the first-class tts tool. It uses speaker ID 0. Playback is segmented at punctuation boundaries: Windows starts speaking the first verified WAV chunk as soon as it arrives, prefetches the next chunk while the current chunk plays, and reports per-chunk progress through computer(action=status). Speech jobs never overlap; a new playback request returns `tts_busy` while another is active. Common Unicode symbols are translated to spoken names and unknown Unicode symbols are surfaced as code points instead of being silently omitted. `play=false` synthesizes chunks and joins PCM audio into one local WAV. Audio bytes are not published to GitHub. TTS setup and readiness are reported separately; a Piper install/download failure must not disable either vision model. The voice is trained on the LibriTTS dataset (OpenSLR 60), licensed under CC BY 4.0; retain attribution to LibriTTS and its dataset paper. See the [voice model card](https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/libritts/high) and [CC BY 4.0 license](https://creativecommons.org/licenses/by/4.0/).
+The same authenticated Colab worker also loads Piper with the en_US-libritts-high voice for the first-class tts tool. It uses speaker ID 0. Playback is segmented at punctuation boundaries: Windows starts speaking the first verified WAV chunk as soon as it arrives, prefetches the next chunk while the current chunk plays, and reports per-chunk progress through computer(action=status). Speech jobs never overlap; a new playback request returns `tts_busy` while another is active. Common Unicode symbols are translated to spoken names and unknown Unicode symbols are surfaced as code points instead of being silently omitted. `play=false` synthesizes chunks and joins PCM audio into one local WAV. Audio bytes are not published to OneDrive. TTS setup and readiness are reported separately; a Piper install/download failure must not disable either vision model. The voice is trained on the LibriTTS dataset (OpenSLR 60), licensed under CC BY 4.0; retain attribution to LibriTTS and its dataset paper. See the [voice model card](https://huggingface.co/rhasspy/piper-voices/tree/v1.0.0/en/en_US/libritts/high) and [CC BY 4.0 license](https://creativecommons.org/licenses/by/4.0/).
 
 On startup, the worker downloads both model packages into Colab's temporary local Ollama cache, prepares the CPU-only Qwen alias, warms Smol on GPU and verifies model placement using Ollama's loaded-model endpoint. It also attempts to enable a 4 GiB Linux swap file under `/content/bridge-qwen-pagefile.swap`. **Colab may prohibit `swapon`**; the service must report the observed swap state and failure reason rather than claim Qwen is swapped. Even when swap is enabled, Linux decides which host-memory pages to move into it. A fresh Colab runtime loses its local cache and must download both models again. GPU access and session uptime are not guaranteed.
 
