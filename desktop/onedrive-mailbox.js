@@ -49,11 +49,11 @@ function validateRelativePath(relativePath) {
   if (parts.length === 2) return parts;
   const fileName = parts[2];
   if (rootFolder === 'request' || rootFolder === 'claims' || rootFolder === 'result') {
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(fileName)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(fileName)) {
       throw new Error('Request, claim and result records must be JSON files named by request ID.');
     }
   } else if (rootFolder === 'messages') {
-    if (!/^msg-[0-9]{13}-[a-f0-9]{32}(?:\\.read)?\\.json$/.test(fileName)) {
+    if (!/^msg-[0-9]{13}-[a-f0-9]{32}(?:\.read)?\.json$/.test(fileName)) {
       throw new Error('Message records and receipts must use the registered message ID format.');
     }
   } else if (!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,199}$/.test(fileName)) {
