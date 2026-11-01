@@ -89,7 +89,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   refreshProjectIndex: () => ipcRenderer.invoke('app:project-index-refresh'),
   selectAgentWorkspace: (agentId, sessionId = null) => ipcRenderer.invoke('app:agent-select-workspace', { agentId, sessionId }),
   setAgentWorkspaceFromRecent: (agentId, sessionId, workspaceRoot) => ipcRenderer.invoke('app:agent-workspace-recent', { agentId, sessionId, workspaceRoot }),
-  addAgentWidget: () => ipcRenderer.invoke('app:agent-widget-add'),
+  addAgentWidget: value => ipcRenderer.invoke('app:agent-widget-add', value),
   deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false, runtimeSessionId = null) => ipcRenderer.invoke('app:agent-widget-delete', { agentId, sessionId, wipeMailbox, runtimeSessionId }),
   pauseAgentSession: (agentId, sessionId, paused) => ipcRenderer.invoke('app:agent-session-pause', { agentId, sessionId, paused }),
   disconnectAgentSession: (agentId, sessionId) => ipcRenderer.invoke('app:agent-session-disconnect', { agentId, sessionId }),
@@ -113,6 +113,14 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   },
   sendAgentMessage: (sessionId, message) => ipcRenderer.invoke('app:agent-send-message', { sessionId, message }),
   readAgentReplies: (sessionId, messageIds) => ipcRenderer.invoke('app:agent-read-replies', { sessionId, messageIds }),
+  sendDirectAgentMessage: (agentId, message) => ipcRenderer.invoke('app:direct-agent-send-message', { agentId, message }),
+  cancelDirectAgent: agentId => ipcRenderer.invoke('app:direct-agent-cancel', { agentId }),
+  onDirectAgentEvent(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload && typeof payload === 'object' ? payload : {});
+    ipcRenderer.on('app:direct-agent-event', listener);
+    return () => ipcRenderer.removeListener('app:direct-agent-event', listener);
+  },
   setAutoAcceptAll: enabled => ipcRenderer.invoke('app:set-auto-accept-all', enabled),
   minimizeToTray: () => ipcRenderer.invoke('app:minimize-to-tray'),
   quit: () => ipcRenderer.invoke('app:quit'),

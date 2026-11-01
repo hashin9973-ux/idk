@@ -508,8 +508,8 @@ function renderAgentMailboxes(rawAgents){
     name.textContent=String(agent.nickname||agent.agent_id);name.title=String(agent.agent_id)+(agent.nickname?' · '+agent.nickname:'');
     nicknameButton.title='Set nickname for '+agent.agent_id;
     dumpButton.title='Auto-dump: '+String((agent.auto_dump&&agent.auto_dump.maxCount)||0)+' retained requests; '+String((agent.auto_dump&&agent.auto_dump.maxAgeMinutes)||0)+' minute age limit';
-    sessionLine.textContent='SESSION '+String(agent.session_id||'none');
-    sessionLine.title=String(agent.session_id||'No conversation currently owns this seat');
+    sessionLine.textContent=agent.connection_mode==='direct'?'DIRECT · '+String(agent.provider||'')+' · '+String(agent.model||'')+' · '+String(agent.runtime_session_id||''):'SESSION '+String(agent.session_id||'none');
+    sessionLine.title=agent.connection_mode==='direct'?'App-side direct API session '+String(agent.runtime_session_id||'')+' · '+String(agent.endpoint||''):String(agent.session_id||'No conversation currently owns this seat');
     const workspaceRoot=String(agent.workspace_root||'');
     const profile=agent.workspace_profile&&typeof agent.workspace_profile==='object'?agent.workspace_profile:{};
     const projectTypes=Array.isArray(profile.projectTypes)?profile.projectTypes:[];
@@ -541,9 +541,9 @@ function renderAgentMailboxes(rawAgents){
     const directStop=card.querySelector('.agent-direct-stop');
     if(directStop)directStop.hidden=!directBusy;
     pauseButton.hidden=isDirect;disconnectButton.hidden=isDirect;
-    const pauseMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('[data-agent-action="pause-session"]');
-    const disconnectMenuItem=agentActionMenus.get(agent.agent_id)?.querySelector('[data-agent-action="disconnect-session"]');
-    if(pauseMenuItem)pauseMenuItem.hidden=isDirect;if(disconnectMenuItem)disconnectMenuItem.hidden=isDirect;
+    const pauseMenuItemDisplay=agentActionMenus.get(agent.agent_id)?.querySelector('[data-agent-action="pause-session"]');
+    const disconnectMenuItemDisplay=agentActionMenus.get(agent.agent_id)?.querySelector('[data-agent-action="disconnect-session"]');
+    if(pauseMenuItemDisplay)pauseMenuItemDisplay.hidden=isDirect;if(disconnectMenuItemDisplay)disconnectMenuItemDisplay.hidden=isDirect;
     const paused=agent.session_status==='paused'||agent.paused===true;
     card.dataset.paused=paused?'true':'false';
     pauseButton.disabled=!hasSession;
@@ -555,7 +555,7 @@ function renderAgentMailboxes(rawAgents){
     disconnectButton.disabled=!hasSession;
     disconnectButton.title=hasSession?'Disconnect '+String(agent.session_id)+' from '+agent.agent_id:'No session to disconnect';
     deleteButton.disabled=false;
-    deleteButton.title=hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'Remove this empty agent widget';
+    deleteButton.title=isDirect?'Delete direct API configuration and local conversation history':hasSession?'Revoke '+String(agent.session_id)+' and remove '+agent.agent_id+' widget':'Remove this empty agent widget';
     workspaceButton.classList.toggle('is-custom',agent.workspace_custom===true);
     workspaceButton.title=agent.workspace_error||('Workspace: '+String(agent.workspace_root||'not available')+(agent.workspace_scope==='agent-default'?' · saved agent default':agent.workspace_scope==='session'?' · current conversation override':agent.workspace_custom?' · custom':' · global default'));
     workspaceMenu.replaceChildren();
@@ -1076,7 +1076,7 @@ $('agent-delete-confirm').addEventListener('click',async()=>{
   const {agentId,sessionId,runtimeSessionId,direct}=pendingAgentDelete;
   const button=$('agent-delete-confirm');
   button.disabled=true;
-  button.textContent='Revoking…';
+  button.textContent=direct?'Deleting…':'Revoking…';
   $('agent-delete-error').textContent='';
   const wipeMailbox=$('agent-delete-wipe-mailbox').checked===true;
   try{

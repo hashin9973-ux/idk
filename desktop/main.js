@@ -1395,6 +1395,10 @@ function saveDirectAgentSession(agentId, session) {
       !/^session-[a-f0-9]{32}$/.test(session.sessionId) || !Array.isArray(session.messages)) {
     throw new Error('The direct-agent session record is invalid.');
   }
+  const existing = getDirectAgentSession(agentId);
+  if (!directAgentConfigRecords()[agentId] || !existing || existing.sessionId !== session.sessionId) {
+    throw new Error('The direct-agent session was removed or replaced.');
+  }
   const records = { ...directAgentSessionRecords(), [agentId]: session };
   settings.directAgentSessions = records;
   persistSettings();
@@ -1454,8 +1458,8 @@ function enrichedBridgeState(state) {
       endpoint: String(config.endpoint || ''),
       runtime_session_id: session.sessionId,
       direct_messages: Array.isArray(session.messages) ? session.messages.slice(-160) : [],
-      direct_status: running ? 'running' : (session.status || 'idle'),
-      direct_error: String(session.error || ''),
+      direct_status: running ? 'running' : (session.status === 'running' ? 'interrupted' : (session.status || 'idle')),
+      direct_error: String(session.status === 'running' && !running ? (session.error || 'The application closed before the previous run finished.') : (session.error || '')),
       status: running ? 'active' : 'inactive',
       busy: running,
       active_count: running ? 1 : 0,
@@ -3371,6 +3375,7 @@ app.on('before-quit', event => {
   autoConnectTimer = null;
   globalShortcut.unregisterAll();
   if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
+  if (directAgentRuntime && typeof directAgentRuntime.stop === 'function') directAgentRuntime.stop();
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;

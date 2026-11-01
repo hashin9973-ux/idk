@@ -375,6 +375,7 @@ function createDirectAgentRuntime({
     } finally {
       clearTimeout(timeout);
       if (active.get(agentId) === controller) active.delete(agentId);
+      emit(agentId, { type: 'status', status: session && session.status || 'idle' });
     }
   }
 
