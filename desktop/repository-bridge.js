@@ -649,7 +649,7 @@ function createRepositoryBridge(deps = {}) {
   async function readRemoteFile(relativePath) {
     if (mailbox) {
       const remote = await trackMailboxOperation(() => mailbox.readJson(relativePath));
-      if (remote && relativePath.startsWith('bridge/requests/') &&
+      if (remote && relativePath.startsWith('request/') &&
           Number(remote.entry && remote.entry.size) > MAX_REQUEST_BYTES) {
         throw new Error('Mailbox request JSON exceeds the 1 MiB request limit.');
       }
@@ -718,7 +718,7 @@ function createRepositoryBridge(deps = {}) {
 
   async function writeRemoteJson(relativePath, value, existingSha = null, createOnly = false) {
     if (mailbox) {
-      if (relativePath.startsWith('bridge/results/') &&
+      if (relativePath.startsWith('result/') &&
           Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESULT_BYTES) {
         throw new Error('Result exceeded the OneDrive mailbox inline JSON limit.');
       }
@@ -902,8 +902,8 @@ function createRepositoryBridge(deps = {}) {
       },
       last_error: lastError || null,
       workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
-      context_path: 'bridge/context/latest.json',
-      artifact_root: 'bridge/artifacts/',
+      context_path: 'AGENT.md',
+      artifact_root: 'sandbox storage/<agent-id>/',
       mailbox_cleanup: {
         retention_days: currentConfig().retentionDays,
         interval_ms: cleanupIntervalMs,
@@ -1050,13 +1050,13 @@ function createRepositoryBridge(deps = {}) {
     if (bytes.length > MAX_FILESYSTEM_INDEX_BYTES) {
       throw new Error('Filesystem index exceeds the 4 MiB repository publishing limit.');
     }
-    const relativePath = 'bridge/context/filesystem-index.md';
+    const relativePath = 'STATUS.md';
     if (mailbox) {
-      const existing = await readRemoteContent('bridge/context/filesystem-index.md');
+      const existing = await readRemoteContent('STATUS.md');
       if (existing && existing.content && existing.content.equals(bytes)) {
-        return { ok: true, unchanged: true, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+        return { ok: true, unchanged: true, path: 'STATUS.md', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
       }
-      const saved = await trackMailboxOperation(() => mailbox.writeContent('bridge/context/filesystem-index.md', bytes, {
+      const saved = await trackMailboxOperation(() => mailbox.writeContent('STATUS.md', bytes, {
         createOnly: false, expectedSha: existing && existing.sha || null
       }));
       return { ok: true, unchanged: false, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: saved.sha256 };
@@ -1119,7 +1119,7 @@ function createRepositoryBridge(deps = {}) {
       throw new Error('Workspace file exceeds the 8 MiB upload limit.');
     }
     const fileName = safeArtifactName(file.artifactName, path.basename(String(file.path || 'artifact.bin')));
-    const relativePath = 'bridge/artifacts/' + requestId + '/' + fileName;
+    const relativePath = 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-' + fileName;
     const stored = await writeRemoteContent(relativePath, file.bytes, '[local bridge] upload ' + fileName);
     const config = currentConfig();
     const extension = path.extname(fileName).toLowerCase();
@@ -1134,7 +1134,7 @@ function createRepositoryBridge(deps = {}) {
     };
     return {
       path: relativePath,
-      ...(mailbox ? { onedrive_path: 'Bridge/runtime/' + relativePath } : {
+      ...(mailbox ? { onedrive_path: 'Bridge/' + relativePath } : {
         url: 'https://github.com/' + config.owner + '/' + config.repo + '/blob/' +
           encodeURIComponent(config.branch) + '/' + relativePath.split('/').map(encodeURIComponent).join('/'),
         github_blob_sha: stored.sha,
@@ -1144,7 +1144,7 @@ function createRepositoryBridge(deps = {}) {
       bytes: stored.bytes,
       sha256: stored.sha256,
       note: mailbox
-        ? 'The full file is stored in OneDrive at Bridge/runtime/' + relativePath + '; retrieve it through the connected OneDrive folder.'
+        ? 'The full file is stored in OneDrive at Bridge/' + relativePath + '; retrieve it through the connected OneDrive folder.'
         : 'The full file is stored in the shared repository; ChatGPT should retrieve this path through its GitHub integration.'
     };
   }
@@ -1217,7 +1217,7 @@ function createRepositoryBridge(deps = {}) {
     const parts = [];
     for (let index = 0; index < groups.length; index++) {
       const partNumber = index + 1;
-      const relativePath = 'bridge/artifacts/' + requestId + '/batch-output-' + String(partNumber).padStart(3, '0') + '.json';
+      const relativePath = 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-batch-output-' + String(partNumber).padStart(3, '0') + '.json';
       const payload = {
         protocol: 'chatgpt-local-batch-output/v1',
         request_id: requestId,
@@ -1789,7 +1789,7 @@ function createRepositoryBridge(deps = {}) {
       data: directoryIndexReference
     });
     files.directory_tree = 'bridge/context/directory_tree.json';
-    files.filesystem_index = 'bridge/context/filesystem-index.md';
+    files.filesystem_index = 'STATUS.md';
 
     const capabilityData = contextReports.capabilities && contextReports.capabilities.result || {};
     const toolGuidePath = 'bridge/context/TOOLS.md';
@@ -1838,7 +1838,7 @@ function createRepositoryBridge(deps = {}) {
           updates: 'filesystem events plus periodic reconciliation'
         },
         instruction_files: Array.isArray(instructionData.instructions) ? instructionData.instructions.map(item => ({ ...item, contents_included: false })) : [],
-        tool_guide: { path: 'bridge/context/TOOLS.md', generated_from: 'bridge/context/capabilities.json' },
+        tool_guide: { path: 'TOOLS.md', generated_from: 'bridge/context/capabilities.json' },
         tool_catalog: {
           protocol: capabilityData.protocol || null,
           catalog_version: capabilityData.catalog_version || 1,
@@ -2467,7 +2467,7 @@ function createRepositoryBridge(deps = {}) {
     }
     const safeReport = await externalizeLargeText(requestId, reportForInline, artifactManifest, artifactErrors);
     const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
-      safeReport.result.path.startsWith('bridge/artifacts/') ? safeReport.result : null;
+      safeReport.result.path.startsWith('sandbox storage/') ? safeReport.result : null;
     const serializedSafeReport = JSON.stringify(safeReport);
     const outputWasShortened = serializedSafeReport.includes('[OUTPUT EXTERNALIZED:') ||
       serializedSafeReport.includes('[OUTPUT ARTIFACT ERROR:') ||
