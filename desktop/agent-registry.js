@@ -34,7 +34,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
+function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
@@ -786,8 +786,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const allowedPrefix = 'sandbox storage/' + agentId + '/';
       for (const artifact of manifest) {
         if (!artifact || typeof artifact.path !== 'string' || !artifact.path.startsWith(allowedPrefix)) continue;
-        const stored = await readRemoteFile(artifact.path).catch(() => null);
-        if (stored && stored.sha) addFile(artifact.path, stored.sha);
+        if (typeof readRemoteContent === 'function') {
+          const stored = await readRemoteContent(artifact.path).catch(() => null);
+          if (stored && stored.sha) addFile(artifact.path, stored.sha);
+        }
       }
       deletedRequests++;
     }
@@ -947,7 +949,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned.',
         session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
       },
-      note: 'The session_id and its agent_id seat remain bound to one ChatGPT conversation until explicit disconnect or revoke/delete, unless that exact ID is evicted as the oldest last-activity record at the hard 10,000-ID cap. active/inactive is only a recent-activity indicator; inactivity never releases the seat. Status includes every seat record found in bridge/agents; no credentials are included.'
+      note: 'The session_id and its agent_id seat remain bound to one ChatGPT conversation until explicit disconnect or revoke/delete, unless that exact ID is evicted as the oldest last-activity record at the hard 10,000-ID cap. active/inactive is only a recent-activity indicator; inactivity never releases the seat. Agent and session ownership records are app-local; no session IDs or credentials are published in STATUS.md.'
     };
   }
 
