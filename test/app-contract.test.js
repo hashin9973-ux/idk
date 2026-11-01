@@ -354,6 +354,7 @@ test('desktop shell, tray, and IPC controls initialize before workspace services
 test('OneDrive mailbox uses flat agent-partitioned paths and four root Markdown files', () => {
   const bridge = read('desktop', 'repository-bridge.js');
   const mailbox = read('desktop', 'onedrive-mailbox.js');
+  const registry = read('desktop', 'agent-registry.js');
   assert.ok(bridge.includes('chatgpt-local-repo-bridge/v1'));
   assert.ok(bridge.includes('chatgpt-local-repo-result/v1'));
   assert.ok(bridge.includes('const mailboxRequestPath = (agentId, requestId) => mailbox'));
@@ -362,7 +363,8 @@ test('OneDrive mailbox uses flat agent-partitioned paths and four root Markdown 
   assert.ok(bridge.includes("'result/' + (requestMailboxAgents.get(requestId)"));
   assert.ok(bridge.includes('requestMailboxAgents'));
   assert.ok(bridge.includes("const LOCAL_REGISTRY_PREFIX = 'local/'"));
-  assert.ok(bridge.includes("return 'local/sessions/' + sessionId + '.json'"));
+  assert.ok(registry.includes("return 'local/sessions/' + sessionId + '.json'"));
+  assert.ok(registry.includes("return 'local/agents/' + agentId + '.json'"));
   assert.ok(bridge.includes("upsertRemoteContent('AGENT.md'"));
   assert.ok(bridge.includes("upsertRemoteContent('TOOLS.md'"));
   assert.ok(bridge.includes("upsertRemoteContent('STATUS.md'"));
