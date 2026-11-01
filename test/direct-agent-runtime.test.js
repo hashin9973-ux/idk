@@ -341,7 +341,7 @@ test('model invokes tools with assistant slash commands and receives local resul
     assert.ok(request.messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   }
   assert.match(requests[0].messages[0].content, /Available local Windows tools/);
-  assert.match(requests[0].messages[0].content, /### `\/read_file`/);
+  assert.match(requests[0].messages[0].content, /### `\/read` · `\/read_file`/);
   assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path="README.md"'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
@@ -414,7 +414,7 @@ test('tool results are rendered as readable Markdown rather than serialized JSON
   });
   assert.match(rendered, /^### Tool result: `\/project_status`/);
   assert.match(rendered, /\*\*Status:\*\* success/);
-  assert.match(rendered, /\*\*Detected Technologies:\*\*/);
+  assert.match(rendered, /\*\*Detected Technologies\*\*/);
   assert.match(rendered, /- Node\.js/);
   assert.match(rendered, /\*\*Project Support:\*\*/);
   assert.match(rendered, /npm run build/);
