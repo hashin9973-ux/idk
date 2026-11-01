@@ -982,12 +982,7 @@ function createRepositoryBridge(deps = {}) {
     lastStatePublishAt = now;
     try {
       if (mailbox) {
-        if (mailbox) await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
-      else if (allowLegacyGitHubMailboxForTests === true) {
-        const legacyPath = 'bridge/state/windows-app.json';
-        const previous = await readRemoteFile(legacyPath);
-        await writeRemoteJson(legacyPath, { protocol: 'chatgpt-local-repo-state/v1', ...snapshot }, previous && previous.sha, false);
-      }
+        await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
       } else if (allowLegacyGitHubMailboxForTests === true) {
         const legacyPath = 'bridge/state/windows-app.json';
         const previous = await readRemoteFile(legacyPath);
