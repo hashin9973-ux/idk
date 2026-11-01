@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const { createOneDriveMailbox } = require('../desktop/onedrive-mailbox');
+const { createOneDriveMailbox, BRIDGE_DIRECTORIES } = require('../desktop/onedrive-mailbox');
 const repositoryBridgeModule = require('../desktop/repository-bridge');
 const {
   PROTOCOL,
@@ -463,65 +463,68 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
   } finally { await bridge.stop(); }
 });
 
-test('OneDrive local mailbox processes a request and writes claims, results and session state without GitHub', async t => {
+test('OneDrive mailbox bootstraps app-local sessions and routes ordinary requests by agent', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-onedrive-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
-  const runtime = path.join(temp, 'OneDrive', 'Bridge', 'runtime');
+  const runtime = path.join(temp, 'OneDrive', 'Bridge');
   const settings = { repositoryBridge: { oneDrivePath: runtime, retentionDays: 30 } };
+  const persistSettings = () => true;
   const mailbox = createOneDriveMailbox({ getSettings: () => settings });
   await mailbox.ensureReady();
 
-  const requestId = 'req-onedrive-local-transport';
-  const request = {
-    protocol: PROTOCOL,
-    request_id: requestId,
-    created_at: new Date().toISOString(),
-    tool: 'session_start',
-    args: { label: 'OneDrive integration test' }
-  };
-  await mailbox.writeJson('request/agent-000/' + requestId + '.json', request, null, true);
+  const bootstrapId = 'req-onedrive-session-bootstrap';
+  await mailbox.writeJson('request/agent-000/' + bootstrapId + '.json', {
+    protocol: PROTOCOL, request_id: bootstrapId, created_at: new Date().toISOString(),
+    tool: 'session_start', args: { label: 'OneDrive integration test' }
+  }, null, true);
 
-  const fixture = { settings, getSettings: () => settings, persistSettings: () => {} };
-  const githubCalls = [];
-  let assignment = null;
   const bridge = createRepositoryBridge({
     mailbox,
-    githubAuth: {
-      requestApi: async input => {
-        githubCalls.push(input);
-        throw new Error('GitHub mailbox must never be invoked by OneDrive transport.');
-      }
-    },
-    ...fixture,
-    getWorkspaceRoot: () => process.cwd(),
-    requestSessionAssignment: async options => {
-      assignment = options;
-      return { autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' };
-    },
+    githubAuth: async () => { throw new Error('GitHub must not be used for OneDrive mailbox transport.'); },
+    getSettings: () => settings,
+    persistSettings,
+    getWorkspaceRoot: () => temp,
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: temp, message: '' }),
     onSessionAssigned: async () => {},
-    executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
-    intervalMs: 5000
+    executeTool: async (tool, args) => {
+      assert.equal(tool, 'environment_info');
+      return { ok: true, result: { platform: 'win32', workspace: temp, checked: true } };
+    },
+    intervalMs: 5000,
+    publishContextOnStart: true
   });
-
   try {
-    const started = await bridge.start();
-    assert.equal(started.transport, 'onedrive-synced-folder');
-    assert.equal(started.running, true);
-    await waitForAsync(async () => Boolean(await mailbox.readJson('result/agent-000/' + requestId + '.json')));
-    const result = await mailbox.readJson('bridge/results/' + requestId + '.json');
-    const claim = await mailbox.readJson('claims/agent-000/' + requestId + '.json');
-    const state = await mailbox.readContent('STATUS.md');
-    assert.equal(result.value.status, 'completed');
-    assert.equal(result.value.result.result.assignment_mode, 'automatic-confirmed');
-    assert.ok(result.value.result.result.session_id);
-    assert.equal(claim.value.status, 'completed');
-    assert.match(state.content.toString('utf8'), /^# Windows Bridge Status/m);
-    assert.equal(assignment.workspaceSuggestion, null);
-    assert.deepEqual(githubCalls, [], 'OneDrive mailbox work must not call GitHub APIs');
-    const sessionId = result.value.result.result.session_id;
+    await bridge.start();
+    await waitForAsync(async () => (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json'))?.value?.status === 'completed');
+    const bootstrapResult = (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json')).value;
+    const sessionId = bootstrapResult.result.result.session_id;
+    const agentId = bootstrapResult.result.result.agent_id;
+    assert.match(sessionId, /^session-[a-f0-9]{32}$/);
+    assert.match(agentId, /^agent-[0-9]{3,}$/);
     assert.ok(settings.agentRegistryRecords['local/sessions/' + sessionId + '.json']);
-    assert.ok(settings.agentRegistryRecords['local/agents/agent-001.json']);
-    assert.equal((await mailbox.listFolder('request')).some(item => item.name === 'agent-001'), false);
+    assert.ok(settings.agentRegistryRecords['local/agents/' + agentId + '.json']);
+    assert.ok(await mailbox.readJson('claims/agent-000/' + bootstrapId + '.json'));
+
+    const requestId = 'req-onedrive-agent-work';
+    await mailbox.writeJson('request/' + agentId + '/' + requestId + '.json', {
+      protocol: PROTOCOL, request_id: requestId, created_at: new Date().toISOString(),
+      session_id: sessionId, tool: 'environment_info', args: {}
+    }, null, true);
+    await bridge.pollOnce();
+    await waitForAsync(async () => (await mailbox.readJson('result/' + agentId + '/' + requestId + '.json'))?.value?.status === 'completed');
+    const result = (await mailbox.readJson('result/' + agentId + '/' + requestId + '.json')).value;
+    assert.equal(result.request_id, requestId);
+    assert.equal(result.status, 'completed');
+    assert.ok(await mailbox.readJson('claims/' + agentId + '/' + requestId + '.json'));
+    assert.equal(result.result.result.platform, 'win32');
+
+    const rootEntries = (await fs.readdir(runtime)).sort();
+    const allowed = [...BRIDGE_DIRECTORIES, 'AGENT.md', 'TOOLS.md', 'STATUS.md'].sort();
+    assert.deepEqual(rootEntries, allowed);
+    assert.equal(rootEntries.some(name => ['runtime', 'bridge', 'context', 'state', 'agents', 'sessions', 'tasks', 'projects', 'vision', 'artifacts', 'docs'].includes(name)), false);
+    assert.deepEqual((await mailbox.listFolder('request')).map(item => item.name).sort(), ['agent-000', agentId].sort());
+    assert.equal((await mailbox.listFolder('claims')).every(item => item.type === 'dir'), true);
+    assert.equal((await mailbox.listFolder('result')).every(item => item.type === 'dir'), true);
   } finally {
     await bridge.stop();
   }
