@@ -763,10 +763,10 @@ function createRepositoryBridge(deps = {}) {
     return settings.agentRegistryRecords;
   }
   function localRecordSha(value) {
-    return createHash('sha256').update(JSON.stringify(value, null, 2) + '\\n', 'utf8').digest('hex');
+    return createHash('sha256').update(JSON.stringify(value, null, 2) + '\n', 'utf8').digest('hex');
   }
   function localRegistryPath(value) {
-    if (typeof value !== 'string' || !/^local\\/(?:agents|sessions|revoked-sessions|evicted-sessions)\\/[A-Za-z0-9_.-]+\\.json$/.test(value)) {
+    if (typeof value !== 'string' || !/^local\/(?:agents|sessions|revoked-sessions|evicted-sessions)\/[A-Za-z0-9_.-]+\.json$/.test(value)) {
       throw new Error('Invalid app-local agent registry key.');
     }
     return value;
