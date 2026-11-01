@@ -1776,11 +1776,11 @@ test('message retention deletes only expired messages with valid read receipts',
   const fake = fakeGitHub({ initial: [
     ['bridge/sessions/' + sessionId + '.json', session],
     ['bridge/agents/agent-001.json', seat],
-    ['bridge/agent-messages/' + sessionId + '/' + oldReadId + '.json', message(oldReadId, oldDate)],
-    ['bridge/agent-message-receipts/' + sessionId + '/' + oldReadId + '.json', receipt(oldReadId)],
-    ['bridge/agent-messages/' + sessionId + '/' + oldUnreadId + '.json', message(oldUnreadId, oldDate)],
-    ['bridge/agent-messages/' + sessionId + '/' + recentReadId + '.json', message(recentReadId, recentDate)],
-    ['bridge/agent-message-receipts/' + sessionId + '/' + recentReadId + '.json', receipt(recentReadId)]
+    ['messages/agent-001/' + oldReadId + '.json', message(oldReadId, oldDate)],
+    ['messages/agent-001/' + oldReadId + '.read.json', receipt(oldReadId)],
+    ['messages/agent-001/' + oldUnreadId + '.json', message(oldUnreadId, oldDate)],
+    ['messages/agent-001/' + recentReadId + '.json', message(recentReadId, recentDate)],
+    ['messages/agent-001/' + recentReadId + '.read.json', receipt(recentReadId)]
   ] });
   const fixture = settingsFixture();
   const bridge = createRepositoryBridge({
@@ -1789,11 +1789,11 @@ test('message retention deletes only expired messages with valid read receipts',
   });
   try {
     await bridge.start();
-    await waitFor(() => !fake.files.has('bridge/agent-messages/' + sessionId + '/' + oldReadId + '.json'), 5000);
-    assert.equal(fake.files.has('bridge/agent-message-receipts/' + sessionId + '/' + oldReadId + '.json'), false);
-    assert.equal(fake.files.has('bridge/agent-messages/' + sessionId + '/' + oldUnreadId + '.json'), true, 'old unread messages must be retained');
-    assert.equal(fake.files.has('bridge/agent-messages/' + sessionId + '/' + recentReadId + '.json'), true, 'recent read messages must be retained');
-    assert.equal(fake.files.has('bridge/agent-message-receipts/' + sessionId + '/' + recentReadId + '.json'), true);
+    await waitFor(() => !fake.files.has('messages/agent-001/' + oldReadId + '.json'), 5000);
+    assert.equal(fake.files.has('messages/agent-001/' + oldReadId + '.json'), false);
+    assert.equal(fake.files.has('messages/agent-001/' + oldUnreadId + '.json'), true, 'old unread messages must be retained');
+    assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.json'), true, 'recent read messages must be retained');
+    assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.json'), true);
   } finally { await bridge.stop(); }
 });
 
