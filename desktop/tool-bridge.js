@@ -656,6 +656,37 @@ function ttsOutputFailed(args = {}, output) {
   return output.status !== 'tts_completed' || output.played !== true || Boolean(output.playback_error);
 }
 
+const DIRECT_AGENT_TOOL_NAMES = Object.freeze([
+  'project_status', 'environment_info', 'list_dir', 'directory_tree',
+  'glob_file_search', 'read_file', 'file_info', 'search', 'git_status',
+  'git_diff', 'git_log', 'git_show', 'git_branches', 'git_changed_files',
+  'git_worktree', 'discover_instructions', 'init', 'write_file', 'apply_patch',
+  'create_directory', 'move_path', 'delete_path', 'git_create_branch',
+  'git_switch_branch', 'git_commit', 'git_fetch', 'git_pull', 'git_push',
+  'git_clone', 'project_index_status', 'project_index_refresh', 'project_search',
+  'project_overview', 'project_impact', 'game_project_intelligence',
+  'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch'
+]);
+
+function getDirectAgentToolDefinitions() {
+  return DIRECT_AGENT_TOOL_NAMES.map(name => {
+    const schema = parameterSchema(name);
+    if (name === 'batch') {
+      schema.properties.steps.items.properties.tool.enum = DIRECT_AGENT_TOOL_NAMES.filter(
+        candidate => candidate !== 'batch'
+      );
+    }
+    return {
+      type: 'function',
+      function: {
+        name,
+        description: TOOL_DESCRIPTIONS[name] || ('Run the ' + name + ' Windows workspace tool.'),
+        parameters: schema
+      }
+    };
+  });
+}
+
 function createToolBridge(deps) {
   const { dialog, getMainWindow, getWorkspaceRoot, localTools, githubAuth, uploadWorkspaceFile, getAutoAcceptAll, visionService, projectIntelligence,
     getTtsSettings = () => ({ mode: 'autoplay' }), getAgentLabelForSession = () => null, onTtsRequest, onTtsResult,
@@ -1549,6 +1580,7 @@ function createToolBridge(deps) {
 
 module.exports = {
   createToolBridge,
+  getDirectAgentToolDefinitions,
   TOOL_ARGUMENT_KEYS,
   getExecutionFootprint,
   resourcePoolsForTool,

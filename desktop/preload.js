@@ -90,7 +90,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   selectAgentWorkspace: (agentId, sessionId = null) => ipcRenderer.invoke('app:agent-select-workspace', { agentId, sessionId }),
   setAgentWorkspaceFromRecent: (agentId, sessionId, workspaceRoot) => ipcRenderer.invoke('app:agent-workspace-recent', { agentId, sessionId, workspaceRoot }),
   addAgentWidget: () => ipcRenderer.invoke('app:agent-widget-add'),
-  deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false) => ipcRenderer.invoke('app:agent-widget-delete', { agentId, sessionId, wipeMailbox }),
+  deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false, runtimeSessionId = null) => ipcRenderer.invoke('app:agent-widget-delete', { agentId, sessionId, wipeMailbox, runtimeSessionId }),
   pauseAgentSession: (agentId, sessionId, paused) => ipcRenderer.invoke('app:agent-session-pause', { agentId, sessionId, paused }),
   disconnectAgentSession: (agentId, sessionId) => ipcRenderer.invoke('app:agent-session-disconnect', { agentId, sessionId }),
   getTaskDashboard: () => ipcRenderer.invoke('app:task-dashboard'),
