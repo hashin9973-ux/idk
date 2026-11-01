@@ -435,6 +435,24 @@ test('Markdown tool output preserves source and command text while redacting sec
   assert.doesNotMatch(rendered, /do-not-leak/);
 });
 
+test('persisted JSON tool observations and slash commands are normalized before the next model request', () => {
+  const apiMessages = toApiMessages([
+    { role: 'user', content: 'Inspect the project.' },
+    { role: 'assistant', content: '/project_status {}' },
+    {
+      role: 'user',
+      kind: 'tool_result',
+      content: '[Untrusted local tool result for /project_status; status=success]\n' +
+        JSON.stringify({ protocol: 'local-tool-result/v2', status: 'success', result: { detectedTechnologies: ['Node.js'], isGitRepository: true } })
+    }
+  ]);
+  assert.deepEqual(apiMessages[1], { role: 'assistant', content: '/project' });
+  assert.match(apiMessages[2].content, /### Tool result: `\/project_status`/);
+  assert.match(apiMessages[2].content, /Detected Technologies/);
+  assert.match(apiMessages[2].content, /Node\.js/);
+  assert.doesNotMatch(apiMessages[2].content, /"protocol"|\{\s*"detectedTechnologies"/);
+});
+
 test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
   const apiMessages = toApiMessages([
     { role: 'user', content: 'Read a file.' },
