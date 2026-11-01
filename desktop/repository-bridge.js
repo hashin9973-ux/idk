@@ -1643,10 +1643,25 @@ function createRepositoryBridge(deps = {}) {
       const artifactPrefix = mailbox ? 'sandbox storage/' + entry.agent_id + '/' + requestId + '-' : 'bridge/artifacts/' + requestId + '/';
       const artifactPaths = new Set((Array.isArray(resultRecord.artifacts) ? resultRecord.artifacts : [])
         .map(item => item && item.path).filter(pathValue => typeof pathValue === 'string' && pathValue.startsWith(artifactPrefix) && isSafeMailboxCleanupPath(pathValue)));
-      const artifactEntries = mailbox ? await listFolder('sandbox storage/' + entry.agent_id) : [];
-      for (const artifact of artifactEntries) {
-        const artifactPath = 'sandbox storage/' + entry.agent_id + '/' + artifact.name;
-        if (artifact.name.startsWith(requestId + '-') && isSafeMailboxCleanupPath(artifactPath)) artifactPaths.add(artifactPath);
+      if (mailbox) {
+        const artifactEntries = await listFolder('sandbox storage/' + entry.agent_id);
+        for (const artifact of artifactEntries) {
+          const artifactPath = 'sandbox storage/' + entry.agent_id + '/' + artifact.name;
+          if (artifact.name.startsWith(requestId + '-') && isSafeMailboxCleanupPath(artifactPath)) artifactPaths.add(artifactPath);
+        }
+      } else if (allowLegacyGitHubMailboxForTests === true) {
+        const artifactEntries = await listFolder('bridge/artifacts');
+        for (const artifact of artifactEntries) {
+          if (artifact.name === requestId && artifact.type === 'dir') {
+            for (const nested of await listFolder('bridge/artifacts/' + requestId)) {
+              const artifactPath = 'bridge/artifacts/' + requestId + '/' + nested.name;
+              if (nested.type === 'file' && isSafeMailboxCleanupPath(artifactPath)) artifactPaths.add(artifactPath);
+            }
+          } else if (artifact.type === 'file' && artifact.name.startsWith(requestId + '-')) {
+            const artifactPath = 'bridge/artifacts/' + artifact.name;
+            if (isSafeMailboxCleanupPath(artifactPath)) artifactPaths.add(artifactPath);
+          }
+        }
       }
       if (artifactPaths.size > MAX_MAILBOX_ARTIFACTS_PER_RECORD) continue;
       for (const artifactPath of artifactPaths) {
