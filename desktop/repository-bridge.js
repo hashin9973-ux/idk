@@ -213,6 +213,10 @@ function createRepositoryBridge(deps = {}) {
   }
 
   const workerId = randomUUID();
+  const BOOTSTRAP_AGENT_ID = 'agent-000';
+  const mailboxRequestPath = (agentId, requestId) => 'request/' + agentId + '/' + requestId + '.json';
+  const mailboxClaimPath = requestId => 'claims/' + (requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json';
+  const mailboxResultPath = requestId => 'result/' + (requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '.json';
   const operationRecoveryWindowMs = Number.isFinite(Number(stalledOperationRecoveryMs)) && Number(stalledOperationRecoveryMs) > 0
     ? Number(stalledOperationRecoveryMs) : DEFAULT_STALLED_OPERATION_RECOVERY_MS;
   let running = false;
@@ -222,6 +226,7 @@ function createRepositoryBridge(deps = {}) {
   let pollStartedAt = null;
   const activeRequestIds = new Set();
   const requestAgents = new Map();
+  const requestMailboxAgents = new Map();
   const requestSessions = new Map();
   const pendingRequestQueue = [];
   const pendingRequestQueueSet = new Set();
@@ -493,7 +498,7 @@ function createRepositoryBridge(deps = {}) {
     return { value: parseRemoteJson(entry), sha: blob.sha, entry };
   }
 
-  async function loadMailboxRequest(requestId, discoveredBlobSha = requestBlobShas.get(requestId)) {
+  async function loadMailboxRequest(requestId, discoveredBlobSha = requestBlobShas.get(requestId), mailboxAgentId = requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID) {
     if (mailboxRequestCache.has(requestId)) return mailboxRequestCache.get(requestId);
     if (mailboxRequestReadPromises.has(requestId)) return mailboxRequestReadPromises.get(requestId);
     const promise = (async () => {
@@ -511,7 +516,7 @@ function createRepositoryBridge(deps = {}) {
       }
       if (!remote) {
         try {
-          remote = await readRemoteFile('bridge/requests/' + requestId + '.json');
+          remote = await readRemoteFile(mailboxRequestPath(mailboxAgentId, requestId));
         } catch (error) {
           if (isCorruptMailboxFile(error)) throw error;
           if (!blobReadError) throw error;
@@ -913,8 +918,8 @@ function createRepositoryBridge(deps = {}) {
     // queue duplicate state writes. Result dispatch must not wait for this heartbeat.
     lastStatePublishAt = now;
     try {
-      const file = await readRemoteFile('bridge/state/windows-app.json');
-      await writeRemoteJson('bridge/state/windows-app.json', snapshot, file && file.sha, false);
+      const file = await readRemoteContent('STATUS.md');
+      await upsertRemoteContent('STATUS.md', renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
     } catch (error) {
       if (lastStatePublishAt === now) lastStatePublishAt = 0;
       lastError = 'Could not publish shared state: ' + cleanError(error.message);
@@ -1603,7 +1608,7 @@ function createRepositoryBridge(deps = {}) {
       const requestId = entry.name.slice(0, -5);
       if (activeRequestIds.has(requestId) || inFlightRequestIds.has(requestId) ||
           requestTasks.has(requestId) || pendingRequestQueueSet.has(requestId + '.json')) continue;
-      const resultRemote = await readRemoteFile('bridge/results/' + entry.name);
+      const resultRemote = await readRemoteFile('result/' + entry.agent_id + '/' + entry.name);
       if (!resultRemote || (entry.sha && resultRemote.sha !== entry.sha)) continue;
       const resultRecord = resultRemote.value;
       if (!resultRecord || resultRecord.request_id !== requestId ||
@@ -1611,9 +1616,9 @@ function createRepositoryBridge(deps = {}) {
       const completedAt = Date.parse(resultRecord.completed_at || '');
       if (!Number.isFinite(completedAt) || completedAt >= cutoff) continue;
 
-      const requestRemote = await readRemoteFile('bridge/requests/' + entry.name);
+      const requestRemote = await readRemoteFile('request/' + entry.agent_id + '/' + entry.name);
       if (!requestRemote || !requestRemote.value || requestRemote.value.request_id !== requestId) continue;
-      const claimRemote = await readRemoteFile('bridge/claims/' + entry.name);
+      const claimRemote = await readRemoteFile('claims/' + entry.agent_id + '/' + entry.name);
       if (claimRemote && (!claimRemote.value || claimRemote.value.status !== 'completed')) continue;
 
       const legacyArtifactPrefix = requestId + '-batch-output-';
@@ -1937,7 +1942,7 @@ function createRepositoryBridge(deps = {}) {
   }
 
   async function acquireClaim(requestId) {
-    const claimPath = 'bridge/claims/' + requestId + '.json';
+    const claimPath = mailboxClaimPath(requestId);
     const now = Date.now();
     const claim = {
       protocol: 'chatgpt-local-repo-claim/v1',
@@ -2033,7 +2038,7 @@ function createRepositoryBridge(deps = {}) {
 
     if (['completed', 'needs_manual_recovery'].includes(prior.value.status)) {
       const resultIsKnown = Boolean(knownResultFiles && knownResultFiles.has(requestId + '.json'));
-      const existingResult = resultIsKnown ? true : await readRemoteFile('bridge/results/' + requestId + '.json');
+      const existingResult = resultIsKnown ? true : await readRemoteFile(mailboxResultPath(requestId));
       if (existingResult && knownResultFiles) knownResultFiles.add(requestId + '.json');
       if (!existingResult) {
         await publishResult(requestId, {
@@ -2127,7 +2132,7 @@ function createRepositoryBridge(deps = {}) {
             : 'SESSION_REVOKED: The result was suppressed because its owning agent session was explicitly revoked.'
         };
       }
-      const resultPath = 'bridge/results/' + requestId + '.json';
+      const resultPath = mailboxResultPath(requestId);
       const agentId = finalResult && finalResult.agent_id || requestAgents.get(requestId) || null;
       const record = agentId && finalResult && !finalResult.agent_id ? { ...finalResult, agent_id: agentId } : finalResult;
       // Result files are immutable. Hold the session publication lock across the
@@ -2215,7 +2220,8 @@ function createRepositoryBridge(deps = {}) {
     let toolFinishedAt = workerStartedAt;
     const requestId = filename.slice(0, -'.json'.length);
     if (!SAFE_ID.test(requestId) || inMemoryClaims.has(requestId)) return;
-    const requestPath = 'bridge/requests/' + filename;
+    const mailboxAgentId = requestMailboxAgents.get(requestId) || BOOTSTRAP_AGENT_ID;
+    const requestPath = mailboxRequestPath(mailboxAgentId, requestId);
     let remote;
     try {
       remote = await loadMailboxRequest(requestId);
@@ -2598,7 +2604,7 @@ function createRepositoryBridge(deps = {}) {
     });
     let resultPublished = false;
     try {
-      await writeRemoteJson('bridge/claims/' + requestId + '.json', completedClaim, claim.sha, false);
+      await writeRemoteJson(mailboxClaimPath(requestId), completedClaim, claim.sha, false);
       const published = await publishResult(requestId, resultRecord);
       resultPublished = published.published === true;
       if (!published.published) {
