@@ -273,7 +273,9 @@ function toApiMessages(messages) {
           const name = String(call && call.function && call.function.name || 'unknown_tool');
           const args = typeof (call && call.function && call.function.arguments) === 'string'
             ? call.function.arguments : '{}';
-          return '/' + name + ' ' + args;
+          let parsed = {};
+          try { parsed = JSON.parse(args); } catch {}
+          return formatSlashCommand(name, parsed);
         });
         content = [content, ...commands].filter(Boolean).join('\n');
       }
@@ -396,7 +398,7 @@ function parseSlashToolCommand(input, availableTools = DIRECT_AGENT_TOOL_NAMES) 
 
 function slashSchemaType(schema) {
   if (!schema || typeof schema !== 'object') return 'any';
-  if (Array.isArray(schema.enum)) return (schema.type || 'value') + ' (' + schema.enum.map(value => JSON.stringify(value)).join('|') + ')';
+  if (Array.isArray(schema.enum)) return (schema.type || 'value') + ' (one of: ' + schema.enum.map(value => String(value)).join(', ') + ')';
   if (schema.type === 'array') return 'array' + (schema.items && schema.items.type ? '<' + schema.items.type + '>' : '');
   if (schema.type === 'object') return 'object';
   if (Array.isArray(schema.anyOf)) return schema.anyOf.map(slashSchemaType).join('|');
@@ -406,7 +408,7 @@ function slashSchemaType(schema) {
 function slashSchemaLines(name, schema, required = false, depth = 0) {
   const indent = '  '.repeat(depth + 1);
   const details = [slashSchemaType(schema), required ? 'required' : 'optional'];
-  if (schema && schema.default !== undefined) details.push('default=' + JSON.stringify(schema.default));
+  if (schema && schema.default !== undefined) details.push('default ' + String(schema.default));
   if (schema && typeof schema.description === 'string' && schema.description.trim()) {
     details.push(schema.description.trim().replace(/\s+/g, ' ').slice(0, 180));
   }
