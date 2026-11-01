@@ -1791,9 +1791,10 @@ test('message retention deletes only expired messages with valid read receipts',
     await bridge.start();
     await waitFor(() => !fake.files.has('messages/agent-001/' + oldReadId + '.json'), 5000);
     assert.equal(fake.files.has('messages/agent-001/' + oldReadId + '.json'), false);
+    assert.equal(fake.files.has('messages/agent-001/' + oldReadId + '.read.json'), false);
     assert.equal(fake.files.has('messages/agent-001/' + oldUnreadId + '.json'), true, 'old unread messages must be retained');
     assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.json'), true, 'recent read messages must be retained');
-    assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.json'), true);
+    assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.read.json'), true);
   } finally { await bridge.stop(); }
 });
 
