@@ -500,7 +500,7 @@ test('OneDrive local mailbox processes a request and writes claims, results and 
     assert.ok(result.value.result.result.session_id);
     assert.equal(claim.value.status, 'completed');
     assert.equal(state.value.protocol, 'chatgpt-local-repo-state/v1');
-    assert.equal(assignment.workspaceSuggestion, undefined);
+    assert.equal(assignment.workspaceSuggestion, null);
     assert.deepEqual(githubCalls, [], 'OneDrive mailbox work must not call GitHub APIs');
     const sessionId = result.value.result.result.session_id;
     assert.ok(await mailbox.readJson('bridge/sessions/' + sessionId + '.json'));
