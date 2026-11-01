@@ -593,7 +593,7 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
     assert.ok(result.result.retrieval_rules.some(rule => /OneDrive integration provides mailbox files, not native Windows local tools/i.test(rule)));
-    assert.ok(result.result.retrieval_rules.some(rule => rule.includes('create bridge/requests') && rule.includes('read bridge/results')));
+    assert.ok(result.result.retrieval_rules.some(rule => rule.includes('request/agent-000') && rule.includes('result/<agent-id>')));
     assert.ok(result.result.retrieval_rules.some(rule => /before asking for machine facts/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /After session_start, start with get_agent_context/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /Never replay an uncertain side-effecting request/i.test(rule)));
