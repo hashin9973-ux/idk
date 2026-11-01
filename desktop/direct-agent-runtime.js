@@ -371,7 +371,7 @@ function slashSchemaLines(name, schema, required = false, depth = 0) {
       schema.items.properties && typeof schema.items.properties === 'object') {
     nestedProperties = schema.items.properties;
     nestedRequired = Array.isArray(schema.items.required) ? schema.items.required : [];
-    lines.push(indent + '  - *Items:* object);
+    lines.push(indent + '  - *Items:* object');
   }
   if (nestedProperties) {
     for (const [childName, childSchema] of Object.entries(nestedProperties)) {
