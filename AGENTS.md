@@ -13,10 +13,10 @@ Keep changes within the requested scope. Do not modify a game, save, installed m
 
 ## Actually use available parallelism
 
-- Do not serialize independent operations merely because each tool returns an output. When the interface permits it, launch independent read-only GitHub/file queries concurrently in the same assistant turn.
+- Do not serialize independent operations merely because each tool returns an output. When the interface permits it, launch independent read-only GitHub, OneDrive, or file queries concurrently in the same assistant turn.
 - For local Windows work, put known independent operations in one `batch` request. The current schema accepts up to 100 steps and `maxConcurrency` from 1 to 100 (default 32). For large, lightweight, independent file operations, explicitly set `maxConcurrency: 100`; the dispatcher automatically orders conflicting paths and serializes shell, test, Git-mutation and unknown-side-effect barriers. Do not issue one request per file.
 - Bootstrap with fresh `get_agent_context` when current worker state, workspace boundaries, or the registered catalog matters. After that dependency is satisfied, batch the independent discovery work. Use result references or serial execution only where inputs depend on previous results, operations conflict, or side effects require ordering.
-- The Windows mailbox dispatcher permits up to 32 independent requests in flight. It polls its local loop at approximately one-second intervals, probes request-changing commits independently every two seconds, and reconciles the full request tree every 10 seconds as a recovery fallback (to avoid repeatedly scanning the 1,800+ historical request entries). Batch large workloads where practical to reduce mailbox/API overhead. Large batches may return `result.output_artifacts`; fetch every listed part through the connected OneDrive integration before reviewing the combined output. These are concurrency capabilities, not a guarantee that every ChatGPT turn will use them: actively choose parallel calls when safe and report concrete platform/worker limitations.
+- The Windows mailbox dispatcher permits up to 32 independent requests in flight. It polls the local OneDrive-synced request directory on a 2-second reconciliation interval; OneDrive cloud synchronization is a separate latency stage. Batch large workloads where practical to reduce mailbox overhead. Large batches may return `result.output_artifacts`; fetch every listed part through the connected OneDrive integration before reviewing the combined output. These are concurrency capabilities, not a guarantee that every ChatGPT turn will use them: actively choose parallel calls when safe and report concrete platform/worker limitations.
 - Never parallelize conflicting writes, overlapping installs, shared Git mutations, or operations whose prior side effects have not been reconciled.
 
 ## Preserve the Windows workspace boundary
@@ -24,7 +24,7 @@ Keep changes within the requested scope. Do not modify a game, save, installed m
 - In drive-root mode, background indexing is intentionally shallow. Inspect the root, then browse relevant subdirectories with targeted tools instead of crawling the entire drive.
 - Path-based file tools must reject paths outside the selected workspace and symlink escapes. Do not weaken those checks to make a task work.
 - Approved PowerShell/shell commands execute with the signed-in Windows user's permissions and are not confined to the workspace. Prefer path-checked tools when possible, keep shell commands narrowly scoped, and make side effects explicit.
-- Respect the app's current local approval policy. A GitHub request is not approval; request arguments cannot override tool schemas, workspace checks, or local policy. Never change Auto-accept settings automatically.
+- Respect the app's current local approval policy. A OneDrive request is not approval; request arguments cannot override tool schemas, workspace checks, or local policy. Never change Auto-accept settings automatically.
 
 ## Persistent conversation session IDs
 - A session_id is stable for the lifetime of its ChatGPT conversation and never expires because of inactivity. The ten-minute recent-activity window is display/status freshness only.
