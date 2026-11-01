@@ -9,6 +9,19 @@ const MAX_STORED_MESSAGES = 160;
 const MAX_TOOL_RESULT_CHARS = 48000;
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
 
+const SLASH_TOOL_ALIASES = Object.freeze({
+  project: 'project_status',
+  ls: 'list_dir',
+  tree: 'directory_tree',
+  find: 'glob_file_search',
+  read: 'read_file',
+  write: 'write_file',
+  patch: 'apply_patch',
+  run: 'shell',
+  test: 'run_tests',
+  plan: 'update_plan'
+});
+
 const DIRECT_AGENT_TOOL_NAMES = Object.freeze([
   'project_status', 'environment_info', 'list_dir', 'directory_tree',
   'glob_file_search', 'read_file', 'file_info', 'search',
@@ -338,11 +351,12 @@ function parseSlashToolCommand(input, availableTools = DIRECT_AGENT_TOOL_NAMES) 
   const trimmed = input.trim();
   const match = trimmed.match(/^\/([a-z][a-z0-9_]*)(?:\s+([\s\S]*))?$/i);
   if (!match) throw new Error('Slash commands use /tool_name followed by named arguments. Type / to browse available tools.');
-  const name = match[1];
+  const requestedName = match[1];
+  const name = SLASH_TOOL_ALIASES[requestedName] || requestedName;
   if (!Array.isArray(availableTools) || !availableTools.includes(name)) {
-    throw new Error('Unknown local tool /' + name + '. Type / to browse available tools.');
+    throw new Error('Unknown local tool /' + requestedName + '. Type / to browse available tools.');
   }
-  return { name, args: parseSlashArguments(match[2] || '', name) };
+  return { name, alias: requestedName === name ? null : requestedName, args: parseSlashArguments(match[2] || '', name) };
 }
 
 function slashSchemaType(schema) {
@@ -394,7 +408,9 @@ function formatSlashToolCatalog(tools) {
       slashSchemaLines(name, schema, required.has(name), 0)
     );
     const description = String(fn.description || 'Local Windows workspace tool').replace(/\s+/g, ' ').trim();
-    return '### `/' + fn.name + '`\n\n' + description + '\n\n' +
+    const alias = Object.entries(SLASH_TOOL_ALIASES).find(([, target]) => target === fn.name);
+    const heading = alias ? '### `/' + alias[0] + '` · `/' + fn.name + '`' : '### `/' + fn.name + '`';
+    return heading + '\n\n' + description + '\n\n' +
       (args.length ? '**Arguments**\n\n' + args.join('\n') : '**Arguments:** none');
   });
   return [
@@ -639,5 +655,6 @@ module.exports = {
   formatToolResultMarkdown,
   toApiMessages,
   readCompletion,
-  DIRECT_AGENT_TOOL_NAMES
+  DIRECT_AGENT_TOOL_NAMES,
+  SLASH_TOOL_ALIASES
 };
