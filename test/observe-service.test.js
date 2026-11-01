@@ -4,25 +4,49 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createObserveService, OBSERVE_PROTOCOL, FRAME_LIMIT, DEFAULT_SAMPLE_FPS, SAMPLE_INTERVAL_MS, ACCESSIBILITY_REFRESH_INTERVAL_MS } = require('../desktop/observe-service');
 
+function createTestMailbox({ initialValue = null, onWrite = () => {}, reads = null, writes = null } = {}) {
+  let revision = 0;
+  let value = initialValue === null ? null : structuredClone(initialValue);
+  let sha = value === null ? null : 'a'.repeat(64);
+  return {
+    getState: () => ({ configured: true, runtimePath: 'C:\\OneDrive\\Bridge\\runtime' }),
+    async readJson(relativePath) {
+      assert.equal(relativePath, 'bridge/vision/observe.json');
+      if (reads) reads.push(relativePath);
+      return value === null ? null : { value: structuredClone(value), sha };
+    },
+    async writeJson(relativePath, next, expectedSha = null, createOnly = false) {
+      assert.equal(relativePath, 'bridge/vision/observe.json');
+      if (createOnly && value !== null) return { ok: false, conflict: true, sha };
+      if (value !== null && expectedSha !== sha) {
+        const error = new Error('Concurrent OneDrive test fixture update.');
+        error.code = 'MAILBOX_CONFLICT';
+        throw error;
+      }
+      if (value === null && expectedSha) {
+        const error = new Error('OneDrive test fixture record disappeared.');
+        error.code = 'MAILBOX_CONFLICT';
+        throw error;
+      }
+      const nextSha = String.fromCharCode(98 + (revision++ % 24)).repeat(64);
+      if (writes) writes.push(expectedSha);
+      value = structuredClone(next);
+      sha = nextSha;
+      onWrite(structuredClone(next));
+      return { ok: true, sha };
+    }
+  };
+}
+
+
+
 test('Observe defaults to 2 fps, supports rate changes, and publishes a rolling ten-frame buffer', async () => {
   let tick = null;
   let intervalMs = null;
   let fingerprint = 'screen-a';
   const published = [];
   const service = createObserveService({
-    githubAuth: {
-      requestApi: async input => {
-        assert.equal(input.path, '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json');
-        if (input.method === 'GET') {
-          assert.deepEqual(input.query, { ref: 'bridge-mailbox' });
-          throw new Error('GitHub HTTP 404: Not Found');
-        }
-        assert.equal(input.method, 'PUT');
-        const payload = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
-        published.push(payload);
-        return { result: { content: { sha: 'a'.repeat(40) } } };
-      }
-    },
+    mailbox: createTestMailbox({ onWrite: payload => published.push(payload) }),
     captureScreenshot: async () => ({
       bytes: Buffer.from('fake-png'),
       width: 1920, height: 1080, screen_width: 1920, screen_height: 1080,
@@ -108,13 +132,7 @@ test('Observe uses the downsampled visual fingerprint for changes and throttles 
   let accessibilityCalls = 0;
   const published = [];
   const service = createObserveService({
-    githubAuth: {
-      requestApi: async input => {
-        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
-        published.push(JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8')));
-        return { result: { content: { sha: 'b'.repeat(40) } } };
-      }
-    },
+    mailbox: createTestMailbox({ onWrite: payload => published.push(payload) }),
     now: () => clock,
     captureScreenshot: async () => ({
       bytes: Buffer.from('full-frame-' + (++rawFrame)),
@@ -183,13 +201,7 @@ test('Observe coalesces pending passive analysis to the newest frame and marks s
   const firstAnalysisGate = new Promise(resolve => { releaseFirst = resolve; });
 
   const service = createObserveService({
-    githubAuth: {
-      requestApi: async input => {
-        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
-        published.push(JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8')));
-        return { result: { content: { sha: 'c'.repeat(40) } } };
-      }
-    },
+    mailbox: createTestMailbox({ onWrite: payload => published.push(payload) }),
     captureScreenshot: async () => {
       captureIndex += 1;
       return {
@@ -268,13 +280,7 @@ test('Observe retains an in-flight report frame beyond the rolling ten-frame his
   let releaseFirst;
   const firstAnalysisGate = new Promise(resolve => { releaseFirst = resolve; });
   const service = createObserveService({
-    githubAuth: {
-      requestApi: async input => {
-        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
-        published.push(JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8')));
-        return { result: { content: { sha: 'd'.repeat(40) } } };
-      }
-    },
+    mailbox: createTestMailbox({ onWrite: payload => published.push(payload) }),
     captureScreenshot: async () => {
       captureIndex += 1;
       return {
@@ -373,14 +379,7 @@ test('Observe retains full-resolution pixels locally and publishes matching pass
   const published = [];
   const rawBytes = Buffer.from('private-full-resolution-pixel-buffer');
   const service = createObserveService({
-    githubAuth: {
-      requestApi: async input => {
-        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
-        const payload = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
-        published.push(payload);
-        return { result: { content: { sha: 'b'.repeat(40) } } };
-      }
-    },
+    mailbox: createTestMailbox({ onWrite: payload => published.push(payload) }),
     captureScreenshot: async () => ({
       bytes: rawBytes, width: 1920, height: 1080,
       screen_width: 1920, screen_height: 1080,
@@ -538,14 +537,7 @@ test('Observe publishes marked degraded OCR/UIA coordinates instead of dropping 
   const published = [];
   const rawBytes = Buffer.from('private-degraded-frame');
   const service = createObserveService({
-    githubAuth: {
-      requestApi: async input => {
-        if (input.method === 'GET') throw new Error('GitHub HTTP 404: Not Found');
-        const payload = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
-        published.push(payload);
-        return { result: { content: { sha: 'c'.repeat(40) } } };
-      }
-    },
+    mailbox: createTestMailbox({ onWrite: payload => published.push(payload) }),
     captureScreenshot: async () => ({
       bytes: rawBytes, width: 1920, height: 1080, screen_width: 1920, screen_height: 1080,
       captured_at: Date.now(), display_id: 'primary'
