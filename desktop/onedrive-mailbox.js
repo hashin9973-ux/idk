@@ -33,7 +33,7 @@ function detectOneDriveSyncRoot(env = process.env, fsImpl = fsSync) {
 
 function validateRelativePath(relativePath) {
   if (typeof relativePath !== 'string' || !relativePath || relativePath.startsWith('/') ||
-      relativePath.includes('\\')) {
+      relativePath.includes(String.fromCharCode(92))) {
     throw new Error('Unsafe OneDrive mailbox path.');
   }
   if (ROOT_MARKDOWN_FILES.has(relativePath)) return [relativePath];
@@ -436,7 +436,8 @@ function createOneDriveMailbox({
     return {
       configured: Boolean(root),
       rootPath: root || '',
-      runtimePath: root || '',\n      mailboxPath: root || '',
+      runtimePath: root || '',
+      mailboxPath: root || '',
       transport: 'onedrive-synced-folder',
       cloudPath: 'Bridge',
       status: root ? 'configured' : 'not_configured'
