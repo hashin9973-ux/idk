@@ -1994,7 +1994,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.equal(index.agent_context.project_commands.scripts.test, 'node --test');
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
     assert.equal(index.agent_context.tool_catalog.catalog_version, 1);
-    assert.ok(index.agent_context.operating_rules.some(rule => /request file does not exist in OneDrive.*rather than attributing it to Windows execution/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /request file does not exist in OneDrive.*rather than attributing the failure to Windows execution/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /not native OneDrive integration tools/i.test(rule)));
     assert.equal(index.agent_context.bridge_invocation.transport, 'onedrive-synced-folder');
     assert.equal(index.agent_context.bridge_invocation.runtime_path, 'Bridge/runtime');
