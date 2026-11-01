@@ -104,6 +104,34 @@ test('SSE completion returns on finish_reason without waiting for [DONE] or conn
   assert.equal(cancelled, true);
 });
 
+test('ordinary chat turn completes after SSE [DONE] even if the server keeps the stream open', async () => {
+  const session = { sessionId: 'session-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', messages: [], status: 'idle', error: '' };
+  let cancelled = false;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"choices":[{"index":0,"delta":{"content":"Hey there!"}}]}\n\n' +
+          'data: [DONE]\n\n'
+        ));
+      },
+      cancel() { cancelled = true; }
+    }), { headers: { 'content-type': 'text/event-stream' } }),
+    getConfig: async () => config(),
+    getSession: async () => session,
+    saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async () => { throw new Error('No tool should run for a plain greeting.'); }
+  });
+
+  const result = await runtime.sendMessage('direct-agent-004', 'hey');
+  assert.deepEqual(result, { accepted: true, completed: true });
+  assert.equal(session.status, 'idle');
+  assert.equal(session.messages.at(-1).content, 'Hey there!');
+  assert.equal(cancelled, true);
+  assert.equal(runtime.isRunning('direct-agent-004'), false);
+});
+
 test('direct API configuration validates provider, endpoint and model', () => {
   const normalized = normalizeDirectAgentConfig({
     provider: 'koboldcpp',
