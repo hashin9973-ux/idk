@@ -842,31 +842,26 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       unreadMessageCountCache.set(sessionId, cached);
       return { count: cached.count, partial: cached.partial };
     }
+    const sessionRemote = await readSession(sessionId);
+    if (!sessionRemote) return { count: 0, partial: false };
+    const ownerAgentId = sessionRemote.value.agent_id;
     let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
+    try { entries = await listFolder(inboxPath(ownerAgentId)); }
     catch (error) {
       if (/not found|404/i.test(String(error && error.message || error))) entries = [];
       else throw error;
     }
-    const allNames = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))].sort();
-    const names = allNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
-    let receiptEntries = [];
-    if (names.length) {
-      try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
-      catch (error) {
-        if (!/not found|404/i.test(String(error && error.message || error))) throw error;
-      }
-    }
-    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
-      .map(name => name.slice(0, -5)));
+    const allNames = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop()))].sort();
+    const messageNames = allNames.filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\\.json$/.test(name));
+    const names = messageNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
+    const receiptIds = new Set(allNames.filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\\.read\\.json$/.test(name))
+      .map(name => name.slice(0, -10)));
     let unread = 0;
     const scannedIds = new Set(names.map(name => name.slice(0, -5)));
     for (let start = 0; start < names.length; start += 16) {
       const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
         const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
         if (!remote) return null;
         const record = remote.value;
         if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -880,14 +875,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             !record.read_at && !receiptIds.has(record.message_id)) unread++;
       }
     }
-    const summary = {
-      count: unread, partial: allNames.length > names.length,
-      scannedIds, checkedAt: clock()
-    };
+    const summary = { count: unread, partial: messageNames.length > names.length, scannedIds, checkedAt: clock() };
     unreadMessageCountCache.set(sessionId, summary);
-    while (unreadMessageCountCache.size > 10000) {
-      unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
-    }
+    while (unreadMessageCountCache.size > 10000) unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
     return { count: summary.count, partial: summary.partial };
   }
 
