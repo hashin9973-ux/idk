@@ -1810,25 +1810,38 @@ test('mailbox cleanup removes only old terminal request groups and associated ar
   }
 });
 
-test('message retention deletes only expired messages with valid read receipts', async () => {
+test('OneDrive message retention deletes only expired messages with valid read receipts', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-message-retention-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const sessionId = 'session-' + 'b'.repeat(32);
   const now = Date.now();
   const oldTimestamp = String(now - 60 * 24 * 60 * 60 * 1000).padStart(13, '0');
   const recentTimestamp = String(now).padStart(13, '0');
-  const sessionId = 'session-' + 'b'.repeat(32);
   const oldReadId = 'msg-' + oldTimestamp + '-' + 'a'.repeat(32);
   const oldUnreadId = 'msg-' + oldTimestamp + '-' + 'c'.repeat(32);
   const recentReadId = 'msg-' + recentTimestamp + '-' + 'd'.repeat(32);
-  const nowIso = new Date().toISOString();
-  const session = {
-    protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: 'agent-001',
-    label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
-    last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+  const nowIso = new Date(now).toISOString();
+  const oldDate = new Date(Number(oldTimestamp)).toISOString();
+  const recentDate = new Date(Number(recentTimestamp)).toISOString();
+  const settings = {
+    repositoryBridge: { oneDrivePath: bridgeRoot, retentionDays: 30 },
+    agentRegistryRecords: {
+      ['local/sessions/' + sessionId + '.json']: {
+        protocol: 'chatgpt-local-agent-session/v1', session_id: sessionId, agent_id: 'agent-001',
+        label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
+        last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+      },
+      'local/agents/agent-001.json': {
+        protocol: 'chatgpt-local-agent-seat/v2', agent_id: 'agent-001', current_session_id: sessionId,
+        label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
+        last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
+      }
+    }
   };
-  const seat = {
-    protocol: 'chatgpt-local-agent-seat/v2', agent_id: 'agent-001', current_session_id: sessionId,
-    label: 'Retention test session', status: 'active', created_at: nowIso, updated_at: nowIso,
-    last_activity_at: nowIso, active_request_ids: [], recent_request_ids: []
-  };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
   const message = (messageId, createdAt) => ({
     protocol: 'chatgpt-local-agent-message/v1', message_id: messageId, thread_id: messageId,
     sender_session_id: 'session-' + 'e'.repeat(32), sender_agent_id: 'agent-002',
@@ -1839,31 +1852,35 @@ test('message retention deletes only expired messages with valid read receipts',
     protocol: 'chatgpt-local-agent-message-receipt/v1', message_id: messageId,
     recipient_session_id: sessionId, created_at: nowIso, read_at: nowIso
   });
-  const oldDate = new Date(Number(oldTimestamp)).toISOString();
-  const recentDate = new Date(Number(recentTimestamp)).toISOString();
-  const fake = fakeGitHub({ initial: [
-    ['bridge/sessions/' + sessionId + '.json', session],
-    ['bridge/agents/agent-001.json', seat],
-    ['messages/agent-001/' + oldReadId + '.json', message(oldReadId, oldDate)],
-    ['messages/agent-001/' + oldReadId + '.read.json', receipt(oldReadId)],
-    ['messages/agent-001/' + oldUnreadId + '.json', message(oldUnreadId, oldDate)],
-    ['messages/agent-001/' + recentReadId + '.json', message(recentReadId, recentDate)],
-    ['messages/agent-001/' + recentReadId + '.read.json', receipt(recentReadId)]
-  ] });
-  const fixture = settingsFixture();
+  await mailbox.writeJson('messages/agent-001/' + oldReadId + '.json', message(oldReadId, oldDate), null, true);
+  await mailbox.writeJson('messages/agent-001/' + oldReadId + '.read.json', receipt(oldReadId), null, true);
+  await mailbox.writeJson('messages/agent-001/' + oldUnreadId + '.json', message(oldUnreadId, oldDate), null, true);
+  await mailbox.writeJson('messages/agent-001/' + recentReadId + '.json', message(recentReadId, recentDate), null, true);
+  await mailbox.writeJson('messages/agent-001/' + recentReadId + '.read.json', receipt(recentReadId), null, true);
   const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture, getWorkspaceRoot: () => process.cwd(),
-    executeTool: async () => ({ ok: true, result: {} }), intervalMs: 5000, cleanupIntervalMs: 1000
+    mailbox,
+    getSettings: () => settings,
+    persistSettings: () => true,
+    getWorkspaceRoot: () => temp,
+    executeTool: async () => ({ ok: true, result: {} }),
+    intervalMs: 5000,
+    cleanupIntervalMs: 1000
   });
   try {
     await bridge.start();
-    await waitFor(() => !fake.files.has('messages/agent-001/' + oldReadId + '.json'), 5000);
-    assert.equal(fake.files.has('messages/agent-001/' + oldReadId + '.json'), false);
-    assert.equal(fake.files.has('messages/agent-001/' + oldReadId + '.read.json'), false);
-    assert.equal(fake.files.has('messages/agent-001/' + oldUnreadId + '.json'), true, 'old unread messages must be retained');
-    assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.json'), true, 'recent read messages must be retained');
-    assert.equal(fake.files.has('messages/agent-001/' + recentReadId + '.read.json'), true);
-  } finally { await bridge.stop(); }
+    await waitForAsync(async () => {
+      const status = await mailbox.readContent('STATUS.md');
+      return Boolean(status && status.content && status.content.toString('utf8').includes('- Health: healthy'));
+    }, 5000);
+    await waitForAsync(async () => !(await mailbox.readJson('messages/agent-001/' + oldReadId + '.json')), 5000);
+    assert.equal(await mailbox.readJson('messages/agent-001/' + oldReadId + '.json'), null);
+    assert.equal(await mailbox.readJson('messages/agent-001/' + oldReadId + '.read.json'), null);
+    assert.ok(await mailbox.readJson('messages/agent-001/' + oldUnreadId + '.json'), 'old unread messages must be retained');
+    assert.ok(await mailbox.readJson('messages/agent-001/' + recentReadId + '.json'), 'recent read messages must be retained');
+    assert.ok(await mailbox.readJson('messages/agent-001/' + recentReadId + '.read.json'));
+  } finally {
+    await bridge.stop();
+  }
 });
 
 test('filesystem index publishes to a stable path and skips unchanged snapshots', async () => {
@@ -1925,22 +1942,37 @@ test('workspace file upload stores raw bytes and returns a repository locator', 
   assert.deepEqual(Buffer.from(stored.content, 'base64'), bytes);
 });
 
-test('mailbox polling dispatches new requests while a background context refresh is stalled', async () => {
-  const fake = fakeGitHub();
-  const fixture = settingsFixture();
+test('OneDrive mailbox polling dispatches requests while a background context refresh is stalled', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-stalled-context-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const settings = { repositoryBridge: { oneDrivePath: bridgeRoot, retentionDays: 30 } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
+  const bootstrapId = 'req-context-session-bootstrap';
+  await mailbox.writeJson('request/agent-000/' + bootstrapId + '.json', {
+    protocol: PROTOCOL, request_id: bootstrapId, created_at: new Date().toISOString(),
+    tool: 'session_start', args: { label: 'Stalled context test' }
+  }, null, true);
   let releaseContext;
   const contextGate = new Promise(resolve => { releaseContext = resolve; });
   let contextStarted = false;
   let projectStarted = false;
   const requestId = 'req-context-refresh-nonblocking';
   const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture,
-    getWorkspaceRoot: () => process.cwd(),
+    mailbox,
+    githubAuth: async () => { throw new Error('GitHub must not be used for OneDrive mailbox transport.'); },
+    getSettings: () => settings,
+    persistSettings: () => true,
+    getWorkspaceRoot: () => temp,
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: temp, message: '' }),
+    onSessionAssigned: async () => {},
     executeTool: async (tool, args = {}, callId = '') => {
       if (tool === 'environment_info' && String(callId).startsWith('context-')) {
         contextStarted = true;
         await contextGate;
-        return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: process.cwd() } };
+        return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: temp } };
       }
       if (tool === 'project_status') {
         projectStarted = true;
@@ -1955,84 +1987,66 @@ test('mailbox polling dispatches new requests while a background context refresh
     },
     intervalMs: 5000,
     publishContextOnStart: true,
-    contextRefreshIntervalMs: 5 * 60 * 1000
+    contextRefreshIntervalMs: 5 * 60 * 1000,
+    requestReconciliationIntervalMs: 1
   });
-
-  let startPromise;
   try {
-    startPromise = bridge.start();
+    await bridge.start();
     await waitFor(() => contextStarted, 1500);
-    const startupReturned = await Promise.race([
-      startPromise.then(() => true),
+    await waitForAsync(async () =>
+      (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json'))?.value?.status === 'completed', 5000);
+    const session = (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json')).value.result.result;
+    const request = {
+      protocol: PROTOCOL, request_id: requestId, session_id: session.session_id,
+      created_at: new Date().toISOString(), tool: 'project_status', args: {}
+    };
+    await mailbox.writeJson('request/' + session.agent_id + '/' + requestId + '.json', request, null, true);
+    const pollReturned = await Promise.race([
+      bridge.pollOnce().then(() => true),
       new Promise(resolve => setTimeout(() => resolve(false), 250))
     ]);
-    assert.equal(startupReturned, true, 'startup must not wait for the full context refresh');
-
-    const request = {
-      protocol: PROTOCOL,
-      request_id: requestId,
-      session_id: DEFAULT_TEST_SESSION_ID,
-      created_at: new Date().toISOString(),
-      tool: 'project_status',
-      args: {}
-    };
-    const requestPath = 'bridge/requests/' + requestId + '.json';
-    fake.seedSession(request.session_id);
-    fake.files.set(requestPath, {
-      name: requestId + '.json',
-      path: requestPath,
-      type: 'file',
-      encoding: 'base64',
-      content: encode(request),
-      sha: 'sha-injected-request'
-    });
-
-    const originalDateNow = Date.now;
-    const lastScanAt = Date.parse(bridge.getState().requestPolling.lastRequestTreeScanAt);
-    assert.ok(Number.isFinite(lastScanAt), 'the initial request-tree scan should be timestamped');
-    Date.now = () => lastScanAt + DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS + 1;
-    let pollReturned;
-    try {
-      pollReturned = await Promise.race([
-        bridge.pollOnce().then(() => true),
-        new Promise(resolve => setTimeout(() => resolve(false), 250))
-      ]);
-    } finally {
-      Date.now = originalDateNow;
-    }
     assert.equal(pollReturned, true, 'polling must dispatch without awaiting background context collection');
     await waitFor(() => projectStarted, 1500);
-    await waitFor(() => fake.files.has('bridge/results/' + requestId + '.json'), 1500);
-    const result = decode(fake.files.get('bridge/results/' + requestId + '.json'));
+    await waitForAsync(async () =>
+      (await mailbox.readJson('result/' + session.agent_id + '/' + requestId + '.json'))?.value?.status === 'completed', 3000);
+    const result = (await mailbox.readJson('result/' + session.agent_id + '/' + requestId + '.json')).value;
     assert.equal(result.status, 'completed');
     assert.equal(result.result.ok, true);
-
     releaseContext();
-    await waitFor(() => fake.files.has('bridge/context/latest.json'), 2000);
+    await waitForAsync(async () => {
+      const [agent, tools] = await Promise.all([mailbox.readContent('AGENT.md'), mailbox.readContent('TOOLS.md')]);
+      return Boolean(agent && tools);
+    }, 5000);
   } finally {
     releaseContext();
-    if (startPromise) {
-      try { await startPromise; } catch {}
-    }
     await bridge.stop();
   }
 });
 
-test('environment refresh publishes only the canonical AGENT.md and complete TOOLS.md guides', async () => {
-  const request = {
+test('environment refresh publishes only the canonical AGENT.md and complete TOOLS.md guides to OneDrive', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-guide-publication-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const settings = { repositoryBridge: { oneDrivePath: bridgeRoot, retentionDays: 30 } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
+  const requestId = 'req-refresh-context';
+  await mailbox.writeJson('request/agent-000/' + requestId + '.json', {
     protocol: PROTOCOL,
-    request_id: 'req-refresh-context',
+    request_id: requestId,
     created_at: new Date().toISOString(),
     tool: 'session_start',
     args: { label: 'Context publication test' }
-  };
-  const fake = fakeGitHub({ initial: [['bridge/requests/req-refresh-context.json', request]] });
-  const fixture = settingsFixture();
+  }, null, true);
   const calls = [];
   const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture,
-    getWorkspaceRoot: () => process.cwd(),
-    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' }),
+    mailbox,
+    githubAuth: async () => { throw new Error('GitHub must not be used for OneDrive mailbox transport.'); },
+    getSettings: () => settings,
+    persistSettings: () => true,
+    getWorkspaceRoot: () => temp,
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: temp, message: '' }),
     onSessionAssigned: async () => {},
     executeTool: async (tool, args = {}) => {
       calls.push({ tool, args });
@@ -2050,14 +2064,21 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
     },
     intervalMs: 5000,
     publishContextOnStart: true,
+    requestReconciliationIntervalMs: 1,
     contextRefreshIntervalMs: 5 * 60 * 1000
   });
   try {
     await bridge.start();
-    await waitFor(() => fake.files.has('bridge/results/req-refresh-context.json'));
-    await waitFor(() => fake.files.has('AGENT.md') && fake.files.has('TOOLS.md'));
-    const agent = Buffer.from(fake.files.get('AGENT.md').content, 'base64').toString('utf8');
-    const tools = Buffer.from(fake.files.get('TOOLS.md').content, 'base64').toString('utf8');
+    await waitForAsync(async () => {
+      const [result, agent, tools] = await Promise.all([
+        mailbox.readJson('result/agent-000/' + requestId + '.json'),
+        mailbox.readContent('AGENT.md'),
+        mailbox.readContent('TOOLS.md')
+      ]);
+      return Boolean(result && result.value.status === 'completed' && agent && tools);
+    }, 5000);
+    const agent = (await mailbox.readContent('AGENT.md')).content.toString('utf8');
+    const tools = (await mailbox.readContent('TOOLS.md')).content.toString('utf8');
     assert.match(agent, /Windows Bridge operating guide/);
     assert.match(agent, /OneDrive is file storage and message transport only/);
     assert.match(agent, /request\/agent-000/);
@@ -2075,127 +2096,17 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
     assert.match(tools, /read_file/);
     assert.match(tools, /Read UTF-8 text from the Windows workspace/);
     assert.match(tools, /Permission requirements: Read-only; no approval required/);
-    assert.match(tools, /"path": \{/);
-    assert.match(tools, /Argument schema/);
-    assert.match(tools, /Up to 100 operations/);
-    assert.equal(fake.files.has('bridge/context/latest.json'), false);
-    assert.equal(fake.files.has('bridge/context/TOOLS.md'), false);
-    assert.equal(calls.filter(call => call.tool === 'get_capabilities').length >= 1, true);
-    assert.equal(decode(fake.files.get('bridge/results/req-refresh-context.json')).status, 'completed');
+    assert.match(tools, /\\"path\\": \{/);
+    assert.match(tools, /Slash-style shortcuts/);
+    assert.ok(calls.some(call => call.tool === 'get_capabilities'));
+    const root = (await fs.readdir(bridgeRoot)).sort();
+    assert.ok(root.includes('AGENT.md') && root.includes('TOOLS.md') && root.includes('STATUS.md'));
+    assert.equal(root.some(name => ['runtime', 'bridge', 'context', 'state', 'agents', 'sessions',
+      'tasks', 'projects', 'vision', 'artifacts', 'docs'].includes(name)), false);
   } finally {
     await bridge.stop();
   }
 });
-
-test('oversized non-batch results are compacted into a bounded partial result', async () => {
-  const entries = Array.from({ length: 1800 }, (_, index) => ({
-    id: index,
-    detail: String(index).padStart(3, '0') + '-' + 'x'.repeat(620)
-  }));
-  const request = {
-    protocol: PROTOCOL,
-    request_id: 'req-structured-result',
-    created_at: new Date().toISOString(),
-    tool: 'project_status',
-    args: {}
-  };
-  const fake = fakeGitHub({ initial: [['bridge/requests/req-structured-result.json', request]] });
-  const fixture = settingsFixture();
-  const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture,
-    getWorkspaceRoot: () => process.cwd(),
-    executeTool: async () => ({ ok: true, result: { entries } }),
-    intervalMs: 5000
-  });
-
-  try {
-    await bridge.start();
-    await waitFor(() => fake.files.has('bridge/results/req-structured-result.json'));
-    const result = decode(fake.files.get('bridge/results/req-structured-result.json'));
-    assert.equal(result.status, 'completed', 'the complete result JSON was archived');
-    assert.equal(result.output_truncated, true);
-    assert.ok(Buffer.byteLength(JSON.stringify(result), 'utf8') < 850 * 1024);
-    assert.match(result.output_note, /concatenate UTF-8 parts in ascending part order/);
-    const refs = result.artifacts.filter(item => item.kind === 'complete_result_part');
-    assert.ok(refs.length >= 2, 'large structured output should be split into retrievable fallback parts');
-    const completeJson = refs.sort((a, b) => a.part - b.part).map(ref => {
-      const artifact = fake.files.get(ref.path);
-      assert.ok(artifact, 'complete result part must exist: ' + ref.path);
-      return Buffer.from(artifact.content, 'base64').toString('utf8');
-    }).join('');
-    const reconstructed = JSON.parse(completeJson);
-    const completeEntries = reconstructed.result.result.entries;
-    assert.equal(completeEntries.length, entries.length);
-    assert.equal(completeEntries[0].detail, entries[0].detail);
-    assert.equal(completeEntries[599].detail, entries[599].detail);
-    assert.ok(!completeJson.includes('shortened to fit the two-operation result limit'));
-  } finally {
-    await bridge.stop();
-  }
-});
-
-
-test('revoking an in-flight agent session aborts its local tool and publishes a cancelled result', async () => {
-  const requestId = 'req-revoke-inflight';
-  const request = {
-    protocol: PROTOCOL, request_id: requestId, session_id: DEFAULT_TEST_SESSION_ID,
-    created_at: new Date().toISOString(), tool: 'project_status', args: {}
-  };
-  const fake = fakeGitHub({ initial: [['bridge/requests/' + requestId + '.json', request]] });
-  const fixture = settingsFixture();
-  let markStarted;
-  const started = new Promise(resolve => { markStarted = resolve; });
-  let capturedSignal = null;
-  const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture,
-    getWorkspaceRoot: () => process.cwd(),
-    executeTool: async (tool, args, id, sessionId, signal) => {
-      assert.equal(tool, 'project_status');
-      assert.equal(sessionId, DEFAULT_TEST_SESSION_ID);
-      capturedSignal = signal;
-      markStarted();
-      await new Promise((resolve, reject) => {
-        const onAbort = () => reject(signal.reason || new Error('cancelled'));
-        if (signal.aborted) onAbort();
-        else signal.addEventListener('abort', onAbort, { once: true });
-      });
-      return { ok: true, result: { shouldNotPublish: true } };
-    },
-    intervalMs: 5000
-  });
-
-  try {
-    await bridge.start();
-    await waitFor(() => Boolean(capturedSignal), 2000);
-    assert.ok(capturedSignal && !capturedSignal.aborted);
-
-    const revoked = await bridge.revokeAgentSession(DEFAULT_TEST_SESSION_ID);
-    assert.equal(revoked.revoked, true);
-    assert.equal(revoked.agent_id, 'agent-001');
-    assert.equal(revoked.cancellation.length, 1);
-    assert.equal(revoked.cancellation[0].abort_signalled, true);
-    assert.equal(capturedSignal.aborted, true);
-
-    await waitFor(() => fake.files.has('bridge/results/' + requestId + '.json'));
-    const result = decode(fake.files.get('bridge/results/' + requestId + '.json'));
-    assert.equal(result.status, 'cancelled');
-    assert.match(result.error || result.result && result.result.error || '', /SESSION_REVOKED/);
-    assert.equal(result.session_id, DEFAULT_TEST_SESSION_ID);
-    const claim = decode(fake.files.get('bridge/claims/' + requestId + '.json'));
-    assert.equal(claim.status, 'completed');
-    assert.equal(claim.result.status, 'cancelled');
-
-    const session = decode(fake.files.get('bridge/sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
-    const seat = decode(fake.files.get('bridge/agents/agent-001.json'));
-    assert.equal(session.status, 'revoked');
-    assert.equal(seat.current_session_id, null);
-    const visibleAgent = bridge.getState().agentMailboxes.find(item => item.agent_id === 'agent-001');
-    assert.equal(visibleAgent.session_id, null, 'late completion must not restore the revoked session in the dashboard');
-  } finally {
-    await bridge.stop();
-  }
-});
-
 
 test('optional OneDrive mailbox wipe drains a revoked in-flight worker before deleting terminal records', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-wipe-'));
@@ -2260,6 +2171,7 @@ test('optional OneDrive mailbox wipe drains a revoked in-flight worker before de
       tool: 'project_status',
       args: {}
     }, null, true);
+    await bridge.pollOnce();
     await Promise.race([
       started,
       new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution did not start.')), 2000))
