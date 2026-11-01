@@ -1091,67 +1091,15 @@ function createRepositoryBridge(deps = {}) {
       throw new TypeError('Filesystem index publication requires rendered text content.');
     }
     const bytes = Buffer.from(snapshot.content, 'utf8');
-    if (bytes.length > MAX_FILESYSTEM_INDEX_BYTES) {
-      throw new Error('Filesystem index exceeds the 4 MiB repository publishing limit.');
-    }
-    const relativePath = 'STATUS.md';
-    if (mailbox) {
-      const existing = await readRemoteContent('STATUS.md');
-      if (existing && existing.content && existing.content.equals(bytes)) {
-        return { ok: true, unchanged: true, path: 'STATUS.md', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
-      }
-      const saved = await trackMailboxOperation(() => mailbox.writeContent('STATUS.md', bytes, {
-        createOnly: false, expectedSha: existing && existing.sha || null
-      }));
-      return { ok: true, unchanged: false, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: saved.sha256 };
-    }
-    const contentHash = createHash('sha256').update(bytes).digest('hex');
-    const gitBlobSha = createHash('sha1')
-      .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
-      .update(bytes)
-      .digest('hex');
-    const config = currentConfig();
-
-    // This is a mutable, stable path (unlike request artifacts). Compare first
-    // to avoid a GitHub commit for a watcher burst that did not change names.
-    // On a Contents API conflict, reread the current SHA and retry a few times.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const existing = await readRemoteContent(relativePath);
-      if (existing && (
-        (existing.content && existing.content.equals(bytes)) ||
-        existing.sha === gitBlobSha
-      )) {
-        return {
-          ok: true,
-          unchanged: true,
-          path: relativePath,
-          bytes: bytes.length,
-          sha256: contentHash,
-          github_blob_sha: existing.sha || gitBlobSha
-        };
-      }
-      const body = {
-        message: '[local bridge] update names-only filesystem index',
-        content: bytes.toString('base64'),
-        branch: config.branch,
-        ...(existing && existing.sha ? { sha: existing.sha } : {})
-      };
-      try {
-        const response = await api('PUT', apiPath(relativePath), body);
-        return {
-          ok: true,
-          unchanged: false,
-          path: relativePath,
-          bytes: bytes.length,
-          sha256: contentHash,
-          github_blob_sha: response.result && response.result.content && response.result.content.sha || null
-        };
-      } catch (error) {
-        if (attempt < 2 && isConflict(error)) continue;
-        throw error;
-      }
-    }
-    throw new Error('Could not publish filesystem index after resolving repository update conflicts.');
+    if (bytes.length > MAX_FILESYSTEM_INDEX_BYTES) throw new Error('Filesystem index exceeds the 4 MiB local indexing limit.');
+    latestFilesystemIndexSnapshot = {
+      updated_at: new Date().toISOString(),
+      bytes: bytes.length,
+      lines: snapshot.content.split(/\\r?\\n/).length,
+      sha256: createHash('sha256').update(bytes).digest('hex')
+    };
+    await publishState(true);
+    return { ok: true, path: 'STATUS.md', bytes: bytes.length, sha256: latestFilesystemIndexSnapshot.sha256, published_as_status_summary: true };
   }
 
   async function publishWorkspaceFile(requestId, file) {
