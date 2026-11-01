@@ -753,113 +753,84 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function wipeMailbox(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required for mailbox cleanup.');
-    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted session revocation first.');
+    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted local session revocation first.');
     if (typeof deleteRemoteFiles !== 'function') throw new Error('Safe mailbox deletion is unavailable; the session remains revoked.');
+    const sessionRemote = await readSession(sessionId);
+    const agentId = sessionRemote && sessionRemote.value.agent_id;
+    if (!agentId) throw new Error('The revoked session has no local agent ownership record.');
     const files = new Map();
-    const addFile = (filePath, sha) => {
-      if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha);
-    };
-    const requestEntries = await listFolder('bridge/requests');
-    const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)))];
-    let deletedRequests = 0;
-    let ownedRequestRecords = 0;
-    const requestRecords = [];
-    for (let start = 0; start < requestNames.length; start += 16) {
-      const group = requestNames.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
-        const requestId = name.slice(0, -5);
-        const requestRemote = await readRemoteFile('bridge/requests/' + name);
-        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== REQUEST_RECORD_PROTOCOL ||
-            requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
-        ownedRequestRecords++;
-        const [claim, result] = await Promise.all([
-          readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
-        ]);
-        if (!claim || !result || !claim.value || !result.value ||
-            claim.value.protocol !== 'chatgpt-local-repo-claim/v1' || result.value.protocol !== 'chatgpt-local-repo-result/v1' ||
-            claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
-            result.value.request_id !== requestId || (result.value.session_id && result.value.session_id !== sessionId) ||
-            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
-        return { requestId, requestRemote, claim, result };
-      }));
-      requestRecords.push(...rows.filter(Boolean));
-    }
-    const flatArtifacts = await listFolder('bridge/artifacts');
-    for (const record of requestRecords) {
-      const name = record.requestId + '.json';
-      addFile('bridge/requests/' + name, record.requestRemote.sha);
-      addFile('bridge/claims/' + name, record.claim.sha);
-      addFile('bridge/results/' + name, record.result.sha);
-      const manifest = Array.isArray(record.result.value.artifacts) ? record.result.value.artifacts : [];
-      const requestArtifactPrefix = 'bridge/artifacts/' + record.requestId + '/';
-      const legacyBatchArtifactPrefix = 'bridge/artifacts/' + record.requestId + '-batch-output-';
-      const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
-        typeof value === 'string' && (value.startsWith(requestArtifactPrefix) ||
-          value.startsWith(legacyBatchArtifactPrefix))));
-      const nested = await listFolder('bridge/artifacts/' + record.requestId);
-      for (const item of [...flatArtifacts, ...nested]) {
-        const itemPath = String(item && (item.path || item.name) || '');
-        // A revoked request's result journal is intentionally replaced with a
-        // compact cancellation record, so its original artifact manifest may
-        // no longer exist. The request-ID-scoped folder/legacy prefix remain
-        // authoritative ownership boundaries for orphaned request artifacts.
-        const requestScoped = itemPath.startsWith(requestArtifactPrefix) || itemPath.startsWith(legacyBatchArtifactPrefix);
-        if ((ownedPaths.has(itemPath) || requestScoped) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
+    const addFile = (filePath, sha) => { if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha); };
+    let deletedRequests = 0, preservedRequests = 0;
+    const requestEntries = await listFolder('request/' + agentId);
+    for (const item of requestEntries) {
+      const name = String(item && (item.name || item.path) || '').split('/').pop();
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(name)) continue;
+      const requestId = name.slice(0, -5), requestPath = 'request/' + agentId + '/' + name;
+      const [request, claim, result] = await Promise.all([
+        readRemoteFile(requestPath), readRemoteFile('claims/' + agentId + '/' + name),
+        readRemoteFile('result/' + agentId + '/' + name)
+      ]);
+      if (!request || !request.value || request.value.request_id !== requestId || request.value.session_id !== sessionId) continue;
+      if (!claim || !result || !claim.value || !result.value ||
+          claim.value.request_id !== requestId || claim.value.session_id !== sessionId ||
+          claim.value.status !== 'completed' || result.value.request_id !== requestId ||
+          (result.value.session_id && result.value.session_id !== sessionId) ||
+          !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) {
+        preservedRequests++;
+        continue;
+      }
+      addFile(requestPath, request.sha);
+      addFile('claims/' + agentId + '/' + name, claim.sha);
+      addFile('result/' + agentId + '/' + name, result.sha);
+      const manifest = Array.isArray(result.value.artifacts) ? result.value.artifacts : [];
+      const allowedPrefix = 'sandbox storage/' + agentId + '/';
+      for (const artifact of manifest) {
+        if (!artifact || typeof artifact.path !== 'string' || !artifact.path.startsWith(allowedPrefix)) continue;
+        const stored = await readRemoteFile(artifact.path).catch(() => null);
+        if (stored && stored.sha) addFile(artifact.path, stored.sha);
       }
       deletedRequests++;
     }
-
-    const sessionEntries = await listFolder('local/sessions');
-    const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
-    if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
     let deletedMessages = 0;
-    for (let start = 0; start < recipientSessions.length; start += 12) {
-      const group = recipientSessions.slice(start, start + 12);
-      const inboxes = await Promise.all(group.map(async recipientSessionId => {
-        let entries;
-        try { entries = await listFolder(inboxPath(recipientSessionId)); }
-        catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-        return { recipientSessionId, entries };
-      }));
-      for (const inbox of inboxes) {
-        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
-        for (let batch = 0; batch < candidates.length; batch += 16) {
-          const rows = await Promise.all(candidates.slice(batch, batch + 16).map(async item => {
-            const name = String(item.name || item.path).split('/').pop();
-            const messageId = name.slice(0, -5);
-            const messageRemote = await readRemoteFile(messagePath(inbox.recipientSessionId, messageId));
-            const record = messageRemote && messageRemote.value;
-            if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' || record.message_id !== messageId ||
-                record.recipient_session_id !== inbox.recipientSessionId ||
-                (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) return null;
-            return { recipientSessionId: inbox.recipientSessionId, messageId, messageRemote };
-          }));
-          for (const item of rows.filter(Boolean)) {
-            addFile(messagePath(item.recipientSessionId, item.messageId), item.messageRemote.sha);
-            const receiptPath = messageReceiptPath(item.recipientSessionId, item.messageId);
+    for (const folder of await listFolder('messages')) {
+      if (!folder || folder.type !== 'dir' || !AGENT_ID_PATTERN.test(folder.name)) continue;
+      const inbox = 'messages/' + folder.name;
+      const entries = await listFolder(inbox);
+      for (const entry of entries) {
+        const name = String(entry && (entry.name || entry.path) || '').split('/').pop();
+        const receiptMatch = name.match(/^(msg-[0-9]{13}-[a-f0-9]{32})\\.read\\.json$/);
+        if (receiptMatch) {
+          const message = await readRemoteFile(messagePath(folder.name, receiptMatch[1]));
+          const record = message && message.value;
+          if (record && (record.sender_session_id === sessionId || record.recipient_session_id === sessionId)) {
+            const receiptPath = messageReceiptPath(folder.name, receiptMatch[1]);
             const receipt = await readRemoteFile(receiptPath);
-            if (receipt && receipt.value && receipt.value.protocol === 'chatgpt-local-agent-message-receipt/v1' &&
-                receipt.value.message_id === item.messageId && receipt.value.recipient_session_id === item.recipientSessionId) {
-              addFile(receiptPath, receipt.sha);
-            }
-            deletedMessages++;
+            if (receipt) addFile(receiptPath, receipt.sha);
           }
+          continue;
         }
+        if (!/^msg-[0-9]{13}-[a-f0-9]{32}\\.json$/.test(name)) continue;
+        const messageId = name.slice(0, -5);
+        const message = await readRemoteFile(messagePath(folder.name, messageId));
+        const record = message && message.value;
+        if (!record || (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) continue;
+        addFile(messagePath(folder.name, messageId), message.sha);
+        const receipt = await readRemoteFile(messageReceiptPath(folder.name, messageId));
+        if (receipt) addFile(messageReceiptPath(folder.name, messageId), receipt.sha);
+        deletedMessages++;
       }
     }
-    const deletion = await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })));
-    const preservedRequests = Math.max(0, ownedRequestRecords - deletedRequests);
+    const deletion = files.size
+      ? await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })))
+      : { deleted: 0 };
+    unreadMessageCountCache.delete(sessionId);
     return {
       status: preservedRequests ? 'completed_with_preserved_records' : 'completed',
       deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
       deleted_request_records: deletedRequests, deleted_message_records: deletedMessages,
       preserved_request_records: preservedRequests,
-      preservation_note: preservedRequests
-        ? 'Some requests were retained because their claim/result journal was missing, active, incomplete, or could not be proven terminal. Retry cleanup after those operations settle.'
-        : null,
-      commit_sha: deletion.commitSha || null, preserved_session_and_revocation_records: true
+      preservation_note: preservedRequests ? 'Some request records were retained because their claim/result journal was missing, active, incomplete, or not terminal.' : null,
+      preserved_local_session_registry: true
     };
   }
 
