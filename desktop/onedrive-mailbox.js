@@ -310,6 +310,7 @@ function createOneDriveMailbox({
     if (!root) throw new Error('OneDrive is not configured. Select the local OneDrive-synced Bridge/runtime folder.');
     if (!path.isAbsolute(root)) throw new Error('The OneDrive mailbox folder must be an absolute local path.');
     await ensureDirectory(root);
+    await ensureDirectory(path.join(root, 'sandbox'));
     const bridgeRoot = path.join(root, 'bridge');
     await ensureDirectory(bridgeRoot);
     for (const relative of BRIDGE_DIRECTORIES) {
