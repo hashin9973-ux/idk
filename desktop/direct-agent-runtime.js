@@ -225,7 +225,9 @@ function normalizeLegacySlashText(content) {
   if (typeof content !== 'string' || !content.trimStart().startsWith('/')) return content;
   try {
     const invocation = parseSlashToolCommand(content.trim());
-    return invocation ? formatSlashCommand(invocation.name, invocation.args) : content;
+    if (!invocation) return content;
+    const alias = Object.entries(SLASH_TOOL_ALIASES).find(([, target]) => target === invocation.name);
+    return formatSlashCommand(alias ? alias[0] : invocation.name, invocation.args);
   } catch { return content; }
 }
 
