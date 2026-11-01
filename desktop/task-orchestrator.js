@@ -74,11 +74,11 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   function now() { return new Date(clock()).toISOString(); }
   function taskPath(taskId) {
     if (!TASK_ID_PATTERN.test(String(taskId || ''))) throw new Error('Invalid task_id.');
-    return 'bridge/tasks/' + taskId + '.json';
+    return 'local/tasks/' + taskId + '.json';
   }
   function projectPath(projectId) {
     if (!PROJECT_ID_PATTERN.test(String(projectId || ''))) throw new Error('Invalid project_id. Call task_project_init first.');
-    return 'bridge/projects/' + projectId + '.json';
+    return 'local/projects/' + projectId + '.json';
   }
   function withLock(key, operation) {
     const previous = locks.get(key) || Promise.resolve();
@@ -198,7 +198,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
       }
     };
     await createOnly(projectPath(projectId), record);
-    return { project_id: projectId, name, protocol: PROJECT_PROTOCOL, created_at: createdAt, note: 'Share this project_id with every collaborating session. Task records and file/module ownership are shared through the mailbox.' };
+    return { project_id: projectId, name, protocol: PROJECT_PROTOCOL, created_at: createdAt, note: "Share this project_id with every collaborating session. Task records and file/module ownership are shared through the Windows app's persistent local registry." };
   }
 
   async function getProject(projectId) {
@@ -216,7 +216,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
 
   async function listProjects(identity, args = {}) {
     if (identity) validateIdentity(identity);
-    const entries = await listFolder('bridge/projects');
+    const entries = await listFolder('local/projects');
     const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(args.limit, 200)) : 200;
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^project-[a-f0-9]{24}\.json$/.test(name)))].slice(0, limit);
@@ -315,7 +315,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
     if (args.assigned_to_me === true && !identity) throw new Error('A session identity is required for assigned_to_me filtering.');
     const projectId = String(args.project_id || '');
     if (!(await readProject(projectId))) throw new Error('Project not found: ' + projectId);
-    const entries = await listFolder('bridge/tasks');
+    const entries = await listFolder('local/tasks');
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^task-[0-9]{13}-[a-f0-9]{16}\.json$/.test(name)))].sort().reverse();
     const cursor = Number.isInteger(args.offset) ? Math.max(0, Math.min(names.length, args.offset)) : 0;
@@ -707,7 +707,7 @@ function createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson, c
   async function detachSession(sessionId, reason = 'disconnected') {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required to detach task ownership.');
     const normalizedReason = ['disconnected', 'revoked', 'evicted'].includes(reason) ? reason : 'disconnected';
-    const entries = await listFolder('bridge/tasks');
+    const entries = await listFolder('local/tasks');
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^task-[0-9]{13}-[a-f0-9]{16}\.json$/.test(name)))].sort();
     const scanLimit = Math.min(names.length, 50000);

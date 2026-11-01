@@ -415,7 +415,7 @@ function gitWorktree(root,args={}){assertGitRepo(root);const operation=args.oper
 
 
 const READ=new Set(['project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search','git_status','git_diff','git_log','git_show','git_branches','git_changed_files','git_worktree','get_capabilities','discover_instructions','update_plan']);
-const WRITE=new Set(['init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone','git_worktree','shell','run_tests']);
+const WRITE=new Set(['init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch','git_commit','git_fetch','git_pull','git_push','git_clone','git_worktree','shell','exec_command','run_tests']);
 // Only workspace-relative file operations can run automatically. Potentially sensitive paths stay approval-gated.
 const AUTO_WORKSPACE_WRITES=new Set(['write_file','apply_patch','create_directory','move_path','delete_path']);
 function patchTouchesSensitivePath(patch){if(typeof patch!=='string')return false;const paths=[...patch.matchAll(/^\*\*\* (?:Add File|Update File|Delete File):\s*(.+)$/gm)].map(m=>m[1].trim());return paths.some(looksSensitiveFile);}
@@ -430,7 +430,7 @@ function getCapabilities(root){return{workspaceRoot:root,protocol:'chatgpt-local
 {name:'init',mode:'approval'},{name:'write_file',mode:'automatic-workspace-write'},{name:'apply_patch',mode:'automatic-workspace-write'},
 {name:'create_directory',mode:'automatic-workspace-write'},{name:'move_path',mode:'automatic-workspace-write'},{name:'delete_path',mode:'automatic-workspace-write'},
 {name:'git_create_branch',mode:'approval'},{name:'git_switch_branch',mode:'approval'},{name:'git_commit',mode:'approval'},
-{name:'shell',mode:'approval'},{name:'run_tests',mode:'approval'},{name:'update_plan',mode:'local'}]};}
+{name:'exec_command',mode:'approval'},{name:'shell',mode:'approval',legacy_alias:'exec_command'},{name:'run_tests',mode:'approval'},{name:'update_plan',mode:'local'}]};}
 async function executeTool(rootInput,tool,args={},signal=null){
  if(signal&&signal.aborted){const error=new Error(String(signal.reason&&signal.reason.message||signal.reason||'Operation cancelled.'));error.name='AbortError';error.code='ABORT_ERR';throw error;}
  if(!args||typeof args!=='object'||Array.isArray(args))throw new Error('arguments must be a JSON object.');
@@ -464,7 +464,7 @@ async function executeTool(rootInput,tool,args={},signal=null){
  case'create_directory':return createDirectory(root,args);
  case'move_path':return movePath(root,args);
  case'delete_path':return deletePath(root,args);
- case'shell':return runPowerShell(root,args,signal);
+ case'shell':case'exec_command':return runPowerShell(root,args,signal);
  case'run_tests':return args.command?runPowerShell(root,{command:args.command,timeoutMs:args.timeoutMs},signal):runTests(root,args,signal);
  case'update_plan':if(!Array.isArray(args.items)||args.items.length>30)throw new Error('items must contain at most 30 plan steps.');plan=args.items.map((p,i)=>typeof p==='string'?{id:i+1,step:p,status:'pending'}:{id:i+1,step:String(p.step||''),status:['pending','in_progress','completed'].includes(p.status)?p.status:'pending'});return{plan};
  default:throw new Error('unsupported tool.');

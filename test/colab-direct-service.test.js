@@ -98,25 +98,19 @@ function fixture(options = {}) {
     releaseAll: async () => ({ released: 0 }),
     dispose: async () => {}
   };
-  const githubAuth = {
-    async requestApi(input) {
-      calls.push(input);
-      if (input.method !== 'GET') throw new Error('Unexpected GitHub write from vision service');
-      if (input.path.endsWith('/bridge/state/windows-app.json')) {
-        return {
-          result: {
-            encoding: 'base64',
-            content: Buffer.from(JSON.stringify({ protocol: 'chatgpt-local-repo-state/v1', status: 'idle' })).toString('base64'),
-            sha: 'state-sha'
-          }
-        };
-      }
-      throw new Error('404 Not Found');
+  const mailbox = {
+    getState: () => ({ configured: true, mailboxPath: 'C:\\OneDrive\\Bridge', transport: 'onedrive-synced-folder' }),
+    async readContent(relativePath) {
+      if (relativePath !== 'STATUS.md') return null;
+      return {
+        content: Buffer.from('# Windows Bridge Status\n- Updated: ' + new Date().toISOString() + '\n- Worker: online', 'utf8'),
+        sha: 'state-sha256'
+      };
     }
   };
   const service = createVisionService({
-    githubAuth,
-    getSettings: () => ({ repositoryBridge: { owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' } }),
+    mailbox,
+    getSettings: () => ({ repositoryBridge: { oneDrivePath: 'C:\\OneDrive\\Bridge' } }),
     getWorkspaceRoot: () => '',
     captureScreenshot: async () => ({
       bytes: Buffer.from('desktop-source-image'), filename: 'desktop.png',
@@ -784,12 +778,12 @@ test('stale accessibility snapshots are not attached to a newer screenshot', asy
   assert.equal(analyzeCall.body.accessibility.reason, 'snapshot_too_old_for_frame');
 });
 
-test('setup check keeps GitHub mailbox verification separate and requires no Colab secret', async t => {
+test('setup check verifies OneDrive mailbox separately and requires no Colab secret', async t => {
   const f = fixture();
   t.after(() => f.service.dispose());
   await openAndPublishEndpoint(f);
-  const result = await f.service.setupCheck({ authenticated: true, login: 'tester' });
-  assert.equal(result.checks.github.status, 'passed');
+  const result = await f.service.setupCheck();
+  assert.equal(result.checks.onedrive.status, 'passed');
   assert.equal(result.checks.mailbox.status, 'passed');
   assert.equal(result.checks.colab.status, 'passed');
   assert.equal(result.checks.model.status, 'passed');

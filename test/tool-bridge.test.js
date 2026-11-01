@@ -25,7 +25,7 @@ test('workspace artifact upload waits for local approval before reading and publ
         approvalCalls++;
         assert.match(options.title, /Approve local coding tool/);
         assert.match(options.detail, /artifact\.txt/);
-        assert.match(options.detail, /shared GitHub mailbox branch/);
+        assert.match(options.detail, /OneDrive mailbox/);
         return { response: 0 };
       }
     };
@@ -102,6 +102,13 @@ test('shell commands remain approval-gated and are not executed when declined', 
     assert.equal(result.ok, false);
     assert.equal(result.cancelled, true);
     assert.equal(fs.existsSync(path.join(root, 'should-not-exist.txt')), false);
+    const execResult = await bridge.runTool('exec_command', {
+      command: "Set-Content -LiteralPath 'exec-should-not-exist.txt' -Value 'not run'"
+    }, 'req-exec-command-declined');
+    assert.equal(approvalCalls, 2);
+    assert.equal(execResult.ok, false);
+    assert.equal(execResult.cancelled, true);
+    assert.equal(fs.existsSync(path.join(root, 'exec-should-not-exist.txt')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -231,7 +238,13 @@ test('tool capabilities advertise the separate upload and context-refresh contro
     assert.ok(names.includes('send_agent_message'));
     assert.ok(names.includes('read_agent_messages'));
     assert.ok(names.includes('reply_to_agent_message'));
-    assert.equal(result.result.catalog_version, 4);
+    assert.equal(result.result.catalog_version, 5);
+    const execCommand = result.result.tools.find(tool => tool.name === 'exec_command');
+    assert.ok(execCommand);
+    assert.deepEqual(execCommand.parameters.required, ['command']);
+    assert.equal(execCommand.parameters.properties.timeoutMs.maximum, 120000);
+    assert.equal(execCommand.mode, 'approval');
+    assert.equal(result.result.tools.find(tool => tool.name === 'shell').legacy_alias, 'exec_command');
     assert.equal(result.result.tools.find(tool => tool.name === 'upload_workspace_file').mode, 'approval-required');
     assert.equal(result.result.tools.find(tool => tool.name === 'refresh_environment_context').mode, 'repository-bridge-control');
     assert.equal(result.result.tools.find(tool => tool.name === 'session_start').mode, 'repository-bridge-control');
@@ -483,7 +496,7 @@ test('tool capabilities expose parameter schemas and the batch reference syntax'
     const search = tools.find(item => item.name === 'search');
     const shell = tools.find(item => item.name === 'shell');
     assert.equal(result.status, 'success');
-    assert.equal(result.result.tool_calling.catalog_version, 4);
+    assert.equal(result.result.tool_calling.catalog_version, 5);
     assert.equal(batch.parameters.properties.steps.type, 'array');
     assert.equal(batch.parameters.properties.steps.maxItems, 100);
     assert.equal(batch.parameters.properties.maxConcurrency.default, 32);
@@ -579,8 +592,8 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.equal(result.result.execution_policy.auto_accept_all, false);
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
-    assert.ok(result.result.retrieval_rules.some(rule => /does not expose these local tools as native functions/i.test(rule)));
-    assert.ok(result.result.retrieval_rules.some(rule => rule.includes('create bridge/requests') && rule.includes('read bridge/results')));
+    assert.ok(result.result.retrieval_rules.some(rule => /OneDrive integration provides mailbox files, not native Windows local tools/i.test(rule)));
+    assert.ok(result.result.retrieval_rules.some(rule => rule.includes('request/agent-000') && rule.includes('result/<agent-id>')));
     assert.ok(result.result.retrieval_rules.some(rule => /before asking for machine facts/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /After session_start, start with get_agent_context/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /Never replay an uncertain side-effecting request/i.test(rule)));

@@ -30,9 +30,17 @@ function safeText(value, limit = 500) {
   return String(value == null ? '' : value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit);
 }
 
+function redactScreenText(value, limit = 1200) {
+  return safeText(value, limit)
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/g, '[REDACTED]')
+    .replace(/([?&](?:access_token|refresh_token|token|client_secret|password|api[_-]?key|secret|code)=)[^&\s]+/gi, '$1[REDACTED]')
+    .replace(/:\/\/[^/\s:@]+:[^/@\s]+@/g, '://[REDACTED]@');
+}
+
 function createObserveService(deps = {}) {
   const {
-    githubAuth,
+    mailbox = null,
     captureScreenshot,
     fingerprintScreenshot,
     getAccessibleSnapshot,
@@ -116,15 +124,93 @@ function createObserveService(deps = {}) {
     };
   }
 
-  function getMailboxConfig() {
-    const authSettings = githubAuth && typeof githubAuth.getState === 'function';
-    if (!authSettings) throw new Error('GitHub authentication is unavailable.');
+  function screenSafeValue(value, key = '', depth = 0) {
+    if (/(?:password|secret|token|authorization|credential|api[-_]?key|cookie)/i.test(key)) return '[REDACTED]';
+    if (depth > 5) return '[MAX DEPTH]';
+    if (typeof value === 'string') return redactScreenText(value, 1200);
+    if (Array.isArray(value)) return value.slice(0, 100).map(item => screenSafeValue(item, '', depth + 1));
+    if (!value || typeof value !== 'object') return value;
+    const output = {};
+    for (const [name, item] of Object.entries(value).slice(0, 80)) {
+      if (['image', 'screenshot', 'pixels', 'jpeg', 'base64'].includes(name.toLowerCase())) continue;
+      output[name] = screenSafeValue(item, name, depth + 1);
+    }
+    return output;
+  }
+
+  function renderScreenMarkdown(payload) {
+    const latest = payload.frames && payload.frames.length ? payload.frames[payload.frames.length - 1] : null;
+    const capturedAt = latest && Date.parse(latest.captured_at);
+    const frameAgeMs = Number.isFinite(capturedAt) ? Math.max(0, now() - capturedAt) : null;
+    const lastSampleAt = Date.parse(payload.last_capture_at || '');
+    const sampleAgeMs = Number.isFinite(lastSampleAt) ? Math.max(0, now() - lastSampleAt) : null;
+    const staleAfterMs = Math.max(5000, Number(payload.sample_interval_ms) * 4 || 5000);
+    const freshness = !payload.enabled ? 'disabled' : sampleAgeMs === null ? 'no current sample' :
+      sampleAgeMs > staleAfterMs ? 'stale (' + sampleAgeMs + ' ms since last sample)' : 'fresh (' + sampleAgeMs + ' ms since last sample)';
+    const controls = latest && Array.isArray(latest.controls) ? latest.controls.slice(0, 120) : [];
+    const safeControls = controls.map(control => {
+      const item = control && typeof control === 'object' ? control : {};
+      const isPassword = item.is_password === true || /password|passcode|credential/i.test(String(item.name || '') + ' ' + String(item.automation_id || ''));
+      const selected = {};
+      for (const key of ['name', 'control_type', 'automation_id', 'bounds', 'is_enabled', 'is_offscreen', 'is_password', 'value', 'text']) {
+        if (item[key] === undefined) continue;
+        if (isPassword && ['value', 'text'].includes(key)) selected[key] = '[REDACTED]';
+        else selected[key] = screenSafeValue(item[key], key);
+      }
+      return selected;
+    });
+    const lines = [
+      '# Windows Bridge screen context',
+      '',
+      '- Observe: ' + (payload.enabled ? 'enabled' : 'disabled'),
+      '- Status: ' + payload.status,
+      '- Updated: ' + payload.updated_at,
+      '- Freshness: ' + freshness,
+      '- Last changed frame age: ' + (frameAgeMs === null ? 'unknown' : frameAgeMs + ' ms'),
+      '- Sample rate: ' + payload.sample_fps + ' fps (' + payload.sample_interval_ms + ' ms interval)',
+      '- Captures: ' + payload.capture_count,
+      '- Skipped samples: ' + payload.skipped_samples,
+      '- Last capture: ' + (payload.last_capture_at || 'none'),
+      '- Last screen change: ' + (payload.last_change_at || 'unknown'),
+      '- Passive vision: ' + (payload.passive_vision_status || 'off'),
+      '- Vision completed: ' + (payload.last_vision_completed_at || 'none'),
+      '- Error: ' + (payload.error || payload.passive_vision_error || 'none'),
+      ''
+    ];
+    if (!latest) {
+      lines.push('## Current frame', '', payload.enabled ? 'No fresh frame has been captured yet.' : 'Observe is disabled. No screen content is currently published.', '');
+      return lines.join('\n');
+    }
+    lines.push('## Latest frame', '',
+      '- Sequence: ' + latest.sequence,
+      '- Frame ID: ' + (latest.frame_id || 'unknown'),
+      '- Captured: ' + latest.captured_at,
+      '- Dimensions: ' + (latest.coordinate_system && latest.coordinate_system.width_px || 'unknown') + ' × ' +
+        (latest.coordinate_system && latest.coordinate_system.height_px || 'unknown') + ' pixels',
+      '- Coordinate system: screenshot pixels; origin top-left; X right; Y down',
+      '- Active window: ' + JSON.stringify(screenSafeValue(latest.active_window || null)),
+      '- Focused control: ' + JSON.stringify(screenSafeValue(latest.focused_control || null)),
+      '- Cursor: ' + JSON.stringify(screenSafeValue(latest.cursor || null)),
+      '- UI Automation: ' + (latest.accessibility && latest.accessibility.available ? 'available' : 'unavailable') +
+        (latest.accessibility && latest.accessibility.reason ? ' (' + latest.accessibility.reason + ')' : ''),
+      '- UI Automation node count: ' + (latest.accessibility && latest.accessibility.node_count || 'unknown'),
+      '- Vision status: ' + (latest.vision_status || 'not analyzed'),
+      '- Vision model: ' + (latest.vision_model || 'unknown'),
+      '', '### Visible controls', '');
+    if (safeControls.length) {
+      for (const control of safeControls) lines.push('- ' + JSON.stringify(control));
+    } else lines.push('No UI Automation controls were captured.');
+    if (latest.vision) lines.push('', '### Passive visual analysis', '', JSON.stringify(screenSafeValue(latest.vision), null, 2));
+    if (latest.vision_error) lines.push('', '### Vision error', '', redactScreenText(latest.vision_error, 500));
+    lines.push('', '### Coordinate frame', '', JSON.stringify(screenSafeValue(latest.coordinate_system || {}), null, 2), '');
+    return lines.join('\n');
   }
 
   async function publish(enabledValue, errorMessage = '') {
-    if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('Sign in to GitHub to publish Observe context.');
+    if (!mailbox || typeof mailbox.writeContent !== 'function') {
+      throw new Error('The OneDrive mailbox is unavailable. Select the existing OneDrive-synced Bridge folder.');
+    }
     const payload = {
-      protocol: OBSERVE_PROTOCOL,
       enabled: enabledValue,
       updated_at: new Date(now()).toISOString(),
       sample_fps: sampleFps,
@@ -135,59 +221,39 @@ function createObserveService(deps = {}) {
       last_change_at: enabledValue && lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
       last_vision_completed_at: enabledValue && lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
       passive_vision_status: enabledValue ? latestVisionStatus : 'off',
-      passive_vision_error: enabledValue ? safeText(lastVisionError, 500) : '',
-      in_flight_frame_id: enabledValue && activeVisionFrame ? activeVisionFrame.frame_id : null,
-      last_vision_frame_id: enabledValue && lastCompletedVisionFrame ? lastCompletedVisionFrame.frame_id : null,
+      passive_vision_error: enabledValue ? redactScreenText(lastVisionError, 500) : '',
       frame_count: enabledValue ? frames.length : 0,
       frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
-      status: enabledValue ? 'observing' : 'off',
-      error: safeText(errorMessage, 500) || null
+      status: enabledValue ? 'observing' : 'disabled',
+      error: redactScreenText(errorMessage, 500) || null
     };
-    let content = JSON.stringify(payload);
+    let content = renderScreenMarkdown(payload);
     if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
-      const clippedFrames = payload.frames.slice();
-      const protectedFrameIds = new Set(
-        [activeVisionFrame, lastCompletedVisionFrame].filter(Boolean).map(frame => frame.frame_id)
-      );
-      while (clippedFrames.length &&
-             Buffer.byteLength(JSON.stringify({ ...payload, frames: clippedFrames }), 'utf8') > MAX_CONTEXT_BYTES) {
-        const removableIndex = clippedFrames.findIndex(frame => !protectedFrameIds.has(frame.frame_id));
-        if (removableIndex < 0) break;
-        clippedFrames.splice(removableIndex, 1);
-      }
-      payload.frames = clippedFrames;
-      payload.frame_count = clippedFrames.length;
+      payload.frames = payload.frames.slice(-1);
       payload.truncated = true;
-      content = JSON.stringify(payload);
+      content = renderScreenMarkdown(payload) + '\n\nObservation history was trimmed to the latest frame to stay within the mailbox size limit.\n';
     }
-    const path = '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json';
-    // The SHA is process-local. After an app restart, fetch the current blob SHA before
-    // updating an existing Contents API file; a missing file is the only create case.
-    if (!currentSha) {
+    if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
+      throw new Error('SCREEN.md exceeds the 3.5 MiB OneDrive publication limit after history trimming.');
+    }
+    const relativePath = 'SCREEN.md';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = currentSha ? { sha: currentSha } : await mailbox.readContent(relativePath);
       try {
-        const existing = await githubAuth.requestApi({
-          method: 'GET', path, query: { ref: 'bridge-mailbox' }
+        const saved = await mailbox.writeContent(relativePath, content, {
+          createOnly: !existing,
+          expectedSha: existing && existing.sha || null
         });
-        const existingSha = existing && existing.result && existing.result.sha;
-        if (typeof existingSha !== 'string' || !/^[a-f0-9]{40}$/i.test(existingSha)) {
-          throw new Error('GitHub returned no valid blob SHA for the existing Observe context file.');
-        }
-        currentSha = existingSha;
+        currentSha = saved.sha;
+        lastPublishedAt = now();
+        return payload;
       } catch (error) {
-        if (!/GitHub HTTP 404: Not Found/i.test(String(error && error.message || error))) throw error;
+        if (!error || error.code !== 'MAILBOX_CONFLICT' || attempt === 2) throw error;
+        const latest = await mailbox.readContent(relativePath);
+        currentSha = latest && latest.sha || null;
       }
     }
-    const body = {
-      message: enabledValue ? '[observe] update live screen context' : '[observe] clear live screen context',
-      content: Buffer.from(content, 'utf8').toString('base64'),
-      branch: 'bridge-mailbox',
-      ...(currentSha ? { sha: currentSha } : {})
-    };
-    const response = await githubAuth.requestApi({ method: 'PUT', path, body });
-    if (response && response.result && response.result.content && response.result.content.sha) currentSha = response.result.content.sha;
-    else if (response && response.result && response.result.content_sha) currentSha = response.result.content_sha;
-    lastPublishedAt = now();
-    return payload;
+    throw new Error('SCREEN.md could not be published after resolving concurrent OneDrive sync updates.');
   }
 
   async function publishLatestWhenDue() {
@@ -206,7 +272,7 @@ function createObserveService(deps = {}) {
     } finally {
       publishInFlight = false;
       if (enabled && !disposed && publicationRevision > publishedRevision) {
-        // Coalesce changes that arrived while the last GitHub update was in flight.
+        // Coalesce changes that arrived while the last OneDrive mailbox update was in flight.
         void publishLatestWhenDue();
       }
     }
@@ -547,7 +613,7 @@ function createObserveService(deps = {}) {
     observeEpoch += 1;
     pendingCapture = null;
     if (value) {
-      if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('Sign in to GitHub before enabling Observe mode.');
+      if (!mailbox || typeof mailbox.writeContent !== 'function') throw new Error('Select the existing OneDrive-synced Bridge folder before enabling Observe mode.');
       enabled = true;
       lastFingerprint = '';
       latestAccessibilitySnapshot = null;
@@ -608,7 +674,7 @@ function createObserveService(deps = {}) {
     lastFingerprint = '';
     lastError = '';
     while (publishInFlight) await sleep(50);
-    // Clear live context on GitHub. GitHub's prior commit history may still contain old snapshots.
+    // Clear the current OneDrive Observe snapshot; this path is a mutable live-context record.
     await publish(false);
     frames = [];
     activeVisionFrame = null;
@@ -619,37 +685,23 @@ function createObserveService(deps = {}) {
   async function clearStaleContext() {
     if (startupCleanupPromise) return startupCleanupPromise;
     startupCleanupPromise = (async () => {
-      if (enabled || disposed || !githubAuth || typeof githubAuth.requestApi !== 'function') return status();
-      const path = '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json';
+      if (enabled || disposed || !mailbox || typeof mailbox.writeContent !== 'function') return status();
       try {
-        const response = await githubAuth.requestApi({ method: 'GET', path, query: { ref: 'bridge-mailbox' } });
-        const record = response && response.result;
-        if (!record || typeof record.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(record.sha)) {
-          throw new Error('GitHub returned an invalid Observe context file record.');
-        }
-        currentSha = record.sha;
-        let payload = null;
-        try {
-          const raw = Buffer.from(String(record.content || ''), 'base64').toString('utf8');
-          payload = JSON.parse(raw);
-        } catch {}
-        const hasLiveContext = !payload || payload.enabled === true ||
-          (Array.isArray(payload.frames) && payload.frames.length > 0) ||
-          (Number(payload.frame_count) || 0) > 0;
-        if (hasLiveContext) {
-          frames = [];
-          activeVisionFrame = null;
-          lastCompletedVisionFrame = null;
-          pendingCapture = null;
-          lastFingerprint = '';
-          await publish(false);
-          lastError = '';
-        }
+        frames = [];
+        activeVisionFrame = null;
+        lastCompletedVisionFrame = null;
+        pendingCapture = null;
+        pendingVisionFrame = null;
+        lastFingerprint = '';
+        latestVisionStatus = 'off';
+        lastVisionError = '';
+        currentSha = null;
+        await publish(false, 'Observe is disabled. No current desktop frame is being published.');
+        lastError = '';
         return status();
       } catch (error) {
-        if (/GitHub HTTP 404: Not Found/i.test(String(error && error.message || error))) return status();
-        lastError = safeText(error && error.message || error || 'Could not clear stale Observe context', 500);
-        throw error;
+        lastError = safeText(error && error.message || error || 'Could not publish disabled SCREEN.md context', 500);
+        return status();
       }
     })();
     return startupCleanupPromise;

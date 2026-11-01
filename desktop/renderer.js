@@ -2,10 +2,10 @@
   'use strict';
 
   const byId = id => document.getElementById(id);
-  const githubRow = byId('github-row');
-  const githubButton = byId('github-signin');
-  const githubDot = byId('github-dot');
-  const githubLabel = byId('github-status');
+  const oneDriveRow = byId('onedrive-row');
+  const oneDriveButton = byId('onedrive-choose');
+  const oneDriveDot = byId('onedrive-dot');
+  const oneDriveLabel = byId('onedrive-status');
   const workerDot = byId('worker-dot');
   const workerLabel = byId('worker-status');
   const workspaceRow = byId('workspace-row');
@@ -36,11 +36,7 @@
   const quitButton = byId('quit');
   const openDashboardButton = byId('open-dashboard');
 
-  let githubState = null;
   let currentBridgeState = null;
-  let authBusy = false;
-  let authTimer = null;
-  let loginCode = '';
   let autoAcceptAll = false;
   let observeBusy = false;
   let observeEnabled = false;
@@ -54,58 +50,24 @@
     dot.className = 'status-dot ' + status;
   }
 
-  function renderGitHub(state) {
-    githubState = state || {};
-    if (githubState.verificationPending === true) {
-      githubButton.disabled = false;
-      githubButton.setAttribute('aria-label', 'Retry GitHub connection verification');
-      githubLabel.textContent = githubState.login ? 'GitHub connected · checking' : 'GitHub sign-in saved · checking';
-      githubLabel.title = githubState.verificationError || githubState.error || 'The saved GitHub credential is being rechecked. A temporary API/network failure is not treated as a logout.';
-      githubButton.textContent = 'Retry connection';
-      githubButton.title = 'Retry GitHub/mailbox verification without signing out';
-      setDot(githubDot, 'waiting');
-      return;
+  function renderOneDrive(state) {
+    const value = state || {};
+    const configured = value.configured === true;
+    const bridge = currentBridgeState || {};
+    oneDriveButton.disabled = false;
+    oneDriveButton.textContent = configured ? 'Change folder' : 'Choose folder';
+    oneDriveButton.setAttribute('aria-label', configured ? 'Change OneDrive mailbox folder' : 'Choose OneDrive mailbox folder');
+    if (configured) {
+      oneDriveLabel.textContent = bridge.running ? 'OneDrive mailbox connected' : 'OneDrive folder ready';
+      oneDriveLabel.title = (value.mailboxPath || value.runtimePath || 'Bridge') +
+        (bridge.running ? ' · The Windows worker is polling the synchronized mailbox.' : ' · The Windows worker will connect automatically.');
+      setDot(oneDriveDot, bridge.running ? 'online' : 'waiting');
+    } else {
+      oneDriveLabel.textContent = 'OneDrive folder not configured';
+      oneDriveLabel.title = value.error || 'Choose the local OneDrive-synced Bridge folder.';
+      setDot(oneDriveDot, 'waiting');
     }
-
-    if (githubState.authenticated) {
-      githubButton.disabled = false;
-      githubButton.setAttribute('aria-label', 'Sign in again to GitHub');
-      githubLabel.textContent = 'GitHub connected';
-      githubLabel.title = githubState.login ? 'Connected as @' + githubState.login : 'Connected to GitHub';
-      githubButton.textContent = 'Sign in again';
-      githubButton.title = 'Sign in again or switch GitHub accounts';
-      setDot(githubDot, 'online');
-      return;
-    }
-
-    if (authBusy) {
-      if (loginCode) {
-        githubLabel.textContent = 'Enter code at GitHub';
-        githubLabel.title = 'Use this one-time code on the GitHub device verification page. Click the code to copy it.';
-        githubButton.disabled = false;
-        githubButton.textContent = loginCode;
-        githubButton.title = 'Click to copy the GitHub device code';
-        githubButton.setAttribute('aria-label', 'Copy GitHub device code ' + loginCode);
-      } else {
-        githubLabel.textContent = 'Waiting for device code…';
-        githubLabel.title = 'Waiting for GitHub CLI to provide the one-time device code.';
-        githubButton.disabled = true;
-        githubButton.textContent = 'Waiting…';
-        githubButton.title = 'Waiting for the GitHub device code';
-        githubButton.setAttribute('aria-label', 'Waiting for GitHub device code');
-      }
-      setDot(githubDot, 'waiting');
-      return;
-    }
-
-    const networkUnavailable = /network|offline|fetch failed|failed to fetch|enotfound|eai_again|econn|timed out|unable to connect|socket|dns/i.test(String(githubState.error || ''));
-    githubButton.disabled = false;
-    githubButton.setAttribute('aria-label', 'Sign in to GitHub');
-    githubLabel.textContent = networkUnavailable ? 'GitHub unavailable' : 'GitHub not connected';
-    githubLabel.title = githubState.error || 'Sign in to connect this app to GitHub';
-    githubButton.textContent = 'Sign in to GitHub';
-    githubButton.title = 'Start GitHub sign-in; this button stays available while offline';
-    setDot(githubDot, networkUnavailable ? 'error' : 'waiting');
+    oneDriveRow.title = oneDriveLabel.title;
   }
 
   function renderWorker(state) {
@@ -118,9 +80,9 @@
         : pending > 0 ? 'Worker online · ' + pending + ' queued'
           : 'Worker online · idle',
       connecting: 'Worker connecting…',
-      reconnecting: 'Worker reconnecting · retrying GitHub mailbox',
-      offline: 'Worker cannot reach the GitHub mailbox',
-      github: 'Worker waiting for GitHub sign-in',
+      reconnecting: 'Worker reconnecting · waiting for OneDrive sync',
+      offline: 'Worker cannot reach the OneDrive mailbox',
+      github: 'Worker waiting for OneDrive configuration',
       setup: 'Worker needs configuration',
       attention: 'Worker needs attention'
     };
@@ -184,7 +146,7 @@
       'Target sampling rate: ' + Number(value.fps || 2) + ' fps (' + Number(value.sample_interval_ms || 500) + ' ms per tick).',
       'Retained changed frames: ' + retainedFrames + '/10 maximum; this is buffer size, not FPS. Unchanged fingerprints are omitted.',
       'Successful captures this session: ' + Number(value.capture_count || 0) + '; timer ticks skipped while a capture was busy: ' + Number(value.skipped_samples || 0) + '.',
-      'Live context is published to the private GitHub mailbox at most once per second.',
+      'Live context is published to the OneDrive mailbox at most once per second.',
       observeEnabled ? 'Status: ' + String(value.status || 'watching') : 'Live context is cleared when Observe is turned off.',
       value.last_capture_at ? 'Last capture: ' + value.last_capture_at : '',
       value.last_publish_at ? 'Last publish: ' + value.last_publish_at : '',
@@ -460,7 +422,7 @@
     }
 
     if (!visionSetupSnapshot && visionSetupDetail.textContent === 'Not checked') {
-      visionSetupDetail.title = 'Setup check tests GitHub sign-in, mailbox reads, the direct Colab tunnel, and model readiness. Successful tunnel connection activates vision and begins model loading automatically.';
+      visionSetupDetail.title = 'Setup check tests OneDrive mailbox reads, the direct Colab tunnel, and model readiness. Successful tunnel connection activates vision and begins model loading automatically.';
       visionSetupDetail.dataset.state = 'not_verified';
       visionMailboxDetail.title = 'Mailbox read access is checked by Setup check.';
       visionMailboxDetail.dataset.state = 'not_verified';
@@ -621,10 +583,10 @@
         startVisionConnectionWatch();
       } else {
         const message = result && (result.message || result.error) || 'Colab connection could not be started.';
-        visionSetupDetail.textContent = result && result.status === 'action_required' ? 'GitHub sign-in needed' : 'Connection failed';
+        visionSetupDetail.textContent = result && result.status === 'action_required' ? 'OneDrive folder needed' : 'Connection failed';
         visionSetupDetail.title = message;
         visionSetupDetail.dataset.state = result && result.status === 'action_required' ? 'action_required' : 'failed';
-        visionColabDetail.textContent = result && result.status === 'action_required' ? 'Sign in to GitHub first' : 'Not connected';
+        visionColabDetail.textContent = result && result.status === 'action_required' ? 'Choose the OneDrive mailbox folder first' : 'Not connected';
         visionColabDetail.title = message;
         visionColabDetail.dataset.state = result && result.status === 'action_required' ? 'action_required' : 'failed';
         if (result) renderVisionStatus(result);
@@ -674,7 +636,7 @@
           colab: { status: 'not_verified', message: 'Setup check failed before Colab could be verified.' },
           model: { status: 'not_verified', message: 'Setup check failed before model readiness could be verified.' }
         },
-        next_steps: ['Check that the app is connected to GitHub, then run Setup check again.']
+        next_steps: ['Choose the local OneDrive-synced Bridge folder, then run Setup check again.']
       });
     } finally {
       visionBusy = false;
@@ -694,105 +656,33 @@
       setDot(workerDot, 'error');
     }
     try {
-      renderGitHub(await window.windowsBridge.getGitHubState());
+      renderOneDrive(await window.windowsBridge.getOneDriveState());
     } catch (error) {
-      renderGitHub({ authenticated: false, error: String(error && error.message || error) });
+      renderOneDrive({ configured: false, error: String(error && error.message || error) });
     }
     await refreshVisionStatus();
   }
 
-  function stopAuthPolling() {
-    if (authTimer !== null) window.clearTimeout(authTimer);
-    authTimer = null;
-    authBusy = false;
-    loginCode = '';
-  }
-
-  function scheduleAuthPoll(seconds = 3) {
-    if (authTimer !== null) window.clearTimeout(authTimer);
-    authTimer = window.setTimeout(async () => {
-      try {
-        const result = await window.windowsBridge.pollGitHubLogin();
-        if (result.status === 'authenticated') {
-          stopAuthPolling();
-          await refreshState();
-          return;
-        }
-        if (result.status === 'pending') {
-          if (result.userCode) loginCode = result.userCode;
-          renderGitHub({ authenticated: false });
-          scheduleAuthPoll(Math.max(3, result.intervalSeconds || seconds));
-          return;
-        }
-        stopAuthPolling();
-        renderGitHub({ authenticated: false, error: result.message || '' });
-        if (result.message) githubLabel.title = result.message;
-      } catch (error) {
-        stopAuthPolling();
-        renderGitHub({ authenticated: false, error: String(error && error.message || error) });
-      }
-    }, Math.max(3, seconds) * 1000);
-  }
-
-  async function copyGitHubDeviceCode() {
-    if (!loginCode) return;
+  oneDriveButton.addEventListener('click', async () => {
+    if (oneDriveButton.disabled) return;
+    oneDriveButton.disabled = true;
+    oneDriveLabel.textContent = 'Select OneDrive folder…';
     try {
-      await window.windowsBridge.copyDeviceCode(loginCode);
-      githubLabel.textContent = 'Code copied — paste into GitHub';
-      githubLabel.title = 'The one-time device code was copied to the clipboard. Return to the GitHub device page and paste it.';
-    } catch (error) {
-      githubLabel.title = 'Could not copy device code: ' + String(error && error.message || error);
-    }
-  }
-
-  async function connectGitHub() {
-    if (authBusy) return;
-    authBusy = true;
-    renderGitHub(githubState || { authenticated: false });
-    try {
-      const existing = await window.windowsBridge.getGitHubState();
-      const flow = existing.authenticated
-        ? await window.windowsBridge.reconnectGitHub()
-        : await window.windowsBridge.startGitHubLogin();
-      if (flow && flow.cancelled) {
-        stopAuthPolling();
-        renderGitHub(existing);
-        return;
-      }
-      if (flow && flow.status === 'authenticated') {
-        stopAuthPolling();
+      const result = await window.windowsBridge.chooseOneDriveFolder();
+      if (result && !result.canceled) {
+        renderOneDrive(result.status || {});
+        if (result.bridge) renderWorker(result.bridge);
         await refreshState();
-        return;
       }
-      loginCode = flow && flow.userCode || loginCode || '';
-      renderGitHub({ authenticated: false });
-      scheduleAuthPoll(flow && flow.intervalSeconds || 3);
     } catch (error) {
-      stopAuthPolling();
-      renderGitHub({ authenticated: false, error: String(error && error.message || error) });
-      githubLabel.title = String(error && error.message || error);
+      oneDriveLabel.textContent = 'OneDrive setup failed';
+      oneDriveLabel.title = String(error && error.message || error);
+      setDot(oneDriveDot, 'error');
+    } finally {
+      oneDriveButton.disabled = false;
     }
-  }
+  });
 
-  githubButton.addEventListener('click', () => {
-    if (authBusy && loginCode) {
-      void copyGitHubDeviceCode();
-      return;
-    }
-    if (githubState && githubState.verificationPending === true) {
-      void window.windowsBridge.retryConnection().then(() => refreshState()).catch(error => {
-        renderGitHub({ ...githubState, verificationPending: true, error: String(error && error.message || error) });
-      });
-      return;
-    }
-    void connectGitHub();
-  });
-  window.windowsBridge.onGitHubDeviceCode(code => {
-    const value = String(code || '').toUpperCase();
-    if (!/^[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(value) || !authBusy) return;
-    loginCode = value;
-    renderGitHub({ authenticated: false });
-  });
   workspaceRow.addEventListener('click', chooseWorkspace);
   autoAcceptRow.addEventListener('click', toggleAutoAcceptAll);
   observeRow.addEventListener('click', () => { void toggleObserve(); });
@@ -823,7 +713,7 @@
     openDashboardButton.title = String(error && error.message || error);
   }));
   window.windowsBridge.onBridgeState(renderWorker);
-  window.windowsBridge.onGitHubState(state => renderGitHub(state));
+  window.windowsBridge.onOneDriveState(state => renderOneDrive(state));
   window.windowsBridge.onColabHandoffResult(result => {
     void refreshVisionStatus().finally(() => {
       const message = String(result && result.message || '');
@@ -845,7 +735,6 @@
     }
   });
   window.addEventListener('beforeunload', () => {
-    stopAuthPolling();
     stopVisionConnectionWatch();
   });
 

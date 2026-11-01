@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
-  <title>Windows Repository Bridge</title>
+  <title>Windows Bridge</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -13,10 +13,10 @@
     <button id="open-dashboard" class="window-control dashboard-control" type="button" title="Open dashboard window" aria-label="Open dashboard window">↗</button>
     <button id="quit" class="window-control quit-control" type="button" title="Quit application" aria-label="Quit application">×</button>
 
-    <div id="github-row" class="status-row github-status-row" role="group" aria-label="GitHub connection status">
-      <span id="github-dot" class="status-dot waiting" aria-hidden="true"></span>
-      <span id="github-status" class="status-label">GitHub checking…</span>
-      <button id="github-signin" class="status-action" type="button" aria-label="Sign in to GitHub">Sign in to GitHub</button>
+    <div id="onedrive-row" class="status-row onedrive-status-row" role="group" aria-label="OneDrive mailbox status">
+      <span id="onedrive-dot" class="status-dot waiting" aria-hidden="true"></span>
+      <span id="onedrive-status" class="status-label">OneDrive checking…</span>
+      <button id="onedrive-choose" class="status-action" type="button" aria-label="Choose OneDrive mailbox folder">Choose folder</button>
     </div>
 
     <div class="status-row worker-row" role="status" aria-live="polite">
@@ -29,7 +29,7 @@
       <span id="workspace-status" class="status-label">Workspace: checking…</span>
     </button>
 
-    <button id="observe-row" class="status-row" type="button" aria-label="Toggle Observe mode" aria-pressed="false" title="Observe the desktop at the selected sampling rate and publish changed context to the private GitHub mailbox. Turning off clears the live context files.">
+    <button id="observe-row" class="status-row" type="button" aria-label="Toggle Observe mode" aria-pressed="false" title="Observe the desktop at the selected sampling rate and publish changed context to the OneDrive mailbox. Turning off clears the live context files.">
       <span id="observe-dot" class="status-dot waiting" aria-hidden="true"></span>
       <span id="observe-status" class="status-label">Observe: OFF</span>
     </button>

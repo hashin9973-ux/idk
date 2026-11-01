@@ -14,6 +14,29 @@ function fixture() {
 }
 function cleanup(root) { fs.rmSync(root, { recursive: true, force: true }); }
 
+
+
+test('exec_command is classified as an approval-gated generic host command', () => {
+  const policy = tools.getToolPolicy('exec_command', { command: 'python --version' });
+  assert.equal(policy.requiresApproval, true);
+  assert.equal(policy.automatic, false);
+});
+
+test('exec_command launches an installed runtime through PowerShell on Windows', {
+  skip: process.platform !== 'win32'
+}, async () => {
+  const root = fixture();
+  try {
+    const executable = process.execPath.replace(/'/g, "''");
+    const command = "& '" + executable + "' -e \"process.stdout.write('exec-command-ok')\"";
+    const result = await tools.executeTool(root, 'exec_command', { command });
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.equal(result.stdout, 'exec-command-ok');
+    assert.equal(result.timedOut, false);
+  } finally {
+    cleanup(root);
+  }
+});
 test('workspace path policy allows in-workspace absolute paths and rejects paths outside the workspace', () => {
   const root = fixture();
   try {

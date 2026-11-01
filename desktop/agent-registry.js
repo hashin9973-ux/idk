@@ -34,7 +34,7 @@ function formatAgentMessage(session, value) {
   return body.startsWith(prefix) ? body : prefix + ' ' + body;
 }
 
-function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
+function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFolder, writeRemoteJson, deleteRemoteFiles = null, isConflict, clock = () => Date.now(), maxSessions = 10000 }) {
   if (typeof readRemoteFile !== 'function' || typeof listFolder !== 'function' ||
       typeof writeRemoteJson !== 'function' || typeof isConflict !== 'function') {
     throw new TypeError('Agent registry dependencies are incomplete.');
@@ -48,32 +48,35 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   function timestamp() { return new Date(clock()).toISOString(); }
   function seatPath(agentId) {
     if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid Agent ID.');
-    return 'bridge/agents/' + agentId + '.json';
+    return 'local/agents/' + agentId + '.json';
   }
   function sessionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id. Call session_start to create a session.');
-    return 'bridge/sessions/' + sessionId + '.json';
+    return 'local/sessions/' + sessionId + '.json';
   }
   function revocationPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
-    return 'bridge/revoked-sessions/' + sessionId + '.json';
+    return 'local/revoked-sessions/' + sessionId + '.json';
   }
   function evictionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
-    return 'bridge/evicted-sessions/' + sessionId + '.json';
+    return 'local/evicted-sessions/' + sessionId + '.json';
   }
-  function inboxPath(sessionId) {
-    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
-    return 'bridge/agent-messages/' + sessionId;
+  function inboxPath(agentId) {
+    if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid recipient agent ID.');
+    return 'messages/' + agentId;
   }
-  function messagePath(sessionId, messageId) {
+  function messagePath(agentId, messageId) {
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
-    return inboxPath(sessionId) + '/' + messageId + '.json';
+    return inboxPath(agentId) + '/' + messageId + '.json';
   }
-  function messageReceiptPath(sessionId, messageId) {
-    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
+  function messageReceiptPath(agentId, messageId) {
+    if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid recipient agent ID.');
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
-    return 'bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json';
+    return inboxPath(agentId) + '/' + messageId + '.read.json';
+  }
+  function messageOwnerAgentId(record) {
+    return record && record.recipient_agent_id === 'user' ? record.sender_agent_id : record && record.recipient_agent_id;
   }
 
   async function withLock(key, operation) {
@@ -232,7 +235,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function listSeatIds() {
-    const entries = await listFolder('bridge/agents');
+    const entries = await listFolder('local/agents');
     return [...new Set(entries
       .filter(item => item && typeof item.name === 'string')
       .map(item => item.name.split('/').pop())
@@ -298,7 +301,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       throw new Error('The session registration cap must be a positive integer.');
     }
     const evictedSessions = [];
-    let names = [...new Set((await listFolder('bridge/sessions'))
+    let names = [...new Set((await listFolder('local/sessions'))
       .map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
 
@@ -323,7 +326,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       candidates.sort((a, b) =>
         a.lastActivity - b.lastActivity || a.sessionId.localeCompare(b.sessionId));
       if (!candidates.length) {
-        throw new Error('SESSION_LIMIT_REACHED: The mailbox is at its ' + maxSessions +
+        throw new Error('SESSION_LIMIT_REACHED: The app-local session registry is at its ' + maxSessions +
           '-ID cap, but no session record could be read safely for oldest-activity eviction.');
       }
 
@@ -438,7 +441,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
       if (names.length < maxSessions) break;
       if (rescan) {
-        names = [...new Set((await listFolder('bridge/sessions'))
+        names = [...new Set((await listFolder('local/sessions'))
           .map(item => String(item && (item.name || item.path) || '').split('/').pop())
           .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
         continue;
@@ -518,7 +521,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
               session_id: sessionId, agent_id: agentId, label, status: 'active', busy: false,
               last_activity_at: now, created_at: now,
               note: 'Session created after explicit desktop assignment. Keep this session_id for this ChatGPT conversation and include it on every subsequent bridge tool request. This session ID and its agent seat remain valid while idle; at the hard 10,000-ID cap, the oldest last-activity ID may be evicted. Explicit disconnect or revoke/delete also releases the seat.',
-              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the all-agent status list and use agent messaging tools to coordinate. Inactivity never expires this session or releases its agent seat. At the hard 10,000-ID cap, the ID with the oldest last_activity_at is evicted. Pause temporarily blocks this session; disconnect explicitly releases its seat; delete/revoke permanently disables it.'
+              context_message: 'You are assigned to ' + agentId + '. Your session_id is ' + sessionId + '. Keep this exact session_id for this ChatGPT conversation and include it on every ordinary bridge request. Read the agent inventory in STATUS.md and use agent messaging tools to coordinate. Inactivity never expires this session or releases its agent seat. At the hard 10,000-ID cap, the ID with the oldest last_activity_at is evicted. Pause temporarily blocks this session; disconnect explicitly releases its seat; delete/revoke permanently disables it.'
             };
           });
           if (!allocated) {
@@ -750,113 +753,102 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function wipeMailbox(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('A valid session_id is required for mailbox cleanup.');
-    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted session revocation first.');
+    if (!(await isRevoked(sessionId))) throw new Error('Mailbox cleanup requires a persisted local session revocation first.');
     if (typeof deleteRemoteFiles !== 'function') throw new Error('Safe mailbox deletion is unavailable; the session remains revoked.');
+    const sessionRemote = await readSession(sessionId);
+    const agentId = sessionRemote && sessionRemote.value.agent_id;
+    if (!agentId) throw new Error('The revoked session has no local agent ownership record.');
     const files = new Map();
-    const addFile = (filePath, sha) => {
-      if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha);
-    };
-    const requestEntries = await listFolder('bridge/requests');
-    const requestNames = [...new Set(requestEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)))];
-    let deletedRequests = 0;
-    let ownedRequestRecords = 0;
-    const requestRecords = [];
-    for (let start = 0; start < requestNames.length; start += 16) {
-      const group = requestNames.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
+    const addFile = (filePath, sha) => { if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha); };
+    let deletedRequests = 0, preservedRequests = 0;
+    const requestFolders = (await listFolder('request'))
+      .filter(folder => folder && folder.type === 'dir' && (folder.name === agentId || folder.name === 'agent-000'));
+    for (const folder of requestFolders) {
+      const ownerFolder = folder.name;
+      const requestEntries = await listFolder('request/' + ownerFolder);
+      for (const item of requestEntries) {
+        const name = String(item && (item.name || item.path) || '').split('/').pop();
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)) continue;
         const requestId = name.slice(0, -5);
-        const requestRemote = await readRemoteFile('bridge/requests/' + name);
-        if (!requestRemote || !requestRemote.value || requestRemote.value.protocol !== REQUEST_RECORD_PROTOCOL ||
-            requestRemote.value.request_id !== requestId || requestRemote.value.session_id !== sessionId) return null;
-        ownedRequestRecords++;
-        const [claim, result] = await Promise.all([
-          readRemoteFile('bridge/claims/' + name), readRemoteFile('bridge/results/' + name)
+        const requestPath = 'request/' + ownerFolder + '/' + name;
+        const claimPath = 'claims/' + ownerFolder + '/' + name;
+        const resultPath = 'result/' + ownerFolder + '/' + name;
+        const [request, claim, result] = await Promise.all([
+          readRemoteFile(requestPath), readRemoteFile(claimPath), readRemoteFile(resultPath)
         ]);
-        if (!claim || !result || !claim.value || !result.value ||
-            claim.value.protocol !== 'chatgpt-local-repo-claim/v1' || result.value.protocol !== 'chatgpt-local-repo-result/v1' ||
-            claim.value.request_id !== requestId || claim.value.session_id !== sessionId || claim.value.status !== 'completed' ||
-            result.value.request_id !== requestId || (result.value.session_id && result.value.session_id !== sessionId) ||
-            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) return null;
-        return { requestId, requestRemote, claim, result };
-      }));
-      requestRecords.push(...rows.filter(Boolean));
-    }
-    const flatArtifacts = await listFolder('bridge/artifacts');
-    for (const record of requestRecords) {
-      const name = record.requestId + '.json';
-      addFile('bridge/requests/' + name, record.requestRemote.sha);
-      addFile('bridge/claims/' + name, record.claim.sha);
-      addFile('bridge/results/' + name, record.result.sha);
-      const manifest = Array.isArray(record.result.value.artifacts) ? record.result.value.artifacts : [];
-      const requestArtifactPrefix = 'bridge/artifacts/' + record.requestId + '/';
-      const legacyBatchArtifactPrefix = 'bridge/artifacts/' + record.requestId + '-batch-output-';
-      const ownedPaths = new Set(manifest.map(item => item && item.path).filter(value =>
-        typeof value === 'string' && (value.startsWith(requestArtifactPrefix) ||
-          value.startsWith(legacyBatchArtifactPrefix))));
-      const nested = await listFolder('bridge/artifacts/' + record.requestId);
-      for (const item of [...flatArtifacts, ...nested]) {
-        const itemPath = String(item && (item.path || item.name) || '');
-        // A revoked request's result journal is intentionally replaced with a
-        // compact cancellation record, so its original artifact manifest may
-        // no longer exist. The request-ID-scoped folder/legacy prefix remain
-        // authoritative ownership boundaries for orphaned request artifacts.
-        const requestScoped = itemPath.startsWith(requestArtifactPrefix) || itemPath.startsWith(legacyBatchArtifactPrefix);
-        if ((ownedPaths.has(itemPath) || requestScoped) && item && typeof item.sha === 'string') addFile(itemPath, item.sha);
-      }
-      deletedRequests++;
-    }
-
-    const sessionEntries = await listFolder('bridge/sessions');
-    const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
-    if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
-    let deletedMessages = 0;
-    for (let start = 0; start < recipientSessions.length; start += 12) {
-      const group = recipientSessions.slice(start, start + 12);
-      const inboxes = await Promise.all(group.map(async recipientSessionId => {
-        let entries;
-        try { entries = await listFolder(inboxPath(recipientSessionId)); }
-        catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-        return { recipientSessionId, entries };
-      }));
-      for (const inbox of inboxes) {
-        const candidates = inbox.entries.filter(item => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(String(item && (item.name || item.path) || '').split('/').pop()));
-        for (let batch = 0; batch < candidates.length; batch += 16) {
-          const rows = await Promise.all(candidates.slice(batch, batch + 16).map(async item => {
-            const name = String(item.name || item.path).split('/').pop();
-            const messageId = name.slice(0, -5);
-            const messageRemote = await readRemoteFile(messagePath(inbox.recipientSessionId, messageId));
-            const record = messageRemote && messageRemote.value;
-            if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' || record.message_id !== messageId ||
-                record.recipient_session_id !== inbox.recipientSessionId ||
-                (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) return null;
-            return { recipientSessionId: inbox.recipientSessionId, messageId, messageRemote };
-          }));
-          for (const item of rows.filter(Boolean)) {
-            addFile(messagePath(item.recipientSessionId, item.messageId), item.messageRemote.sha);
-            const receiptPath = messageReceiptPath(item.recipientSessionId, item.messageId);
-            const receipt = await readRemoteFile(receiptPath);
-            if (receipt && receipt.value && receipt.value.protocol === 'chatgpt-local-agent-message-receipt/v1' &&
-                receipt.value.message_id === item.messageId && receipt.value.recipient_session_id === item.recipientSessionId) {
-              addFile(receiptPath, receipt.sha);
-            }
-            deletedMessages++;
-          }
+        if (!request || !request.value || request.value.request_id !== requestId ||
+            !claim || !claim.value || claim.value.request_id !== requestId ||
+            !result || !result.value || result.value.request_id !== requestId ||
+            claim.value.status !== 'completed' ||
+            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) {
+          if (request && request.value && request.value.session_id === sessionId) preservedRequests++;
+          continue;
         }
+        const resultSessionId = result.value.session_id ||
+          (result.value.result && result.value.result.session_id) ||
+          (result.value.result && result.value.result.result && result.value.result.result.session_id);
+        const ownedBySession = request.value.session_id === sessionId ||
+          claim.value.session_id === sessionId || resultSessionId === sessionId;
+        if (!ownedBySession || (ownerFolder !== agentId && ownerFolder !== 'agent-000')) continue;
+        addFile(requestPath, request.sha);
+        addFile(claimPath, claim.sha);
+        addFile(resultPath, result.sha);
+        const manifest = Array.isArray(result.value.artifacts) ? result.value.artifacts : [];
+        const allowedPrefix = 'sandbox storage/' + ownerFolder + '/';
+        const artifactPaths = new Set(manifest.map(artifact => artifact && artifact.path)
+          .filter(artifactPath => typeof artifactPath === 'string' && artifactPath.startsWith(allowedPrefix)));
+        for (const artifact of await listFolder('sandbox storage/' + ownerFolder)) {
+          if (artifact && artifact.type === 'file' && typeof artifact.name === 'string' &&
+              artifact.name.startsWith(requestId + '-')) artifactPaths.add(allowedPrefix + artifact.name);
+        }
+        for (const artifactPath of artifactPaths) {
+          if (typeof readRemoteContent !== 'function') continue;
+          const stored = await readRemoteContent(artifactPath).catch(() => null);
+          if (stored && stored.sha) addFile(artifactPath, stored.sha);
+        }
+        deletedRequests++;
       }
     }
-    const deletion = await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })));
-    const preservedRequests = Math.max(0, ownedRequestRecords - deletedRequests);
+    let deletedMessages = 0;
+    for (const folder of await listFolder('messages')) {
+      if (!folder || folder.type !== 'dir' || !AGENT_ID_PATTERN.test(folder.name)) continue;
+      const inbox = 'messages/' + folder.name;
+      const entries = await listFolder(inbox);
+      for (const entry of entries) {
+        const name = String(entry && (entry.name || entry.path) || '').split('/').pop();
+        const receiptMatch = name.match(/^(msg-[0-9]{13}-[a-f0-9]{32})\.read\.json$/);
+        if (receiptMatch) {
+          const message = await readRemoteFile(messagePath(folder.name, receiptMatch[1]));
+          const record = message && message.value;
+          if (record && (record.sender_session_id === sessionId || record.recipient_session_id === sessionId)) {
+            const receiptPath = messageReceiptPath(folder.name, receiptMatch[1]);
+            const receipt = await readRemoteFile(receiptPath);
+            if (receipt) addFile(receiptPath, receipt.sha);
+          }
+          continue;
+        }
+        if (!/^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(name)) continue;
+        const messageId = name.slice(0, -5);
+        const message = await readRemoteFile(messagePath(folder.name, messageId));
+        const record = message && message.value;
+        if (!record || (record.sender_session_id !== sessionId && record.recipient_session_id !== sessionId)) continue;
+        addFile(messagePath(folder.name, messageId), message.sha);
+        const receipt = await readRemoteFile(messageReceiptPath(folder.name, messageId));
+        if (receipt) addFile(messageReceiptPath(folder.name, messageId), receipt.sha);
+        deletedMessages++;
+      }
+    }
+    const deletion = files.size
+      ? await deleteRemoteFiles([...files].map(([filePath, sha]) => ({ path: filePath, sha })))
+      : { deleted: 0 };
+    unreadMessageCountCache.delete(sessionId);
     return {
       status: preservedRequests ? 'completed_with_preserved_records' : 'completed',
       deleted_records: deletedRequests + deletedMessages, deleted_files: deletion.deleted || files.size,
       deleted_request_records: deletedRequests, deleted_message_records: deletedMessages,
       preserved_request_records: preservedRequests,
-      preservation_note: preservedRequests
-        ? 'Some requests were retained because their claim/result journal was missing, active, incomplete, or could not be proven terminal. Retry cleanup after those operations settle.'
-        : null,
-      commit_sha: deletion.commitSha || null, preserved_session_and_revocation_records: true
+      preservation_note: preservedRequests ? 'Some request records were retained because their claim/result journal was missing, active, incomplete, or not terminal.' : null,
+      preserved_local_session_registry: true
     };
   }
 
@@ -868,31 +860,26 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       unreadMessageCountCache.set(sessionId, cached);
       return { count: cached.count, partial: cached.partial };
     }
+    const sessionRemote = await readSession(sessionId);
+    if (!sessionRemote) return { count: 0, partial: false };
+    const ownerAgentId = sessionRemote.value.agent_id;
     let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
+    try { entries = await listFolder(inboxPath(ownerAgentId)); }
     catch (error) {
       if (/not found|404/i.test(String(error && error.message || error))) entries = [];
       else throw error;
     }
-    const allNames = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))].sort();
-    const names = allNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
-    let receiptEntries = [];
-    if (names.length) {
-      try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
-      catch (error) {
-        if (!/not found|404/i.test(String(error && error.message || error))) throw error;
-      }
-    }
-    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
-      .map(name => name.slice(0, -5)));
+    const allNames = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop()))].sort();
+    const messageNames = allNames.filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\.json$/.test(name));
+    const names = messageNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
+    const receiptIds = new Set(allNames.filter(name => /^msg-[0-9]{13}-[a-f0-9]{32}\.read\.json$/.test(name))
+      .map(name => name.slice(0, -10)));
     let unread = 0;
     const scannedIds = new Set(names.map(name => name.slice(0, -5)));
     for (let start = 0; start < names.length; start += 16) {
       const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
         const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
         if (!remote) return null;
         const record = remote.value;
         if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -906,14 +893,9 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
             !record.read_at && !receiptIds.has(record.message_id)) unread++;
       }
     }
-    const summary = {
-      count: unread, partial: allNames.length > names.length,
-      scannedIds, checkedAt: clock()
-    };
+    const summary = { count: unread, partial: messageNames.length > names.length, scannedIds, checkedAt: clock() };
     unreadMessageCountCache.set(sessionId, summary);
-    while (unreadMessageCountCache.size > 10000) {
-      unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
-    }
+    while (unreadMessageCountCache.size > 10000) unreadMessageCountCache.delete(unreadMessageCountCache.keys().next().value);
     return { count: summary.count, partial: summary.partial };
   }
 
@@ -983,7 +965,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         busy: 'One or more local bridge requests are still executing. Busy seats are not reassigned.',
         session_id: 'The conversation identity currently leased to this reusable seat; it is not a secret.'
       },
-      note: 'The session_id and its agent_id seat remain bound to one ChatGPT conversation until explicit disconnect or revoke/delete, unless that exact ID is evicted as the oldest last-activity record at the hard 10,000-ID cap. active/inactive is only a recent-activity indicator; inactivity never releases the seat. Status includes every seat record found in bridge/agents; no credentials are included.'
+      note: 'The session_id and its agent_id seat remain bound to one ChatGPT conversation until explicit disconnect or revoke/delete, unless that exact ID is evicted as the oldest last-activity record at the hard 10,000-ID cap. active/inactive is only a recent-activity indicator; inactivity never releases the seat. Agent and session ownership records are app-local; no session IDs or credentials are published in STATUS.md.'
     };
   }
 
@@ -1004,7 +986,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function writeMessage(recipientSessionId, record) {
-    const path = messagePath(recipientSessionId, record.message_id);
+    const path = messagePath(messageOwnerAgentId(record), record.message_id);
     const saved = await writeRemoteJson(path, record, null, true);
     if (!saved || !saved.ok) throw new Error('Message publication conflicted. Do not send a duplicate until the original message path has been checked.');
     return record;
@@ -1096,10 +1078,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function markMessageRead(sessionId, messageId, knownRecord = null) {
-    const path = messagePath(sessionId, messageId);
+    const identity = await currentSession(sessionId);
     let value = knownRecord;
     if (!value) {
-      const remote = await readRemoteFile(path);
+      const remote = await readRemoteFile(messagePath(identity.session.agent_id, messageId));
       if (!remote) return null;
       value = remote.value;
     }
@@ -1107,7 +1089,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         value.message_id !== messageId || value.recipient_session_id !== sessionId) {
       throw new Error('Message record is malformed or addressed to another session.');
     }
-    const receiptPath = messageReceiptPath(sessionId, messageId);
+    const receiptPath = messageReceiptPath(messageOwnerAgentId(value), messageId);
     const updateCachedUnread = () => {
       const cached = unreadMessageCountCache.get(sessionId);
       if (!cached) return;
@@ -1126,24 +1108,16 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         const receipt = existing.value;
         if (!receipt || receipt.protocol !== 'chatgpt-local-agent-message-receipt/v1' ||
             receipt.message_id !== messageId || receipt.recipient_session_id !== sessionId ||
-            typeof receipt.read_at !== 'string') {
-          throw new Error('Message read receipt is malformed or addressed to another session.');
-        }
+            typeof receipt.read_at !== 'string') throw new Error('Message read receipt is malformed or addressed to another session.');
         updateCachedUnread();
         return { ...value, read_at: receipt.read_at };
       }
       const readAt = timestamp();
-      const receipt = {
-        protocol: 'chatgpt-local-agent-message-receipt/v1',
-        message_id: messageId, recipient_session_id: sessionId,
-        created_at: readAt, read_at: readAt
-      };
+      const receipt = { protocol: 'chatgpt-local-agent-message-receipt/v1',
+        message_id: messageId, recipient_session_id: sessionId, created_at: readAt, read_at: readAt };
       try {
         const saved = await writeRemoteJson(receiptPath, receipt, null, true);
-        if (saved && saved.ok) {
-          updateCachedUnread();
-          return { ...value, read_at: readAt };
-        }
+        if (saved && saved.ok) { updateCachedUnread(); return { ...value, read_at: readAt }; }
       } catch (error) {
         if (!isConflictError(error) || attempt === 4) throw error;
       }
@@ -1153,95 +1127,87 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function readMessages(sessionId, args = {}) {
     return withSessionLock(sessionId, async () => {
-    await currentSession(sessionId);
-    const unreadOnly = args.unread_only !== false;
-    const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
-    let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
-    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
-      .sort().slice(-200);
-    const found = [];
-    for (let start = 0; start < names.length; start += 16) {
-      const group = names.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
-        const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
-        if (!remote) return null;
-        const record = remote.value;
-        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
-            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
-          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
-        }
-        return record;
-      }));
-      found.push(...rows.filter(Boolean));
-    }
-    found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
-    let receiptEntries;
-    try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
-    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = []; else throw error; }
-    const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
-      .map(name => name.slice(0, -5)));
-    const selected = found.filter(record => record.recipient_agent_id !== 'user' && (!unreadOnly ||
-      (!receiptIds.has(record.message_id) && !record.read_at))).slice(-limit);
-    const read = [];
-    for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
-    return {
-      session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
-      scanned_recent_limit: 200, messages: read.filter(Boolean),
-      note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
-    };
+      const identity = await currentSession(sessionId);
+      const ownerAgentId = identity.session.agent_id;
+      const unreadOnly = args.unread_only !== false;
+      const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
+      let entries;
+      try { entries = await listFolder(inboxPath(ownerAgentId)); }
+      catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+      const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\.json$/i, '')) && /\.json$/i.test(name) && !/\.read\.json$/i.test(name)))]
+        .sort().slice(-200);
+      const found = [];
+      for (let start = 0; start < names.length; start += 16) {
+        const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+          const messageId = name.slice(0, -5);
+          const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
+          if (!remote) return null;
+          const record = remote.value;
+          if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+              record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+            throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+          }
+          return record;
+        }));
+        found.push(...rows.filter(Boolean));
+      }
+      found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      const receiptIds = new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => /\.read\.json$/i.test(name)).map(name => name.slice(0, -10)));
+      const selected = found.filter(record => record.recipient_agent_id !== 'user' && (!unreadOnly ||
+        (!receiptIds.has(record.message_id) && !record.read_at))).slice(-limit);
+      const read = [];
+      for (const record of selected) read.push(await markMessageRead(sessionId, record.message_id, record));
+      return { session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
+        scanned_recent_limit: 200, messages: read.filter(Boolean),
+        note: 'Messages and read receipts are stored under the recipient agent folder; exact session IDs prevent delivery to a recycled seat occupant.' };
     });
   }
 
   async function readDashboardReplies(sessionId, args = {}) {
     return withSessionLock(sessionId, async () => {
-    await currentSession(sessionId);
-    const suppliedIds = args.message_ids;
-    if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
-        suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
-      throw new Error('message_ids must contain 1–100 valid message IDs.');
-    }
-    const wanted = new Set(suppliedIds);
-    if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
-    let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
-    catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
-    const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
-      .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
-      .sort().slice(-200);
-    const replies = [];
-    for (let start = 0; start < names.length; start += 16) {
-      const group = names.slice(start, start + 16);
-      const rows = await Promise.all(group.map(async name => {
-        const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
-        if (!remote) return null;
-        const record = remote.value;
-        if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
-            record.message_id !== messageId || record.recipient_session_id !== sessionId) {
-          throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
-        }
-        if (record.sender_session_id === sessionId && record.recipient_agent_id === 'user' &&
-            wanted.has(record.in_reply_to)) return record;
-        return null;
-      }));
-      replies.push(...rows.filter(Boolean));
-    }
-    replies.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
-    return {
-      session_id: sessionId, count: replies.length, messages: replies,
-      note: 'Replies are read from the same session-scoped agent-message mailbox; no other session inbox is accessed.'
-    };
+      const identity = await currentSession(sessionId);
+      const ownerAgentId = identity.session.agent_id;
+      const suppliedIds = args.message_ids;
+      if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
+          suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
+        throw new Error('message_ids must contain 1–100 valid message IDs.');
+      }
+      const wanted = new Set(suppliedIds);
+      if (!wanted.size) return { session_id: sessionId, count: 0, messages: [] };
+      let entries;
+      try { entries = await listFolder(inboxPath(ownerAgentId)); }
+      catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
+      const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
+        .filter(name => MESSAGE_ID_PATTERN.test(name.replace(/\.json$/i, '')) && /\.json$/i.test(name) && !/\.read\.json$/i.test(name)))]
+        .sort().slice(-200);
+      const replies = [];
+      for (let start = 0; start < names.length; start += 16) {
+        const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
+          const messageId = name.slice(0, -5);
+          const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
+          if (!remote) return null;
+          const record = remote.value;
+          if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
+              record.message_id !== messageId || record.recipient_session_id !== sessionId) {
+            throw new Error('Message record ' + messageId + ' is malformed or addressed to another session.');
+          }
+          return record.sender_session_id === sessionId && record.recipient_agent_id === 'user' &&
+            wanted.has(record.in_reply_to) ? record : null;
+        }));
+        replies.push(...rows.filter(Boolean));
+      }
+      replies.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+      return { session_id: sessionId, count: replies.length, messages: replies,
+        note: 'Replies are read from the sender agent folder and retain their exact session routing.' };
     });
   }
 
   async function replyToMessage(sessionId, args = {}) {
     const originalId = String(args.message_id || '');
-    const initial = await readRemoteFile(messagePath(sessionId, originalId));
+    const initialIdentity = await currentSession(sessionId);
+    const initial = await readRemoteFile(messagePath(initialIdentity.session.agent_id, originalId));
     if (!initial) throw new Error('No message with this message_id exists in the current session inbox.');
     const initialRecord = initial.value;
     if (!initialRecord || initialRecord.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -1257,7 +1223,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     return withSessionLocks([sessionId, recipientSessionId], async () => {
     const sender = await currentSession(sessionId);
     const originalId = String(args.message_id || '');
-    const remote = await readRemoteFile(messagePath(sessionId, originalId));
+    const remote = await readRemoteFile(messagePath(sender.session.agent_id, originalId));
     if (!remote) throw new Error('No message with this message_id exists in the current session inbox.');
     const original = remote.value;
     if (!original || original.protocol !== 'chatgpt-local-agent-message/v1' ||

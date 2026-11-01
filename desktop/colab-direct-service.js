@@ -28,7 +28,6 @@ const MAX_TTS_PREFETCH_CONCURRENCY = 3;
 const TTS_PLAYBACK_TIMEOUT_MS = 10 * 60 * 1000;
 const TTS_STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 const MAX_TTS_STREAM_RESPONSE_BYTES = 36 * 1024 * 1024;
-const DEFAULT_MAILBOX = Object.freeze({ owner: 'hashin9973-ux', repo: 'qdqwg', branch: 'bridge-mailbox' });
 const COLAB_NOTEBOOK_URL = 'https://colab.research.google.com/github/hashin9973-ux/idk/blob/main/vision/vision_worker.ipynb';
 const MODEL_ID = 'ollama/qwen3-vl';
 const MODEL_FILE = 'qwen3-vl:4b-instruct';
@@ -210,7 +209,7 @@ function scaleWavVolume(audio, requestedVolume = 100) {
 
 function createVisionService(deps) {
   const {
-    githubAuth,
+    mailbox = null,
     getSettings,
     getWorkspaceRoot,
     captureScreenshot,
@@ -249,47 +248,16 @@ function createVisionService(deps) {
   const speechJobs = new Map();
   let activeSpeechJobId = null;
 
-  function mailboxConfig() {
-    const settings = typeof getSettings === 'function' ? getSettings() || {} : {};
-    const configured = settings.repositoryBridge || {};
-    const result = {
-      owner: String(configured.owner || DEFAULT_MAILBOX.owner),
-      repo: String(configured.repo || DEFAULT_MAILBOX.repo),
-      branch: String(configured.branch || DEFAULT_MAILBOX.branch)
-    };
-    return result;
-  }
-
   function currentTtsVolume() {
     const configured = typeof getTtsVolume === 'function' ? Number(getTtsVolume()) : 100;
     return Number.isFinite(configured) ? Math.max(0, Math.min(100, configured)) : 100;
   }
 
-  async function readMailboxJson(relativePath) {
-    if (!githubAuth || typeof githubAuth.requestApi !== 'function') throw new Error('The app GitHub connection is unavailable.');
-    if (typeof relativePath !== 'string' || relativePath.startsWith('/') ||
-        relativePath.split('/').some(part => !part || part === '.' || part === '..' || !/^[A-Za-z0-9_.-]+$/.test(part))) {
-      throw new Error('Unsafe internal mailbox path.');
+  async function readStatusMarkdown() {
+    if (!mailbox || typeof mailbox.readContent !== 'function') {
+      throw new Error('The OneDrive mailbox is unavailable. Select the existing OneDrive-synced Bridge folder.');
     }
-    const cfg = mailboxConfig();
-    let response;
-    try {
-      response = await githubAuth.requestApi({
-        method: 'GET',
-        path: '/repos/' + cfg.owner + '/' + cfg.repo + '/contents/' + relativePath,
-        query: { ref: cfg.branch }
-      });
-    } catch (error) {
-      if (/(^|\D)404(\D|$)|not found|does not exist/i.test(messageOf(error))) return null;
-      throw error;
-    }
-    const entry = response && response.result;
-    if (!entry || typeof entry.content !== 'string' || entry.encoding !== 'base64') return null;
-    try {
-      return { value: JSON.parse(Buffer.from(entry.content.replace(/\s/g, ''), 'base64').toString('utf8')), sha: entry.sha || null };
-    } catch {
-      throw new Error('Malformed JSON in mailbox path ' + relativePath + '.');
-    }
+    return mailbox.readContent('STATUS.md');
   }
 
   function endpointFromClipboard(text) {
@@ -745,35 +713,45 @@ function createVisionService(deps) {
     }
   }
 
-  async function setupCheck(githubState = {}) {
+  async function setupCheck() {
     const checkedAt = new Date(now()).toISOString();
-    const githubConnected = githubState && githubState.authenticated === true;
+    const mailboxState = mailbox && typeof mailbox.getState === 'function' ? mailbox.getState() : {};
+    const oneDriveConfigured = mailboxState.configured === true;
     const checks = {
-      github: {
-        status: githubConnected ? 'passed' : 'action_required',
-        message: githubConnected
-          ? (githubState.login ? 'Signed in to GitHub as @' + String(githubState.login).slice(0, 80) + '.' : 'The app has a saved GitHub sign-in.')
-          : 'Sign in to GitHub in the desktop app so normal tool results can be written to the mailbox.'
+      onedrive: {
+        status: oneDriveConfigured ? 'passed' : 'action_required',
+        message: oneDriveConfigured
+          ? 'The Windows app has the existing local OneDrive-synced Bridge folder configured.'
+          : 'Choose the existing locally synchronized OneDrive Bridge folder in the desktop app.'
       },
-      mailbox: { status: githubConnected ? 'not_verified' : 'action_required', message: githubConnected ? 'Checking access to the configured private mailbox.' : 'Sign in to GitHub before checking mailbox access.' },
+      mailbox: {
+        status: oneDriveConfigured ? 'not_verified' : 'action_required',
+        message: oneDriveConfigured
+          ? 'Checking access to the consolidated STATUS.md snapshot.'
+          : 'Configure OneDrive before checking mailbox access.'
+      },
       colab: { status: 'not_verified', message: 'Waiting for the notebook to register its temporary HTTPS tunnel with the app.' },
       model: { status: 'not_verified', message: 'Model readiness has not been confirmed by a live Colab runtime.' },
       vision: { status: 'disabled', message: 'Setup check does not enable vision or download model weights.' }
     };
-    if (githubConnected) {
+    if (oneDriveConfigured) {
       try {
-        const mailbox = await readMailboxJson('bridge/state/windows-app.json');
-        checks.mailbox = mailbox && mailbox.value && mailbox.value.protocol === 'chatgpt-local-repo-state/v1'
-          ? { status: 'passed', message: 'The app can read a valid Windows worker state record from the configured mailbox branch.' }
-          : { status: 'failed', message: 'The mailbox state record is missing or has an invalid protocol.' };
+        const stateRecord = await readStatusMarkdown();
+        const statusText = stateRecord && stateRecord.content ? stateRecord.content.toString('utf8') : '';
+        const updatedLine = statusText.match(/^- Updated: (.+)$/m);
+        const updatedAt = updatedLine ? Date.parse(updatedLine[1]) : NaN;
+        const fresh = Number.isFinite(updatedAt) && now() - updatedAt <= 3 * 60 * 1000;
+        checks.mailbox = statusText.startsWith('# Windows Bridge Status') && fresh
+          ? { status: 'passed', message: 'The app can read a fresh consolidated STATUS.md snapshot from the OneDrive-synced mailbox.' }
+          : { status: 'failed', message: 'STATUS.md is missing, malformed, or its worker heartbeat is stale.' };
       } catch (error) {
-        checks.mailbox = { status: 'failed', message: 'Could not read the configured GitHub mailbox: ' + messageOf(error) };
+        checks.mailbox = { status: 'failed', message: 'Could not read the OneDrive mailbox: ' + messageOf(error) };
       }
     }
     const state = await queryRuntime();
-    if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No GitHub token is stored in Colab.' };
+    if (state.runtime_fresh) checks.colab = { status: 'passed', message: 'Colab responds through an authenticated direct HTTPS tunnel. No OneDrive token is stored in Colab.' };
     else if (state.connection_registered) checks.colab = { status: 'failed', message: state.message };
-    else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS endpoint with the app. No token copy/paste is required.' };
+    else checks.colab = { status: 'not_verified', message: 'Run the notebook cell; it automatically registers its temporary HTTPS tunnel with the app. No token copy/paste is required.' };
     if (state.runtime_fresh && state.status === 'incompatible_runtime') {
       checks.model = { status: 'failed', message: state.message || 'The running Colab notebook is missing required API v5 capabilities.' };
     } else if (state.runtime_fresh && state.model_loaded) checks.model = { status: 'passed', message: 'The connected Colab vision model reports ready. The first real screenshot request may still need warm-up.' };
@@ -785,13 +763,13 @@ function createVisionService(deps) {
       : state.enabled
         ? { status: 'enabled', message: state.model_loaded ? 'Vision is enabled and the connected model is ready for inference.' : 'Vision is enabled; model setup is still in progress.' }
         : { status: 'disabled', message: 'Vision is disabled; connecting alone does not load the model.' };
-    const passed = checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
-    const failed = checks.github.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
+    const passed = checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed' && checks.model.status === 'passed';
+    const failed = checks.onedrive.status === 'failed' || checks.mailbox.status === 'failed' || checks.colab.status === 'failed' || checks.model.status === 'failed';
     const loading = state.runtime_fresh && state.enabled && !state.model_loaded && !failed &&
-      checks.github.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
+      checks.onedrive.status === 'passed' && checks.mailbox.status === 'passed' && checks.colab.status === 'passed';
     const next_steps = [];
-    if (checks.github.status !== 'passed') next_steps.push('Use Sign in to GitHub in the app. GitHub is still used for normal tool requests and results.');
-    if (checks.mailbox.status !== 'passed') next_steps.push('Verify that the app can read hashin9973-ux/qdqwg on the bridge-mailbox branch.');
+    if (checks.onedrive.status !== 'passed') next_steps.push('Choose the existing local OneDrive-synced Bridge folder in the app.');
+    if (checks.mailbox.status !== 'passed') next_steps.push('Check that OneDrive has synchronized the latest Bridge/STATUS.md to this Windows device.');
     if (checks.colab.status !== 'passed') next_steps.push('Open Colab, connect a runtime if needed, and run the notebook cell. It automatically registers the authenticated HTTPS tunnel with the app.');
     if (state.status === 'incompatible_runtime') {
       next_steps.push('Interrupt the old Colab server cell, open the current notebook from main, and run “Start the direct Colab vision server”. The app will continue to block screenshot/TTS requests until API v5 compatibility is confirmed.');
@@ -806,7 +784,7 @@ function createVisionService(deps) {
     return {
       status: passed ? 'ready' : failed ? 'failed' : loading ? 'loading' : 'action_required',
       checked_at: checkedAt, notebook_url: COLAB_NOTEBOOK_URL, checks, next_steps,
-      note: 'The tunnel URL and random bearer key are held only in app/notebook memory for the current runtime. Screenshot bytes and vision reports bypass GitHub; the report returns through the app’s normal bridge result.'
+      note: 'The tunnel URL and random bearer key are held only in app/notebook memory for the current runtime. Screenshot bytes and vision reports bypass OneDrive; the report returns through the app’s normal bridge result.'
     };
   }
 
@@ -865,7 +843,7 @@ function createVisionService(deps) {
       endpoint_watch_error: endpointWatchError || '',
       notebook_url: COLAB_NOTEBOOK_URL,
       transport: 'direct_https_tunnel',
-      report_location_hint: 'Returned through the normal GitHub mailbox tool result; there is no separate vision result artifact.'
+      report_location_hint: 'Returned through the normal OneDrive mailbox tool result; there is no separate vision result artifact.'
     };
   }
 
@@ -1699,7 +1677,7 @@ function createVisionService(deps) {
           speaker_id: TTS_SPEAKER_ID, sample_rate: state.tts_sample_rate || 22050, channels: 1,
           duration_seconds: duration, audio_bytes: audio.length, audio_sha256: hash,
           local_file: filePath, played: false, playback_error: null, chunks_total: chunks.length,
-          chunks_completed: chunks.length, audio_transport: 'Audio is saved to Windows temporary storage; raw audio is not published to the GitHub mailbox.' };
+          chunks_completed: chunks.length, audio_transport: 'Audio is saved to Windows temporary storage; raw audio is not published to the OneDrive mailbox.' };
       } catch (error) {
         job.status = 'failed'; job.error = messageOf(error); job.finished_at = new Date(now()).toISOString();
         return { status: 'tts_failed', request_id: jobId, speech_job_id: jobId, error: job.error };
@@ -1899,7 +1877,7 @@ function createVisionService(deps) {
         input_image: screenshot.metadata, input_sha256: data.input_sha256,
         report: validatedReport, result_protocol: RESULT_PROTOCOL,
         evidence_policy: 'Structured perception evidence only. Windows UI Automation bounds are system-derived; visual-only target bounds are explicitly unverified. ChatGPT decides actions and verifies outcomes using a fresh observation.',
-        report_transport: 'direct Colab HTTPS response, returned by the app through its normal GitHub mailbox result'
+        report_transport: 'direct Colab HTTPS response, returned by the app through its normal OneDrive mailbox result'
       };
     } catch (error) {
       job.result = { status: 'inference_failed', request_id: jobId, error: messageOf(error), success: false };
@@ -2138,7 +2116,7 @@ function createVisionService(deps) {
     speechPlaybackStatus,
     controlSpeechPlayback,
     dispose,
-    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, VISION_CONTEXT_SCHEMA, VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS, DEFAULT_MAILBOX, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
+    constants: { DIRECT_VISION_PROTOCOL, RESULT_PROTOCOL, VISION_CONTEXT_SCHEMA, VISION_WORKER_API_VERSION, REQUIRED_VISION_FEATURES, TTS_PROTOCOL, TTS_VOICE, TTS_SPEAKER_ID, MAX_TTS_TEXT_CHARS, COLAB_NOTEBOOK_URL, MODEL_ID, MODEL_FILE, PROJECTOR_FILE, MAX_SCREENSHOT_BYTES }
   };
 }
 

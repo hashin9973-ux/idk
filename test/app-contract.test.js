@@ -16,7 +16,7 @@ test('packaging includes the native Windows worker and mailbox implementation', 
   assert.ok(pkg.scripts['dist:win'].startsWith('node desktop/prepare-gh-cli.js && electron-builder'));
   assert.ok(pkg.scripts['dist:win:dir'].startsWith('node desktop/prepare-gh-cli.js && electron-builder'));
   assert.ok(pkg.scripts.prestart.includes('desktop/prepare-gh-cli.js'));
-  assert.match(pkg.description, /shared GitHub repository mailbox/i);
+  assert.match(pkg.description, /OneDrive-synced mailbox/i);
   assert.match(pkg.scripts.check, /desktop\/repository-bridge\.js/);
   assert.match(pkg.scripts.check, /test\/repository-bridge\.test\.js/);
   assert.doesNotMatch(pkg.scripts.check, /accounts\.js/);
@@ -122,36 +122,35 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal)'));
 });
 
-test('dashboard is a minimal GitHub and worker status window', () => {
+test('dashboard is a minimal OneDrive and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
+  const dashboardRenderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'styles.css');
   const main = read('desktop', 'main.js');
-  for (const id of ['github-row', 'github-signin', 'github-dot', 'github-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'open-dashboard', 'minimize', 'quit']) {
+  for (const id of ['onedrive-row', 'onedrive-choose', 'onedrive-dot', 'onedrive-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'open-dashboard', 'minimize', 'quit']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing status element: ' + id);
   }
   assert.match(html, /title="Observe the desktop at the selected sampling rate/);
   assert.match(html, /value="2" selected>2 fps \(default\)/);
-  assert.match(renderer, /GitHub connected/);
-  assert.match(renderer, /Sign in to GitHub/);
-  assert.match(renderer, /githubButton\.textContent = loginCode/);
-  assert.match(renderer, /Enter code at GitHub/);
-  assert.match(renderer, /copyGitHubDeviceCode/);
-  assert.match(renderer, /onGitHubDeviceCode/);
-  assert.match(renderer, /githubButton\.addEventListener\('click', \(\) => \{/);
-  assert.match(renderer, /void connectGitHub\(\)/);
-  assert.match(renderer, /windowsBridge\.reconnectGitHub/);
+  assert.match(renderer, /OneDrive mailbox connected/);
+  assert.match(renderer, /chooseOneDriveFolder/);
+  assert.match(renderer, /onOneDriveState/);
+  assert.match(renderer, /renderOneDrive/);
+  assert.doesNotMatch(renderer, /connectGitHub|startGitHubLogin|githubButton/);
+  assert.match(html, /OneDrive mailbox status/);
+  assert.doesNotMatch(html, /github-row|github-signin/);
   assert.match(renderer, /windowsBridge\.retryConnection/);
   assert.match(renderer, /Worker online/);
   assert.ok(renderer.includes("active > 0 ? 'Worker online · ' + active + ' active'"));
   assert.ok(renderer.includes("pending > 0 ? 'Worker online · ' + pending + ' queued'"));
   assert.ok(renderer.includes(": 'Worker online · idle'"));
-  assert.match(renderer, /Worker cannot reach the GitHub mailbox/);
+  assert.match(renderer, /Worker cannot reach the OneDrive mailbox/);
   assert.match(renderer, /Last successful request scan:/);
   assert.match(renderer, /Mailbox transport error:/);
   assert.match(renderer, /Recent tool\/result issue \(worker still reachable\):/);
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
-  assert.match(renderer, /windowsBridge\.startGitHubLogin/);
+  assert.match(dashboardRenderer, /api\.startGitHubLogin/);
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
   assert.match(renderer, /windowsBridge\.selectWorkspace/);
   assert.match(renderer, /windowsBridge\.getVisionStatus/);
@@ -201,7 +200,7 @@ test('dashboard is a minimal GitHub and worker status window', () => {
   assert.doesNotMatch(renderer, /windowsBridge\.(startBridge|stopBridge|saveBridgeConfig|openChatGPT)/);
 });
 
-test('main process opens login in the system browser and returns focus after GitHub approval', () => {
+test('main process preserves optional GitHub login separately from OneDrive worker connection', () => {
   const main = read('desktop', 'main.js');
   assert.match(main, /require\('\.\/repository-bridge'\)/);
   assert.match(main, /createRepositoryBridge/);
@@ -215,9 +214,11 @@ test('main process opens login in the system browser and returns focus after Git
   assert.match(main, /'app:github-start-login'/);
   assert.match(main, /'app:github-poll-login'/);
   assert.match(main, /'app:retry-connection'/);
-  assert.ok(main.includes('githubAuth.getState({ force: true }).then(auth =>'));
-  assert.ok(main.includes('if (!state.running) void attemptAutoConnect();'),
-    'a successful explicit auth retry restarts the mailbox worker immediately');
+  assert.ok(main.includes("ipcMain.handle('app:github-state'"));
+  assert.ok(main.includes("ipcMain.handle('app:onedrive-state'"));
+  assert.match(main, /if \(!initial\.configured\)/);
+  assert.match(main, /async function attemptAutoConnect\(\)/);
+  assert.match(main, /function retryConnectionNow\(\)/);
   assert.match(main, /AUTO_CONNECT_INTERVAL_MS = 5000/);
   assert.match(main, /ready-to-show/);
   assert.match(main, /did-fail-load/);
@@ -248,7 +249,7 @@ test('main process opens login in the system browser and returns focus after Git
   assert.doesNotMatch(visionStatusHandler, /githubAuth\.getState|githubState\.authenticated/);
   assert.match(connectColabHandler, /return visionService\.connectColab/);
   assert.doesNotMatch(connectColabHandler, /githubAuth\.getState|visionService\.setupCheck|mailboxCheck/);
-  assert.match(main, /visionService\.setupCheck\(githubState\)/);
+  assert.match(main, /return visionService\.setupCheck\(\)/);
   assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);
   assert.match(main, /githubAuth\.importToken/);
@@ -281,7 +282,7 @@ test('the separate dashboard implements tabbed widgets, settings, and embedded-b
   const main = read('desktop', 'main.js');
   for (const id of ['tab-list', 'add-tab', 'main-page', 'settings-page', 'queues-widget', 'controls-widget',
     'queue-list', 'observe-toggle', 'auto-accept-toggle', 'quick-colab-connect', 'workspace-button',
-    'github-connect', 'repo-owner', 'repo-name', 'repo-branch', 'allow-public-mailbox',
+    'github-connect', 'onedrive-status', 'onedrive-detail', 'onedrive-path', 'onedrive-folder-choose', 'onedrive-message',
     'tts-volume', 'local-tts-enabled', 'local-tts-resource-guard', 'local-tts-max-cpu', 'local-tts-min-ram', 'local-tts-prepare', 'local-tts-status', 'theme-select', 'theme-gallery', 'browser-keep-active', 'browser-low-memory', 'browser-memory']) {
     assert.ok(html.includes('id="' + id + '"'), 'missing dashboard element: ' + id);
   }
@@ -324,7 +325,7 @@ test('embedded browser memory telemetry uses supported Electron APIs and cannot 
 
 test('preload exposes the single-dashboard, caption, persistence, sync and bridge APIs', () => {
   const preload = read('desktop', 'preload.js');
-  for (const action of ['getState', 'openDashboard', 'saveDashboardState', 'saveNow', 'getTtsSettings', 'setTtsSettings', 'previewCaptions', 'getCloudSyncStatus', 'chooseCloudFolder', 'configureCloudSync', 'syncCloudNow', 'acknowledgeTrayState', 'onPrepareForTray', 'onDashboardState', 'onPreferences', 'onCloudSyncStatus', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
+  for (const action of ['getState', 'getOneDriveState', 'chooseOneDriveFolder', 'onOneDriveState', 'openDashboard', 'saveDashboardState', 'saveNow', 'getTtsSettings', 'setTtsSettings', 'previewCaptions', 'getCloudSyncStatus', 'chooseCloudFolder', 'configureCloudSync', 'syncCloudNow', 'acknowledgeTrayState', 'onPrepareForTray', 'onDashboardState', 'onPreferences', 'onCloudSyncStatus', 'getBrowserTabs', 'openBrowserTab', 'openColabTab', 'setBrowserTabActive', 'closeBrowserTab', 'setBrowserBounds', 'getBrowserSettings', 'setBrowserSettings', 'setTtsVolume', 'setTheme', 'setRepositoryBridgeConfig', 'onBrowserTabsChanged', 'onBrowserMemory', 'onBrowserBoundsRefresh', 'selectWorkspace', 'setAutoAcceptAll', 'minimizeToTray', 'quit', 'getGitHubState', 'getVisionStatus', 'connectColab', 'checkVisionSetup', 'setVisionManualPanel', 'startGitHubLogin', 'reconnectGitHub', 'pollGitHubLogin', 'retryConnection', 'copyDeviceCode', 'onGitHubDeviceCode', 'onBridgeState', 'onGitHubState', 'onColabHandoffResult']) {
     assert.match(preload, new RegExp(action));
   }
   assert.doesNotMatch(preload, /startBridge|stopBridge|saveBridgeConfig|openChatGPT|logoutGitHub|node:fs|process\.env|ipcRenderer\.send\(/);
@@ -344,66 +345,74 @@ test('desktop shell, tray, and IPC controls initialize before workspace services
   assert.match(main, /skipTaskbar: Boolean\(tray\)/);
   assert.match(main, /function createTray\(\)[\s\S]*?return false;/);
   assert.match(main, /if \(!githubAuth\) throw new Error/);
+  assert.match(main, /mailbox: oneDriveMailbox/);
+  assert.match(read('desktop', 'repository-bridge.js'), /allowLegacyGitHubMailboxForTests = false/);
+  assert.match(read('desktop', 'repository-bridge.js'), /GitHub is not a mailbox fallback/);
   assert.match(main, /ipcRegistered = true/);
 });
 
-test('repository mailbox has explicit request, result, claim and heartbeat paths', () => {
+test('OneDrive mailbox uses flat agent-partitioned paths and four root Markdown files', () => {
   const bridge = read('desktop', 'repository-bridge.js');
-  assert.match(bridge, /chatgpt-local-repo-bridge\/v1/);
-  assert.match(bridge, /chatgpt-local-repo-result\/v1/);
-  assert.match(bridge, /bridge\/requests\//);
-  assert.match(bridge, /bridge\/results\//);
-  assert.match(bridge, /bridge\/claims\//);
-  assert.match(bridge, /bridge\/state\/windows-app\.json/);
-  assert.match(bridge, /DEFAULT_INTERVAL_MS = 1000/);
-  assert.match(bridge, /needs_manual_recovery/);
-  assert.match(bridge, /publishState/);
-  assert.match(bridge, /allowPublicMailbox/);
-  assert.match(bridge, /public-mailbox warning checkbox/i);
-  assert.match(bridge, /session_start/);
-  assert.match(bridge, /agent_status/);
-  assert.match(bridge, /send_agent_message/);
-  assert.match(bridge, /read_agent_messages/);
-  assert.match(bridge, /reply_to_agent_message/);
-  assert.match(bridge, /SESSION_ID_REQUIRED/);
-  const agentRegistry = read('desktop', 'agent-registry.js');
-  assert.match(agentRegistry, /AGENT_RECORD_PROTOCOL/);
-  assert.match(agentRegistry, /AGENT_ACTIVITY_RECENCY_WINDOW_MS/);
-  assert.match(agentRegistry, /SESSION_RECORD_PROTOCOL/);
-  const toolBridge = read('desktop', 'tool-bridge.js');
-  assert.ok(toolBridge.includes("session_start: ['label', 'workspace_suggestion']"));
-  assert.ok(toolBridge.includes("agent_status: ['agent_id']"));
-  assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
-  assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));
-  assert.ok(toolBridge.includes("reply_to_agent_message: ['message_id', 'message']"));
-  assert.match(toolBridge, /catalog_version = 4/);
+  const mailbox = read('desktop', 'onedrive-mailbox.js');
+  const registry = read('desktop', 'agent-registry.js');
+  assert.ok(bridge.includes('chatgpt-local-repo-bridge/v1'));
+  assert.ok(bridge.includes('chatgpt-local-repo-result/v1'));
+  assert.ok(bridge.includes('const mailboxRequestPath = (agentId, requestId) => mailbox'));
+  assert.ok(bridge.includes("'request/' + agentId + '/' + requestId + '.json'"));
+  assert.ok(bridge.includes("'claims/' + (requestMailboxAgents.get(requestId)"));
+  assert.ok(bridge.includes("'result/' + (requestMailboxAgents.get(requestId)"));
+  assert.ok(bridge.includes('requestMailboxAgents'));
+  assert.ok(bridge.includes("const LOCAL_REGISTRY_PREFIX = 'local/'"));
+  assert.ok(registry.includes("return 'local/sessions/' + sessionId + '.json'"));
+  assert.ok(registry.includes("return 'local/agents/' + agentId + '.json'"));
+  assert.ok(bridge.includes("upsertRemoteContent('AGENT.md'"));
+  assert.ok(bridge.includes("upsertRemoteContent('TOOLS.md'"));
+  assert.ok(bridge.includes("upsertRemoteContent('STATUS.md'"));
+  assert.ok(bridge.includes('sandbox storage/'));
+  assert.ok(bridge.includes('DEFAULT_INTERVAL_MS = 1000'));
+  assert.ok(bridge.includes('needs_manual_recovery'));
+  assert.ok(bridge.includes('publishState'));
+  assert.ok(bridge.includes('onedrive-synced-folder'));
+  assert.ok(bridge.includes('mailbox.ensureReady()'));
+  assert.ok(bridge.includes('GitHub mailbox API access is disabled'));
+  assert.ok(bridge.includes('session_start'));
+  assert.ok(bridge.includes('agent_status'));
+  assert.ok(bridge.includes('send_agent_message'));
+  assert.deepEqual(require('../desktop/onedrive-mailbox').BRIDGE_DIRECTORIES,
+    ['request', 'claims', 'result', 'messages', 'sandbox storage']);
+  assert.match(mailbox, /ROOT_MARKDOWN_FILES/);
+  assert.match(mailbox, /Nested mailbox infrastructure paths are not permitted/);
 });
+
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
   const main = read('desktop', 'main.js');
   assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
-  assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
+  assert.match(bridge, /The OneDrive mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);
   assert.doesNotMatch(main, /submitMessageToChat|insertAndSubmitToolMessage|assistant-tool:/);
 });
 
-test('inline GitHub auth stores an encrypted app-side credential and does not require ChatGPT login', () => {
+test('optional GitHub tools store an encrypted app-side credential and do not require ChatGPT login', () => {
   const main = read('desktop', 'main.js');
   const auth = read('desktop', 'github-auth.js');
   const html = read('desktop', 'index.html');
-  const js = read('desktop', 'renderer.js');
+  const dashboardHtml = read('desktop', 'dashboard.html');
+  const js = read('desktop', 'dashboard-renderer.js');
   assert.match(main, /safeStorage/);
   assert.match(auth, /safeStorage\.encryptString/);
   assert.match(auth, /safeStorage\.decryptString/);
   assert.match(auth, /runGitOperation/);
   assert.doesNotMatch(html, /github-client-id/);
-  assert.match(html, /github-row/);
-  assert.match(js, /windowsBridge\.startGitHubLogin/);
-  assert.match(js, /scheduleAuthPoll/);
+  assert.match(html, /onedrive-row/);
+  assert.doesNotMatch(html, /github-row/);
+  assert.match(js, /api\.startGitHubLogin/);
+  assert.match(js, /api\.pollGitHubLogin/);
+  assert.match(dashboardHtml, /github-connect/);
   assert.match(main, /setAlwaysOnTop\(false\)/);
-  assert.doesNotMatch(auth, /localStorage|github_api/);
+  assert.doesNotMatch(auth, /localStorage|github_api|validateMailboxRequest|requestApi|MAX_MAILBOX_CONTENT_BYTES|repository mailbox/);
 });
 
 test('the single dashboard unloads to the system tray while the worker stays alive', () => {
@@ -417,9 +426,10 @@ test('the single dashboard unloads to the system tray while the worker stays ali
   assert.match(main, /win\.on\('close', event => \{\s*if \(!finishingQuit\) \{\s*event\.preventDefault\(\);\s*if \(tray\) void destroyDashboardWindowToTray\(\);/);
   assert.match(main, /function startAutoConnectLoop\(\)/);
   assert.match(main, /setInterval\(\(\) => \{ void attemptAutoConnect\(\); \}, AUTO_CONNECT_INTERVAL_MS\)/);
-  assert.match(main, /owner: 'hashin9973-ux'/);
-  assert.match(main, /repo: 'qdqwg'/);
-  assert.match(main, /branch: 'bridge-mailbox'/);
+  assert.match(main, /oneDrivePath: ''/);
+  assert.match(main, /retentionDays: 30/);
+  assert.match(main, /createOneDriveMailbox/);
+  assert.match(main, /repositoryBridge\.start\(\)/);
   assert.match(main, /startAutoConnectLoop\(\)/);
   assert.doesNotMatch(main, /app:start-bridge|app:stop-bridge/);
   assert.doesNotMatch(html, /Start worker|worker-toggle|titlebar|open-overlay/);
@@ -431,39 +441,40 @@ test('the single dashboard unloads to the system tray while the worker stays ali
   assert.match(main, /startAutoConnectLoop\(\)/);
 });
 
-test('environment snapshots and result artifacts stay in the repository channel', () => {
+test('canonical Markdown mailbox files and agent sandbox artifacts are published through OneDrive', () => {
   const bridge = read('desktop', 'repository-bridge.js');
-  const auth = read('desktop', 'github-auth.js');
   const toolBridge = read('desktop', 'tool-bridge.js');
-  const html = read('desktop', 'index.html');
   const readme = read('README.md');
-  assert.ok(bridge.includes('chatgpt-local-environment-context/v1'));
-  assert.ok(bridge.includes('bridge/context/latest.json'));
+  assert.ok(bridge.includes("upsertRemoteContent('AGENT.md'"));
+  assert.ok(bridge.includes("upsertRemoteContent('TOOLS.md'"));
+  assert.ok(bridge.includes("upsertRemoteContent('STATUS.md'"));
+  assert.ok(bridge.includes("'SCREEN.md'"));
   assert.ok(bridge.includes('refresh_environment_context'));
   assert.ok(bridge.includes('externalizeLargeText'));
-  assert.ok(bridge.includes('bridge/artifacts/'));
-  assert.ok(auth.includes('bridge/context'));
-  assert.ok(auth.includes('bridge/artifacts'));
+  assert.ok(bridge.includes('sandbox storage/'));
+  assert.match(bridge, /mailbox\.readJson\(relativePath\)/);
+  assert.match(bridge, /mailbox\.writeJson\(relativePath/);
+  assert.match(bridge, /mailbox\.writeContent\(relativePath/);
+  assert.match(bridge, /mailbox\.deleteFiles/);
   assert.ok(toolBridge.includes('upload_workspace_file'));
   assert.ok(toolBridge.includes('requiresApproval: true'));
-  assert.match(readme, /only input placed into ChatGPT is what you type yourself/i);
-  assert.match(readme, /Read the result through the GitHub integration/i);
+  assert.match(readme, /OneDrive is file storage and message transport only/i);
+  assert.match(readme, /connected OneDrive integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
 });
 
-test('manual smoke-test documentation covers local execution, truncated-output recovery, and artifact retrieval', () => {
+test('manual smoke-test documentation covers app-local sessions and flat OneDrive round-trip', () => {
   const guide = read('docs', 'manual-smoke-test.md');
-  assert.match(guide, /private repo and dedicated branch/i);
-  assert.match(guide, /read-only request produces a result/i);
-  assert.match(guide, /large output is marked incomplete honestly/i);
-  assert.match(guide, /stable-sorted pages of 50 entries/i);
-  assert.match(guide, /not a safety denial/i);
-  assert.match(guide, /workspace file edits run automatically without escaping the selected folder/i);
-  assert.match(guide, /declined shell command remains unexecuted/i);
-  assert.match(guide, /file upload requires a local approval/i);
-  assert.match(guide, /no output is inserted into the ChatGPT conversation/i);
+  assert.match(guide, /existing Bridge folder is hydrated locally/i);
+  assert.match(guide, /existing local OneDrive-synchronized Bridge folder/i);
+  assert.match(guide, /request\/agent-000/);
+  assert.match(guide, /result\/agent-000/);
+  assert.match(guide, /app-generated session_id/);
+  assert.match(guide, /sandbox storage\/<agent-id>/);
+  assert.match(guide, /SCREEN.md/);
+  assert.match(guide, /no execution occurred in OneDrive or on GitHub Actions/i);
+  assert.doesNotMatch(guide, /Bridge\/runtime|bridge\/context|bridge\/state/);
 });
-
 
 
 test('whole-drive workspaces require explicit confirmation and use a shallow index', () => {
@@ -524,7 +535,8 @@ test('optional Colab vision uses direct authenticated HTTPS without a Colab GitH
   assert.ok(bridge.includes("tts: ['text', 'play']"));
   assert.ok(bridge.includes('function ttsOutputFailed(args = {}, output)'));
   assert.ok(bridge.includes("output.status === 'tts_started'"));
-  assert.ok(vision.includes('async function setupCheck(githubState = {})'));
+  assert.ok(vision.includes('async function setupCheck()'));
+  assert.ok(vision.includes('checks.onedrive.status'));
   assert.ok(vision.includes('async function connectPublicEndpoint'));
   assert.ok(vision.includes("directRequest('/activate'"));
   assert.ok(vision.includes('activate immediately'));
@@ -850,11 +862,11 @@ test('unstable Windows network status does not gate mailbox connection attempts'
   const end = main.indexOf('function retryConnectionNow()', start);
   const connect = main.slice(start, end);
   assert.ok(start >= 0 && end > start, 'auto-connect implementation is present');
-  assert.match(connect, /if \(!auth\.authenticated\)/);
-  assert.doesNotMatch(connect, /!auth\.authenticated\s*\|\|\s*auth\.verificationPending/);
+  assert.match(connect, /if \(!initial\.configured\)/);
+  assert.doesNotMatch(connect, /auth\.authenticated|GitHub/);
   assert.match(connect, /repositoryBridge\.start\(\)/);
-  assert.match(connect, /testing mailbox access directly/);
-  assert.ok(main.includes("return resolveMailboxWorkerStatus(current, autoConnectionStatus);"));
+  assert.match(connect, /oneDriveMailbox\.getState\(\)/);
+  assert.ok(main.includes("resolveMailboxWorkerStatus(current, autoConnectionStatus)"));
   assert.ok(main.includes("const { isNetworkError, resolveWorkerStatus: resolveMailboxWorkerStatus } = require('./worker-status');"));
   assert.ok(read('desktop', 'worker-status.js').includes("return 'reconnecting'"));
 

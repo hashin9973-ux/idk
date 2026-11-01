@@ -44,6 +44,9 @@ test('project tasks enforce dependency completion and atomic overlapping scope l
   const tasks = createTaskOrchestrator({ ...deps, clock: () => 1800000000000, leaseMs: 1000 });
   const project = await tasks.initProject(a, { name: 'Game' });
   const first = await tasks.createTask(a, { project_id: project.project_id, title: 'Player module', objective: 'Implement player module', acceptance_criteria: ['Class compiles'], scope_paths: ['Source/Game/Player'] });
+  assert.ok(deps.files.has('local/projects/' + project.project_id + '.json'));
+  assert.ok(deps.files.has('local/tasks/' + first.task_id + '.json'));
+  assert.equal([...deps.files.keys()].some(file => file.startsWith('bridge/projects/') || file.startsWith('bridge/tasks/')), false);
   const second = await tasks.createTask(b, { project_id: project.project_id, title: 'Player tests', objective: 'Implement player tests', acceptance_criteria: ['Tests pass'], scope_paths: ['Source/Game/Player/Tests'] , dependencies: [first.task_id] });
   await assert.rejects(tasks.claimTask(b, { task_id: second.task_id }), /TASK_DEPENDENCY_BLOCKED/);
   await tasks.claimTask(a, { task_id: first.task_id });

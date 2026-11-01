@@ -1,78 +1,41 @@
-# ChatGPT Developer Workflow — Windows Repository Bridge
+# ChatGPT Developer Workflow — Windows Bridge
 
-The selected Windows workspace is the actual execution environment. GitHub is a request/result mailbox, not the project itself and not a substitute for the Windows worker. Use the user's existing ChatGPT conversation.
+The Windows Bridge desktop app is the local execution environment. OneDrive is a synchronized file mailbox only. Use the connected OneDrive integration to publish/read ordinary files; do not use GitHub as the mailbox or ask the user to run local commands when a registered Windows tool can do the work.
 
-## Paste-ready custom instructions
+## Canonical instructions
 
-```text
-Use Windows Repository Bridge against my actual Windows workspace; GitHub is only the mailbox. For visible desktop work, read qdqwg:bridge-mailbox/bridge/vision/observe.json FIRST when Observe is enabled; do not block it on get_agent_context, catalog refresh, or computer(status). Loop: read live state → choose a justified input → invoke the GitHub integration's create-file/write operation for a fresh immutable bridge/requests/<id>.json request using the exact registered schema → read its matching result → reread Observe → adapt and repeat until verified. Reading repo files is not execution. If request creation fails, report the exact GitHub integration error; if result is delayed, inspect that same ID's claim and state, then reread the same result—never duplicate uncertain input. Avoid unnecessary status/context calls and narration between inputs. Batch only predictable adjacent inputs with computer(action=sequence, mode=fast); if the next step depends on the changed screen, observe first. Observe supplies window/control/UIA evidence, not full pixels or guaranteed OCR. Use Colab screenshots only when pixel/OCR/model analysis is needed and explicitly permitted, and confirm readiness first. For non-visual Windows tasks, fetch fresh context/catalog only when workspace, state, or schemas are unknown/stale; batch independent work. Discover machine facts before asking me. For substantial changes, inspect source/tests, define acceptance criteria, implement modularly, run checks/tests/builds and smoke tests, fix failures, verify diffs and exit codes, and report only measured results. Fetch all referenced output artifacts and reconstruct parts before relying on previews. Never edit existing bridge transport records, leak secrets, claim blocked access before trying the actual integration write, or replay uncertain side effects.
-```
+Read the generated root files in the existing OneDrive Bridge folder:
 
-## 1. Live desktop: Observe first
+- AGENT.md — authoritative operating rules and request/result workflow
+- TOOLS.md — complete live Windows worker tool catalog and exact JSON schemas
+- STATUS.md — current worker, agent, workspace, tool, queue and diagnostic state
+- SCREEN.md — latest Observe context and freshness
 
-When the task concerns the visible Windows desktop and passive Observe is already enabled, read `hashin9973-ux/qdqwg` on branch `bridge-mailbox`, file `bridge/vision/observe.json`, directly and immediately. Do **not** wait for a fresh `get_agent_context`, reread capabilities just to see the screen, or call `computer(action=status)` just to read passive Observe. Context bootstrap and Colab vision status are separate concerns.
+The only mailbox folders are request, claims, result, messages and sandbox storage, each partitioned by agent ID. Do not create runtime, bridge, context, state, agents, sessions, tasks, projects, vision, artifacts, docs or other mailbox directories.
 
-- Validate `enabled`, `updated_at`, the newest frame's `captured_at`, and its active window/focused control. If the feed is disabled, absent, or stale, say exactly what evidence is missing; never enable/disable it without the user's instruction.
-- Observe frames contain active-window and focused-control data, Windows UI Automation control bounds when available, screen dimensions and change fingerprints. They are **not full screenshot pixels** and do not guarantee OCR or readable values for inputs. Do not claim that text was read when the feed says it was withheld.
-- Use the adaptive loop **Observe read → choose next justified input → publish one request through GitHub integration → verify matching result → read newest Observe → adapt**, repeating until the requested outcome is confirmed.
-- Each input request must use a new unique ID. Invoke the actual GitHub integration create-file/write operation for `bridge/requests/<id>.json`; merely reading the repo or seeing a catalog entry does not invoke the Windows tool. A successful commit proves publication only. A matching completed result proves execution. If create-file returns a 409 branch-head conflict, read the exact request path: if it exists, follow that same request; if absent, refresh the branch and retry the same ID/path. Do not blindly publish a second ID for an uncertain write.
-- If the next action is predictable, batch adjacent actions in one `computer(action=sequence, mode="fast", steps=[...])` request (subject to the current catalog's maximum). If the next action depends on the resulting screen, use the minimum needed input and read Observe again before deciding.
-- Use `observe=false` for a fast input sequence when you will read the passive Observe file directly and do not need Colab inference. Set `observe=true` only when the Colab screenshot-analysis report itself is needed to make the next decision.
-- Avoid narration between each step, repeated status checks, repeated context bootstrap, and one-request-per-key when a known sequence can be sent together. Do not sacrifice verification for speed.
-- Never infer failure from a missing result alone. Inspect the same request's `bridge/claims/<id>.json` and current `bridge/state/windows-app.json`, then reread `bridge/results/<id>.json`. Do not issue a duplicate while an input might still execute.
-- The worker scans the bounded request-directory Git tree every five seconds for new requests and no longer waits on the path-filtered commits endpoint before discovery. Local/published `requestPolling` telemetry records scan duration/count and poll duration. This is a worker-side scan interval, not an end-to-end SLA; GitHub integration and ChatGPT latency remain separate.
+## Session bootstrap
 
-## 2. Bootstrap and catalog only when needed
+If the current conversation has no successful session_start result, create one immutable bootstrap JSON request at request/agent-000/<request-id>.json. Wait for result/agent-000/<same-request-id>.json. The app generates and returns the opaque session_id and agent_id. Reuse only that assigned session; never invent or derive identifiers.
 
-For non-visual Windows tasks, or when tool availability, workspace boundaries, local state or exact schemas are unknown/stale:
+Ordinary requests go to request/<agent-id>/<request-id>.json and carry the exact returned session_id. Matching claims and results live in claims/<agent-id>/ and result/<agent-id>/. Requests, claims and results remain JSON; the four root Markdown files are guides and live context, not a Markdown task protocol.
 
-1. Read `bridge/context/latest.json` and `bridge/context/capabilities.json` on `bridge-mailbox`.
-2. Submit `get_agent_context` using a fresh request when a genuinely fresh view is needed. Its returned tool catalog and workspace guidance govern calls to the worker.
-3. Read the applicable root/nested `AGENTS.md`, project manifests, relevant source and tests. Discover locally available facts before asking the user.
-4. Treat GitHub as the mailbox only; create and inspect files or run commands through registered Windows tools within the selected workspace and local policy.
+## Slash-style shortcuts
 
-A fresh environment bootstrap must not block direct reading of an already-enabled live Observe feed. When both reads are useful, start the independent GitHub reads concurrently where the interface permits.
+Use familiar slash-style aliases in the ChatGPT conversation: `/help`, `/status`, `/tools`, `/screen`, `/agents`, `/messages`, `/workspace` and `/plan` map to the corresponding mailbox files or registered tools. Coding shortcuts include `/ls <path>`, `/tree <path>`, `/find <pattern>`, `/read <path>`, `/search <query>`, `/write <path>`, `/patch <patch>`, `/run <command>` and `/test <command>`. Git shortcuts include `/git status`, `/git diff`, `/git log`, `/git show <ref>`, `/git branches`, `/git changed` and `/commit <message>`. `/tasks <project-id>`, `/inspect <path>`, `/send <agent-id> <message>` and `/reply <message-id> <message>` cover collaboration. ChatGPT resolves each alias to the existing registered Windows tool and its exact TOOLS.md schema; no new tool or slash-command parser is added.
 
-## 3. Mailbox efficiency and latency diagnosis
+## Coding loop
 
-Every local operation is published and returned through GitHub, so avoid avoidable cycles.
+1. Read STATUS.md and SCREEN.md; inspect workspace and project instructions.
+2. Read the exact tool schemas from TOOLS.md.
+3. Inspect relevant source, configuration, and tests completely enough to understand the change.
+4. Split independent work across agents only with explicit ownership and non-overlapping files/interfaces.
+5. Batch independent operations; wait for dependencies; serialize conflicting writes and side effects.
+6. Make focused edits using the native Windows tools.
+7. Run project-native checks, tests and builds; inspect exit codes, complete output, diffs and generated files.
+8. Verify the matching result record before reporting success. If a result is missing, inspect the matching claim and STATUS.md before retrying.
 
-- The current worker can process up to 32 independent mailbox requests. The current published `batch` catalog supports 1–100 steps and `maxConcurrency` 1–100; the installed catalog is authoritative for the build actually running.
-- Batch independent inspections and edits; preserve dependencies, shared-file conflicts, installs, stateful inputs and other side-effect order. Use result references for actual dependencies.
-- The updated worker scans the bounded request-directory tree every five seconds as its request discovery source. It no longer waits for the path-filtered commit API before running the scan, because that slow API call could block the timer and defeat the fallback. Older builds used a path-filtered commit cursor and a 60-second reconciliation fallback and could exhibit minute-scale pickup stalls.
-- Use request commit time to measure commit-to-claim pickup. `created_to_worker_start` starts from the request JSON's `created_at`, which is set before the integration write has necessarily committed, so it also includes pre-publication time. Compare commit timestamp, claim `claimed_at`, result `timing_ms`, and API errors instead of guessing where the delay occurred.
-- If `output_truncated` is true, status is `partial`, or a field says `OUTPUT EXTERNALIZED`, fetch all artifacts referenced in `artifacts[]`. For `tool_output_part`, concatenate all parts for the field in numeric part order; for `complete_result_part`, reconstruct the full result JSON before following its manifest. Check `artifact_errors`, stdout/stderr truncation and EOF/page markers before claiming complete output.
+Use the installed toolchains actually reported by the Windows machine. PowerShell is the host shell, not a language limitation. Never assume a compiler, SDK, engine, package manager, path or version without checking.
 
-## Compact diagnostics and long-running installs
+## Trust and safety
 
-Prefer bounded PowerShell summaries over returning whole files, process objects, command lines, environment snapshots or full transcripts. Return only the fields that determine the next action, and cap log output by both lines and characters. Huge stdout can create many numbered artifacts and extra GitHub commits; retrieve all parts only when complete output is necessary, and never infer from a preview alone.
-
-For installs/downloads that may outlive a shell wrapper, record a small status file with stage, expected/actual asset size and SHA-256, installer exit code, before/after app archive hashes and process status. A wrapper timeout is an uncertain outcome when a child may still be running: issue a new read-only status request and reconcile that same operation before any retry. A new worker ID indicates a restart but is not by itself proof of success. Do not duplicate installers or side effects while status is ambiguous.
-
-For pickup latency, measure from the actual GitHub commit time to the matching claim's `claimed_at`; `created_to_worker_start` includes time before the write is committed. Use request-tree scan/poll telemetry where available to tell whether delay belongs to local discovery, tool execution, or result publication.
-
-## 4. Trust results, recover carefully
-
-1. Publish a new immutable JSON request at `bridge/requests/<id>.json` with protocol `chatgpt-local-repo-bridge/v1`, exact `tool`, schema-valid `args`, and matching `request_id`.
-2. Read `bridge/results/<same-id>.json`. Check request ID, status, nested `ok`, errors, exit code, timeout, partial/truncation flags and artifacts.
-3. If missing, inspect that same ID's claim and current worker state, then poll/re-read the same result. Claims, commits, heartbeats and previews are not terminal results.
-4. Diagnose the observed error: a GitHub create/write rejection happens before Windows sees the request; a missing result is a pickup/result-publication problem until evidence says otherwise; a matching rejected result gives the actual local validation error. Do not label these generically as a safety block.
-5. Never replay uncertain side effects. Rerun only when the original operation is known not to have executed or its state has been reconciled.
-
-## 5. Build and verify software changes
-
-For substantial coding tasks, define measurable acceptance criteria, inspect existing implementation and tests, choose an architecture appropriate to the feature, and deliver integrated modules rather than an unrelated single-file approximation. Run project-native syntax/lint/checks, relevant automated tests, builds and available UI smoke tests. Fix failures and repeat the checks. Inspect diffs, output truncation, exit codes and persisted postconditions. Distinguish the tests that actually ran from unverified environment-specific behavior. Documentation-only changes do not require a redundant installer run.
-
-## 6. Optional pixel-level Colab vision
-
-Passive Observe and the Colab screenshot backend are independent.
-
-- Use the Colab `computer(action=screenshot)` path only when pixels, OCR, image interpretation or model-grounded coordinates materially help and the user asked for that visual path or its use is otherwise clearly permitted by their instruction.
-- Before screenshot analysis, check `computer(action=status)` and confirm the direct Colab connection, vision-enabled state and model readiness. Do not connect, activate or capture automatically just because Observe is on.
-- The Colab service analyzes screenshots; Windows still executes mouse/keyboard input. Keep screenshots, private messages, tunnel URLs and secrets out of repository artifacts.
-- If a screenshot/inference request returns pending, wait with the exact returned request ID. Do not submit duplicates.
-- `disable` prevents new screenshots but does not stop the Colab runtime or unload the model.
-
-## 7. Report only verified outcomes
-
-Keep reporting concise during rapid interaction and summarize at completion. State what was actually changed, the request/result IDs that support local actions, checks that passed, and remaining limitations. Never claim that a window opened, a tool executed, a build passed, or a file was fully read without matching evidence.
+OneDrive never executes code. The Windows app owns validation, approvals, workspace boundaries, local session state and execution. Do not bypass native approvals, path protections, symlink checks, secret-file protections or session lifecycle rules. Do not place credentials or private screenshots in Markdown files. Do not replay an uncertain side effect or broadly delete mailbox/OneDrive content.
