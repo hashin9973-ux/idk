@@ -277,8 +277,8 @@ test('slash command parser uses readable named arguments and list values, not JS
   assert.deepEqual(parseSlashToolCommand('/project', available), { name: 'project', args: { action: 'status' } });
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
   assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['workspace']), /JSON argument objects/);
-  assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', ['read_file']), /repeated/);
-  assert.throws(() => parseSlashToolCommand('/read_file []', ['read_file']), /Use named arguments/);
+  assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', available), /repeated/);
+  assert.throws(() => parseSlashToolCommand('/read_file []', available), /Use named arguments/);
 });
 
 test('explicit user slash shortcut routes through grouped local capability and preserves the actual result', async () => {
