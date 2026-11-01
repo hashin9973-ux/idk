@@ -2155,6 +2155,7 @@ function getUiState() {
     dashboardState: normalizeDashboardState(settings.dashboardState || defaultDashboardState()),
     browserTabs: browserTabSnapshot(),
     cloudSync: { ...cloudSyncStatus, enabled: cloud.enabled === true, configured: Boolean(cloud.folder), folder: String(cloud.folder || '') },
+    oneDrive: oneDriveMailbox ? oneDriveMailbox.getState() : { configured: false, status: 'unavailable' },
     bridge: enrichedBridgeState(repositoryBridge ? repositoryBridge.getState() : { running: false, configured: false }),
     workspace: {
       root: getWorkspaceRoot(),
@@ -2945,8 +2946,7 @@ if (!hasInstanceLock) {
         persistSettings
       });
     } catch (error) {
-      appInitializationError = 'GitHub authentication could not initialize: ' + String(error && error.message || error);
-      console.error(appInitializationError);
+      console.warn('Optional GitHub integration could not initialize:', String(error && error.message || error));
     }
 
     oneDriveMailbox = createOneDriveMailbox({ getSettings: () => settings });
