@@ -1567,7 +1567,7 @@ function createRepositoryBridge(deps = {}) {
     } else if (allowLegacyGitHubMailboxForTests === true) {
       const statusFile = await readRemoteFile('bridge/state/windows-app.json');
       const value = statusFile && statusFile.value;
-      if (value) statusText = '# Windows Bridge Status\\n- Updated: ' + value.updated_at +
+      if (value) statusText = '# Windows Bridge Status\n- Updated: ' + value.updated_at + '\n- Active requests: ' + value.active_count + '\n- Pending requests: ' + value.pending_count + '\n- Health: ' + (value.last_error ? 'attention' : 'healthy');
         '\\n- Active requests: ' + value.active_count + '\\n- Pending requests: ' + value.pending_count +
         '\\n- Health: ' + (value.last_error ? 'attention' : 'healthy');
     }
@@ -1977,7 +1977,7 @@ function createRepositoryBridge(deps = {}) {
       } else if (allowLegacyGitHubMailboxForTests === true) {
         const workerState = await readRemoteFile('bridge/state/windows-app.json').catch(() => null);
         const value = workerState && workerState.value;
-        if (value) stateText = '# Windows Bridge Status\\n- Worker ID: ' + value.worker_id + '\\n- Updated: ' + value.updated_at;
+        if (value) stateText = '# Windows Bridge Status\n- Worker ID: ' + value.worker_id + '\n- Updated: ' + value.updated_at;
       }
       const workerIdMatch = stateText.match(/^- Worker ID: (.+)$/m);
       const updatedMatch = stateText.match(/^- Updated: (.+)$/m);
