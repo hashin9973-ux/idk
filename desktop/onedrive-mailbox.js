@@ -81,30 +81,41 @@ function createOneDriveMailbox({
     catch (error) { if (error && error.code === 'ENOENT') return null; throw error; }
   }
 
-  async function ensureDirectory(target) {
-    await fsImpl.mkdir(target, { recursive: true });
-    const stat = await fsImpl.lstat(target);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error('OneDrive mailbox directory is not a regular directory: ' + target);
+  async function ensureDirectoryPath(target, { create = false } = {}) {
+    const root = path.parse(path.resolve(target)).root;
+    const segments = path.resolve(target).slice(root.length).split(path.sep).filter(Boolean);
+    let cursor = root;
+    for (const segment of segments) {
+      cursor = path.join(cursor, segment);
+      let stat = await lstatOptional(cursor);
+      if (!stat && create) {
+        try { await fsImpl.mkdir(cursor); }
+        catch (error) {
+          if (!error || error.code !== 'EEXIST') throw error;
+        }
+        stat = await lstatOptional(cursor);
+      }
+      if (!stat) return false;
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new Error('OneDrive mailbox path contains a non-directory or symbolic link: ' + cursor);
+      }
     }
+    return true;
+  }
+
+  async function ensureDirectory(target) {
+    const ready = await ensureDirectoryPath(target, { create: true });
+    if (!ready) throw new Error('Could not create OneDrive mailbox directory: ' + target);
   }
 
   async function ensureParent(target) {
     const parent = path.dirname(target);
     await ensureDirectory(parent);
-    const relative = path.relative(configuredPath(), parent);
-    let cursor = configuredPath();
-    for (const segment of relative.split(path.sep).filter(Boolean)) {
-      cursor = path.join(cursor, segment);
-      const stat = await fsImpl.lstat(cursor);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) {
-        throw new Error('OneDrive mailbox path contains a non-directory or symbolic link.');
-      }
-    }
   }
 
   async function readBytes(relativePath) {
     const { target } = resolvePath(relativePath);
+    if (!await ensureDirectoryPath(path.dirname(target))) return null;
     const stat = await lstatOptional(target);
     if (!stat) return null;
     if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Mailbox entry is not a regular file: ' + relativePath);
@@ -160,23 +171,17 @@ function createOneDriveMailbox({
 
   async function listFolder(relativePath) {
     const { target } = resolvePath(relativePath);
-    const stat = await lstatOptional(target);
-    if (!stat) return [];
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error('Mailbox folder is not a regular directory: ' + relativePath);
-    }
+    if (!await ensureDirectoryPath(target)) return [];
     const children = await fsImpl.readdir(target, { withFileTypes: true });
     const result = [];
     for (const child of children) {
       if (!SAFE_SEGMENT.test(child.name) || child.name === '.' || child.name === '..') continue;
-      const childPath = path.join(target, child.name);
-      const childStat = await fsImpl.lstat(childPath);
-      if (childStat.isSymbolicLink()) throw new Error('OneDrive mailbox contains an unexpected symbolic link.');
+      if (child.isSymbolicLink()) throw new Error('OneDrive mailbox contains an unexpected symbolic link.');
       result.push({
         name: child.name,
         path: relativePath + '/' + child.name,
-        type: childStat.isDirectory() ? 'dir' : childStat.isFile() ? 'file' : 'other',
-        size: childStat.isFile() ? childStat.size : 0
+        type: child.isDirectory() ? 'dir' : child.isFile() ? 'file' : 'other',
+        size: 0
       });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
