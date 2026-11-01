@@ -116,6 +116,68 @@ function createObserveService(deps = {}) {
     };
   }
 
+  async function publish(enabledValue, errorMessage = '') {
+    if (!mailbox || typeof mailbox.writeJson !== 'function') {
+      throw new Error('The OneDrive mailbox is unavailable. Select the OneDrive-synced Bridge/runtime folder.');
+    }
+    const payload = {
+      protocol: OBSERVE_PROTOCOL,
+      enabled: enabledValue,
+      updated_at: new Date(now()).toISOString(),
+      sample_fps: sampleFps,
+      sample_interval_ms: intervalForFps(sampleFps),
+      capture_count: enabledValue ? captureCount : 0,
+      skipped_samples: enabledValue ? skippedSamples : 0,
+      last_capture_at: enabledValue && lastCaptureAt ? new Date(lastCaptureAt).toISOString() : null,
+      last_change_at: enabledValue && lastChangeAt ? new Date(lastChangeAt).toISOString() : null,
+      last_vision_completed_at: enabledValue && lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
+      passive_vision_status: enabledValue ? latestVisionStatus : 'off',
+      passive_vision_error: enabledValue ? safeText(lastVisionError, 500) : '',
+      in_flight_frame_id: enabledValue && activeVisionFrame ? activeVisionFrame.frame_id : null,
+      last_vision_frame_id: enabledValue && lastCompletedVisionFrame ? lastCompletedVisionFrame.frame_id : null,
+      frame_count: enabledValue ? frames.length : 0,
+      frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
+      status: enabledValue ? 'observing' : 'off',
+      error: safeText(errorMessage, 500) || null
+    };
+    let content = JSON.stringify(payload);
+    if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
+      const clippedFrames = payload.frames.slice();
+      const protectedFrameIds = new Set(
+        [activeVisionFrame, lastCompletedVisionFrame].filter(Boolean).map(frame => frame.frame_id)
+      );
+      while (clippedFrames.length &&
+             Buffer.byteLength(JSON.stringify({ ...payload, frames: clippedFrames }), 'utf8') > MAX_CONTEXT_BYTES) {
+        const removableIndex = clippedFrames.findIndex(frame => !protectedFrameIds.has(frame.frame_id));
+        if (removableIndex < 0) break;
+        clippedFrames.splice(removableIndex, 1);
+      }
+      payload.frames = clippedFrames;
+      payload.frame_count = clippedFrames.length;
+      payload.truncated = true;
+      content = JSON.stringify(payload);
+    }
+    if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
+      throw new Error('Observe context exceeds the 3.5 MiB OneDrive publication limit after frame trimming.');
+    }
+
+    const relativePath = 'bridge/vision/observe.json';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const existing = currentSha ? { sha: currentSha } : await mailbox.readJson(relativePath);
+      try {
+        const saved = await mailbox.writeJson(relativePath, payload, existing && existing.sha || null, false);
+        currentSha = saved.sha;
+        lastPublishedAt = now();
+        return payload;
+      } catch (error) {
+        if (!error || error.code !== 'MAILBOX_CONFLICT' || attempt === 2) throw error;
+        const latest = await mailbox.readJson(relativePath);
+        currentSha = latest && latest.sha || null;
+      }
+    }
+    throw new Error('Observe context could not be published after resolving concurrent OneDrive sync updates.');
+  }
+
   async function publishLatestWhenDue() {
     if (publishInFlight || !enabled || disposed || publicationRevision <= publishedRevision) return;
     publishInFlight = true;
