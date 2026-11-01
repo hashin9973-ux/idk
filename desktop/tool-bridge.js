@@ -54,6 +54,7 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   upload_workspace_file: ['path', 'artifactName'],
   computer: ['action', 'source', 'path', 'prompt', 'region', 'waitMs', 'request_id', 'frame_id', 'x', 'y', 'fromX', 'fromY', 'button', 'clicks', 'deltaX', 'deltaY', 'durationMs', 'key', 'keys', 'text', 'steps', 'observe', 'frameWidth', 'frameHeight', 'mode'],
   tts: ['text', 'play'],
+  exec_command: ['command', 'timeoutMs'],
   shell: ['command', 'timeoutMs'],
   run_tests: ['command', 'timeoutMs'],
   update_plan: ['items'],
@@ -192,6 +193,7 @@ function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
       break;
     case 'tts':
     case 'shell':
+    case 'exec_command':
     case 'run_tests':
     case 'git_fetch':
     case 'git_pull':
@@ -279,7 +281,8 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   git_pull: 'Pull from a remote using the app GitHub credential; defaults to origin. Requires local approval.',
   git_push: 'Push to a remote using the app GitHub credential; defaults to origin. Requires local approval.',
   git_clone: 'Clone a repository into a relative destination inside the selected workspace. Requires local approval.',
-  shell: 'Run PowerShell as the signed-in Windows user from the selected workspace. Waits for the foreground process to exit or the configured timeout, then returns exitCode, timedOut, stdout, stderr, and durationMs. Each output stream has an 8 MiB capture ceiling; the mailbox externalizes complete captured text above its inline threshold, but output beyond this hard ceiling is marked truncated before archiving and must be retried in bounded pages or redirected to a local file. At timeout it attempts to kill the whole process tree and still returns a timeout result. For long-running servers, start them deliberately in the background with logs redirected to files, poll a bounded readiness check, and do not confuse server startup with command completion. Requires local approval unless Auto-accept everything is enabled; PowerShell is not OS-sandboxed.',
+  exec_command: 'Run a command from the selected Windows workspace using PowerShell as the host shell. Invoke any installed language runtime, compiler, package manager, build system, test runner, or executable; availability depends on the installed Windows toolchain and PATH. Returns exitCode, timeout state, stdout/stderr, and duration. Captures up to 8 MiB per stream and reports truncation explicitly. Requires local approval unless Auto-accept everything is enabled; commands run with the signed-in Windows user permissions.',
+  shell: 'Legacy alias for exec_command. Runs a PowerShell command from the selected workspace with the same approval, timeout, output and security behavior.',
   run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. Each output stream has an 8 MiB capture ceiling; externalized text is lossless only when stdout_truncated/stderr_truncated are false. If either flag is true, rerun in bounded pages or redirect full output to a local file. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   session_start: 'Create a cryptographically random stable session_id and bind it to an agent_id seat. Session IDs have no TTL or inactivity expiration. The registry hard-caps registered IDs at 10,000 and evicts the one with the oldest last_activity_at when a new ID is created at the cap; busy and paused IDs are subject to this cap. Explicit disconnect or revoke/delete, and automatic hard-cap eviction, can release a seat. Returns assigned IDs, any cap evictions and calling instructions. Call once per ChatGPT conversation without session_id; include the returned session_id in every ordinary request and use a fresh request_id for every call.',
@@ -295,6 +298,8 @@ const TOOL_DESCRIPTIONS = Object.freeze({
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   task_project_status: ['project_id'], task_create: ['project_id', 'title', 'objective', 'acceptance_criteria'], task_list: ['project_id'], task_get: ['task_id'], task_claim: ['task_id'], task_heartbeat: ['task_id'], task_update: ['task_id', 'status'], task_submit: ['task_id', 'commit_sha', 'evidence'], task_review: ['task_id', 'verdict'], task_integrate: ['task_id', 'target_branch'], task_verify: ['task_id', 'checks'], task_decision: ['project_id', 'decision', 'rationale'], task_cancel: ['task_id'],
+  exec_command: ['command'],
+  exec_command: ['command'],
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
   apply_patch: ['patch'], create_directory: ['path'], move_path: ['source', 'destination'],
   delete_path: ['path'], git_create_branch: ['name'], git_switch_branch: ['name'],
@@ -395,7 +400,7 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   region: { type: 'array', description: 'Optional focused observation crop [left, top, right, bottom] in pixels relative to the exact screenshot frame. Use only with screenshot or a sequence follow-up observation. The returned context coordinates remain mapped to the original full screenshot.', minItems: 4, maxItems: 4, items: { type: 'integer', minimum: 0, maximum: 20000 } },
   frameWidth: { type: 'integer', description: 'Optional coordinate frame width.', minimum: 1, maximum: 20000 },
   frameHeight: { type: 'integer', description: 'Optional coordinate frame height.', minimum: 1, maximum: 20000 },
-  command: { type: 'string', description: 'PowerShell command to execute from the workspace. Arbitrary commands run with the signed-in user permissions and require local approval.', minLength: 1, maxLength: 20000 },
+  command: { type: 'string', description: 'Command to execute from the workspace through the Windows PowerShell host shell. It can invoke any installed executable or language tool.', minLength: 1, maxLength: 20000 },
   maxDepth: { type: 'integer', description: 'Maximum directory depth (1–12). Defaults to 4.', minimum: 1, maximum: 12, default: 4 },
   maxEntries: { type: 'integer', description: 'Maximum tree entries (1–2,000). Defaults to 500.', minimum: 1, maximum: 2000, default: 500 },
   format: { type: 'string', description: 'Use paths for a compact path-only listing, or entries for structured file records.', enum: ['entries', 'paths'], default: 'entries' },
@@ -495,12 +500,16 @@ const TOOL_PARAMETER_OVERRIDES = Object.freeze({
   git_show: { ref: { default: 'HEAD' } },
   git_commit: { paths: { description: 'Optional paths to stage before committing. If omitted, only changes already staged are committed.', items: { type: 'string' }, minItems: 1, maxItems: 100 } },
   discover_instructions: { paths: { description: 'Optional relative files/directories whose ancestor AGENTS.md files should be found. Maximum 50 paths.', items: { type: 'string' }, maxItems: 50 } },
-  run_tests: { command: { description: 'Optional override PowerShell command. If omitted, detect and run the project-native test command. Requires local approval.', minLength: 1, maxLength: 20000 } },
+  run_tests: { command: { description: 'Optional project-native test command override. If omitted, run a detected supported test command. Requires local approval.', minLength: 1, maxLength: 20000 } },
   git_fetch: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   git_pull: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   git_push: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
   git_clone: { timeoutMs: { description: 'Operation timeout in milliseconds (1,000–180,000). Defaults to 120,000.', minimum: 1000, maximum: 180000, default: 120000 } },
-  shell: { timeoutMs: { description: 'PowerShell timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
+  exec_command: {
+    command: { description: 'Command to run from the selected workspace using Windows PowerShell as the host shell. Invoke any installed runtime, compiler, package manager or tool.', type: 'string', minLength: 1, maxLength: 20000 },
+    timeoutMs: { description: 'Command timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 }
+  },
+  shell: { timeoutMs: { description: 'Legacy shell alias timeout in milliseconds (1,000–120,000). Defaults to 60,000.', minimum: 1000, maximum: 120000, default: 60000 } },
   project_search: { query: { minLength: 1, maxLength: 300 }, maxResults: { minimum: 1, maximum: 100, default: 30 } },
   git_worktree: {
     operation: { type: 'string', enum: ['list', 'add', 'remove', 'integrate'] },
@@ -548,7 +557,8 @@ const TOOL_RESULT_SUMMARIES = Object.freeze({
   apply_patch: 'Returns changed-file count, relative changed paths, and per-file actions.',
   git_status: 'Returns current branch/working-tree status, Git output, exit code, and stderr.',
   git_diff: 'Returns Git diff command, exitCode, stdout/stderr, and whether output was truncated.',
-  shell: 'Returns PowerShell command, working directory, exitCode, timeout state, stdout/stderr, timeoutMs, and explicit stdout_truncated/stderr_truncated flags. Captures up to 8 MiB per stream; mailbox artifacts preserve the captured bytes, but truncated flags mean the original output exceeded the cap and remains incomplete.',
+  exec_command: 'Returns command, working directory, exitCode, timeout state, stdout/stderr, timeoutMs, and explicit stdout_truncated/stderr_truncated flags. Captures up to 8 MiB per stream; mailbox artifacts preserve captured bytes, but truncated flags mean the original output exceeded the cap and remains incomplete.',
+  shell: 'Legacy alias for exec_command; returns the same command result fields.',
   run_tests: 'Returns test command result with exitCode, timeout state, stdout, stderr, timeoutMs, and explicit stdout_truncated/stderr_truncated flags. Captures up to 8 MiB per stream; externalization preserves captured bytes, and either truncation flag means the original output remains incomplete.',
   file_info: 'Returns relative path, file type, byte size, timestamps, permissions, and SHA-256 for regular files.',
   git_log: 'Returns Git command metadata and commits with SHA, short SHA, author, ISO date, and subject.',
@@ -986,8 +996,8 @@ function createToolBridge(deps) {
         (args.branch ? '\nBranch: ' + displayApprovalValue(args.branch, 200) : '') +
         '\nThe app-side GitHub credential stays inside the Windows app.';
     }
-    if (tool === 'shell') {
-      return header + resultWarning + 'This PowerShell command runs with your Windows user permissions and is not sandboxed:\n\n' +
+    if (tool === 'shell' || tool === 'exec_command') {
+      return header + resultWarning + 'This command runs through Windows PowerShell with your Windows user permissions and is not sandboxed. It can launch any installed executable or language tool:\n\n' +
         displayApprovalValue(args.command || '', 4000);
     }
     if (tool === 'apply_patch') {
@@ -1140,10 +1150,10 @@ function createToolBridge(deps) {
                 ? 'Normally runs automatically for workspace-relative paths; secret-like paths still require native Windows approval.'
                 : 'No approval dialog is normally required; the app still validates paths and arguments.'
         }));
-        output.catalog_version = 4;
+        output.catalog_version = 5;
         output.tool_calling = {
           mode: 'onedrive-mailbox-batch',
-          catalog_version: 4,
+          catalog_version: 5,
           rule: 'Submit up to 100 local steps in one request rather than one request per file. Independent lightweight file operations can run with maxConcurrency=100; default is 32. File/path conflicts, shell, tests, Git mutations, and unknown-side-effect operations are ordered automatically. For large file-output batches, fetch every part listed in result.output_artifacts concurrently, then review/process outputs together. Whenever output_truncated is true or a field says OUTPUT EXTERNALIZED, retrieve referenced artifacts with the connected OneDrive integration and concatenate numbered parts in order. For complete_result_part, reconstruct the JSON result before following its artifact manifest. If artifacts are missing or artifact_errors is non-empty, retry the read/search in bounded pages; truncation is not evidence of a safety block. $ref arguments wait for their source step. Inspect exitCode, timedOut, stdout, and stderr before dependent actions.',
           reference_syntax: '{"$ref":"priorStepId.result.content"}'
         };
