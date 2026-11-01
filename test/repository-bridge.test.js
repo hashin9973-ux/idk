@@ -595,6 +595,10 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     assert.doesNotMatch(statusText, new RegExp(sessionId));
     assert.match(statusText, /Registered tools/);
 
+    await waitForAsync(async () => {
+      const names = await fs.readdir(runtime);
+      return !names.some(name => name.includes('.pending-'));
+    }, 5000);
     const rootEntries = (await fs.readdir(runtime)).sort();
     const allowed = [...BRIDGE_DIRECTORIES, 'AGENT.md', 'TOOLS.md', 'STATUS.md'].sort();
     assert.deepEqual(rootEntries, allowed);
@@ -1864,14 +1868,16 @@ test('OneDrive message retention deletes only expired messages with valid read r
     getWorkspaceRoot: () => temp,
     executeTool: async () => ({ ok: true, result: {} }),
     intervalMs: 100,
-    cleanupIntervalMs: 1000
+    cleanupIntervalMs: 1000,
+    publishContextOnStart: false,
+    requestReconciliationIntervalMs: 1
   });
   try {
     await bridge.start();
-    await waitForAsync(async () => {
-      const status = await mailbox.readContent('STATUS.md');
-      return Boolean(status && status.content && status.content.toString('utf8').includes('- Health: healthy'));
-    }, 5000);
+    await bridge.pollOnce();
+    const status = await mailbox.readContent('STATUS.md');
+    assert.ok(status && status.content, 'worker must publish STATUS.md before retention: ' + JSON.stringify(bridge.getState()));
+    assert.match(status.content.toString('utf8'), /- Health: healthy/);
     await waitForAsync(async () => !(await mailbox.readJson('messages/agent-001/' + oldReadId + '.json')), 5000);
     assert.equal(await mailbox.readJson('messages/agent-001/' + oldReadId + '.json'), null);
     assert.equal(await mailbox.readJson('messages/agent-001/' + oldReadId + '.read.json'), null);
@@ -1969,7 +1975,7 @@ test('OneDrive mailbox polling dispatches requests while a background context re
     requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: temp, message: '' }),
     onSessionAssigned: async () => {},
     executeTool: async (tool, args = {}, callId = '') => {
-      if (tool === 'environment_info' && String(callId).startsWith('context-')) {
+      if (tool === 'get_capabilities' && String(callId).startsWith('context-capabilities-')) {
         contextStarted = true;
         await contextGate;
         return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: temp } };
@@ -1992,9 +1998,11 @@ test('OneDrive mailbox polling dispatches requests while a background context re
   });
   try {
     await bridge.start();
-    await waitFor(() => contextStarted, 1500);
     await waitForAsync(async () =>
       (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json'))?.value?.status === 'completed', 5000);
+    await waitFor(() => bridge.getState().active_count === 0, 1500);
+    await bridge.pollOnce();
+    await waitFor(() => contextStarted, 1500);
     const session = (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json')).value.result.result;
     const request = {
       protocol: PROTOCOL, request_id: requestId, session_id: session.session_id,
@@ -2069,13 +2077,16 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
   });
   try {
     await bridge.start();
+    await waitForAsync(async () =>
+      (await mailbox.readJson('result/agent-000/' + requestId + '.json'))?.value?.status === 'completed', 5000);
+    await waitFor(() => bridge.getState().active_count === 0, 1500);
+    await bridge.pollOnce();
     await waitForAsync(async () => {
-      const [result, agent, tools] = await Promise.all([
-        mailbox.readJson('result/agent-000/' + requestId + '.json'),
+      const [agent, tools] = await Promise.all([
         mailbox.readContent('AGENT.md'),
         mailbox.readContent('TOOLS.md')
       ]);
-      return Boolean(result && result.value.status === 'completed' && agent && tools);
+      return Boolean(agent && tools);
     }, 5000);
     const agent = (await mailbox.readContent('AGENT.md')).content.toString('utf8');
     const tools = (await mailbox.readContent('TOOLS.md')).content.toString('utf8');
