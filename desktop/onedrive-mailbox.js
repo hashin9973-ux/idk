@@ -181,7 +181,6 @@ function createOneDriveMailbox({
         name: child.name,
         path: relativePath + '/' + child.name,
         type: child.isDirectory() ? 'dir' : child.isFile() ? 'file' : 'other',
-        size: 0
       });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
