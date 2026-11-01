@@ -2233,17 +2233,26 @@ test('a conflicting immutable result is not mistaken for successful publication 
     ...{ settings, getSettings: () => settings, persistSettings: () => {} },
     getWorkspaceRoot: () => process.cwd(),
     requestSessionAssignment: async () => {
-      await mailbox.writeJson('bridge/results/' + requestId + '.json', {
-        protocol: RESULT_PROTOCOL,
-        request_id: requestId,
-        status: 'failed',
-        completed_at: new Date().toISOString(),
-        error: 'A different immutable result was already published.'
-      }, null, true);
-      conflictWritten = true;
       return { autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' };
     },
     onSessionAssigned: async () => {},
+    onState: state => {
+      if (conflictWritten || !Array.isArray(state.agentMailboxes)) return;
+      const row = state.agentMailboxes.flatMap(agent => Array.isArray(agent.requests) ? agent.requests : [])
+        .find(item => item && item.request_id === requestId && item.status === 'publishing' &&
+          typeof item.resultJson === 'string');
+      if (!row) return;
+      const conflictingResult = JSON.parse(row.resultJson);
+      Object.defineProperty(conflictingResult, '__proto__', {
+        value: { unexpected: true }, enumerable: true, configurable: true, writable: true
+      });
+      require('node:fs').writeFileSync(
+        path.join(runtime, 'bridge', 'results', requestId + '.json'),
+        JSON.stringify(conflictingResult),
+        'utf8'
+      );
+      conflictWritten = true;
+    },
     executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
     intervalMs: 5000
   });
@@ -2262,7 +2271,8 @@ test('a conflicting immutable result is not mistaken for successful publication 
     assert.ok(Number.isInteger(claim.value.result.timing_ms.mailbox_operations_before_result_publish));
     assert.ok(claim.value.result.timing_ms.mailbox_operations_before_result_publish > 0);
     assert.ok(Number.isInteger(claim.value.result.timing_ms.mailbox_operation_ms_before_result_publish));
-    assert.equal(storedResult.value.status, 'failed', 'the worker must not overwrite an existing immutable result');
+    assert.equal(storedResult.value.status, 'completed', 'the pre-existing result is a copy of the worker result with one extra JSON key');
+    assert.equal(Object.hasOwn(storedResult.value, '__proto__'), true, 'a literal __proto__ key must remain part of JSON equality');
     assert.match(bridge.getState().lastError, /contents do not match/i);
   } finally {
     await bridge.stop();
