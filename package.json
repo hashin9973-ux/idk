@@ -22,8 +22,8 @@
     "electron-builder": "^26.0.12"
   },
   "build": {
-    "appId": "com.hashin997ux.windowsbridge",
-    "productName": "Windows Bridge",
+    "appId": "com.hashin997ux.windowsrepositorybridge",
+    "productName": "Windows Repository Bridge",
     "asar": true,
     "directories": {
       "output": "dist"
