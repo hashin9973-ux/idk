@@ -565,7 +565,7 @@ function createDirectAgentRuntime({
             error: safeError(error, config.apiKey || '')
           };
         }
-        const status = output && typeof output.status === 'string' ? output.status : 'success';
+        const status = output && typeof output.status === 'string' ? output.status : output && output.cancelled ? 'cancelled' : output && (output.ok === false || output.error) ? 'failed' : 'success';
         const toolContent = formatToolResultMarkdown(invocation.name, output, MAX_TOOL_RESULT_CHARS);
         session.messages.push({
           role: 'user',
