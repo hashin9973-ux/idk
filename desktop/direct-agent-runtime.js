@@ -306,9 +306,10 @@ function toApiMessages(messages) {
 
 function parseSlashListItem(token) {
   const value = String(token).trim();
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1).replace(/\\(["'\\])/g, '$1');
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try { return JSON.parse(value); } catch { throw new Error('A quoted command value contains invalid escaping.'); }
   }
+  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1).replace(/\\(['\\])/g, '$1');
   if (/^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
   if (/^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
   if (/^(null|none)$/i.test(value)) return null;
@@ -381,7 +382,13 @@ function parseSlashArguments(raw, toolName) {
     if (Object.prototype.hasOwnProperty.call(args, key)) throw new Error('Argument "' + key + '" is repeated in /' + toolName + '.');
     index += match[0].length;
     const parsed = parseSlashArgumentValue(input, index);
-    if (key === 'steps' && typeof parsed.value === 'string') {
+    if (key === 'steps' && typeof parsed.value === 'string' && toolName === 'computer') {
+      args[key] = parsed.value.split(';').map(part => part.trim()).filter(Boolean).map(part => {
+        const match = part.match(/^([a-z][a-z0-9_-]*)(?:\\s+([\\s\\S]*))?$/i);
+        if (!match) throw new Error('Each computer step needs an action name and named arguments.');
+        return { action: match[1], ...parseSlashArguments(match[2] || '', 'computer-step') };
+      });
+    } else if (key === 'steps' && typeof parsed.value === 'string' && toolName === 'batch') {
       args[key] = parsed.value.split(';').map(part => part.trim()).filter(Boolean).map(part => {
         const command = parseSlashToolCommand(part.startsWith('/') ? part : '/' + part,
           DIRECT_AGENT_TOOL_NAMES.filter(name => name !== 'batch'));
