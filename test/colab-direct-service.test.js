@@ -99,7 +99,7 @@ function fixture(options = {}) {
     dispose: async () => {}
   };
   const mailbox = {
-    getState: () => ({ configured: true, runtimePath: 'C:\\OneDrive\\Bridge', mailboxPath: 'C:\\OneDrive\\Bridge', transport: 'onedrive-synced-folder' }),
+    getState: () => ({ configured: true, mailboxPath: 'C:\\OneDrive\\Bridge', transport: 'onedrive-synced-folder' }),
     async readContent(relativePath) {
       if (relativePath !== 'STATUS.md') return null;
       return {
