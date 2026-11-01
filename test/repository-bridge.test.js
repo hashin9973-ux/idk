@@ -1937,122 +1937,65 @@ test('mailbox polling dispatches new requests while a background context refresh
   }
 });
 
-test('environment refresh publishes one compact agent entry and refreshes after workspace changes', async () => {
+test('environment refresh publishes only the canonical AGENT.md and complete TOOLS.md guides', async () => {
   const request = {
     protocol: PROTOCOL,
     request_id: 'req-refresh-context',
     created_at: new Date().toISOString(),
-    tool: 'refresh_environment_context',
-    args: {}
+    tool: 'session_start',
+    args: { label: 'Context publication test' }
   };
   const fake = fakeGitHub({ initial: [['bridge/requests/req-refresh-context.json', request]] });
   const fixture = settingsFixture();
   const calls = [];
-  let workspaceRoot = process.cwd();
   const bridge = createRepositoryBridge({
     githubAuth: fake.githubAuth, ...fixture,
-    getWorkspaceRoot: () => workspaceRoot,
+    getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' }),
+    onSessionAssigned: async () => {},
     executeTool: async (tool, args = {}) => {
       calls.push({ tool, args });
-      if (tool === 'discover_instructions') {
-        return { ok: true, result: { count: 1, instructions: [{ path: 'AGENTS.md', content: 'do not publish this instruction body' }] } };
-      }
-      if (tool === 'read_file' && args.path === 'package.json') {
-        return { ok: true, result: { path: 'package.json', content: JSON.stringify({ name: 'fixture-app', scripts: { test: 'node --test', check: 'node --check index.js' } }) } };
-      }
-      if (tool === 'get_capabilities') {
-        return { ok: true, result: {
-          protocol: 'chatgpt-local-tools-v2',
-          tools: [{ name: 'read_file', mode: 'read', description: 'Read UTF-8 text', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path' } }, required: ['path'], additionalProperties: false } }],
-          tool_calling: { mode: 'onedrive-mailbox-batch', catalog_version: 1 }
-        } };
-      }
-      if (tool === 'project_status') return { ok: true, result: { detectedTechnologies: ['Node.js'], topLevelEntries: ['package.json', 'src', '.git'], isGitRepository: true } };
-      if (tool === 'environment_info') return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: workspaceRoot, homeDirectory: 'C:/Users/Private', hostname: 'private-host' } };
-      return { ok: true, result: { tool, summary: 'captured' } };
+      if (tool === 'get_capabilities') return { ok: true, result: {
+        catalog_version: 7,
+        tools: [{
+          name: 'read_file', mode: 'read', description: 'Read UTF-8 text from the Windows workspace.',
+          permission_note: 'Read-only; no approval required.', returns: 'Content and pagination metadata.',
+          parameters: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path' } },
+            required: ['path'], additionalProperties: false }
+        }],
+        tool_calling: { mode: 'onedrive-mailbox-batch', rule: 'Up to 100 operations.', reference_syntax: '{"$ref":"priorStepId.result.content"}' }
+      } };
+      return { ok: true, result: { tool } };
     },
     intervalMs: 5000,
     publishContextOnStart: true,
     contextRefreshIntervalMs: 5 * 60 * 1000
   });
-
   try {
     await bridge.start();
     await waitFor(() => fake.files.has('bridge/results/req-refresh-context.json'));
-    const index = decode(fake.files.get('bridge/context/latest.json'));
-    assert.equal(index.protocol, 'chatgpt-local-environment-context/v1');
-    assert.ok(index.files.environment);
-    assert.ok(index.files.project);
-    assert.ok(index.files.capabilities);
-    assert.ok(index.files.project_commands);
-    assert.ok(index.files.directory_tree);
-    assert.ok(index.files.instructions);
-    assert.equal(index.files.tools, 'bridge/context/TOOLS.md');
-    assert.equal(index.agent_context.protocol, 'chatgpt-local-agent-context/v1');
-    assert.match(index.agent_context.tool_failure_contract.no_request, /worker has not received/i);
-    assert.match(index.agent_context.tool_failure_contract.rejected, /status rejected/i);
-    assert.match(index.agent_context.tool_failure_contract.failed, /not automatically safety blocks/i);
-    assert.equal(index.agent_context.project_commands.name, 'fixture-app');
-    assert.equal(index.agent_context.project_commands.scripts.test, 'node --test');
-    assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
-    assert.equal(index.agent_context.tool_catalog.catalog_version, 1);
-    assert.equal(index.agent_context.tool_guide.path, 'bridge/context/TOOLS.md');
-    const toolGuide = Buffer.from(fake.files.get('bridge/context/TOOLS.md').content, 'base64').toString('utf8');
-    assert.match(toolGuide, /Any programming language/);
-    assert.match(toolGuide, /Schemas and transport/);
-    assert.ok(index.agent_context.operating_rules.some(rule => /request file does not exist in OneDrive.*rather than attributing the failure to Windows execution/i.test(rule)));
-    assert.ok(index.agent_context.operating_rules.some(rule => /not native OneDrive integration tools/i.test(rule)));
-    assert.equal(index.agent_context.bridge_invocation.transport, 'onedrive-synced-folder');
-    assert.equal(index.agent_context.bridge_invocation.runtime_path, 'Bridge/runtime');
-    assert.equal(index.agent_context.bridge_invocation.mailbox_path, 'Bridge/runtime/bridge');
-    assert.equal(index.agent_context.bridge_invocation.publication_integration, 'connected OneDrive integration');
-    assert.equal('repository' in index.agent_context.bridge_invocation, false);
-    assert.equal('branch' in index.agent_context.bridge_invocation, false);
-    assert.doesNotMatch(JSON.stringify(index.agent_context), /GitHub MCP|GitHub mailbox|bridge-mailbox/i);
-    assert.ok(index.agent_context.operating_rules.some(rule => /targeted read-only Windows discovery/i.test(rule)));
-    assert.ok(index.agent_context.operating_rules.some(rule => /measurable acceptance criteria and a short implementation plan/i.test(rule)));
-    assert.ok(index.agent_context.operating_rules.some(rule => /do not collapse a complex game.*one file/i.test(rule)));
-    assert.ok(index.agent_context.operating_rules.some(rule => /run project-native checks and tests/i.test(rule)));
-    const invocation = index.agent_context.bridge_invocation;
-    assert.equal(invocation.protocol, PROTOCOL);
-    assert.equal(invocation.request_path_template, 'bridge/requests/<request_id>.json');
-    assert.equal(invocation.result_path_template, 'bridge/results/<same-request-id>.json');
-    assert.equal(invocation.request_example.protocol, PROTOCOL);
-    assert.equal(invocation.request_example.tool, 'get_agent_context');
-    assert.deepEqual(invocation.request_example.args, {});
-    assert.match(invocation.calling_contract, /connected OneDrive integration/i);
-    assert.match(invocation.calling_contract, /local OneDrive sync folder/i);
-    assert.match(invocation.calling_contract, /do not use GitHub for mailbox traffic/i);
-    assert.equal(index.agent_context.tool_catalog.tools[0].parameters.properties.path.description, 'Workspace-relative path');
-    assert.equal(JSON.stringify(index.agent_context).includes('do not publish this instruction body'), false);
-    assert.equal(JSON.stringify(index.agent_context).includes('private-host'), false);
-    const instructions = decode(fake.files.get('bridge/context/instructions.json'));
-    assert.deepEqual(instructions.data.result.instructions, [{
-      path: 'AGENTS.md',
-      bytes: Buffer.byteLength('do not publish this instruction body', 'utf8'),
-      sha256: require('node:crypto').createHash('sha256').update('do not publish this instruction body').digest('hex')
-    }]);
-    assert.equal(JSON.stringify(instructions).includes('do not publish this instruction body'), false);
-    assert.ok(calls.some(call => call.tool === 'environment_info'));
-    assert.equal(calls.some(call => call.tool === 'directory_tree'), false,
-      'context refresh must use the maintained index instead of rescanning the workspace');
-    assert.equal(index.files.filesystem_index, 'bridge/context/filesystem-index.md');
-    assert.equal(index.agent_context.filesystem_index.contents_included, false);
-    assert.equal(index.agent_context.filesystem_index.mode, 'names-only');
-    const directoryReference = decode(fake.files.get('bridge/context/directory_tree.json'));
-    assert.equal(directoryReference.data.result.path, 'bridge/context/filesystem-index.md');
-    assert.ok(calls.some(call => call.tool === 'read_file' && call.args.path === 'package.json'));
-    const result = decode(fake.files.get('bridge/results/req-refresh-context.json'));
-    assert.equal(result.status, 'completed');
-
-    const beforeRefreshes = calls.filter(call => call.tool === 'environment_info').length;
-    const firstGeneratedAt = index.generated_at;
-    workspaceRoot = path.join(process.cwd(), 'workspace-changed-during-test');
-    await new Promise(resolve => setTimeout(resolve, 5));
-    await bridge.pollOnce();
-    const refreshed = decode(fake.files.get('bridge/context/latest.json'));
-    assert.equal(refreshed.generated_at, firstGeneratedAt, 'unchanged context must not generate pointless repository commits');
-    assert.equal(calls.filter(call => call.tool === 'environment_info').length, beforeRefreshes + 1);
+    const agent = Buffer.from(fake.files.get('AGENT.md').content, 'base64').toString('utf8');
+    const tools = Buffer.from(fake.files.get('TOOLS.md').content, 'base64').toString('utf8');
+    assert.match(agent, /Windows Bridge operating guide/);
+    assert.match(agent, /OneDrive is file storage and message transport only/);
+    assert.match(agent, /request\\/agent-000/);
+    assert.match(agent, /claims\\/<agent-id>/);
+    assert.match(agent, /app persistent local settings store/);
+    assert.match(agent, /10,000 sessions/);
+    assert.match(agent, /SCREEN.md/);
+    assert.doesNotMatch(agent, /Bridge\\/runtime|bridge\\/context|capabilities\\.json/);
+    assert.match(tools, /Windows Bridge tool reference/);
+    assert.match(tools, /Catalog version: 7/);
+    assert.match(tools, /read_file/);
+    assert.match(tools, /Read UTF-8 text from the Windows workspace/);
+    assert.match(tools, /Permission requirements: Read-only; no approval required/);
+    assert.match(tools, /"path": \\{/);
+    assert.match(tools, /Argument schema/);
+    assert.match(tools, /Up to 100 operations/);
+    assert.equal(fake.files.has('bridge/context/latest.json'), false);
+    assert.equal(fake.files.has('bridge/context/TOOLS.md'), false);
+    assert.equal(calls.filter(call => call.tool === 'get_capabilities').length >= 1, true);
+    assert.equal(decode(fake.files.get('bridge/results/req-refresh-context.json')).status, 'completed');
   } finally {
     await bridge.stop();
   }
