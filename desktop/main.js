@@ -2762,7 +2762,7 @@ function registerIpc() {
         message: appInitializationError || 'Vision service is not available in this app session.'
       };
     }
-    // Colab's direct HTTPS health endpoint is independent of the GitHub mailbox.
+    // Colab's direct HTTPS health endpoint is independent of the OneDrive mailbox.
     // Do not hide a live Colab runtime because a separate GitHub /user probe timed out.
     const state = visionService.status();
     const handoff = colabHandoffServer ? colabHandoffServer.status() : { ready: false, lastError: 'not_initialized' };
