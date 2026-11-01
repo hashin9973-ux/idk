@@ -197,6 +197,38 @@ async function readCompletion(response, onDelta) {
   return state;
 }
 
+function trimHistory(messages) {
+  if (!Array.isArray(messages) || messages.length <= MAX_STORED_MESSAGES) {
+    return Array.isArray(messages) ? messages : [];
+  }
+  let start = Math.max(0, messages.length - MAX_STORED_MESSAGES);
+  // Keep the complete latest user turn, including any assistant tool-call and
+  // tool-result messages that belong to it.
+  while (start > 0 && messages[start].role !== 'user') start--;
+  return messages.slice(start);
+}
+
+function toApiMessages(messages) {
+  return messages.filter(message => message && ['user', 'assistant', 'tool'].includes(message.role))
+    .map(message => {
+      const safe = { role: message.role };
+      if (typeof message.content === 'string' || message.content === null) safe.content = message.content;
+      if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
+        safe.tool_calls = message.tool_calls.map(call => ({
+          id: String(call.id || ''),
+          type: 'function',
+          function: {
+            name: String(call.function && call.function.name || ''),
+            arguments: typeof (call.function && call.function.arguments) === 'string'
+              ? call.function.arguments : '{}'
+          }
+        }));
+      }
+      if (message.role === 'tool') safe.tool_call_id = String(message.tool_call_id || '');
+      return safe;
+    });
+}
+
 function createDirectAgentRuntime({
   fetchImpl = globalThis.fetch,
   getConfig,
@@ -271,8 +303,8 @@ function createDirectAgentRuntime({
       if (!config || !config.model || !config.endpoint) throw new Error('The direct API connection is incomplete.');
       session.status = 'running';
       session.error = '';
+      session.messages = trimHistory(session.messages);
       session.messages.push({ role: 'user', content: input.trim(), createdAt: new Date(clock()).toISOString() });
-      session.messages = session.messages.slice(-MAX_STORED_MESSAGES);
       await save(agentId, session, { status: 'running' });
       emit(agentId, { type: 'status', status: 'running' });
 
@@ -291,16 +323,12 @@ function createDirectAgentRuntime({
       let toolRounds = 0;
       while (true) {
         if (controller.signal.aborted) throw controller.signal.reason || new Error('The run was cancelled.');
-        let partial = '';
         const completion = await requestCompletion(
           config,
-          [{ role: 'system', content: system }, ...session.messages],
+          [{ role: 'system', content: system }, ...toApiMessages(session.messages)],
           tools,
           controller.signal,
-          delta => {
-            partial += delta;
-            emit(agentId, { type: 'delta', delta });
-          }
+          delta => { emit(agentId, { type: 'delta', delta }); }
         );
         const toolCalls = [...completion.toolCalls.entries()].sort((a, b) => a[0] - b[0]).map(([, call]) => call);
         if (!toolCalls.length) {
@@ -308,7 +336,7 @@ function createDirectAgentRuntime({
           session.messages.push({ role: 'assistant', content: completion.content, createdAt: new Date(clock()).toISOString() });
           session.status = 'idle';
           session.error = '';
-          session.messages = session.messages.slice(-MAX_STORED_MESSAGES);
+          session.messages = trimHistory(session.messages);
           await save(agentId, session, { status: 'idle' });
           emit(agentId, { type: 'completed', status: 'idle' });
           return { accepted: true, completed: true };
@@ -360,7 +388,7 @@ function createDirectAgentRuntime({
           });
           emit(agentId, { type: 'tool_completed', tool: result.name, status: result.status, output: result.content });
         }
-        session.messages = session.messages.slice(-MAX_STORED_MESSAGES);
+        session.messages = trimHistory(session.messages);
         await save(agentId, session, { status: 'running' });
       }
     } catch (error) {

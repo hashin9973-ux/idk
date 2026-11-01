@@ -1368,15 +1368,30 @@ async function encryptDirectAgentApiKey(value) {
   return Buffer.from(encrypted).toString('base64');
 }
 
-async function decryptDirectAgentApiKey(value) {
+async function decryptDirectAgentApiKey(agentId, value) {
   if (typeof value !== 'string' || !value) return '';
   if (!safeStorage || typeof safeStorage.isAsyncEncryptionAvailable !== 'function' ||
       typeof safeStorage.decryptStringAsync !== 'function' ||
+      typeof safeStorage.encryptStringAsync !== 'function' ||
       !(await safeStorage.isAsyncEncryptionAvailable())) {
     throw new Error('OS-backed secure storage is temporarily unavailable; the API key cannot be read.');
   }
-  const result = await safeStorage.decryptStringAsync(Buffer.from(value, 'base64'));
-  return String(result || '');
+  const decrypted = await safeStorage.decryptStringAsync(Buffer.from(value, 'base64'));
+  if (!decrypted || typeof decrypted.result !== 'string') {
+    throw new Error('OS-backed secure storage returned an invalid decrypted value.');
+  }
+  if (decrypted.shouldReEncrypt === true) {
+    const rotated = await safeStorage.encryptStringAsync(decrypted.result);
+    const latest = directAgentConfigRecords()[agentId];
+    if (latest && latest.apiKeyEncrypted === value) {
+      settings.directAgentConfigs = {
+        ...directAgentConfigRecords(),
+        [agentId]: { ...latest, apiKeyEncrypted: Buffer.from(rotated).toString('base64') }
+      };
+      persistSettings();
+    }
+  }
+  return decrypted.result;
 }
 
 function directAgentConfigRecords() {
@@ -1416,7 +1431,7 @@ async function getDirectAgentRuntimeConfig(agentId) {
   if (!record || !['openai-compatible', 'koboldcpp'].includes(record.provider)) {
     throw new Error('No direct API connection is configured for this agent.');
   }
-  const apiKey = await decryptDirectAgentApiKey(record.apiKeyEncrypted);
+  const apiKey = await decryptDirectAgentApiKey(agentId, record.apiKeyEncrypted);
   return normalizeDirectAgentConfig({ ...record, apiKey });
 }
 

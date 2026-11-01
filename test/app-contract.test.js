@@ -1033,7 +1033,7 @@ test('agent widget render, composer, workspace and context actions survive statu
   const styles = read('desktop', 'dashboard.css');
   assert.match(renderer, /requiredWidgetParts/);
   assert.match(renderer, /if\(messageInput\)\{/);
-  assert.match(renderer, /composer\.append\(input\)/);
+  assert.match(renderer, /composer\.append\(input(?:,stopButton)?\)/);
   assert.match(renderer, /api\.sendAgentMessage\(sessionId,message\)/);
   assert.match(renderer, /input\.addEventListener\('keydown'/);
   assert.match(renderer, /agent-pause-button/);
