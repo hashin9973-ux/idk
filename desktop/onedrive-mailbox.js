@@ -443,7 +443,9 @@ function createOneDriveMailbox({
     for (const relative of BRIDGE_DIRECTORIES) {
       await ensureDirectory(path.join(root, relative));
     }
-    const probe = path.join(root, 'request', '.windows-bridge-write-check-' + crypto.randomUUID() + '.json');
+    const bootstrapRequestFolder = path.join(root, 'request', 'agent-000');
+    await ensureDirectory(bootstrapRequestFolder);
+    const probe = path.join(bootstrapRequestFolder, '.windows-bridge-write-check-' + crypto.randomUUID() + '.json');
     let handle = null;
     try {
       handle = await fsImpl.open(probe, 'wx');
