@@ -75,12 +75,17 @@
   function formatSlashCommand(tool, args) {
     const name = String(tool || 'unknown_tool').replace(/[^a-zA-Z0-9_.:-]/g, '_');
     const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
-    if (name === 'batch' && Array.isArray(values.steps)) {
-      const steps = values.steps.map(step => formatSlashCommand(step && step.tool, step && step.args)).map(command => command.replace(/^\//, ''));
+    if ((name === 'batch' || name === 'computer') && Array.isArray(values.steps)) {
+      const steps = values.steps.map(step => {
+        if (name === 'batch') return formatSlashCommand(step && step.tool, step && step.args).replace(/^\//, '');
+        const action = String(step && step.action || 'unknown');
+        const args = Object.fromEntries(Object.entries(step || {}).filter(([key]) => key !== 'action'));
+        return formatSlashCommand(action, args).replace(/^\//, '');
+      });
       const options = Object.entries(values).filter(([key]) => key !== 'steps')
         .map(([key, value]) => key + '=' + formatSlashValue(value));
-      return '/' + name + (steps.length ? ' steps=' + JSON.stringify(steps.join('; ')) : '') +
-        (options.length ? ' ' + options.join(' ') : '');
+      return '/' + name + (options.length ? ' ' + options.join(' ') : '') +
+        (steps.length ? (options.length ? ' ' : ' ') + 'steps=' + JSON.stringify(steps.join('; ')) : '');
     }
     const argsText = Object.entries(values).filter(([key]) => !SECRET_KEY.test(key))
       .map(([key, value]) => key + '=' + formatSlashValue(redactValue(value))).join(' ');
