@@ -116,12 +116,87 @@ function createObserveService(deps = {}) {
     };
   }
 
+  function screenSafeValue(value, key = '', depth = 0) {
+    if (/(?:password|secret|token|authorization|credential|api[-_]?key|cookie)/i.test(key)) return '[REDACTED]';
+    if (depth > 5) return '[MAX DEPTH]';
+    if (typeof value === 'string') return safeText(value, 1200);
+    if (Array.isArray(value)) return value.slice(0, 100).map(item => screenSafeValue(item, '', depth + 1));
+    if (!value || typeof value !== 'object') return value;
+    const output = {};
+    for (const [name, item] of Object.entries(value).slice(0, 80)) {
+      if (['image', 'screenshot', 'pixels', 'jpeg', 'base64'].includes(name.toLowerCase())) continue;
+      output[name] = screenSafeValue(item, name, depth + 1);
+    }
+    return output;
+  }
+
+  function renderScreenMarkdown(payload) {
+    const latest = payload.frames && payload.frames.length ? payload.frames[payload.frames.length - 1] : null;
+    const capturedAt = latest && Date.parse(latest.captured_at);
+    const ageMs = Number.isFinite(capturedAt) ? Math.max(0, now() - capturedAt) : null;
+    const controls = latest && Array.isArray(latest.controls) ? latest.controls.slice(0, 120) : [];
+    const safeControls = controls.map(control => {
+      const item = control && typeof control === 'object' ? control : {};
+      const isPassword = item.is_password === true || /password|passcode|credential/i.test(String(item.name || '') + ' ' + String(item.automation_id || ''));
+      const selected = {};
+      for (const key of ['name', 'control_type', 'automation_id', 'bounds', 'is_enabled', 'is_offscreen', 'is_password', 'value', 'text']) {
+        if (item[key] === undefined) continue;
+        if (isPassword && ['value', 'text'].includes(key)) selected[key] = '[REDACTED]';
+        else selected[key] = screenSafeValue(item[key], key);
+      }
+      return selected;
+    });
+    const lines = [
+      '# Windows Bridge screen context',
+      '',
+      '- Observe: ' + (payload.enabled ? 'enabled' : 'disabled'),
+      '- Status: ' + payload.status,
+      '- Updated: ' + payload.updated_at,
+      '- Freshness: ' + (payload.enabled && ageMs !== null ? ageMs + ' ms old' : 'no current frame'),
+      '- Sample rate: ' + payload.sample_fps + ' fps (' + payload.sample_interval_ms + ' ms interval)',
+      '- Captures: ' + payload.capture_count,
+      '- Skipped samples: ' + payload.skipped_samples,
+      '- Last capture: ' + (payload.last_capture_at || 'none'),
+      '- Last screen change: ' + (payload.last_change_at || 'unknown'),
+      '- Passive vision: ' + (payload.passive_vision_status || 'off'),
+      '- Vision completed: ' + (payload.last_vision_completed_at || 'none'),
+      '- Error: ' + (payload.error || payload.passive_vision_error || 'none'),
+      ''
+    ];
+    if (!latest) {
+      lines.push('## Current frame', '', payload.enabled ? 'No fresh frame has been captured yet.' : 'Observe is disabled. No screen content is currently published.', '');
+      return lines.join('\n');
+    }
+    lines.push('## Latest frame', '',
+      '- Sequence: ' + latest.sequence,
+      '- Frame ID: ' + (latest.frame_id || 'unknown'),
+      '- Captured: ' + latest.captured_at,
+      '- Dimensions: ' + (latest.coordinate_system && latest.coordinate_system.width_px || 'unknown') + ' × ' +
+        (latest.coordinate_system && latest.coordinate_system.height_px || 'unknown') + ' pixels',
+      '- Coordinate system: screenshot pixels; origin top-left; X right; Y down',
+      '- Active window: ' + JSON.stringify(screenSafeValue(latest.active_window || null)),
+      '- Focused control: ' + JSON.stringify(screenSafeValue(latest.focused_control || null)),
+      '- Cursor: ' + JSON.stringify(screenSafeValue(latest.cursor || null)),
+      '- UI Automation: ' + (latest.accessibility && latest.accessibility.available ? 'available' : 'unavailable') +
+        (latest.accessibility && latest.accessibility.reason ? ' (' + latest.accessibility.reason + ')' : ''),
+      '- UI Automation node count: ' + (latest.accessibility && latest.accessibility.node_count || 'unknown'),
+      '- Vision status: ' + (latest.vision_status || 'not analyzed'),
+      '- Vision model: ' + (latest.vision_model || 'unknown'),
+      '', '### Visible controls', '');
+    if (safeControls.length) {
+      for (const control of safeControls) lines.push('- ' + JSON.stringify(control));
+    } else lines.push('No UI Automation controls were captured.');
+    if (latest.vision) lines.push('', '### Passive visual analysis', '', JSON.stringify(screenSafeValue(latest.vision), null, 2));
+    if (latest.vision_error) lines.push('', '### Vision error', '', safeText(latest.vision_error, 500));
+    lines.push('', '### Coordinate frame', '', JSON.stringify(screenSafeValue(latest.coordinate_system || {}), null, 2), '');
+    return lines.join('\n');
+  }
+
   async function publish(enabledValue, errorMessage = '') {
-    if (!mailbox || typeof mailbox.writeJson !== 'function') {
-      throw new Error('The OneDrive mailbox is unavailable. Select the OneDrive-synced Bridge/runtime folder.');
+    if (!mailbox || typeof mailbox.writeContent !== 'function') {
+      throw new Error('The OneDrive mailbox is unavailable. Select the existing OneDrive-synced Bridge folder.');
     }
     const payload = {
-      protocol: OBSERVE_PROTOCOL,
       enabled: enabledValue,
       updated_at: new Date(now()).toISOString(),
       sample_fps: sampleFps,
@@ -133,49 +208,38 @@ function createObserveService(deps = {}) {
       last_vision_completed_at: enabledValue && lastVisionCompletedAt ? new Date(lastVisionCompletedAt).toISOString() : null,
       passive_vision_status: enabledValue ? latestVisionStatus : 'off',
       passive_vision_error: enabledValue ? safeText(lastVisionError, 500) : '',
-      in_flight_frame_id: enabledValue && activeVisionFrame ? activeVisionFrame.frame_id : null,
-      last_vision_frame_id: enabledValue && lastCompletedVisionFrame ? lastCompletedVisionFrame.frame_id : null,
       frame_count: enabledValue ? frames.length : 0,
       frames: enabledValue ? frames.slice(-FRAME_LIMIT) : [],
-      status: enabledValue ? 'observing' : 'off',
+      status: enabledValue ? 'observing' : 'disabled',
       error: safeText(errorMessage, 500) || null
     };
-    let content = JSON.stringify(payload);
+    let content = renderScreenMarkdown(payload);
     if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
-      const clippedFrames = payload.frames.slice();
-      const protectedFrameIds = new Set(
-        [activeVisionFrame, lastCompletedVisionFrame].filter(Boolean).map(frame => frame.frame_id)
-      );
-      while (clippedFrames.length &&
-             Buffer.byteLength(JSON.stringify({ ...payload, frames: clippedFrames }), 'utf8') > MAX_CONTEXT_BYTES) {
-        const removableIndex = clippedFrames.findIndex(frame => !protectedFrameIds.has(frame.frame_id));
-        if (removableIndex < 0) break;
-        clippedFrames.splice(removableIndex, 1);
-      }
-      payload.frames = clippedFrames;
-      payload.frame_count = clippedFrames.length;
+      payload.frames = payload.frames.slice(-1);
       payload.truncated = true;
-      content = JSON.stringify(payload);
+      content = renderScreenMarkdown(payload) + '\n\nObservation history was trimmed to the latest frame to stay within the mailbox size limit.\n';
     }
     if (Buffer.byteLength(content, 'utf8') > MAX_CONTEXT_BYTES) {
-      throw new Error('Observe context exceeds the 3.5 MiB OneDrive publication limit after frame trimming.');
+      throw new Error('SCREEN.md exceeds the 3.5 MiB OneDrive publication limit after history trimming.');
     }
-
-    const relativePath = 'bridge/vision/observe.json';
+    const relativePath = 'SCREEN.md';
     for (let attempt = 0; attempt < 3; attempt++) {
-      const existing = currentSha ? { sha: currentSha } : await mailbox.readJson(relativePath);
+      const existing = currentSha ? { sha: currentSha } : await mailbox.readContent(relativePath);
       try {
-        const saved = await mailbox.writeJson(relativePath, payload, existing && existing.sha || null, false);
+        const saved = await mailbox.writeContent(relativePath, content, {
+          createOnly: !existing,
+          expectedSha: existing && existing.sha || null
+        });
         currentSha = saved.sha;
         lastPublishedAt = now();
         return payload;
       } catch (error) {
         if (!error || error.code !== 'MAILBOX_CONFLICT' || attempt === 2) throw error;
-        const latest = await mailbox.readJson(relativePath);
+        const latest = await mailbox.readContent(relativePath);
         currentSha = latest && latest.sha || null;
       }
     }
-    throw new Error('Observe context could not be published after resolving concurrent OneDrive sync updates.');
+    throw new Error('SCREEN.md could not be published after resolving concurrent OneDrive sync updates.');
   }
 
   async function publishLatestWhenDue() {
@@ -535,7 +599,7 @@ function createObserveService(deps = {}) {
     observeEpoch += 1;
     pendingCapture = null;
     if (value) {
-      if (!mailbox || typeof mailbox.writeJson !== 'function') throw new Error('Select the OneDrive-synced Bridge/runtime folder before enabling Observe mode.');
+      if (!mailbox || typeof mailbox.writeContent !== 'function') throw new Error('Select the existing OneDrive-synced Bridge folder before enabling Observe mode.');
       enabled = true;
       lastFingerprint = '';
       latestAccessibilitySnapshot = null;
