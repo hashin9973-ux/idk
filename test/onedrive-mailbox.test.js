@@ -88,10 +88,9 @@ test('artifact content is binary-safe, create-only and readable with a SHA-256 d
   assert.equal(read.sha, written.sha);
   const unchanged = await mailbox.writeContent('bridge/artifacts/req-1/image.bin', bytes, { allowUnchanged: true });
   assert.equal(unchanged.unchanged, true);
-  await assert.rejects(
-    mailbox.writeContent('bridge/artifacts/req-1/image.bin', Buffer.from('different')),
-    /already exists|conflict/i
-  );
+  const conflict = await mailbox.writeContent('bridge/artifacts/req-1/image.bin', Buffer.from('different'));
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.conflict, true);
 });
 
 test('cleanup verifies every SHA before deleting any mailbox record', async t => {
