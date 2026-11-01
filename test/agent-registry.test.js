@@ -23,12 +23,23 @@ function mockMailbox(startTime = Date.now(), options = {}) {
     },
     async listFolder(folder) {
       const prefix = folder + '/';
-      return [...records.entries()]
-        .filter(([path]) => path.startsWith(prefix))
-        .map(([path, stored]) => ({
-          name: path.slice(prefix.length), path, type: 'file',
-          sha: stored.sha, size: JSON.stringify(stored.value).length
-        }));
+      const children = new Map();
+      for (const [recordPath, stored] of records.entries()) {
+        if (!recordPath.startsWith(prefix)) continue;
+        const remainder = recordPath.slice(prefix.length);
+        const slash = remainder.indexOf('/');
+        const name = slash < 0 ? remainder : remainder.slice(0, slash);
+        if (!name) continue;
+        if (slash >= 0) children.set(name, { name, path: prefix + name, type: 'dir' });
+        else children.set(name, { name, path: recordPath, type: 'file', sha: stored.sha, size: JSON.stringify(stored.value).length });
+      }
+      return [...children.values()];
+    },
+    async readRemoteContent(path) {
+      const stored = records.get(path);
+      if (!stored) return null;
+      const content = Buffer.isBuffer(stored.value) ? stored.value : Buffer.from(String(stored.value), 'utf8');
+      return { content, sha: stored.sha };
     },
     async writeRemoteJson(path, value, existingSha = null, createOnly = false) {
       const existing = records.get(path);
@@ -397,14 +408,14 @@ test('optional mailbox wipe removes only fully attributable records and preserve
   const claim = { protocol: 'chatgpt-local-repo-claim/v1', request_id: requestId, session_id: target.session_id, status: 'completed' };
   const result = { protocol: 'chatgpt-local-repo-result/v1', request_id: requestId, session_id: target.session_id, status: 'completed', artifacts: [] };
   const incompleteId = 'wipe-incomplete-request';
-  records.set('bridge/requests/' + requestId + '.json', { value: request, sha: 'req-sha' });
-  records.set('bridge/claims/' + requestId + '.json', { value: claim, sha: 'claim-sha' });
-  records.set('bridge/results/' + requestId + '.json', { value: result, sha: 'result-sha' });
-  records.set('bridge/artifacts/' + requestId + '/orphaned-cancelled-output.txt', {
+  records.set('request/' + target.agent_id + '/' + requestId + '.json', { value: request, sha: 'req-sha' });
+  records.set('claims/' + target.agent_id + '/' + requestId + '.json', { value: claim, sha: 'claim-sha' });
+  records.set('result/' + target.agent_id + '/' + requestId + '.json', { value: result, sha: 'result-sha' });
+  records.set('sandbox storage/' + target.agent_id + '/' + requestId + '-orphaned-cancelled-output.txt', {
     value: 'artifact bytes owned by the request, but absent from its cancellation result manifest',
     sha: 'orphan-artifact-sha'
   });
-  records.set('bridge/requests/' + incompleteId + '.json', {
+  records.set('request/' + target.agent_id + '/' + incompleteId + '.json', {
     value: { ...request, request_id: incompleteId }, sha: 'incomplete-request-sha'
   });
   const targetMessage = {
@@ -426,12 +437,12 @@ test('optional mailbox wipe removes only fully attributable records and preserve
   assert.equal(cleanup.status, 'completed_with_preserved_records');
   assert.equal(cleanup.deleted_request_records, 1);
   assert.equal(cleanup.preserved_request_records, 1);
-  assert.equal(records.has('bridge/requests/' + requestId + '.json'), false);
-  assert.equal(records.has('bridge/claims/' + requestId + '.json'), false);
-  assert.equal(records.has('bridge/results/' + requestId + '.json'), false);
-  assert.equal(records.has('bridge/artifacts/' + requestId + '/orphaned-cancelled-output.txt'), false,
+  assert.equal(records.has('request/' + target.agent_id + '/' + requestId + '.json'), false);
+  assert.equal(records.has('claims/' + target.agent_id + '/' + requestId + '.json'), false);
+  assert.equal(records.has('result/' + target.agent_id + '/' + requestId + '.json'), false);
+  assert.equal(records.has('sandbox storage/' + target.agent_id + '/' + requestId + '-orphaned-cancelled-output.txt'), false,
     'request-scoped orphan artifacts are removed even when the cancellation result has no manifest');
-  assert.equal(records.has('bridge/requests/' + incompleteId + '.json'), true, 'incomplete session requests are preserved');
+  assert.equal(records.has('request/' + target.agent_id + '/' + incompleteId + '.json'), true, 'incomplete session requests are preserved');
   assert.equal(records.has('messages/' + target.agent_id + '/' + targetMessage.message_id + '.json'), false);
   assert.equal(records.has('messages/' + other.agent_id + '/' + otherMessage.message_id + '.json'), true,
     'other sessions inbox records are preserved');
