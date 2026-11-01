@@ -487,6 +487,7 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: temp, message: '' }),
     onSessionAssigned: async () => {},
     executeTool: async (tool, args) => {
+      if (tool === 'get_capabilities') return { ok: true, result: { catalog_version: 1, tools: [], tool_calling: {} } };
       assert.equal(tool, 'environment_info');
       return { ok: true, result: { platform: 'win32', workspace: temp, checked: true } };
     },
