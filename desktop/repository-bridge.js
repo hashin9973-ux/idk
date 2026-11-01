@@ -1141,7 +1141,7 @@ function createRepositoryBridge(deps = {}) {
       if (existing && existing.content && Buffer.from(existing.content).equals(bytes)) {
         unchanged = true;
       } else {
-        await writeRemoteContent(legacyPath, bytes, existing && existing.sha);
+        await upsertRemoteContent(legacyPath, bytes, '[local bridge] update filesystem index (test-only legacy transport)');
       }
     } else {
       await publishState(true);

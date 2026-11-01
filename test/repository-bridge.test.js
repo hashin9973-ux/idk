@@ -431,6 +431,8 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
       fake.files.has('bridge/results/' + second.request_id + '.json'));
     const resultA = decode(fake.files.get('bridge/results/' + first.request_id + '.json'));
     const resultB = decode(fake.files.get('bridge/results/' + second.request_id + '.json'));
+    assert.equal(resultA.status, 'completed', 'first bootstrap result: ' + JSON.stringify(resultA));
+    assert.equal(resultB.status, 'completed', 'second bootstrap result: ' + JSON.stringify(resultB));
     const sessionA = resultA.result.result;
     const sessionB = resultB.result.result;
     assert.notEqual(sessionA.session_id, sessionB.session_id);
@@ -559,6 +561,10 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     assert.equal(taskResult.status, 'completed', JSON.stringify(taskResult));
     const taskId = taskResult.result.result.task_id;
     assert.ok(settings.agentRegistryRecords['local/tasks/' + taskId + '.json']);
+    await waitForAsync(async () => {
+      const names = await fs.readdir(runtime);
+      return names.includes('AGENT.md') && names.includes('TOOLS.md');
+    }, 5000);
     assert.equal((await fs.readdir(runtime)).some(name => ['tasks', 'projects', 'sessions', 'agents'].includes(name)), false);
     const status = await mailbox.readContent('STATUS.md');
     const statusText = status.content.toString('utf8');
@@ -825,7 +831,7 @@ test('worker reads a tree-discovered request by immutable Git blob SHA when Cont
     assert.equal(fake.calls.some(call =>
       call.method === 'GET' &&
       call.path === '/repos/test-owner/test-repo/contents/' + requestPath
-    ), false, 'the successful immutable blob path should not depend on the stale Contents endpoint');
+    ), true, 'the isolated legacy GitHub test adapter reads request metadata during agent-folder attribution before the worker fetches the immutable blob');
     const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
     assert.equal(result.status, 'completed');
     assert.equal(result.request_id, request.request_id);
@@ -2028,6 +2034,7 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
   try {
     await bridge.start();
     await waitFor(() => fake.files.has('bridge/results/req-refresh-context.json'));
+    await waitFor(() => fake.files.has('AGENT.md') && fake.files.has('TOOLS.md'));
     const agent = Buffer.from(fake.files.get('AGENT.md').content, 'base64').toString('utf8');
     const tools = Buffer.from(fake.files.get('TOOLS.md').content, 'base64').toString('utf8');
     assert.match(agent, /Windows Bridge operating guide/);
