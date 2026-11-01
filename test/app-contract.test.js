@@ -461,7 +461,7 @@ test('environment snapshots and result artifacts stay in the repository channel'
 test('manual smoke-test documentation covers local execution, truncated-output recovery, and artifact retrieval', () => {
   const guide = read('docs', 'manual-smoke-test.md');
   assert.match(guide, /local OneDrive.*Bridge\/runtime/i);
-  assert.match(guide, /read-only request produces a result/i);
+  assert.match(guide, /read-only request produces .*matching result/i);
   assert.match(guide, /large output is marked incomplete honestly/i);
   assert.match(guide, /stable-sorted pages of 50 entries/i);
   assert.match(guide, /not a safety denial/i);
