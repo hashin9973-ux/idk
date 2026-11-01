@@ -53,6 +53,20 @@ test('mailbox paths allow only root Markdown files and agent-partitioned records
   ]) assert.throws(() => validateRelativePath(value));
 });
 
+test('mailbox initialization never creates a missing Bridge root', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'onedrive-mailbox-missing-root-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(path.dirname(bridgeRoot), { recursive: true });
+  const mailbox = createOneDriveMailbox({
+    getSettings: () => ({ repositoryBridge: { oneDrivePath: bridgeRoot } })
+  });
+  assert.equal(mailbox.getState().configured, false);
+  assert.equal(mailbox.getState().status, 'missing');
+  await assert.rejects(mailbox.ensureReady(), /must already exist/);
+  await assert.rejects(fs.stat(bridgeRoot), { code: 'ENOENT' });
+});
+
 test('saved legacy Bridge/runtime setting resolves to the existing Bridge root without recreating runtime', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'onedrive-mailbox-legacy-setting-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
