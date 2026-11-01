@@ -1775,7 +1775,7 @@ function createRepositoryBridge(deps = {}) {
       '5. For every ordinary request, include the exact returned session_id at the top level and publish the request in request/<agent-id>/<request-id>.json.',
       '6. Reuse that session_id only for this assigned conversation. Use a new globally unique request_id for every operation.',
       '',
-      'The authoritative session and agent registry is stored in the Windows app persistent local settings store. It is not stored in OneDrive. Session IDs have no time-based expiry. The hard cap is 10,000 sessions; only the oldest last-activity session is evicted when the cap requires it. Pause, disconnect, revoke, delete, and optional mailbox wipe retain their distinct lifecycle semantics. Pausing temporarily invalidates that session until resumed. Inactivity alone never expires a session.',
+      'The authoritative session, agent, project, and task coordination records are stored in the Windows app persistent local settings store. They are not stored in OneDrive. OneDrive carries request, claim, result, message, and per-agent sandbox-storage files only. Session IDs have no time-based expiry. The hard cap is 10,000 sessions; only the oldest last-activity session is evicted when the cap requires it. Pause, disconnect, revoke, delete, and optional mailbox wipe retain their distinct lifecycle semantics. Pausing temporarily invalidates that session until resumed. Inactivity alone never expires a session.',
       '',
       '## Request, claim, result workflow',
       '',

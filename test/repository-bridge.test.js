@@ -493,7 +493,8 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
       return { ok: true, result: { platform: 'win32', workspace: temp, checked: true } };
     },
     intervalMs: 5000,
-    publishContextOnStart: true
+    publishContextOnStart: true,
+    requestReconciliationIntervalMs: 1
   });
   try {
     await bridge.start();
@@ -2034,6 +2035,7 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
     assert.match(agent, /request\/agent-000/);
     assert.match(agent, /claims\/<agent-id>/);
     assert.match(agent, /app persistent local settings store/);
+    assert.match(agent, /project, and task coordination records/);
     assert.match(agent, /10,000 sessions/);
     assert.match(agent, /SCREEN.md/);
     assert.match(agent, /Slash-style shortcuts/);

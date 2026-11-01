@@ -16,7 +16,7 @@ Mailbox root contents are exactly AGENT.md, TOOLS.md, STATUS.md, SCREEN.md and f
 
 A new conversation starts with a session_start request in request/agent-000/<request-id>.json. The app creates/assigns an agent and generates the opaque session ID. The matching claim and result are written under agent-000. Ordinary requests are written to request/<agent-id>/<request-id>.json and include the app-issued session_id. The app validates folder ownership against its local persistent registry before execution.
 
-Session and agent ownership are persisted in the app's existing local settings storage, not OneDrive. Session IDs do not expire by elapsed time. The registry is capped at 10,000 sessions and evicts the oldest last-activity session only when required. Pause, resume, disconnect, revoke, delete and optional mailbox wipe remain distinct lifecycle operations. STATUS.md never exposes session IDs or authentication tokens.
+Session, agent, project and task coordination records are persisted in the app's existing local settings storage, not OneDrive. Session IDs do not expire by elapsed time. The registry is capped at 10,000 sessions and evicts the oldest last-activity session only when required. Pause, resume, disconnect, revoke, delete and optional mailbox wipe remain distinct lifecycle operations. STATUS.md never exposes session IDs or authentication tokens.
 
 ## Diagnose a failed request
 
