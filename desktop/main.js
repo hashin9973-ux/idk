@@ -26,6 +26,7 @@ const {
 const { resolveWorkspaceRoot, resolveAgentSessionWorkspaceRoot, resolveSessionWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
+const { createOneDriveMailbox } = require('./onedrive-mailbox');
 const { createToolBridge } = require('./tool-bridge');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
@@ -108,10 +109,8 @@ const AUTO_CONNECT_INTERVAL_MS = 5000;
 const COLAB_HANDOFF_SCHEME = 'windows-repository-bridge';
 const COLAB_HANDOFF_ARM_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
-  owner: 'hashin9973-ux',
-  repo: 'qdqwg',
-  branch: 'bridge-mailbox',
-  allowPublicMailbox: false
+  oneDrivePath: '',
+  retentionDays: 30
 });
 const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest', 'sunset', 'rose', 'high-contrast', 'aurora', 'cyberpunk', 'dracula', 'nord', 'solarized-light', 'terminal', 'lavender', 'graphite']);
 
@@ -144,6 +143,7 @@ let autoConnectionStatus = 'connecting';
 let autoConnectionError = '';
 let settings = {};
 let githubAuth = null;
+let oneDriveMailbox = null;
 let toolBridge = null;
 let visionService = null;
 let localTtsService = null;
@@ -1455,6 +1455,16 @@ function broadcastGitHubState(state) {
   if (dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isDestroyed()) dashboardWindow.webContents.send('app:github-state', safe);
 }
 
+function broadcastOneDriveState(state) {
+  const safe = state && typeof state === 'object' ? { ...state } : { configured: false, status: 'unavailable' };
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.send('app:onedrive-state', safe);
+  }
+  if (dashboardWindow && !dashboardWindow.isDestroyed() && !dashboardWindow.webContents.isDestroyed()) {
+    dashboardWindow.webContents.send('app:onedrive-state', safe);
+  }
+}
+
 function parseColabHandoffUri(raw) {
   if (typeof raw !== 'string' || raw.length > 1200) return null;
   try {
@@ -1570,96 +1580,6 @@ function setAutoConnectionStatus(status, error = '') {
   autoConnectionStatus = status;
   autoConnectionError = String(error || '');
   if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
-}
-
-async function attemptAutoConnect() {
-  if (!repositoryBridge || !githubAuth || autoConnectInFlight) return;
-  const initial = repositoryBridge.getState();
-  if (initial.running) {
-    const recovery = repositoryBridge.recoverStalledPolling();
-    const status = resolveWorkerStatus(initial);
-    const connectionError = ['offline', 'reconnecting', 'attention'].includes(status)
-      ? String(initial.lastPollError || initial.lastError || '')
-      : '';
-    setAutoConnectionStatus(status, connectionError);
-    // Poll the mailbox even when Windows reports "No internet". Only the actual
-    // GitHub mailbox request determines whether the transport is reachable.
-    if (!recovery.recovered) {
-      void repositoryBridge.pollOnce().catch(error => {
-        const message = String(error && error.message || error);
-        setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
-      });
-    }
-    return;
-  }
-  if (!initial.configured) {
-    setAutoConnectionStatus('setup', 'The shared GitHub mailbox is not configured.');
-    return;
-  }
-
-  autoConnectInFlight = true;
-  try {
-    const auth = await githubAuth.getState();
-    broadcastGitHubState(auth);
-    // Treat a transient /user verification failure as non-authoritative for the
-    // mailbox. A retained authenticated credential is allowed to try the repo API.
-    if (!auth.authenticated) {
-      setAutoConnectionStatus(auth.error ? 'offline' : 'github',
-        auth.verificationError || auth.error || 'Sign in to GitHub to connect the mailbox.');
-      return;
-    }
-
-    setAutoConnectionStatus('connecting', auth.verificationPending
-      ? 'GitHub profile verification is temporarily unavailable; testing mailbox access directly.'
-      : '');
-    const started = await repositoryBridge.start();
-    setAutoConnectionStatus(resolveWorkerStatus(started), started.lastPollError || started.lastError || '');
-    if (started.running && latestFilesystemIndexSnapshot) {
-      // Initial index creation is asynchronous and may finish while the worker is offline.
-      // Publish the latest snapshot after reconnect without blocking the online status update.
-      void repositoryBridge.publishFilesystemIndex(latestFilesystemIndexSnapshot).then(() => {
-        filesystemIndexSyncError = '';
-      }).catch(error => {
-        filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
-        console.warn('Could not publish filesystem index:', filesystemIndexSyncError);
-      });
-    }
-  } catch (error) {
-    const message = String(error && error.message || error);
-    const stillRunning = Boolean(repositoryBridge && repositoryBridge.getState().running);
-    setAutoConnectionStatus(isNetworkError(message) ? (stillRunning ? 'reconnecting' : 'offline') : 'attention', message);
-  } finally {
-    autoConnectInFlight = false;
-  }
-}
-
-function retryConnectionNow() {
-  if (!repositoryBridge || !githubAuth) return { scheduled: false };
-  const state = repositoryBridge.getState();
-
-  // Force a fresh auth check, but do not let a transient profile endpoint failure
-  // prevent the independently verified mailbox connection attempt.
-  void githubAuth.getState({ force: true }).then(auth => {
-    broadcastGitHubState(auth);
-    if (!auth.authenticated) {
-      setAutoConnectionStatus(auth.error ? 'offline' : 'github',
-        auth.verificationError || auth.error || 'Sign in to GitHub to connect the mailbox.');
-      return;
-    }
-    if (!state.running) void attemptAutoConnect();
-  }).catch(error => {
-    const message = String(error && error.message || error);
-    const stillRunning = Boolean(repositoryBridge && repositoryBridge.getState().running);
-    setAutoConnectionStatus(isNetworkError(message) ? (stillRunning ? 'reconnecting' : 'offline') : 'attention', message);
-  });
-
-  if (state.running) {
-    void repositoryBridge.pollOnce().catch(error => {
-      const message = String(error && error.message || error);
-      setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
-    });
-  }
-  return { scheduled: true };
 }
 
 function startAutoConnectLoop() {
@@ -2268,6 +2188,46 @@ function saveDashboardState(value) {
   return normalized;
 }
 
+async function chooseOneDriveFolder() {
+  const options = {
+    title: 'Select the OneDrive-synced Bridge/runtime folder',
+    properties: ['openDirectory']
+  };
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showOpenDialog(mainWindow, options)
+    : await dialog.showOpenDialog(options);
+  if (result.canceled || !result.filePaths || !result.filePaths[0]) {
+    return { canceled: true, status: oneDriveMailbox ? oneDriveMailbox.getState() : { configured: false } };
+  }
+  const selected = path.resolve(result.filePaths[0]);
+  const parts = selected.split(path.sep).filter(Boolean);
+  if (parts.length < 2 || parts[parts.length - 1].toLowerCase() !== 'runtime' ||
+      parts[parts.length - 2].toLowerCase() !== 'bridge') {
+    throw new Error('Select the existing Bridge/runtime folder inside your OneDrive folder, not the OneDrive root or the raw archive.');
+  }
+  const before = repositoryBridge ? repositoryBridge.getState() : {};
+  if (Number(before.activeCount) > 0 || Number(before.pendingCount) > 0) {
+    throw new Error('Cannot switch the OneDrive mailbox while requests are active or queued.');
+  }
+  if (repositoryBridge) await repositoryBridge.stop();
+  const previous = { ...(settings.repositoryBridge || DEFAULT_REPOSITORY_BRIDGE) };
+  try {
+    const next = { ...previous, oneDrivePath: selected };
+    if (repositoryBridge) repositoryBridge.setConfig(next);
+    else { settings.repositoryBridge = next; persistSettings(); }
+    const status = oneDriveMailbox ? await oneDriveMailbox.ensureReady() : { configured: true, runtimePath: selected };
+    if (repositoryBridge) await repositoryBridge.start();
+    broadcastOneDriveState(status);
+    return { canceled: false, folder: selected, status, bridge: repositoryBridge ? repositoryBridge.getState() : null };
+  } catch (error) {
+    if (repositoryBridge) {
+      try { repositoryBridge.setConfig(previous); } catch { settings.repositoryBridge = previous; persistSettings(); }
+      try { await repositoryBridge.start(); } catch {}
+    } else { settings.repositoryBridge = previous; persistSettings(); }
+    throw new Error('OneDrive folder change failed; the previous configuration was restored. ' + String(error && error.message || error));
+  }
+}
+
 async function chooseCloudFolder() {
   const options = { title: 'Choose your synchronized Windows Bridge folder', properties: ['openDirectory', 'createDirectory'] };
   const result = mainWindow && !mainWindow.isDestroyed()
@@ -2413,33 +2373,6 @@ function registerIpc() {
     persistSettings(); publishSharedState();
     dashboardSend('app:preferences', getUiState().settings);
     return { theme };
-  });
-  ipcMain.handle('app:repository-bridge-config', async (event, input) => {
-    assertLocalUi(event, 'index.html');
-    if (!input || typeof input !== 'object') throw new Error('Repository settings are required.');
-    const owner=String(input.owner||'').trim(), repo=String(input.repo||'').trim(), branch=String(input.branch||'').trim();
-    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || owner==='.' || owner==='..' ||
-        !/^[A-Za-z0-9_.-]{1,100}$/.test(repo) || repo==='.' || repo==='..' ||
-        !branch || branch.length>120 || branch.startsWith('/') || branch.endsWith('/') ||
-        branch.includes('..') || branch.includes('//') || !/^[A-Za-z0-9_.\/-]+$/.test(branch)) throw new Error('Enter a valid repository owner, name, and branch.');
-    const existingRetention=settings.repositoryBridge&&settings.repositoryBridge.retentionDays;
-    const next={owner,repo,branch,allowPublicMailbox:input.allowPublicMailbox===true,
-      retentionDays:Number.isInteger(input.retentionDays)?input.retentionDays:(Number.isInteger(existingRetention)?existingRetention:30)};
-    const before={...(settings.repositoryBridge||DEFAULT_REPOSITORY_BRIDGE)};
-    const current=repositoryBridge?repositoryBridge.getState():{};
-    if(Number(current.activeCount)>0 || Number(current.pendingCount)>0) throw new Error('Cannot switch the bridge repository while requests are active or queued.');
-    if(repositoryBridge) await repositoryBridge.stop();
-    try {
-      if(repositoryBridge) repositoryBridge.setConfig(next); else {settings.repositoryBridge=next;persistSettings();}
-      if(repositoryBridge && githubAuth) await repositoryBridge.start();
-    } catch(error) {
-      if(repositoryBridge) {
-        try{repositoryBridge.setConfig(before);}catch{settings.repositoryBridge=before;persistSettings();}
-        try{if(githubAuth)await repositoryBridge.start();}catch{}
-      } else {settings.repositoryBridge=before;persistSettings();}
-      throw new Error('Repository change failed; the previous configuration was restored. '+String(error&&error.message||error));
-    }
-    return { repositoryBridge: settings.repositoryBridge, bridge: repositoryBridge ? repositoryBridge.getState() : null };
   });
   ipcMain.handle('app:select-workspace', async event => {
     assertLocalUi(event, 'index.html');
@@ -2736,8 +2669,9 @@ function registerIpc() {
     assertLocalUi(event, 'index.html');
     if (typeof enabled !== 'boolean') throw new Error('Observe toggle must be a boolean.');
     if (!observeService) throw new Error('Observe service is unavailable.');
-    const githubState = githubAuth ? await githubAuth.getState() : { authenticated: false };
-    if (enabled && !githubState.authenticated) throw new Error('Sign in to GitHub before enabling Observe mode.');
+    if (enabled && (!oneDriveMailbox || oneDriveMailbox.getState().configured !== true)) {
+      throw new Error('Select the local OneDrive-synced Bridge/runtime folder before enabling Observe mode.');
+    }
     return observeService.setEnabled(enabled);
   });
   ipcMain.handle('app:observe-fps', async (event, fps) => {
@@ -2814,28 +2748,6 @@ function registerIpc() {
     return { ...result, automatic_handoff_ready: Boolean(colabHandoffServer && colabHandoffServer.status().ready), automatic_handoff_armed: colabHandoffArmed };
   });
   ipcMain.handle('app:vision-manual-panel', (event, visible) => { assertLocalUi(event, 'index.html'); return { expanded: visible === true }; });
-  ipcMain.handle('app:vision-setup-check', async event => {
-    assertLocalUi(event, 'index.html');
-    const githubState = githubAuth
-      ? await githubAuth.getState()
-      : { authenticated: false, error: appInitializationError || 'GitHub authentication service is not available.' };
-    if (!visionService) {
-      return {
-        status: 'failed',
-        checked_at: new Date().toISOString(),
-        checks: {
-          github: { status: githubState.authenticated ? 'passed' : 'action_required', message: githubState.authenticated ? 'Signed in.' : 'GitHub sign-in is not verified.' },
-          mailbox: { status: 'not_verified', message: 'Vision/mailbox service is unavailable in this app session.' },
-          colab: { status: 'not_verified', message: 'Colab runtime status is unavailable.' },
-          model: { status: 'not_verified', message: 'Model readiness is unavailable.' },
-          vision: { status: 'disabled', message: 'No activation was attempted.' }
-        },
-        next_steps: [appInitializationError || 'Restart the app after resolving its initialization error.'],
-        note: 'Setup check does not enable vision or trigger model downloads.'
-      };
-    }
-    return visionService.setupCheck(githubState);
-  });
   ipcMain.handle('app:copy-device-code', (event, rawCode) => {
     assertLocalUi(event, 'index.html');
     const code = String(rawCode || '').trim().toUpperCase();
@@ -3002,10 +2914,9 @@ if (!hasInstanceLock) {
     settings.repositoryBridge = {
       ...DEFAULT_REPOSITORY_BRIDGE,
       ...savedBridge,
-      owner: String(savedBridge.owner || DEFAULT_REPOSITORY_BRIDGE.owner),
-      repo: String(savedBridge.repo || DEFAULT_REPOSITORY_BRIDGE.repo),
-      branch: String(savedBridge.branch || DEFAULT_REPOSITORY_BRIDGE.branch),
-      allowPublicMailbox: savedBridge.allowPublicMailbox === true
+      oneDrivePath: String(savedBridge.oneDrivePath || ''),
+      retentionDays: Number.isInteger(savedBridge.retentionDays) && savedBridge.retentionDays >= 1 && savedBridge.retentionDays <= 365
+        ? savedBridge.retentionDays : DEFAULT_REPOSITORY_BRIDGE.retentionDays
     };
     persistSettings();
 
@@ -3038,7 +2949,8 @@ if (!hasInstanceLock) {
       console.error(appInitializationError);
     }
 
-    if (githubAuth) {
+    oneDriveMailbox = createOneDriveMailbox({ getSettings: () => settings });
+    if (oneDriveMailbox) {
       try {
         windowsInputController = createWindowsInputController({
           platform: process.platform,
@@ -3057,7 +2969,7 @@ if (!hasInstanceLock) {
         });
         visionService = createVisionService({
           localTts: localTtsService,
-          githubAuth,
+          mailbox: oneDriveMailbox,
           getSettings: () => settings,
           getWorkspaceRoot,
           inputControl: windowsInputController,
@@ -3081,7 +2993,7 @@ if (!hasInstanceLock) {
           });
         });
         observeService = createObserveService({
-          githubAuth,
+          mailbox: oneDriveMailbox,
           getSampleFps: () => settings.observeFps ?? DEFAULT_SAMPLE_FPS,
           captureScreenshot: captureDesktopScreenshot,
           fingerprintScreenshot: fingerprintDesktopScreenshot,
@@ -3120,7 +3032,7 @@ if (!hasInstanceLock) {
         });
 
         repositoryBridge = createRepositoryBridge({
-          githubAuth,
+          mailbox: oneDriveMailbox,
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
