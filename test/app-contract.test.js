@@ -441,41 +441,39 @@ test('the single dashboard unloads to the system tray while the worker stays ali
   assert.match(main, /startAutoConnectLoop\(\)/);
 });
 
-test('environment snapshots and result artifacts stay in the repository channel', () => {
+test('canonical Markdown mailbox files and agent sandbox artifacts are published through OneDrive', () => {
   const bridge = read('desktop', 'repository-bridge.js');
-  const auth = read('desktop', 'github-auth.js');
   const toolBridge = read('desktop', 'tool-bridge.js');
-  const html = read('desktop', 'index.html');
   const readme = read('README.md');
-  assert.ok(bridge.includes('chatgpt-local-environment-context/v1'));
-  assert.ok(bridge.includes('bridge/context/latest.json'));
+  assert.ok(bridge.includes("upsertRemoteContent('AGENT.md'"));
+  assert.ok(bridge.includes("upsertRemoteContent('TOOLS.md'"));
+  assert.ok(bridge.includes("upsertRemoteContent('STATUS.md'"));
+  assert.ok(bridge.includes("'SCREEN.md'"));
   assert.ok(bridge.includes('refresh_environment_context'));
   assert.ok(bridge.includes('externalizeLargeText'));
-  assert.ok(bridge.includes('bridge/artifacts/'));
-  assert.match(bridge, /mailbox\.readJson\(relativePath\)/);
-  assert.match(bridge, /mailbox\.writeJson\(relativePath/);
-  assert.match(bridge, /mailbox\.writeContent\(relativePath/);
-  assert.match(bridge, /mailbox\.deleteFiles/);
+  assert.ok(bridge.includes('sandbox storage/'));
+  assert.match(bridge, /mailbox\\.readJson\\(relativePath\\)/);
+  assert.match(bridge, /mailbox\\.writeJson\\(relativePath/);
+  assert.match(bridge, /mailbox\\.writeContent\\(relativePath/);
+  assert.match(bridge, /mailbox\\.deleteFiles/);
   assert.ok(toolBridge.includes('upload_workspace_file'));
   assert.ok(toolBridge.includes('requiresApproval: true'));
-  assert.match(readme, /The conversation stays human-facing/i);
-  assert.match(readme, /Read the result through the connected OneDrive integration/i);
+  assert.match(readme, /OneDrive is file storage and message transport only/i);
+  assert.match(readme, /connected OneDrive integration/i);
   assert.doesNotMatch(toolBridge, /submitMessageToChat|insertAndSubmitToolMessage|returnMessageToChat/);
 });
 
-test('manual smoke-test documentation covers local execution, truncated-output recovery, and artifact retrieval', () => {
+test('manual smoke-test documentation covers app-local sessions and flat OneDrive round-trip', () => {
   const guide = read('docs', 'manual-smoke-test.md');
-  assert.match(guide, /local OneDrive.*Bridge\/runtime/i);
-  assert.match(guide, /read-only request produces .*matching result/i);
-  assert.match(guide, /large output is marked incomplete honestly/i);
-  assert.match(guide, /stable-sorted pages of 50 entries/i);
-  assert.match(guide, /not a safety denial/i);
-  assert.match(guide, /workspace file edits run automatically without escaping the selected folder/i);
-  assert.match(guide, /declined shell command remains unexecuted/i);
-  assert.match(guide, /file upload requires a local approval/i);
-  assert.match(guide, /no output is inserted into the ChatGPT conversation/i);
+  assert.match(guide, /existing local OneDrive-synchronized folder named Bridge/i);
+  assert.match(guide, /request\\/agent-000/);
+  assert.match(guide, /result\\/agent-000/);
+  assert.match(guide, /app-generated session_id/);
+  assert.match(guide, /sandbox storage\\/<agent-id>/);
+  assert.match(guide, /SCREEN.md/);
+  assert.match(guide, /no execution occurred in OneDrive or on GitHub Actions/i);
+  assert.doesNotMatch(guide, /Bridge\\/runtime|bridge\\/context|bridge\\/state/);
 });
-
 
 
 test('whole-drive workspaces require explicit confirmation and use a shallow index', () => {
