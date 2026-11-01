@@ -689,30 +689,17 @@ function createRepositoryBridge(deps = {}) {
 
   async function listFolder(relativePath) {
     if (mailbox) return trackMailboxOperation(() => mailbox.listFolder(relativePath));
-    const config = currentConfig();
+    if (allowLegacyGitHubMailboxForTests !== true) {
+      throw new Error('GitHub folder listing is disabled outside explicit test mode.');
+    }
     const segments = String(relativePath || '').split('/');
-    if (segments.length < 2 || segments[0] !== 'bridge' ||
+    const allowedRoots = new Set(['bridge', 'request', 'claims', 'result', 'messages', 'sandbox storage']);
+    if (!segments.length || !allowedRoots.has(segments[0]) ||
         segments.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) {
       throw new Error('Unsafe mailbox folder path.');
     }
+    const config = currentConfig();
     try {
-      let bridgeEntries = null;
-      try {
-        const response = await api('GET', apiPath('bridge'), null, { ref: config.branch });
-        if (Array.isArray(response && response.result)) bridgeEntries = response.result;
-      } catch (error) {
-        if (isNotFound(error)) return [];
-      }
-      if (bridgeEntries && segments.length === 2) {
-        const directory = bridgeEntries.find(item => item && item.type === 'dir' && item.name === segments[1]);
-        if (!directory) return [];
-        if (typeof directory.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(directory.sha)) {
-          throw new Error('GitHub returned an invalid tree SHA for mailbox directory ' + segments[1] + '.');
-        }
-        const tree = await readRemoteTree(directory.sha);
-        return tree.tree.filter(item => item && item.type === 'blob' && typeof item.path === 'string')
-          .map(item => ({ name: item.path, path: relativePath + '/' + item.path, type: 'file', sha: item.sha, size: item.size }));
-      }
       let tree = await readRemoteTree(config.branch);
       for (const segment of segments) {
         const directory = tree.tree.find(item => item && item.type === 'tree' && item.path === segment);
@@ -722,8 +709,15 @@ function createRepositoryBridge(deps = {}) {
         }
         tree = await readRemoteTree(directory.sha);
       }
-      return tree.tree.filter(item => item && item.type === 'blob' && typeof item.path === 'string')
-        .map(item => ({ name: item.path, path: relativePath + '/' + item.path, type: 'file', sha: item.sha, size: item.size }));
+      return tree.tree
+        .filter(item => item && (item.type === 'blob' || item.type === 'tree') && typeof item.path === 'string')
+        .map(item => ({
+          name: item.path,
+          path: relativePath + '/' + item.path,
+          type: item.type === 'tree' ? 'dir' : 'file',
+          ...(typeof item.sha === 'string' ? { sha: item.sha } : {}),
+          ...(Number.isFinite(Number(item.size)) ? { size: Number(item.size) } : {})
+        }));
     } catch (error) {
       if (isNotFound(error)) return [];
       throw error;
