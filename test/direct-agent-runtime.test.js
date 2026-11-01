@@ -333,7 +333,7 @@ test('model invokes tools with assistant slash commands and receives local resul
     assert.ok(request.messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   }
   assert.match(requests[0].messages[0].content, /Available local Windows tools/);
-  assert.match(requests[0].messages[0].content, /\/read_file — Read a workspace file/);
+  assert.match(requests[0].messages[0].content, /### `\/read_file`/);
   assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path="README.md"'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
