@@ -590,6 +590,12 @@ function createRepositoryBridge(deps) {
   }
 
   async function api(method, path, body, query) {
+    if (mailbox) {
+      throw new Error('GitHub mailbox API access is disabled while the OneDrive-synced mailbox transport is active.');
+    }
+    if (!githubAuth || typeof githubAuth.requestApi !== 'function') {
+      throw new Error('GitHub API access is unavailable for the inactive legacy mailbox transport.');
+    }
     const telemetry = requestTelemetry.getStore() || null;
     const startedAt = Date.now();
     try {
@@ -756,10 +762,10 @@ function createRepositoryBridge(deps) {
         poll_in_flight: pollInFlight,
         poll_started_at: pollStartedAt ? new Date(pollStartedAt).toISOString() : null,
         poll_timer_active: Boolean(timer),
-        request_commit_probe_interval_ms: FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
-        request_commit_probe_in_flight: requestCommitProbeInFlight,
-        request_commit_probe_started_at: requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
-        request_commit_probe_timer_active: Boolean(requestCommitProbeTimer),
+        request_commit_probe_interval_ms: mailbox ? null : FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
+        request_commit_probe_in_flight: mailbox ? false : requestCommitProbeInFlight,
+        request_commit_probe_started_at: !mailbox && requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
+        request_commit_probe_timer_active: !mailbox && Boolean(requestCommitProbeTimer),
         last_request_commit_probe_at: lastRequestCommitProbeAt,
         last_request_commit_probe_duration_ms: lastRequestCommitProbeDurationMs,
         last_request_commit_probe_error: lastRequestCommitProbeError
