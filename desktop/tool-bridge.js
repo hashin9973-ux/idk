@@ -95,7 +95,7 @@ function resourcePoolsForTool(tool, args = {}) {
   if (['read_file','file_info','upload_workspace_file','write_file','create_directory','delete_path','move_path','apply_patch','list_dir','directory_tree','glob_file_search','search'].includes(tool)) return ['filesystem','disk-io'];
   if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact','game_project_intelligence','get_agent_context'].includes(tool)) return ['source-analysis','disk-io'];
   if (tool === 'run_tests') { const command=String(args.command||'').toLowerCase(); if(/buildcookrun|cook(?:content)?|unreal.*cook/.test(command))return ['cook','disk-io']; if(/unrealeditor|ue4editor|unity(?:\.exe)?|godot/.test(command))return ['editor','disk-io']; return ['compilation','disk-io']; }
-  if (tool === 'shell') {
+  if (tool === 'shell' || tool === 'exec_command') {
     const command = String(args.command || '').toLowerCase();
     if (/buildcookrun|cook(?:content)?|unreal.*cook/.test(command)) return ['cook'];
     if (/package|packaging|electron-builder|gradle.*bundle|dotnet publish/.test(command)) return ['packaging'];
@@ -283,7 +283,7 @@ const TOOL_DESCRIPTIONS = Object.freeze({
   git_clone: 'Clone a repository into a relative destination inside the selected workspace. Requires local approval.',
   exec_command: 'Run a command from the selected Windows workspace using PowerShell as the host shell. Invoke any installed language runtime, compiler, package manager, build system, test runner, or executable; availability depends on the installed Windows toolchain and PATH. Returns exitCode, timeout state, stdout/stderr, and duration. Captures up to 8 MiB per stream and reports truncation explicitly. Requires local approval unless Auto-accept everything is enabled; commands run with the signed-in Windows user permissions.',
   shell: 'Legacy alias for exec_command. Runs a PowerShell command from the selected workspace with the same approval, timeout, output and security behavior.',
-  run_tests: 'Run the detected project-native test command, or the supplied PowerShell command, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. Each output stream has an 8 MiB capture ceiling; externalized text is lossless only when stdout_truncated/stderr_truncated are false. If either flag is true, rerun in bounded pages or redirect full output to a local file. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
+  run_tests: 'Run the detected project-native test command, or the supplied command through the Windows PowerShell host shell, and wait for its exit or timeout. Returns the actual exit code, timeout flag, stdout, stderr, and duration. Each output stream has an 8 MiB capture ceiling; externalized text is lossless only when stdout_truncated/stderr_truncated are false. If either flag is true, rerun in bounded pages or redirect full output to a local file. A timeout or non-zero exit is a failure; inspect output before making dependent changes.',
   update_plan: 'Maintain a short local task plan with up to 30 string or structured steps.',
   session_start: 'Create a cryptographically random stable session_id and bind it to an agent_id seat. Session IDs have no TTL or inactivity expiration. The registry hard-caps registered IDs at 10,000 and evicts the one with the oldest last_activity_at when a new ID is created at the cap; busy and paused IDs are subject to this cap. Explicit disconnect or revoke/delete, and automatic hard-cap eviction, can release a seat. Returns assigned IDs, any cap evictions and calling instructions. Call once per ChatGPT conversation without session_id; include the returned session_id in every ordinary request and use a fresh request_id for every call.',
   agent_status: 'List every agent seat with recent-activity status, busy flag, current session_id, last activity, and recent request IDs; no credentials are returned.',
@@ -298,7 +298,6 @@ const TOOL_DESCRIPTIONS = Object.freeze({
 });
 const REQUIRED_ARGUMENTS = Object.freeze({
   task_project_status: ['project_id'], task_create: ['project_id', 'title', 'objective', 'acceptance_criteria'], task_list: ['project_id'], task_get: ['task_id'], task_claim: ['task_id'], task_heartbeat: ['task_id'], task_update: ['task_id', 'status'], task_submit: ['task_id', 'commit_sha', 'evidence'], task_review: ['task_id', 'verdict'], task_integrate: ['task_id', 'target_branch'], task_verify: ['task_id', 'checks'], task_decision: ['project_id', 'decision', 'rationale'], task_cancel: ['task_id'],
-  exec_command: ['command'],
   exec_command: ['command'],
   read_file: ['path'], file_info: ['path'], search: ['query'], write_file: ['path', 'content'],
   apply_patch: ['patch'], create_directory: ['path'], move_path: ['source', 'destination'],
