@@ -99,10 +99,6 @@ function safeError(value, secret = '') {
   return message.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 1000);
 }
 
-function jsonText(value) {
-  return formatToolResultMarkdown('tool', value, MAX_TOOL_RESULT_CHARS);
-}
-
 function parseToolArguments(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) return value;
   if (typeof value !== 'string' || !value.trim()) return {};
