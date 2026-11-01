@@ -284,7 +284,7 @@ function createDirectAgentRuntime({
   }
 
   async function sendMessage(agentId, input) {
-    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) throw new Error('A valid direct-agent ID is required.');
+    if (typeof agentId !== 'string' || !/^direct-agent-[0-9]{3,}$/.test(agentId)) throw new Error('A valid direct-agent ID is required.');
     if (typeof input !== 'string' || !input.trim() || input.length > 20000) {
       throw new Error('Message must contain 1–20,000 characters.');
     }

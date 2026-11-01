@@ -62,7 +62,7 @@ function applyDashboardState(value){
     const widgets=source.widgets&&typeof source.widgets==='object'?source.widgets:{};
     savedWidgetLayout={};
     for(const [id,layout] of Object.entries(widgets)){
-      if(/^agent-[0-9]{3,}$/.test(id)&&layout&&typeof layout==='object'){
+      if(/^(?:agent|direct-agent)-[0-9]{3,}$/.test(id)&&layout&&typeof layout==='object'){
         savedWidgetLayout[id]={x:layout.x,y:layout.y,width:layout.width,height:layout.height};
       }
     }
@@ -471,7 +471,7 @@ function makeAgentWidget(agent,index){
 function renderAgentMailboxes(rawAgents){
   if(!agentWidgetHost)return;
   const all=Array.isArray(rawAgents)?rawAgents:[];
-  const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^agent-[0-9]{3,}$/.test(agent.agent_id));
+  const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^(?:agent|direct-agent)-[0-9]{3,}$/.test(agent.agent_id));
   const visibleIds=new Set(agents.map(agent=>agent.agent_id));
   for(const [id,card] of agentWidgets){if(!visibleIds.has(id)){card.remove();agentWidgets.delete(id);const menu=agentActionMenus.get(id);if(menu)menu.remove();agentActionMenus.delete(id);}}
   const count=$('agent-mailbox-count');if(count)count.textContent=agents.length+' seat'+(agents.length===1?'':'s');
@@ -875,7 +875,7 @@ function showAgentAssignment(payload){
     const option=document.createElement('option');option.value=agent.agent_id;
     option.textContent=agent.agent_id+' · '+String(agent.status||'inactive');select.append(option);
   }
-  const highestAgentNumber=agents.reduce((highest,agent)=>Math.max(highest,Number(String(agent&&agent.agent_id||'').slice(6))||0),0);
+  const highestAgentNumber=agents.reduce((highest,agent)=>{const match=String(agent&&agent.agent_id||'').match(/^agent-([0-9]{3,})$/);return Math.max(highest,match?Number(match[1]):0)},0);
   const newAgentId='agent-'+String(highestAgentNumber+1).padStart(3,'0');
   const next=document.createElement('option');next.value=newAgentId;next.textContent=newAgentId+' · new agent';select.append(next);
   $('agent-assignment-auto').checked=false;
@@ -1059,7 +1059,7 @@ function autoArrangeWidgets(){
   const hasRightColumn=width>=leftWidth+cardWidth+margin*2+gap;
   const startX=hasRightColumn?margin+leftWidth+gap:margin;
   let x=startX,y=hasRightColumn?24:controls.offsetTop+controls.offsetHeight+gap,col=0;const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
-  for(const [id,el] of [...agentWidgets.entries()].sort((a,b)=>Number(a[0].slice(6))-Number(b[0].slice(6)))){
+  for(const [id,el] of [...agentWidgets.entries()].sort((a,b)=>Number(a[0].match(/([0-9]+)$/)?.[1]||0)-Number(b[0].match(/([0-9]+)$/)?.[1]||0))){
     Object.assign(el.style,{left:x+'px',top:y+'px',width:cardWidth+'px',height:cardHeight+'px'});
     savedWidgetLayout[id]={x,y,width:cardWidth,height:cardHeight};widgetMoved[id]=true;
     if(++col>=columns){col=0;x=startX;y+=cardHeight+gap}else{x+=cardWidth+gap}

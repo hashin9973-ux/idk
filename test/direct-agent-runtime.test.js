@@ -105,7 +105,7 @@ test('direct chat executes tools locally and feeds tool results into the next AP
     onEvent: () => {}
   });
 
-  const result = await runtime.sendMessage('agent-001', 'Inspect the environment.');
+  const result = await runtime.sendMessage('direct-agent-001', 'Inspect the environment.');
   assert.deepEqual(result, { accepted: true, completed: true });
   assert.equal(executed.length, 1);
   assert.equal(executed[0].name, 'environment_info');
@@ -116,5 +116,5 @@ test('direct chat executes tools locally and feeds tool results into the next AP
   assert.equal(session.status, 'idle');
   assert.equal(session.messages.at(-1).content, 'The local tool ran successfully.');
   assert.ok(saved.length >= 3);
-  assert.equal(runtime.isRunning('agent-001'), false);
+  assert.equal(runtime.isRunning('direct-agent-001'), false);
 });
