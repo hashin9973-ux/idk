@@ -421,6 +421,11 @@ test('tool results are rendered as readable Markdown rather than serialized JSON
   assert.doesNotMatch(rendered, /"protocol"|\{\s*"isGitRepository"/);
 });
 
+test('tool output status reflects failed and cancelled local outcomes', () => {
+  assert.match(formatToolResultMarkdown('run_tests', { ok: false, error: 'Tests exited with code 1.' }), /\*\*Status:\*\* failed/);
+  assert.match(formatToolResultMarkdown('computer', { cancelled: true, error: 'Stopped by the user.' }), /\*\*Status:\*\* cancelled/);
+});
+
 test('Markdown tool output preserves source and command text while redacting secret fields', () => {
   const rendered = formatToolResultMarkdown('read_file', {
     status: 'success',
