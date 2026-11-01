@@ -175,31 +175,43 @@ function trimHistory(messages) {
     return Array.isArray(messages) ? messages : [];
   }
   let start = Math.max(0, messages.length - MAX_STORED_MESSAGES);
-  // Keep the complete latest user turn, including any assistant tool-call and
-  // tool-result messages that belong to it.
+  // Keep the latest user turn, including its slash command and tool-result observations.
   while (start > 0 && messages[start].role !== 'user') start--;
   return messages.slice(start);
 }
 
 function toApiMessages(messages) {
-  return messages.filter(message => message && ['user', 'assistant', 'tool'].includes(message.role))
-    .map(message => {
-      const safe = { role: message.role };
-      if (typeof message.content === 'string' || message.content === null) safe.content = message.content;
-      if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
-        safe.tool_calls = message.tool_calls.map(call => ({
-          id: String(call.id || ''),
-          type: 'function',
-          function: {
-            name: String(call.function && call.function.name || ''),
-            arguments: typeof (call.function && call.function.arguments) === 'string'
-              ? call.function.arguments : '{}'
-          }
-        }));
+  const output = [];
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || !['user', 'assistant', 'tool'].includes(message.role)) continue;
+    if (message.role === 'user') {
+      output.push({ role: 'user', content: typeof message.content === 'string' ? message.content : '' });
+      continue;
+    }
+    if (message.role === 'assistant') {
+      let content = typeof message.content === 'string' ? message.content : '';
+      // Convert sessions created by the earlier native-function implementation
+      // into the plain-text protocol without sending unsupported tool-call fields.
+      if (Array.isArray(message.tool_calls)) {
+        const commands = message.tool_calls.map(call => {
+          const name = String(call && call.function && call.function.name || 'unknown_tool');
+          const args = typeof (call && call.function && call.function.arguments) === 'string'
+            ? call.function.arguments : '{}';
+          return '/' + name + ' ' + args;
+        });
+        content = [content, ...commands].filter(Boolean).join('\n');
       }
-      if (message.role === 'tool') safe.tool_call_id = String(message.tool_call_id || '');
-      return safe;
+      if (content) output.push({ role: 'assistant', content });
+      continue;
+    }
+    const name = String(message.name || 'unknown_tool');
+    output.push({
+      role: 'user',
+      content: '[Untrusted local tool result from /' + name + ']\n' +
+        (typeof message.content === 'string' ? message.content : '')
     });
+  }
+  return output;
 }
 
 
@@ -561,6 +573,7 @@ module.exports = {
   parseToolArguments,
   parseSlashToolCommand,
   formatSlashToolCatalog,
+  toApiMessages,
   readCompletion,
   DIRECT_AGENT_TOOL_NAMES
 };
