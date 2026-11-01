@@ -210,7 +210,7 @@ function createRepositoryBridge(deps = {}) {
   } = deps;
 
   if (!mailbox && allowLegacyGitHubMailboxForTests !== true) {
-    throw new Error('The OneDrive-synchronized Bridge/runtime mailbox is required; GitHub is not a mailbox fallback.');
+    throw new Error('The existing OneDrive-synchronized Bridge mailbox is required; GitHub is not a mailbox fallback.');
   }
 
   const workerId = randomUUID();
@@ -734,7 +734,7 @@ function createRepositoryBridge(deps = {}) {
       branch: config.branch,
       ...(existingSha ? { sha: existingSha } : {})
     };
-    if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESULT_BYTES && relativePath.startsWith('bridge/results/')) {
+    if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESULT_BYTES && relativePath.startsWith('result/')) {
       throw new Error('Result exceeded the repository mailbox limit.');
     }
     try {
@@ -1269,7 +1269,7 @@ function createRepositoryBridge(deps = {}) {
       const partNumber = index + 1;
       const suffix = chunks.length > 1 ? '-part-' + String(partNumber).padStart(3, '0') : '';
       const fileName = prefix + suffix + '.' + extension;
-      const relativePath = 'bridge/artifacts/' + requestId + '/' + fileName;
+      const relativePath = 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-' + fileName;
       const saved = await writeRemoteContent(relativePath, chunks[index], '[local bridge] publish complete tool output artifact');
       const ref = {
         kind: options.kind || 'tool_output_part',
@@ -2956,7 +2956,7 @@ function createRepositoryBridge(deps = {}) {
   async function start() {
     if (running) return stateSnapshot();
     if (!mailbox && allowLegacyGitHubMailboxForTests !== true) {
-      throw new Error('The OneDrive-synchronized Bridge/runtime mailbox is required; GitHub is not a mailbox fallback.');
+      throw new Error('The existing OneDrive-synchronized Bridge mailbox is required; GitHub is not a mailbox fallback.');
     }
     const config = currentConfig();
     if (mailbox) {
@@ -3012,7 +3012,7 @@ function createRepositoryBridge(deps = {}) {
       const value = input && typeof input === 'object' ? input : {};
       const oneDrivePath = String(value.oneDrivePath || '').trim();
       if (oneDrivePath && !path.isAbsolute(oneDrivePath)) {
-        throw new Error('The OneDrive-synced Bridge/runtime folder must be an absolute Windows path.');
+        throw new Error('The existing OneDrive-synced Bridge folder must be an absolute Windows path.');
       }
       const requestedRetention = Number(value.retentionDays);
       const retentionDays = Number.isInteger(requestedRetention) && requestedRetention >= 1 && requestedRetention <= 365
