@@ -1006,7 +1006,7 @@ function createRepositoryBridge(deps = {}) {
     } catch (error) {
       if (lastStatePublishAt === now) lastStatePublishAt = 0;
       lastError = 'Could not publish STATUS.md: ' + cleanError(error.message);
-      announce();
+      try { onState(stateSnapshot()); } catch {}
     }
   }
 
