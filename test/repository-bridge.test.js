@@ -510,8 +510,13 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     getWorkspaceRoot: () => temp,
     requestSessionAssignment: async () => ({ autoAssign: true, agent_id: null, workspace_root: temp, message: '' }),
     onSessionAssigned: async () => {},
-    executeTool: async (tool, args) => {
+    executeTool: async (tool, args, requestId) => {
       if (tool === 'get_capabilities') return { ok: true, result: { catalog_version: 1, tools: [], tool_calling: {} } };
+      if (tool === 'upload_workspace_file') {
+        return { ok: true, result: await bridge.publishWorkspaceFile(requestId, {
+          path: args.path, artifactName: '../sample.bin', bytes: Buffer.from([0, 1, 2, 127, 128, 255])
+        }) };
+      }
       assert.equal(tool, 'environment_info');
       return { ok: true, result: { platform: 'win32', workspace: temp, checked: true } };
     },
@@ -550,6 +555,24 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     assert.equal(result.status, 'completed');
     assert.ok(await mailbox.readJson('claims/' + agentId + '/' + requestId + '.json'));
     assert.equal(result.result.result.platform, 'win32');
+
+    const uploadRequestId = 'req-onedrive-binary-upload';
+    await mailbox.writeJson('request/' + agentId + '/' + uploadRequestId + '.json', {
+      protocol: PROTOCOL, request_id: uploadRequestId, created_at: new Date().toISOString(),
+      session_id: sessionId, tool: 'upload_workspace_file', args: { path: 'output/sample.bin' }
+    }, null, true);
+    await bridge.pollOnce();
+    await waitForAsync(async () =>
+      (await mailbox.readJson('result/' + agentId + '/' + uploadRequestId + '.json'))?.value?.status === 'completed');
+    const uploadResult = (await mailbox.readJson('result/' + agentId + '/' + uploadRequestId + '.json')).value;
+    const artifactPath = 'sandbox storage/' + agentId + '/' + uploadRequestId + '-sample.bin';
+    assert.equal(uploadResult.status, 'completed', JSON.stringify(uploadResult));
+    assert.equal(uploadResult.result.result.path, artifactPath);
+    assert.equal(uploadResult.result.result.onedrive_path, 'Bridge/' + artifactPath);
+    const storedArtifact = await mailbox.readContent(artifactPath);
+    assert.deepEqual(storedArtifact.content, Buffer.from([0, 1, 2, 127, 128, 255]));
+    assert.equal(uploadResult.result.result.bytes, 6);
+
     const projectRequestId = 'req-onedrive-task-project';
     await mailbox.writeJson('request/' + agentId + '/' + projectRequestId + '.json', {
       protocol: PROTOCOL, request_id: projectRequestId, created_at: new Date().toISOString(),
