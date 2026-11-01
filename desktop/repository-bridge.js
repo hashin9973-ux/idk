@@ -13,7 +13,7 @@ const PROTOCOL = 'chatgpt-local-repo-bridge/v1';
 const RESULT_PROTOCOL = 'chatgpt-local-repo-result/v1';
 const CONTEXT_PROTOCOL = 'chatgpt-local-environment-context/v1';
 const CONTEXT_REQUEST_TOOL = 'refresh_environment_context';
-const DEFAULT_BRANCH = 'bridge-mailbox';
+const DEFAULT_BRANCH = 'main';
 const DEFAULT_INTERVAL_MS = 1000;
 // Full request-tree reads scan 1,800+ historical request entries and can take several seconds.
 // Keep the independent 2-second commit probe as the fast path; use the full tree as recovery fallback.
