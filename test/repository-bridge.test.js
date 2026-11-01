@@ -1978,7 +1978,7 @@ test('OneDrive mailbox polling dispatches requests while a background context re
       if (tool === 'get_capabilities' && String(callId).startsWith('context-capabilities-')) {
         contextStarted = true;
         await contextGate;
-        return { ok: true, result: { platform: 'win32', os: 'Windows_NT', workspace: temp } };
+        return { ok: true, result: { protocol: 'chatgpt-local-tools-v2', catalog_version: 1, tools: [], tool_calling: { mode: 'onedrive-mailbox-batch' } } };
       }
       if (tool === 'project_status') {
         projectStarted = true;
@@ -2023,7 +2023,9 @@ test('OneDrive mailbox polling dispatches requests while a background context re
     releaseContext();
     await waitForAsync(async () => {
       const [agent, tools] = await Promise.all([mailbox.readContent('AGENT.md'), mailbox.readContent('TOOLS.md')]);
-      return Boolean(agent && tools);
+      return Boolean(agent && tools &&
+        agent.content.toString('utf8').includes('# Windows Bridge operating guide') &&
+        tools.content.toString('utf8').includes('Catalog version: 1'));
     }, 5000);
   } finally {
     releaseContext();
@@ -2086,7 +2088,9 @@ test('environment refresh publishes only the canonical AGENT.md and complete TOO
         mailbox.readContent('AGENT.md'),
         mailbox.readContent('TOOLS.md')
       ]);
-      return Boolean(agent && tools);
+      return Boolean(agent && tools &&
+        agent.content.toString('utf8').includes('# Windows Bridge operating guide') &&
+        tools.content.toString('utf8').includes('Catalog version: 7'));
     }, 5000);
     const agent = (await mailbox.readContent('AGENT.md')).content.toString('utf8');
     const tools = (await mailbox.readContent('TOOLS.md')).content.toString('utf8');
