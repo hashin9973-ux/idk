@@ -2176,20 +2176,37 @@ test('revoking an in-flight agent session aborts its local tool and publishes a 
 });
 
 
-test('optional mailbox wipe drains a revoked in-flight worker before deleting its terminal mailbox records', async () => {
-  const requestId = 'req-revoke-and-wipe';
-  const request = {
-    protocol: PROTOCOL, request_id: requestId, session_id: DEFAULT_TEST_SESSION_ID,
-    created_at: new Date().toISOString(), tool: 'project_status', args: {}
-  };
-  const fake = fakeGitHub({ initial: [['bridge/requests/' + requestId + '.json', request]] });
-  const fixture = settingsFixture();
+test('optional OneDrive mailbox wipe drains a revoked in-flight worker before deleting terminal records', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-wipe-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const settings = { repositoryBridge: { oneDrivePath: bridgeRoot, retentionDays: 30 } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
+
+  const bootstrapId = 'req-wipe-session-start';
+  await mailbox.writeJson('request/agent-000/' + bootstrapId + '.json', {
+    protocol: PROTOCOL,
+    request_id: bootstrapId,
+    created_at: new Date().toISOString(),
+    tool: 'session_start',
+    args: { label: 'Mailbox wipe test' }
+  }, null, true);
+
   let markStarted;
   const started = new Promise(resolve => { markStarted = resolve; });
   const bridge = createRepositoryBridge({
-    githubAuth: fake.githubAuth, ...fixture,
+    mailbox,
+    getSettings: () => settings,
+    persistSettings: () => true,
     getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async () => ({
+      autoAssign: true, agent_id: null, workspace_root: null, message: ''
+    }),
+    onSessionAssigned: async () => {},
     executeTool: async (tool, args, id, sessionId, signal) => {
+      if (tool !== 'project_status') return { ok: true, result: { tool } };
       markStarted();
       await new Promise((resolve, reject) => {
         const onAbort = () => reject(signal.reason || new Error('cancelled'));
@@ -2198,26 +2215,46 @@ test('optional mailbox wipe drains a revoked in-flight worker before deleting it
       });
       return { ok: true, result: { shouldNotPublish: true } };
     },
-    intervalMs: 5000
+    intervalMs: 5000,
+    requestReconciliationIntervalMs: 1
   });
 
   try {
     await bridge.start();
+    await waitForAsync(async () =>
+      (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json'))?.value?.status === 'completed');
+    const bootstrapResult = (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json')).value;
+    const session = bootstrapResult.result.result;
+    const sessionId = session.session_id;
+    const agentId = session.agent_id;
+    assert.match(sessionId, /^session-[a-f0-9]{32}$/);
+    assert.match(agentId, /^agent-[0-9]{3,}$/);
+
+    const requestId = 'req-revoke-and-wipe';
+    await mailbox.writeJson('request/' + agentId + '/' + requestId + '.json', {
+      protocol: PROTOCOL,
+      request_id: requestId,
+      session_id: sessionId,
+      created_at: new Date().toISOString(),
+      tool: 'project_status',
+      args: {}
+    }, null, true);
     await Promise.race([
       started,
       new Promise((_, reject) => setTimeout(() => reject(new Error('Tool execution did not start.')), 2000))
     ]);
-    const revoked = await bridge.revokeAgentSession(DEFAULT_TEST_SESSION_ID, { wipeMailbox: true });
+
+    const revoked = await bridge.revokeAgentSession(sessionId, { wipeMailbox: true });
     assert.equal(revoked.revoked, true);
     assert.equal(revoked.cancellation_drain_timed_out, false);
     assert.equal(revoked.mailbox_cleanup.status, 'completed');
-    assert.equal(revoked.mailbox_cleanup.deleted_request_records, 1);
-    assert.equal(fake.files.has('bridge/requests/' + requestId + '.json'), false);
-    assert.equal(fake.files.has('bridge/claims/' + requestId + '.json'), false);
-    assert.equal(fake.files.has('bridge/results/' + requestId + '.json'), false);
-    const session = decode(fake.files.get('bridge/sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
-    assert.equal(session.status, 'revoked', 'session history remains after an optional mailbox wipe');
-    assert.ok(fake.files.has('bridge/revoked-sessions/' + DEFAULT_TEST_SESSION_ID + '.json'));
+    assert.ok(revoked.mailbox_cleanup.deleted_request_records >= 1);
+    assert.equal(await mailbox.readJson('request/' + agentId + '/' + requestId + '.json'), null);
+    assert.equal(await mailbox.readJson('claims/' + agentId + '/' + requestId + '.json'), null);
+    assert.equal(await mailbox.readJson('result/' + agentId + '/' + requestId + '.json'), null);
+    const sessionRecord = settings.agentRegistryRecords['local/sessions/' + sessionId + '.json'];
+    assert.equal(sessionRecord.status, 'revoked', 'session history remains in the app-local registry after mailbox wipe');
+    assert.ok(settings.agentRegistryRecords['local/revoked-sessions/' + sessionId + '.json']);
   } finally {
     await bridge.stop();
   }
