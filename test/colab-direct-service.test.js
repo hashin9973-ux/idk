@@ -103,7 +103,7 @@ function fixture(options = {}) {
     async readContent(relativePath) {
       if (relativePath !== 'STATUS.md') return null;
       return {
-        content: Buffer.from('# Windows Bridge Status\\n- Updated: ' + new Date().toISOString() + '\\n- Worker: online', 'utf8'),
+        content: Buffer.from('# Windows Bridge Status\n- Updated: ' + new Date().toISOString() + '\n- Worker: online', 'utf8'),
         sha: 'state-sha256'
       };
     }
