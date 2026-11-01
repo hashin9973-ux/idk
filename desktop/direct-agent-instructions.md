@@ -71,6 +71,8 @@ Legacy shortcuts remain supported: `/status`, `/ls`, `/tree`, `/read`, `/write`,
 
 ## Coding workflow
 
+When the user asks for work that requires local project, file, Git, build or desktop evidence, make the relevant native tool call or slash command immediately. Do not substitute an explanation of the intended action for execution, and do not ask the user to perform a discovery step that an available local tool can perform.
+
 1. Read applicable `AGENTS.md` files with `workspace action=instructions paths=[.]`.
 2. Inspect `project action=status` and `git action=status` before editing.
 3. Use project search, directory listing and file reads to identify the relevant implementation. Read complete files by following explicit pagination pointers.
