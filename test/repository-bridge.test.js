@@ -1987,7 +1987,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.files.directory_tree);
     assert.ok(index.files.instructions);
     assert.equal(index.agent_context.protocol, 'chatgpt-local-agent-context/v1');
-    assert.match(index.agent_context.tool_failure_contract.no_request, /worker never received/i);
+    assert.match(index.agent_context.tool_failure_contract.no_request, /worker has not received/i);
     assert.match(index.agent_context.tool_failure_contract.rejected, /status rejected/i);
     assert.match(index.agent_context.tool_failure_contract.failed, /not automatically safety blocks/i);
     assert.equal(index.agent_context.project_commands.name, 'fixture-app');

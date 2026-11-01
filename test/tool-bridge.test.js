@@ -579,7 +579,7 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.equal(result.result.execution_policy.auto_accept_all, false);
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'batch'));
     assert.ok(result.result.tool_catalog.tools.some(item => item.name === 'get_agent_context'));
-    assert.ok(result.result.retrieval_rules.some(rule => /does not expose these local tools as native functions/i.test(rule)));
+    assert.ok(result.result.retrieval_rules.some(rule => /OneDrive integration provides mailbox files, not native Windows local tools/i.test(rule)));
     assert.ok(result.result.retrieval_rules.some(rule => rule.includes('create bridge/requests') && rule.includes('read bridge/results')));
     assert.ok(result.result.retrieval_rules.some(rule => /before asking for machine facts/i.test(rule)));
     assert.ok(result.result.development_workflow.rules.some(rule => /After session_start, start with get_agent_context/i.test(rule)));
