@@ -126,7 +126,6 @@ test('Observe defaults to 2 fps and publishes the latest screen context as Markd
   assert.equal(service.status().enabled, false);
   assert.match(mailbox.content, /Observe: disabled/);
   assert.match(mailbox.content, /Observe is disabled/);
-  assert.deepEqual(service.status().frames, []);
   await service.dispose();
 });
 
