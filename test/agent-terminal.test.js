@@ -32,6 +32,14 @@ test('potential credentials are redacted from the display-only command', () => {
   assert.doesNotMatch(rendered, /never-display-this/);
 });
 
+test('terminal argument display renders lists and nested objects without JSON', () => {
+  const request = JSON.stringify({ tool: 'project_search', args: { query: 'main entry', paths: ['src', 'test'], filters: { kind: 'symbol', maxResults: 5 } } });
+  const rendered = formatRequestCommands(request, 'unknown');
+  assert.match(rendered, /--paths \\[.*src.*test.*\\]/);
+  assert.match(rendered, /--filters \\[kind='symbol'; maxResults=5\\]/);
+  assert.doesNotMatch(rendered, /"paths":/);
+});
+
 test('result JSON is translated to ordinary output lines', () => {
   const result = JSON.stringify({ status: 'completed', result: { output: { stdout: '2 tests passed\nOK', stderr: '' } } });
   assert.equal(formatResultOutput(result, 'queued', ''), '# completed\n2 tests passed\nOK');
