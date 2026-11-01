@@ -47,7 +47,7 @@ test('result sanitization redacts the active session workspace rather than only 
 
 function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null,
   falseConflictCreatePaths = [], transientCreateConflictPaths = [], unscopedRequestIds = [],
-  contentsNotFoundPaths = [] } = {}) {
+  contentsNotFoundPaths = [], blobNotFoundShas = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
   const normalizedInitial = initial.map(([path, value]) => {
@@ -112,6 +112,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
   const falseConflictPaths = new Set(falseConflictCreatePaths);
   const transientCreateConflictTargets = new Set(transientCreateConflictPaths);
   const contentsNotFoundTargets = new Set(contentsNotFoundPaths);
+  const blobNotFoundTargets = new Set(blobNotFoundShas);
   let headCommitSha = 'f'.repeat(40);
   let gitObjectCounter = 1;
   const treePathsBySha = new Map();
@@ -186,6 +187,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
       const blobPrefix = '/repos/test-owner/test-repo/git/blobs/';
       if (method === 'GET' && path.startsWith(blobPrefix)) {
         const blobSha = path.slice(blobPrefix.length);
+        if (blobNotFoundTargets.has(blobSha)) throw new Error('Not Found (404): simulated missing immutable blob');
         const stored = [...files.values()].find(value => value && value.sha === blobSha);
         if (!stored) throw new Error('Not Found (404)');
         return { status: 200, result: { sha: blobSha, encoding: 'base64', content: stored.content } };
@@ -693,6 +695,51 @@ test('worker reads a tree-discovered request by immutable Git blob SHA when Cont
     assert.ok(rendered.request_json.includes(request.request_id), 'the widget should contain the actual request JSON');
     assert.ok(rendered.claim_json.includes(request.request_id), 'the widget should contain its matching claim');
     assert.ok(rendered.result_json.includes(request.request_id), 'the widget should contain its matching result');
+  } finally {
+    await bridge.stop();
+  }
+});
+
+test('worker surfaces a discovered request read failure instead of silently dropping it', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-request-read-failure-visible',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const requestPath = 'bridge/requests/' + request.request_id + '.json';
+  const unavailableBlobSha = 'c'.repeat(40);
+  const fake = fakeGitHub({
+    initial: [[requestPath, request]],
+    contentsNotFoundPaths: [requestPath],
+    blobNotFoundShas: [unavailableBlobSha]
+  });
+  fake.files.get(requestPath).sha = unavailableBlobSha;
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth,
+    ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async () => {
+      executions++;
+      return { ok: true };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    await waitFor(() => bridge.getState().lastError.includes('REQUEST_FILE_UNAVAILABLE'));
+    assert.equal(executions, 0);
+    assert.equal(fake.files.has('bridge/claims/' + request.request_id + '.json'), false);
+    assert.equal(fake.files.has('bridge/results/' + request.request_id + '.json'), false);
+    const mailbox = bridge.getState().agentMailboxes.find(item => item.agent_id === 'agent-001');
+    const rendered = mailbox && mailbox.requests.find(item => item.request_id === request.request_id);
+    assert.ok(rendered, 'the undispatched request still needs a visible diagnostic row');
+    assert.equal(rendered.status, 'failed');
+    assert.match(rendered.error, /REQUEST_FILE_UNAVAILABLE/);
   } finally {
     await bridge.stop();
   }
