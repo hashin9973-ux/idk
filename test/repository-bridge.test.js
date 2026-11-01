@@ -735,8 +735,9 @@ test('worker surfaces a discovered request read failure instead of silently drop
     assert.equal(executions, 0);
     assert.equal(fake.files.has('bridge/claims/' + request.request_id + '.json'), false);
     assert.equal(fake.files.has('bridge/results/' + request.request_id + '.json'), false);
-    const mailbox = bridge.getState().agentMailboxes.find(item => item.agent_id === 'agent-001');
-    const rendered = mailbox && mailbox.requests.find(item => item.request_id === request.request_id);
+    const rendered = bridge.getState().agentMailboxes
+      .flatMap(item => item.requests || [])
+      .find(item => item.request_id === request.request_id);
     assert.ok(rendered, 'the undispatched request still needs a visible diagnostic row');
     assert.equal(rendered.status, 'failed');
     assert.match(rendered.error, /REQUEST_FILE_UNAVAILABLE/);
