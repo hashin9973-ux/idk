@@ -43,6 +43,14 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   configureCloudSync: value => ipcRenderer.invoke('app:cloud-sync-config', value),
   syncCloudNow: () => ipcRenderer.invoke('app:cloud-sync-now'),
   setRepositoryBridgeConfig: value => ipcRenderer.invoke('app:repository-bridge-config', value),
+  getOneDriveState: () => ipcRenderer.invoke('app:onedrive-state'),
+  chooseOneDriveFolder: () => ipcRenderer.invoke('app:onedrive-choose-folder'),
+  onOneDriveState(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, state) => callback(state && typeof state === 'object' ? state : {});
+    ipcRenderer.on('app:onedrive-state', listener);
+    return () => ipcRenderer.removeListener('app:onedrive-state', listener);
+  },
   onDashboardState(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, state) => callback(state && typeof state === 'object' ? state : {});
