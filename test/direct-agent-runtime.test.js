@@ -252,6 +252,10 @@ test('slash command parser uses readable named arguments and list values, not JS
     parseSlashToolCommand('/batch steps="read_file path=README.md; git_status"', ['batch']),
     { name: 'batch', args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
   );
+  assert.deepEqual(
+    parseSlashToolCommand('/computer action=sequence steps="click x=400 y=300; type text=Hello; press key=ENTER"', ['computer']),
+    { name: 'computer', args: { action: 'sequence', steps: [{ action: 'click', x: 400, y: 300 }, { action: 'type', text: 'Hello' }, { action: 'press', key: 'ENTER' }] } }
+  );
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
   assert.deepEqual(parseSlashToolCommand('/project', ['project_status']), { name: 'project_status', args: {} });
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
