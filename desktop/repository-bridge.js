@@ -1560,8 +1560,17 @@ function createRepositoryBridge(deps = {}) {
     if (!running || activeRequestIds.size || requestTasks.size || pendingRequestQueue.length) {
       return { skipped: true, reason: 'worker_not_idle' };
     }
-    const statusFile = await readRemoteContent('STATUS.md');
-    const statusText = statusFile && statusFile.content ? statusFile.content.toString('utf8') : '';
+    let statusText = '';
+    if (mailbox) {
+      const statusFile = await readRemoteContent('STATUS.md');
+      statusText = statusFile && statusFile.content ? statusFile.content.toString('utf8') : '';
+    } else if (allowLegacyGitHubMailboxForTests === true) {
+      const statusFile = await readRemoteFile('bridge/state/windows-app.json');
+      const value = statusFile && statusFile.value;
+      if (value) statusText = '# Windows Bridge Status\\n- Updated: ' + value.updated_at +
+        '\\n- Active requests: ' + value.active_count + '\\n- Pending requests: ' + value.pending_count +
+        '\\n- Health: ' + (value.last_error ? 'attention' : 'healthy');
+    }
     const updatedMatch = statusText.match(/^- Updated: (.+)$/m);
     const activeMatch = statusText.match(/^- Active requests: (\\d+)$/m);
     const pendingMatch = statusText.match(/^- Pending requests: (\\d+)$/m);
@@ -1961,8 +1970,15 @@ function createRepositoryBridge(deps = {}) {
       // Recover only after the mailbox state proves the current worker is alive
       // and its heartbeat postdates the original claim. Never replay the operation:
       // its child process may still have side effects in progress.
-      const workerState = await readRemoteContent('STATUS.md').catch(() => null);
-      const stateText = workerState && workerState.content ? workerState.content.toString('utf8') : '';
+      let stateText = '';
+      if (mailbox) {
+        const workerState = await readRemoteContent('STATUS.md').catch(() => null);
+        stateText = workerState && workerState.content ? workerState.content.toString('utf8') : '';
+      } else if (allowLegacyGitHubMailboxForTests === true) {
+        const workerState = await readRemoteFile('bridge/state/windows-app.json').catch(() => null);
+        const value = workerState && workerState.value;
+        if (value) stateText = '# Windows Bridge Status\\n- Worker ID: ' + value.worker_id + '\\n- Updated: ' + value.updated_at;
+      }
       const workerIdMatch = stateText.match(/^- Worker ID: (.+)$/m);
       const updatedMatch = stateText.match(/^- Updated: (.+)$/m);
       const stateUpdatedAt = updatedMatch ? Date.parse(updatedMatch[1]) : NaN;
