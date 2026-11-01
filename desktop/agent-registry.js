@@ -761,41 +761,53 @@ function createAgentRegistry({ readRemoteFile, readRemoteContent = null, listFol
     const files = new Map();
     const addFile = (filePath, sha) => { if (typeof filePath === 'string' && typeof sha === 'string' && sha) files.set(filePath, sha); };
     let deletedRequests = 0, preservedRequests = 0;
-    const requestEntries = await listFolder('request/' + agentId);
-    for (const item of requestEntries) {
-      const name = String(item && (item.name || item.path) || '').split('/').pop();
-      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(name)) continue;
-      const requestId = name.slice(0, -5), requestPath = 'request/' + agentId + '/' + name;
-      const [request, claim, result] = await Promise.all([
-        readRemoteFile(requestPath), readRemoteFile('claims/' + agentId + '/' + name),
-        readRemoteFile('result/' + agentId + '/' + name)
-      ]);
-      if (!request || !request.value || request.value.request_id !== requestId || request.value.session_id !== sessionId) continue;
-      if (!claim || !result || !claim.value || !result.value ||
-          claim.value.request_id !== requestId || claim.value.session_id !== sessionId ||
-          claim.value.status !== 'completed' || result.value.request_id !== requestId ||
-          (result.value.session_id && result.value.session_id !== sessionId) ||
-          !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) {
-        preservedRequests++;
-        continue;
+    const requestFolders = (await listFolder('request'))
+      .filter(folder => folder && folder.type === 'dir' && (folder.name === agentId || folder.name === 'agent-000'));
+    for (const folder of requestFolders) {
+      const ownerFolder = folder.name;
+      const requestEntries = await listFolder('request/' + ownerFolder);
+      for (const item of requestEntries) {
+        const name = String(item && (item.name || item.path) || '').split('/').pop();
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.json$/.test(name)) continue;
+        const requestId = name.slice(0, -5);
+        const requestPath = 'request/' + ownerFolder + '/' + name;
+        const claimPath = 'claims/' + ownerFolder + '/' + name;
+        const resultPath = 'result/' + ownerFolder + '/' + name;
+        const [request, claim, result] = await Promise.all([
+          readRemoteFile(requestPath), readRemoteFile(claimPath), readRemoteFile(resultPath)
+        ]);
+        if (!request || !request.value || request.value.request_id !== requestId ||
+            !claim || !claim.value || claim.value.request_id !== requestId ||
+            !result || !result.value || result.value.request_id !== requestId ||
+            claim.value.status !== 'completed' ||
+            !['completed', 'partial', 'failed', 'cancelled', 'rejected'].includes(result.value.status)) {
+          if (request && request.value && request.value.session_id === sessionId) preservedRequests++;
+          continue;
+        }
+        const resultSessionId = result.value.session_id ||
+          (result.value.result && result.value.result.session_id) ||
+          (result.value.result && result.value.result.result && result.value.result.result.session_id);
+        const ownedBySession = request.value.session_id === sessionId ||
+          claim.value.session_id === sessionId || resultSessionId === sessionId;
+        if (!ownedBySession || (ownerFolder !== agentId && ownerFolder !== 'agent-000')) continue;
+        addFile(requestPath, request.sha);
+        addFile(claimPath, claim.sha);
+        addFile(resultPath, result.sha);
+        const manifest = Array.isArray(result.value.artifacts) ? result.value.artifacts : [];
+        const allowedPrefix = 'sandbox storage/' + ownerFolder + '/';
+        const artifactPaths = new Set(manifest.map(artifact => artifact && artifact.path)
+          .filter(artifactPath => typeof artifactPath === 'string' && artifactPath.startsWith(allowedPrefix)));
+        for (const artifact of await listFolder('sandbox storage/' + ownerFolder)) {
+          if (artifact && artifact.type === 'file' && typeof artifact.name === 'string' &&
+              artifact.name.startsWith(requestId + '-')) artifactPaths.add(allowedPrefix + artifact.name);
+        }
+        for (const artifactPath of artifactPaths) {
+          if (typeof readRemoteContent !== 'function') continue;
+          const stored = await readRemoteContent(artifactPath).catch(() => null);
+          if (stored && stored.sha) addFile(artifactPath, stored.sha);
+        }
+        deletedRequests++;
       }
-      addFile(requestPath, request.sha);
-      addFile('claims/' + agentId + '/' + name, claim.sha);
-      addFile('result/' + agentId + '/' + name, result.sha);
-      const manifest = Array.isArray(result.value.artifacts) ? result.value.artifacts : [];
-      const allowedPrefix = 'sandbox storage/' + agentId + '/';
-      const artifactPaths = new Set(manifest.map(artifact => artifact && artifact.path)
-        .filter(artifactPath => typeof artifactPath === 'string' && artifactPath.startsWith(allowedPrefix)));
-      for (const artifact of await listFolder('sandbox storage/' + agentId)) {
-        if (artifact && artifact.type === 'file' && typeof artifact.name === 'string' &&
-            artifact.name.startsWith(requestId + '-')) artifactPaths.add(allowedPrefix + artifact.name);
-      }
-      for (const artifactPath of artifactPaths) {
-        if (typeof readRemoteContent !== 'function') continue;
-        const stored = await readRemoteContent(artifactPath).catch(() => null);
-        if (stored && stored.sha) addFile(artifactPath, stored.sha);
-      }
-      deletedRequests++;
     }
     let deletedMessages = 0;
     for (const folder of await listFolder('messages')) {
