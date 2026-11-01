@@ -57,7 +57,7 @@
     if (value === null) return 'null';
     if (typeof value === 'boolean' || typeof value === 'number') return String(value);
     if (typeof value === 'string') {
-      return /[\\s,;=\\[\\]"']/.test(value) ? JSON.stringify(value) : value;
+      return /[\s,;=\[\]"']/.test(value) ? JSON.stringify(value) : value;
     }
     if (Array.isArray(value)) return '[' + value.map(formatSlashValue).join(', ') + ']';
     return '[structured value]';
@@ -67,7 +67,7 @@
     const name = String(tool || 'unknown_tool').replace(/[^a-zA-Z0-9_.:-]/g, '_');
     const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
     if (name === 'batch' && Array.isArray(values.steps)) {
-      const steps = values.steps.map(step => formatSlashCommand(step && step.tool, step && step.args)).map(command => command.replace(/^\\//, ''));
+      const steps = values.steps.map(step => formatSlashCommand(step && step.tool, step && step.args)).map(command => command.replace(/^\//, ''));
       const options = Object.entries(values).filter(([key]) => key !== 'steps')
         .map(([key, value]) => key + '=' + formatSlashValue(value));
       return '/' + name + (steps.length ? ' steps=' + JSON.stringify(steps.join('; ')) : '') +
