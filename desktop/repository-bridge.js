@@ -699,25 +699,36 @@ function createRepositoryBridge(deps = {}) {
       throw new Error('Unsafe mailbox folder path.');
     }
     const config = currentConfig();
+    const entriesFor = (items, currentPath) => (Array.isArray(items) ? items : [])
+      .filter(item => item && (item.type === 'file' || item.type === 'dir') && typeof item.name === 'string')
+      .map(item => ({
+        name: item.name,
+        path: currentPath + '/' + item.name,
+        type: item.type,
+        ...(typeof item.sha === 'string' ? { sha: item.sha } : {}),
+        ...(Number.isFinite(Number(item.size)) ? { size: Number(item.size) } : {})
+      }));
     try {
-      let tree = await readRemoteTree(config.branch);
-      for (const segment of segments) {
-        const directory = tree.tree.find(item => item && item.type === 'tree' && item.path === segment);
+      let currentPath = segments[0];
+      let response = await api('GET', apiPath(currentPath), null, { ref: config.branch });
+      let entries = entriesFor(response && response.result, currentPath);
+      if (segments.length === 1) return entries;
+      for (const segment of segments.slice(1)) {
+        const directory = entries.find(item => item.type === 'dir' && item.name === segment);
         if (!directory) return [];
         if (typeof directory.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(directory.sha)) {
           throw new Error('GitHub returned an invalid tree SHA for mailbox directory ' + segment + '.');
         }
-        tree = await readRemoteTree(directory.sha);
-      }
-      return tree.tree
-        .filter(item => item && (item.type === 'blob' || item.type === 'tree') && typeof item.path === 'string')
-        .map(item => ({
+        const tree = await readRemoteTree(directory.sha);
+        currentPath += '/' + segment;
+        entries = entriesFor(tree.tree.map(item => ({
           name: item.path,
-          path: relativePath + '/' + item.path,
-          type: item.type === 'tree' ? 'dir' : 'file',
-          ...(typeof item.sha === 'string' ? { sha: item.sha } : {}),
-          ...(Number.isFinite(Number(item.size)) ? { size: Number(item.size) } : {})
-        }));
+          type: item.type === 'tree' ? 'dir' : item.type === 'blob' ? 'file' : item.type,
+          sha: item.sha,
+          size: item.size
+        })), currentPath);
+      }
+      return entries;
     } catch (error) {
       if (isNotFound(error)) return [];
       throw error;
