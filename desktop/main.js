@@ -2840,6 +2840,10 @@ function registerIpc() {
     });
     return { accepted: true, cancelled: false };
   });
+  ipcMain.handle('app:direct-agent-tools', event => {
+    assertLocalUi(event, 'dashboard.html');
+    return getDirectAgentToolDefinitions();
+  });
   ipcMain.handle('app:direct-agent-send-message', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
     const agentId = payload && payload.agentId;

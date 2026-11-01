@@ -67,6 +67,59 @@ test('SSE parser accumulates streamed text and partial tool-call arguments', asy
   assert.equal(result.finishReason, 'tool_calls');
 });
 
+
+test('slash tool commands parse a known tool and JSON arguments', () => {
+  assert.deepEqual(
+    require('../desktop/direct-agent-runtime').parseSlashToolCommand('/read_file {"path":"src/app.js"}'),
+    { name: 'read_file', args: { path: 'src/app.js' } }
+  );
+  assert.deepEqual(
+    require('../desktop/direct-agent-runtime').parseSlashToolCommand('/environment_info'),
+    { name: 'environment_info', args: {} }
+  );
+  assert.equal(require('../desktop/direct-agent-runtime').parseSlashToolCommand('Please inspect the project.'), null);
+  assert.throws(() => require('../desktop/direct-agent-runtime').parseSlashToolCommand('/not_a_tool {}'), /Unknown local tool/);
+  assert.throws(() => require('../desktop/direct-agent-runtime').parseSlashToolCommand('/read_file {bad json}'), /must be a JSON object/);
+  assert.throws(() => require('../desktop/direct-agent-runtime').parseSlashToolCommand('/read_file []'), /must be a JSON object/);
+});
+
+test('slash invocation executes the selected local tool before asking the model to continue', async () => {
+  const session = { sessionId: 'session-abcdef0123456789abcdef0123456789', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  const executed = [];
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'The requested file was read successfully.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => ({
+      provider: 'openai-compatible', endpoint: 'http://127.0.0.1:8000/v1',
+      model: 'test-model', apiKey: '', systemPrompt: '', temperature: 0.2, maxTokens: 1024
+    }),
+    getSession: async () => session,
+    saveSession: async () => {},
+    getToolDefinitions: async () => [{
+      type: 'function',
+      function: { name: 'read_file', description: 'Read a workspace file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } }
+    }],
+    executeTool: async (name, args) => {
+      executed.push({ name, args });
+      return { protocol: 'local-tool-result/v1', status: 'success', result: { content: 'actual file content' } };
+    }
+  });
+  const result = await runtime.sendMessage('direct-agent-002', '/read_file {"path":"src/app.js"}');
+  assert.equal(result.completed, true);
+  assert.deepEqual(executed, [{ name: 'read_file', args: { path: 'src/app.js' } }]);
+  const apiMessages = requests[0].messages;
+  assert.ok(apiMessages.some(message => message.role === 'user' && message.content === '/read_file {"path":"src/app.js"}'));
+  assert.ok(apiMessages.some(message => message.role === 'assistant' && message.tool_calls && message.tool_calls[0].function.name === 'read_file'));
+  assert.ok(apiMessages.some(message => message.role === 'tool' && message.content.includes('actual file content')));
+  assert.equal(session.messages.at(-1).content, 'The requested file was read successfully.');
+});
+
 test('direct chat executes tools locally and feeds tool results into the next API request', async () => {
   const session = { sessionId: 'session-0123456789abcdef0123456789abcdef', messages: [], status: 'idle', error: '' };
   const saved = [];

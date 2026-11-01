@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('windowsBridge', Object.freeze({
   },
   sendAgentMessage: (sessionId, message) => ipcRenderer.invoke('app:agent-send-message', { sessionId, message }),
   readAgentReplies: (sessionId, messageIds) => ipcRenderer.invoke('app:agent-read-replies', { sessionId, messageIds }),
+  getDirectAgentTools: () => ipcRenderer.invoke('app:direct-agent-tools'),
   sendDirectAgentMessage: (agentId, message) => ipcRenderer.invoke('app:direct-agent-send-message', { agentId, message }),
   cancelDirectAgent: agentId => ipcRenderer.invoke('app:direct-agent-cancel', { agentId }),
   onDirectAgentEvent(callback) {

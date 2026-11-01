@@ -97,6 +97,12 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('function setDirectWidgetBusy(agentId,busy)'));
   assert.ok(preload.includes('sendDirectAgentMessage: (agentId, message)'));
   assert.ok(preload.includes('cancelDirectAgent: agentId'));
+  assert.ok(main.includes("ipcMain.handle('app:direct-agent-tools'"));
+  assert.ok(preload.includes('getDirectAgentTools: () => ipcRenderer.invoke(\'app:direct-agent-tools\')'));
+  assert.ok(renderer.includes('function updateSlashMenu()'));
+  assert.ok(renderer.includes('message.split(/\\s/,1)[0]'));
+  assert.ok(renderer.includes('terminal.formatSlashCommand(call.function&&call.function.name,args)'));
+  assert.ok(css.includes('.agent-slash-menu{position:absolute'));
   assert.ok(renderer.includes('showAgentCreateDialog'));
   assert.ok(html.includes('agent-create-dialog'));
   assert.ok(html.includes('agent-create-provider'));

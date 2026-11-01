@@ -4,6 +4,18 @@ const mainPage=$('main-page'),settingsPage=$('settings-page'),browserPage=$('bro
 const workerDot=$('worker-dot'),workerStatus=$('worker-status'),githubStatus=$('github-status'),message=$('dashboard-message'),obs=$('observe-toggle'),acceptBtn=$('auto-accept-toggle'),colab=$('quick-colab-connect'),workspace=$('workspace-button'),repoForm=$('repo-form'),repoMsg=$('repo-message'),volume=$('tts-volume'),volumeValue=$('tts-volume-value'),fps=$('observe-fps'),themeSelect=$('theme-select'),themeGallery=$('theme-gallery'),browserEnabled=$('browser-enabled'),keep=$('browser-keep-active'),low=$('browser-low-memory'),memory=$('browser-memory');
 let tabs=[{id:'main',kind:'main',label:'Main',closable:false},{id:'settings',kind:'settings',label:'Settings',closable:true}],active='main',bridge={},github={},observe={},autoAccept=false,dragId=null,gesture=null;
 let busy={observe:false,accept:false,colab:false,workspace:false,github:false,repo:false,volume:false};let widgetMoved={queues:false,controls:false};const agentWidgets=new Map(),agentActionMenus=new Map(),openAgentDetails=new Set();let savedWidgetLayout={};const directLiveText=new Map(),directLiveStatus=new Map();
+let directAgentToolCatalog=[];
+let directAgentToolCatalogPromise=null;
+async function loadDirectAgentToolCatalog(){
+  if(directAgentToolCatalog.length)return directAgentToolCatalog;
+  if(!directAgentToolCatalogPromise){
+    directAgentToolCatalogPromise=api.getDirectAgentTools().then(items=>{
+      directAgentToolCatalog=Array.isArray(items)?items.filter(item=>item&&item.type==='function'&&item.function&&typeof item.function.name==='string'): [];
+      return directAgentToolCatalog;
+    }).catch(error=>{directAgentToolCatalogPromise=null;throw error});
+  }
+  return directAgentToolCatalogPromise;
+}
 document.addEventListener('pointerdown',event=>{if(event.target&&event.target.closest&&event.target.closest('.agent-action-menu'))return;for(const menu of agentActionMenus.values())menu.hidden=true});const grid=12,minW=180,minH=100;
 function note(t,s=''){message.textContent=String(t||'');message.dataset.state=s}
 
@@ -373,7 +385,57 @@ function makeAgentWidget(agent,index){
   actions.append(workspaceButton,nicknameButton,dumpButton,pauseButton,disconnectButton,deleteButton);
   header.append(identity,status,busy,unread,counts,actions);
   const composer=document.createElement('form');composer.className='agent-message-composer';composer.dataset.noWidgetDrag='true';
-  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder='> message agent… (Enter to send)';input.setAttribute('aria-label','Message for '+agent.agent_id);input.autocomplete='off';
+  const input=document.createElement('input');input.type='text';input.maxLength=20000;input.placeholder=agent.connection_mode==='direct'?'> message or /tool {"arg":"value"}':'> message agent… (Enter to send)';input.setAttribute('aria-label','Message for '+agent.agent_id);input.autocomplete='off';
+  const slashMenu=document.createElement('div');slashMenu.className='agent-slash-menu';slashMenu.hidden=true;slashMenu.setAttribute('role','listbox');slashMenu.setAttribute('aria-label','Available local tools');slashMenu.dataset.noWidgetDrag='true';
+  let slashMenuItems=[],slashActiveIndex=0;
+  function selectSlashTool(index){
+    const item=slashMenuItems[index];if(!item)return;
+    input.value='/'+item.function.name+' ';
+    slashMenu.hidden=true;input.focus();input.dispatchEvent(new Event('input',{bubbles:true}));
+  }
+  function setSlashActive(index){
+    if(!slashMenuItems.length)return;
+    slashActiveIndex=(index+slashMenuItems.length)%slashMenuItems.length;
+    for(const [i,button] of [...slashMenu.querySelectorAll('button[data-tool-index]')].entries()){
+      button.classList.toggle('is-selected',i===slashActiveIndex);
+      if(i===slashActiveIndex)button.setAttribute('aria-selected','true');else button.removeAttribute('aria-selected');
+    }
+  }
+  function updateSlashMenu(){
+    const match=input.value.match(/^\/([a-z0-9_]*)$/i);
+    if(agent.connection_mode!=='direct'||!match){slashMenu.hidden=true;return}
+    const query=match[1].toLowerCase();
+    if(!directAgentToolCatalog.length){
+      slashMenu.replaceChildren();
+      const loading=document.createElement('div');loading.className='agent-slash-empty';loading.textContent='Loading local tools…';slashMenu.append(loading);slashMenu.hidden=false;
+      void loadDirectAgentToolCatalog().then(()=>updateSlashMenu()).catch(error=>{slashMenu.replaceChildren();const failed=document.createElement('div');failed.className='agent-slash-empty';failed.textContent='Could not load local tools: '+String(error&&error.message||error);slashMenu.append(failed)});
+      return;
+    }
+    slashMenuItems=directAgentToolCatalog.filter(item=>item.function.name.toLowerCase().startsWith(query));
+    slashMenu.replaceChildren();
+    const heading=document.createElement('div');heading.className='agent-slash-heading';heading.textContent='LOCAL TOOLS · TYPE TO FILTER · ENTER TO INSERT';slashMenu.append(heading);
+    if(!slashMenuItems.length){
+      const empty=document.createElement('div');empty.className='agent-slash-empty';empty.textContent='No matching tool. Type / to show every tool.';slashMenu.append(empty);
+    }else{
+      slashActiveIndex=0;
+      slashMenuItems.forEach((item,index)=>{
+        const button=document.createElement('button');button.type='button';button.className='agent-slash-option';button.dataset.toolIndex=String(index);button.setAttribute('role','option');
+        const title=document.createElement('strong');title.textContent='/'+item.function.name;
+        const description=document.createElement('span');description.textContent=String(item.function.description||'Local Windows tool');
+        const parameters=item.function.parameters&&typeof item.function.parameters==='object'?item.function.parameters:{};
+        const required=Array.isArray(parameters.required)?parameters.required:[];
+        const usage=document.createElement('small');usage.textContent=required.length?'Required: '+required.join(', '):'Arguments optional';
+        button.append(title,description,usage);
+        button.addEventListener('pointerdown',event=>event.preventDefault());
+        button.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();selectSlashTool(index)});
+        slashMenu.append(button);
+      });
+      setSlashActive(0);
+    }
+    slashMenu.hidden=false;
+  }
+  if(agent.connection_mode==='direct')void loadDirectAgentToolCatalog().catch(error=>note('Could not load direct-agent tools: '+String(error&&error.message||error),'error'));
+  input.addEventListener('input',updateSlashMenu);
   const stopButton=document.createElement('button');stopButton.type='button';stopButton.className='agent-direct-stop';stopButton.textContent='Stop';stopButton.hidden=true;stopButton.title='Stop the current direct-agent run';
   composer.append(input,stopButton);
   const body=document.createElement('div');body.className='agent-console-body';body.dataset.noWidgetDrag='true';
@@ -385,7 +447,7 @@ function makeAgentWidget(agent,index){
   for(const [label,target] of actionItems){const item=document.createElement('button');item.type='button';item.textContent=label;item.dataset.agentAction=label.toLowerCase().replaceAll(' ','-');item.addEventListener('click',()=>{actionMenu.hidden=true;target.click()});actionMenu.append(item)}
   document.body.append(actionMenu);agentActionMenus.set(agent.agent_id,actionMenu);
   card.addEventListener('contextmenu',event=>{if(event.target.closest('input,textarea'))return;event.preventDefault();event.stopPropagation();for(const menu of agentActionMenus.values())menu.hidden=true;actionMenu.hidden=false;actionMenu.style.left=Math.max(8,Math.min(window.innerWidth-190,event.clientX))+'px';actionMenu.style.top=Math.max(8,Math.min(window.innerHeight-240,event.clientY))+'px'});
-  card.append(header,body,messageThread,composer,workspaceMenu);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
+  card.append(header,body,messageThread,slashMenu,composer,workspaceMenu);agentWidgetHost.append(card);agentWidgets.set(agent.agent_id,card);attachWidgetGesture(card);
   stopButton.addEventListener('click',async event=>{event.preventDefault();event.stopPropagation();stopButton.disabled=true;try{await api.cancelDirectAgent(agent.agent_id)}catch(error){note('Could not stop '+agent.agent_id+': '+String(error&&error.message||error),'error')}finally{stopButton.disabled=false}});
   pauseButton.addEventListener('click',async event=>{
     event.stopPropagation();
@@ -447,8 +509,8 @@ function makeAgentWidget(agent,index){
     try {
       if(direct){
         await api.sendDirectAgentMessage(agent.agent_id,message);
-        input.value='';
-        note('Message sent to direct agent '+agent.agent_id+'.','success');
+        input.value='';slashMenu.hidden=true;
+        note(message.startsWith('/')?'Executed '+message.split(/\s/,1)[0]+' on '+agent.agent_id+'.':'Message sent to direct agent '+agent.agent_id+'.','success');
       }else{
         const sent=await api.sendAgentMessage(sessionId,message);
         if(sent&&typeof sent.message_id==='string'){
@@ -462,10 +524,16 @@ function makeAgentWidget(agent,index){
         await refresh();
       }
     } catch(error) { note('Could not message '+agent.agent_id+': '+error.message,'error'); }
-    finally { input.disabled=card.dataset.directBusy==='true';input.placeholder=direct?'> message local agent… (Enter to send)':'> message agent… (Enter to send)'; }
+    finally { input.disabled=card.dataset.directBusy==='true';input.placeholder=direct?'> message or /tool {"arg":"value"}':'> message agent… (Enter to send)'; }
   };
   composer.addEventListener('submit',event=>{event.preventDefault();event.stopPropagation();void sendMessage();});
-  input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();void sendMessage();}});
+  input.addEventListener('keydown',event=>{
+    if(!slashMenu.hidden&&slashMenuItems.length&&event.key==='ArrowDown'){event.preventDefault();setSlashActive(slashActiveIndex+1);return}
+    if(!slashMenu.hidden&&slashMenuItems.length&&event.key==='ArrowUp'){event.preventDefault();setSlashActive(slashActiveIndex-1);return}
+    if(!slashMenu.hidden&&slashMenuItems.length&&(event.key==='Enter'||event.key==='Tab')){event.preventDefault();event.stopPropagation();selectSlashTool(slashActiveIndex);return}
+    if(event.key==='Escape'&&!slashMenu.hidden){event.preventDefault();slashMenu.hidden=true;return}
+    if(event.key==='Enter'){event.preventDefault();void sendMessage();}
+  });
   return card;
 }
 function renderAgentMailboxes(rawAgents){
@@ -536,7 +604,7 @@ function renderAgentMailboxes(rawAgents){
     const directBusy=isDirect&&agent.direct_status==='running';
     if(messageInput){
       messageInput.disabled=isDirect?directBusy:!hasSession;
-      messageInput.placeholder=isDirect?'> message local agent… (Enter to send)':hasSession?'> message agent… (Enter to send)':'[no active session]';
+      messageInput.placeholder=isDirect?'> message or /tool {"arg":"value"}':hasSession?'> message agent… (Enter to send)':'[no active session]';
     }
     const directStop=card.querySelector('.agent-direct-stop');
     if(directStop)directStop.hidden=!directBusy;
@@ -598,7 +666,7 @@ function renderAgentMailboxes(rawAgents){
         label.textContent=message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
         item.append(label);
         if(message.role==='assistant'&&Array.isArray(message.tool_calls)){
-          for(const call of message.tool_calls){const command=document.createElement('pre');command.className='agent-direct-tool-call';let args={};try{args=JSON.parse(call.function&&call.function.arguments||'{}')}catch{}command.textContent=terminal.formatRequestCommands(JSON.stringify({tool:call.function&&call.function.name,args}),call.function&&call.function.name);item.append(command)}
+          for(const call of message.tool_calls){const command=document.createElement('pre');command.className='agent-direct-tool-call';let args={};try{args=JSON.parse(call.function&&call.function.arguments||'{}')}catch{}command.textContent=terminal.formatSlashCommand(call.function&&call.function.name,args);item.append(command)}
         }
         if(typeof message.content==='string'&&message.content){const content=document.createElement('div');content.className='agent-direct-message-content';content.textContent=message.content;item.append(content)}
         body.append(item);
