@@ -109,6 +109,20 @@ test('concurrent session starts allocate distinct randomized conversation IDs an
 });
 
 
+test('session authority stays in the app-local registry and elapsed time never expires a session', async () => {
+  const { registry, records, advance } = mockMailbox();
+  const session = await registry.startSession({ label: 'Long-lived app-local session' });
+  const sessionPath = 'local/sessions/' + session.session_id + '.json';
+  const seatPath = 'local/agents/' + session.agent_id + '.json';
+  assert.ok(records.has(sessionPath));
+  assert.ok(records.has(seatPath));
+  assert.equal([...records.keys()].some(key => key.startsWith('bridge/sessions/') || key.startsWith('bridge/agents/')), false);
+  advance(5 * 365 * 24 * 60 * 60 * 1000);
+  const authenticated = await registry.authenticate({ session_id: session.session_id });
+  assert.equal(authenticated.session_id, session.session_id);
+  assert.equal(authenticated.agent_id, session.agent_id);
+});
+ 
 test('legacy expired status values do not invalidate or release persistent session IDs', async () => {
   const { registry, records } = mockMailbox();
   const session = await registry.startSession({ label: 'Legacy status migration' });
