@@ -7,7 +7,7 @@ const CORE_TOOLS = Object.freeze([
 
 function inlineCode(value) {
   const marker = String.fromCharCode(96);
-  return marker + String(value).replace(/[\\r\\n]/g, '').split(marker).join('') + marker;
+  return marker + String(value).replace(/[\r\n]/g, '').split(marker).join('') + marker;
 }
 
 function renderToolCatalogMarkdown(capabilityData) {
