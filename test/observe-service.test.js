@@ -96,6 +96,7 @@ test('Observe defaults to 2 fps and publishes the latest screen context as Markd
   assert.match(mailbox.content, /Minimize/);
   assert.match(mailbox.content, /1920 × 1080 pixels/);
   assert.doesNotMatch(mailbox.content, /private-image-pixels/);
+  assert.doesNotMatch(mailbox.content, /ghp_0123456789abcdefghijklmnopqrstuv/);
 
   await service.setFps(4);
   assert.equal(service.status().fps, 4);
@@ -134,7 +135,8 @@ test('SCREEN.md redacts password-like control values and excludes private image 
   const capture = makeCapture({
     controls: [
       { name: 'Password', control_type: 'Edit', is_password: true, value: 'do-not-publish-this' },
-      { name: 'Search', control_type: 'Edit', value: 'public search text' }
+      { name: 'Search', control_type: 'Edit', value: 'public search text' },
+      { name: 'Token preview', control_type: 'Text', value: 'Bearer ghp_0123456789abcdefghijklmnopqrstuv' }
     ]
   });
   const service = createObserveService({
