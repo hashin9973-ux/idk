@@ -48,32 +48,36 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   function timestamp() { return new Date(clock()).toISOString(); }
   function seatPath(agentId) {
     if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid Agent ID.');
-    return 'bridge/agents/' + agentId + '.json';
+    return 'local/agents/' + agentId + '.json';
   }
   function sessionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id. Call session_start to create a session.');
-    return 'bridge/sessions/' + sessionId + '.json';
+    return 'local/sessions/' + sessionId + '.json';
   }
   function revocationPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
-    return 'bridge/revoked-sessions/' + sessionId + '.json';
+    return 'local/revoked-sessions/' + sessionId + '.json';
   }
   function evictionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
-    return 'bridge/evicted-sessions/' + sessionId + '.json';
+    return 'local/evicted-sessions/' + sessionId + '.json';
   }
-  function inboxPath(sessionId) {
-    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
-    return 'bridge/agent-messages/' + sessionId;
+  function inboxPath(agentId) {
+    if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid recipient agent ID.');
+    return 'messages/' + agentId;
   }
-  function messagePath(sessionId, messageId) {
+  function messagePath(agentId, messageId) {
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
-    return inboxPath(sessionId) + '/' + messageId + '.json';
+    return inboxPath(agentId) + '/' + messageId + '.json';
   }
-  function messageReceiptPath(sessionId, messageId) {
-    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
+  function messageReceiptPath(agentId, messageId) {
+    if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid recipient agent ID.');
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
-    return 'bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json';
+    return inboxPath(agentId) + '/' + messageId + '.read.json';
+  }
+  function messageOwnerAgentId(record) {
+    return record && record.recipient_agent_id === 'user'
+      ? record.sender_agent_id : record && record.recipient_agent_id;
   }
 
   async function withLock(key, operation) {
@@ -232,7 +236,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function listSeatIds() {
-    const entries = await listFolder('bridge/agents');
+    const entries = await listFolder('local/agents');
     return [...new Set(entries
       .filter(item => item && typeof item.name === 'string')
       .map(item => item.name.split('/').pop())
@@ -298,7 +302,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       throw new Error('The session registration cap must be a positive integer.');
     }
     const evictedSessions = [];
-    let names = [...new Set((await listFolder('bridge/sessions'))
+    let names = [...new Set((await listFolder('local/sessions'))
       .map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
 
@@ -438,7 +442,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
       if (names.length < maxSessions) break;
       if (rescan) {
-        names = [...new Set((await listFolder('bridge/sessions'))
+        names = [...new Set((await listFolder('local/sessions'))
           .map(item => String(item && (item.name || item.path) || '').split('/').pop())
           .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
         continue;
@@ -807,7 +811,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       deletedRequests++;
     }
 
-    const sessionEntries = await listFolder('bridge/sessions');
+    const sessionEntries = await listFolder('local/sessions');
     const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
     if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
@@ -869,7 +873,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       return { count: cached.count, partial: cached.partial };
     }
     let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
+    try { entries = await listFolder(inboxPath(ownerAgentId)); }
     catch (error) {
       if (/not found|404/i.test(String(error && error.message || error))) entries = [];
       else throw error;
@@ -879,7 +883,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     const names = allNames.slice(-UNREAD_MESSAGE_SCAN_LIMIT);
     let receiptEntries = [];
     if (names.length) {
-      try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
+      try { receiptEntries = await listFolder(inboxPath(ownerAgentId)); }
       catch (error) {
         if (!/not found|404/i.test(String(error && error.message || error))) throw error;
       }
@@ -892,7 +896,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     for (let start = 0; start < names.length; start += 16) {
       const rows = await Promise.all(names.slice(start, start + 16).map(async name => {
         const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
         if (!remote) return null;
         const record = remote.value;
         if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -1004,7 +1008,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function writeMessage(recipientSessionId, record) {
-    const path = messagePath(recipientSessionId, record.message_id);
+    const path = messagePath(messageOwnerAgentId(record), record.message_id);
     const saved = await writeRemoteJson(path, record, null, true);
     if (!saved || !saved.ok) throw new Error('Message publication conflicted. Do not send a duplicate until the original message path has been checked.');
     return record;
@@ -1096,10 +1100,10 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function markMessageRead(sessionId, messageId, knownRecord = null) {
-    const path = messagePath(sessionId, messageId);
     let value = knownRecord;
     if (!value) {
-      const remote = await readRemoteFile(path);
+      const identity = await currentSession(sessionId);
+      const remote = await readRemoteFile(messagePath(identity.session.agent_id, messageId));
       if (!remote) return null;
       value = remote.value;
     }
@@ -1107,7 +1111,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
         value.message_id !== messageId || value.recipient_session_id !== sessionId) {
       throw new Error('Message record is malformed or addressed to another session.');
     }
-    const receiptPath = messageReceiptPath(sessionId, messageId);
+    const ownerAgentId = messageOwnerAgentId(value);
+    const receiptPath = messageReceiptPath(ownerAgentId, messageId);
     const updateCachedUnread = () => {
       const cached = unreadMessageCountCache.get(sessionId);
       if (!cached) return;
@@ -1153,11 +1158,15 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function readMessages(sessionId, args = {}) {
     return withSessionLock(sessionId, async () => {
-    await currentSession(sessionId);
+    const identity = await currentSession(sessionId);
+    const ownerAgentId = identity.session.agent_id;
     const unreadOnly = args.unread_only !== false;
     const limit = Number.isInteger(args.limit) ? Math.max(1, Math.min(100, args.limit)) : 20;
+    const sessionRecord = await readSession(sessionId);
+    if (!sessionRecord) return { count: 0, partial: false };
+    const ownerAgentId = sessionRecord.value.agent_id;
     let entries;
-    try { entries = await listFolder(inboxPath(sessionId)); }
+    try { entries = await listFolder(inboxPath(ownerAgentId));
     catch (error) { if (/not found|404/i.test(String(error && error.message || error))) entries = []; else throw error; }
     const names = [...new Set(entries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5))))]
@@ -1167,7 +1176,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       const group = names.slice(start, start + 16);
       const rows = await Promise.all(group.map(async name => {
         const messageId = name.slice(0, -5);
-        const remote = await readRemoteFile(messagePath(sessionId, messageId));
+        const remote = await readRemoteFile(messagePath(ownerAgentId, messageId));
         if (!remote) return null;
         const record = remote.value;
         if (!record || record.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -1180,7 +1189,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     }
     found.sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
     let receiptEntries;
-    try { receiptEntries = await listFolder('bridge/agent-message-receipts/' + sessionId); }
+    try { receiptEntries = await listFolder(inboxPath(ownerAgentId));
     catch (error) { if (/not found|404/i.test(String(error && error.message || error))) receiptEntries = []; else throw error; }
     const receiptIds = new Set(receiptEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /\.json$/i.test(name) && MESSAGE_ID_PATTERN.test(name.slice(0, -5)))
@@ -1192,7 +1201,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     return {
       session_id: sessionId, unread_only: unreadOnly, count: read.filter(Boolean).length,
       scanned_recent_limit: 200, messages: read.filter(Boolean),
-      note: 'Message bodies are immutable records. Read state is stored separately in bridge/agent-message-receipts; exact session IDs prevent delivery to a recycled seat occupant.'
+      note: 'Messages and read receipts are stored under the recipient agent folder; records retain exact sender and recipient session IDs to prevent delivery to a recycled seat occupant.'
     };
     });
   }
@@ -1200,6 +1209,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   async function readDashboardReplies(sessionId, args = {}) {
     return withSessionLock(sessionId, async () => {
     await currentSession(sessionId);
+    const identity = await currentSession(sessionId);
+    const ownerAgentId = identity.session.agent_id;
     const suppliedIds = args.message_ids;
     if (!Array.isArray(suppliedIds) || suppliedIds.length > 100 ||
         suppliedIds.some(id => typeof id !== 'string' || !MESSAGE_ID_PATTERN.test(id))) {
@@ -1241,7 +1252,8 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
   async function replyToMessage(sessionId, args = {}) {
     const originalId = String(args.message_id || '');
-    const initial = await readRemoteFile(messagePath(sessionId, originalId));
+    const initialIdentity = await currentSession(sessionId);
+    const initial = await readRemoteFile(messagePath(initialIdentity.session.agent_id, originalId));
     if (!initial) throw new Error('No message with this message_id exists in the current session inbox.');
     const initialRecord = initial.value;
     if (!initialRecord || initialRecord.protocol !== 'chatgpt-local-agent-message/v1' ||
@@ -1257,7 +1269,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
     return withSessionLocks([sessionId, recipientSessionId], async () => {
     const sender = await currentSession(sessionId);
     const originalId = String(args.message_id || '');
-    const remote = await readRemoteFile(messagePath(sessionId, originalId));
+    const remote = await readRemoteFile(messagePath(sender.session.agent_id, originalId));
     if (!remote) throw new Error('No message with this message_id exists in the current session inbox.');
     const original = remote.value;
     if (!original || original.protocol !== 'chatgpt-local-agent-message/v1' ||
