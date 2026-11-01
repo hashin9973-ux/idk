@@ -533,9 +533,12 @@ function createRepositoryBridge(deps) {
     const config = (() => {
       try { return currentConfig(); } catch { return { owner: '', repo: '', branch: DEFAULT_BRANCH, allowPublicMailbox: false }; }
     })();
+    const mailboxState = mailbox && typeof mailbox.getState === 'function' ? mailbox.getState() : null;
     return {
       running,
-      configured: Boolean(config.owner && config.repo),
+      configured: mailbox ? mailboxState.configured === true : Boolean(config.owner && config.repo),
+      transport: mailbox ? 'onedrive-synced-folder' : 'github',
+      oneDrivePath: mailbox ? String(mailboxState.runtimePath || '') : '',
       owner: config.owner,
       repo: config.repo,
       branch: config.branch,
@@ -565,9 +568,9 @@ function createRepositoryBridge(deps) {
         pollInFlight,
         pollStartedAt: pollStartedAt ? new Date(pollStartedAt).toISOString() : null,
         pollTimerActive: Boolean(timer),
-        requestCommitProbeInFlight,
-        requestCommitProbeStartedAt: requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
-        requestCommitProbeTimerActive: Boolean(requestCommitProbeTimer),
+        requestCommitProbeInFlight: mailbox ? false : requestCommitProbeInFlight,
+        requestCommitProbeStartedAt: !mailbox && requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
+        requestCommitProbeTimerActive: !mailbox && Boolean(requestCommitProbeTimer),
         requestTreeScanIntervalMs: Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS),
         lastRequestTreeScanAt: lastRequestTreeReconcileAt ? new Date(lastRequestTreeReconcileAt).toISOString() : null,
         lastRequestTreeScanDurationMs: lastRequestTreeReconcileDurationMs,
@@ -2935,7 +2938,20 @@ function createRepositoryBridge(deps) {
   }
 
   function setConfig(input) {
-    const config = validateConfig(input);
+    let config;
+    if (mailbox) {
+      const value = input && typeof input === 'object' ? input : {};
+      const oneDrivePath = String(value.oneDrivePath || '').trim();
+      if (oneDrivePath && !path.isAbsolute(oneDrivePath)) {
+        throw new Error('The OneDrive-synced Bridge/runtime folder must be an absolute Windows path.');
+      }
+      const requestedRetention = Number(value.retentionDays);
+      const retentionDays = Number.isInteger(requestedRetention) && requestedRetention >= 1 && requestedRetention <= 365
+        ? requestedRetention : currentConfig().retentionDays;
+      config = { oneDrivePath, retentionDays };
+    } else {
+      config = validateConfig(input);
+    }
     const settings = getSettings();
     settings.repositoryBridge = config;
     persistSettings();
