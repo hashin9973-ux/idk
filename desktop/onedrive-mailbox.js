@@ -46,7 +46,19 @@ function validateRelativePath(relativePath) {
   if (parts.length === 1) return parts;
   if (!AGENT_ID_PATTERN.test(parts[1])) throw new Error('Mailbox records must be partitioned by a valid agent ID.');
   if (parts.length > 3) throw new Error('Nested mailbox infrastructure paths are not permitted.');
-  if (parts.length === 3 && !parts[2]) throw new Error('Mailbox file name is required.');
+  if (parts.length === 2) return parts;
+  const fileName = parts[2];
+  if (rootFolder === 'request' || rootFolder === 'claims' || rootFolder === 'result') {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.json$/.test(fileName)) {
+      throw new Error('Request, claim and result records must be JSON files named by request ID.');
+    }
+  } else if (rootFolder === 'messages') {
+    if (!/^msg-[0-9]{13}-[a-f0-9]{32}(?:\\.read)?\\.json$/.test(fileName)) {
+      throw new Error('Message records and receipts must use the registered message ID format.');
+    }
+  } else if (!/^[A-Za-z0-9][A-Za-z0-9_. -]{0,199}$/.test(fileName)) {
+    throw new Error('Sandbox storage file name is invalid.');
+  }
   return parts;
 }
 
