@@ -32,10 +32,10 @@ function safeText(value, limit = 500) {
 
 function redactScreenText(value, limit = 1200) {
   return safeText(value, limit)
-    .replace(/\\bBearer\\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
-    .replace(/\\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\\b/g, '[REDACTED]')
-    .replace(/([?&](?:access_token|refresh_token|token|client_secret|password|api[_-]?key|secret|code)=)[^&\\s]+/gi, '$1[REDACTED]')
-    .replace(/:\\/\\/[^/\\s:@]+:[^/@\\s]+@/g, '://[REDACTED]@');
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b/g, '[REDACTED]')
+    .replace(/([?&](?:access_token|refresh_token|token|client_secret|password|api[_-]?key|secret|code)=)[^&\s]+/gi, '$1[REDACTED]')
+    .replace(/:\/\/[^/\s:@]+:[^/@\s]+@/g, '://[REDACTED]@');
 }
 
 function createObserveService(deps = {}) {
