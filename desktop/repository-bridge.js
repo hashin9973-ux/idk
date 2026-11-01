@@ -790,7 +790,7 @@ function createRepositoryBridge(deps = {}) {
     return { value, sha: localRecordSha(value), entry: { type: 'file', sha: localRecordSha(value) } };
   }
   async function listLocalRegistryFolder(relativePath) {
-    if (!/^local\\/(?:agents|sessions|revoked-sessions|evicted-sessions)$/.test(String(relativePath || ''))) {
+    if (!/^local\/(?:agents|sessions|revoked-sessions|evicted-sessions)$/.test(String(relativePath || ''))) {
       throw new Error('Invalid app-local agent registry folder.');
     }
     const prefix = relativePath + '/';
