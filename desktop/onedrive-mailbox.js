@@ -12,6 +12,10 @@ const BRIDGE_DIRECTORIES = Object.freeze([
   'vision/results', 'vision/claims', 'vision/reports'
 ]);
 const MAX_MAILBOX_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_SYNC_READ_ATTEMPTS = 5;
+const TRANSIENT_SYNC_READ_CODES = new Set([
+  'EACCES', 'EBUSY', 'EAGAIN', 'EIO', 'ENODATA', 'ENOENT', 'EPERM', 'ESTALE'
+]);
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 
 function sha256(bytes) {
@@ -69,6 +73,39 @@ function createOneDriveMailbox({
     return detectedRoot ? path.join(detectedRoot, 'Bridge', 'runtime') : '';
   }
 
+  // Serialize same-path operations inside this app process. The SHA check is a
+  // local conflict detector, not a distributed compare-and-swap against OneDrive.
+  const pathLocks = new Map();
+
+  async function withPathLock(target, operation) {
+    const resolved = path.resolve(target);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    const previous = pathLocks.get(key) || Promise.resolve();
+    let release;
+    const current = new Promise(resolve => { release = resolve; });
+    const queued = previous.then(() => current);
+    pathLocks.set(key, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (pathLocks.get(key) === queued) pathLocks.delete(key);
+    }
+  }
+
+  async function withPathLocks(targets, operation) {
+    const ordered = [...new Set(targets.map(target => {
+      const resolved = path.resolve(target);
+      return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+    }))].sort();
+    async function acquire(index) {
+      if (index >= ordered.length) return operation();
+      return withPathLock(ordered[index], () => acquire(index + 1));
+    }
+    return acquire(0);
+  }
+
   function resolvePath(relativePath) {
     const root = configuredPath();
     if (!root || !path.isAbsolute(root)) {
@@ -122,30 +159,48 @@ function createOneDriveMailbox({
 
   async function readBytes(relativePath) {
     const { target } = resolvePath(relativePath);
-    if (!await ensureDirectoryPath(path.dirname(target))) return null;
-    const stat = await lstatOptional(target);
-    if (!stat) return null;
-    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('Mailbox entry is not a regular file: ' + relativePath);
-    if (stat.size > MAX_MAILBOX_FILE_BYTES) throw new Error('OneDrive mailbox file exceeds the 8 MiB safety limit.');
-    const handle = await fsImpl.open(target, 'r');
-    try {
-      const before = await handle.stat();
-      if (!before.isFile() || before.size > MAX_MAILBOX_FILE_BYTES) {
-        throw new Error('OneDrive mailbox file changed to an invalid size while being read.');
+    for (let attempt = 0; attempt < MAX_SYNC_READ_ATTEMPTS; attempt++) {
+      let handle = null;
+      try {
+        if (!await ensureDirectoryPath(path.dirname(target))) return null;
+        const stat = await lstatOptional(target);
+        if (!stat) return null;
+        if (stat.isSymbolicLink() || !stat.isFile()) {
+          throw new Error('Mailbox entry is not a regular file: ' + relativePath);
+        }
+        if (stat.size > MAX_MAILBOX_FILE_BYTES) {
+          throw new Error('OneDrive mailbox file exceeds the 8 MiB safety limit.');
+        }
+        handle = await fsImpl.open(target, 'r');
+        const before = await handle.stat();
+        if (!before.isFile() || before.size > MAX_MAILBOX_FILE_BYTES) {
+          throw new Error('OneDrive mailbox file changed to an invalid size while being read.');
+        }
+        const bytes = await handle.readFile();
+        const after = await handle.stat();
+        if (before.size !== after.size || before.mtimeMs !== after.mtimeMs ||
+            bytes.length !== after.size) {
+          const error = new Error('OneDrive sync changed the mailbox file during the read; retrying is safe.');
+          error.code = 'MAILBOX_TRANSIENT_READ';
+          throw error;
+        }
+        return { bytes, sha: sha256(bytes), size: bytes.length, mtimeMs: after.mtimeMs };
+      } catch (error) {
+        const retryable = error && (
+          error.code === 'MAILBOX_TRANSIENT_READ' || TRANSIENT_SYNC_READ_CODES.has(error.code)
+        );
+        if (!retryable || attempt === MAX_SYNC_READ_ATTEMPTS - 1) throw error;
+        await sleep(100 + attempt * 100);
+      } finally {
+        if (handle) await handle.close();
       }
-      const bytes = await handle.readFile();
-      const after = await handle.stat();
-      if (before.size !== after.size || bytes.length !== after.size) {
-        throw new Error('OneDrive sync changed the mailbox file during the read; retrying is safe.');
-      }
-      return { bytes, sha: sha256(bytes), size: bytes.length, mtimeMs: after.mtimeMs };
-    } finally {
-      await handle.close();
     }
+    return null;
   }
 
   async function readJson(relativePath) {
-    for (let attempt = 0; attempt < 6; attempt++) {
+    const attempts = 8;
+    for (let attempt = 0; attempt < attempts; attempt++) {
       const stored = await readBytes(relativePath);
       if (!stored) return null;
       try {
@@ -156,9 +211,13 @@ function createOneDriveMailbox({
           entry: { type: 'file', sha: stored.sha, size: stored.size, mtimeMs: stored.mtimeMs }
         };
       } catch (error) {
-        if (!(error instanceof SyntaxError)) throw error;
-        if (attempt === 5) {
-          throw new Error('Malformed or partially synchronized JSON in OneDrive mailbox path ' + relativePath + '.');
+        const transientRead = error && error.code === 'MAILBOX_TRANSIENT_READ';
+        if (!(error instanceof SyntaxError) && !transientRead) throw error;
+        if (attempt === attempts - 1) {
+          if (error instanceof SyntaxError) {
+            throw new Error('Malformed or partially synchronized JSON in OneDrive mailbox path ' + relativePath + '.');
+          }
+          throw error;
         }
         await sleep(80 + attempt * 40);
       }
@@ -197,71 +256,90 @@ function createOneDriveMailbox({
     const { target } = resolvePath(relativePath);
     if (!Buffer.isBuffer(bytes)) bytes = Buffer.from(bytes);
     if (bytes.length > MAX_MAILBOX_FILE_BYTES) throw new Error('OneDrive mailbox write exceeds the 8 MiB safety limit.');
-    await ensureParent(target);
+    const contentSha = sha256(bytes);
 
-    const existing = await readBytes(relativePath);
-    if (existing) {
-      if (allowUnchanged && existing.sha === sha256(bytes)) {
-        return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: existing.sha };
-      }
-      if (createOnly) {
-        return { ok: false, conflict: true, sha: existing.sha };
-      }
-      if (expectedSha && existing.sha !== expectedSha) {
-        const error = new Error('OneDrive mailbox file changed concurrently; refusing to overwrite ' + relativePath + '.');
+    return withPathLock(target, async () => {
+      await ensureParent(target);
+      const existing = await readBytes(relativePath);
+      if (existing) {
+        if (allowUnchanged && existing.sha === contentSha) {
+          return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: existing.sha };
+        }
+        if (createOnly) return { ok: false, conflict: true, sha: existing.sha };
+        if (typeof expectedSha !== 'string' || !expectedSha) {
+          const error = new Error('A current content hash is required before updating an existing OneDrive mailbox file: ' + relativePath);
+          error.code = 'MAILBOX_CONFLICT';
+          throw error;
+        }
+        if (existing.sha !== expectedSha) {
+          const error = new Error('OneDrive mailbox file changed concurrently; refusing to overwrite ' + relativePath + '.');
+          error.code = 'MAILBOX_CONFLICT';
+          throw error;
+        }
+      } else if (expectedSha) {
+        const error = new Error('OneDrive mailbox file disappeared before it could be updated: ' + relativePath);
         error.code = 'MAILBOX_CONFLICT';
         throw error;
       }
-    } else if (expectedSha) {
-      const error = new Error('OneDrive mailbox file disappeared before it could be updated: ' + relativePath);
-      error.code = 'MAILBOX_CONFLICT';
-      throw error;
-    }
 
-    const temp = target + '.pending-' + crypto.randomUUID();
-    const handle = await fsImpl.open(temp, 'wx');
-    try {
-      await handle.writeFile(bytes);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    try {
-      if (createOnly) {
-        try {
-          await fsImpl.link(temp, target);
-        } catch (error) {
-          if (error && error.code === 'EEXIST') {
-            const raced = await readBytes(relativePath);
-            return { ok: false, conflict: true, sha: raced && raced.sha || null };
-          }
-          // Some synchronized/network filesystems do not support hard links.
-          // wx still guarantees that an immutable request/result is never replaced.
-          if (!error || !['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes(error.code)) throw error;
-          let created;
-          try { created = await fsImpl.open(target, 'wx'); }
-          catch (openError) {
-            if (openError && openError.code === 'EEXIST') {
+      const temp = target + '.pending-' + crypto.randomUUID();
+      const handle = await fsImpl.open(temp, 'wx');
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+
+      try {
+        if (createOnly || !existing) {
+          // A hard link publishes the fully written temporary file atomically and
+          // fails when the destination already exists. Never fall back to writing
+          // a partially visible final JSON file on filesystems without link support.
+          try {
+            await fsImpl.link(temp, target);
+          } catch (error) {
+            if (error && error.code === 'EEXIST') {
               const raced = await readBytes(relativePath);
+              if (allowUnchanged && raced && raced.sha === contentSha) {
+                return { ok: true, unchanged: true, sha: raced.sha, bytes: bytes.length, sha256: raced.sha };
+              }
               return { ok: false, conflict: true, sha: raced && raced.sha || null };
             }
-            throw openError;
+            if (error && ['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV'].includes(error.code)) {
+              const unsupported = new Error('This OneDrive sync folder does not support atomic create-only mailbox writes; the worker refused a non-atomic fallback.');
+              unsupported.code = 'ONEDRIVE_ATOMIC_CREATE_UNSUPPORTED';
+              throw unsupported;
+            }
+            throw error;
           }
-          try { await created.writeFile(bytes); await created.sync(); }
-          catch (writeError) {
-            try { await created.close(); } catch {}
-            await fsImpl.unlink(target).catch(() => {});
-            throw writeError;
+        } else {
+          // Re-read after staging to catch local or synchronized changes that
+          // arrived while the temporary file was being written. This narrows the
+          // race window but cannot make OneDrive a distributed compare-and-swap.
+          const latest = await readBytes(relativePath);
+          if (!latest || latest.sha !== expectedSha) {
+            const error = new Error('OneDrive mailbox file changed while the update was staged; refusing to replace ' + relativePath + '.');
+            error.code = 'MAILBOX_CONFLICT';
+            throw error;
           }
-          await created.close();
+          await fsImpl.rename(temp, target);
         }
-      } else {
-        await fsImpl.rename(temp, target);
+
+        // Verify what is visible at the final path before reporting publication.
+        // A sync conflict that replaces our write is surfaced rather than silently
+        // reported as success; this read-back is still not a cloud acknowledgement.
+        const published = await readBytes(relativePath);
+        if (!published || published.sha !== contentSha) {
+          const error = new Error('OneDrive mailbox file changed during local publication; the final content hash did not match.');
+          error.code = 'MAILBOX_SYNC_CONFLICT';
+          throw error;
+        }
+        return { ok: true, unchanged: false, sha: contentSha, bytes: bytes.length, sha256: contentSha };
+      } finally {
+        await fsImpl.unlink(temp).catch(() => {});
       }
-    } finally {
-      await fsImpl.unlink(temp).catch(() => {});
-    }
-    return { ok: true, unchanged: false, sha: sha256(bytes), bytes: bytes.length, sha256: sha256(bytes) };
+    });
   }
 
   async function writeJson(relativePath, value, expectedSha = null, createOnly = false) {
@@ -290,19 +368,38 @@ function createOneDriveMailbox({
       }
       unique.set(item.path, item.sha);
     }
-    for (const [relativePath, expectedSha] of unique) {
-      const current = await readBytes(relativePath);
-      if (!current || current.sha !== expectedSha) {
-        const error = new Error('OneDrive mailbox changed during cleanup; no files were deleted.');
-        error.code = 'MAILBOX_CONFLICT';
-        throw error;
+    const entries = [...unique].map(([relativePath, expectedSha]) => ({
+      path: relativePath, sha: expectedSha, target: resolvePath(relativePath).target
+    })).sort((a, b) => a.target.localeCompare(b.target));
+
+    return withPathLocks(entries.map(item => item.target), async () => {
+      // Lock all target paths in stable order to prevent this process's writers
+      // from racing the cleanup. Revalidate the complete set immediately before
+      // unlinking. OneDrive can still synchronize an external version between
+      // verification and unlink; local hashes are not a distributed CAS.
+      for (const item of entries) {
+        const current = await readBytes(item.path);
+        if (!current || current.sha !== item.sha) {
+          const error = new Error('OneDrive mailbox changed during cleanup; no files were deleted.');
+          error.code = 'MAILBOX_CONFLICT';
+          throw error;
+        }
       }
-    }
-    for (const relativePath of unique.keys()) {
-      const { target } = resolvePath(relativePath);
-      await fsImpl.unlink(target);
-    }
-    return { deleted: unique.size };
+      for (const item of entries) {
+        const latest = await readBytes(item.path);
+        if (!latest || latest.sha !== item.sha) {
+          const error = new Error('OneDrive mailbox changed immediately before cleanup; no files were deleted.');
+          error.code = 'MAILBOX_CONFLICT';
+          throw error;
+        }
+      }
+      let deleted = 0;
+      for (const item of entries) {
+        await fsImpl.unlink(item.target);
+        deleted++;
+      }
+      return { deleted };
+    });
   }
 
   async function ensureReady() {

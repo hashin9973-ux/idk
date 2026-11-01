@@ -12,12 +12,16 @@ const {
   validateRelativePath
 } = require('../desktop/onedrive-mailbox');
 
-async function makeMailbox(t) {
+async function makeMailbox(t, options = {}) {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'onedrive-mailbox-test-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const runtime = path.join(temp, 'OneDrive', 'Bridge', 'runtime');
   const settings = { repositoryBridge: { oneDrivePath: runtime } };
-  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  const mailbox = createOneDriveMailbox({
+    getSettings: () => settings,
+    ...(options.fsImpl ? { fsImpl: options.fsImpl } : {}),
+    ...(options.sleep ? { sleep: options.sleep } : {})
+  });
   return { mailbox, runtime, settings, temp };
 }
 
@@ -68,6 +72,10 @@ test('mutable writes require the expected hash when a record already exists', as
   await mailbox.ensureReady();
   await mailbox.writeJson('bridge/state/windows-app.json', { revision: 1 });
   const first = await mailbox.readJson('bridge/state/windows-app.json');
+  await assert.rejects(
+    mailbox.writeJson('bridge/state/windows-app.json', { revision: 2 }, null, false),
+    error => error && error.code === 'MAILBOX_CONFLICT'
+  );
   const update = await mailbox.writeJson('bridge/state/windows-app.json', { revision: 2 }, first.sha, false);
   assert.equal(update.ok, true);
   assert.equal((await mailbox.readJson('bridge/state/windows-app.json')).value.revision, 2);
@@ -149,3 +157,67 @@ test('mailbox refuses symbolic links and non-file entries instead of following t
   await assert.rejects(mailbox.listFolder('bridge/requests'), /symbolic link/i);
 });
 
+test('partial JSON caused by synchronization is retried and accepted after the file becomes complete', async t => {
+  let repaired = false;
+  let target = '';
+  const { mailbox, runtime } = await makeMailbox(t, {
+    sleep: async () => {
+      if (!repaired) {
+        repaired = true;
+        await fs.writeFile(target, '{"protocol":"complete","revision":2}\\n', 'utf8');
+      }
+    }
+  });
+  await mailbox.ensureReady();
+  target = path.join(runtime, 'bridge', 'requests', 'request-partial.json');
+  await fs.writeFile(target, '{"protocol":', 'utf8');
+  const loaded = await mailbox.readJson('bridge/requests/request-partial.json');
+  assert.equal(repaired, true);
+  assert.deepEqual(loaded.value, { protocol: 'complete', revision: 2 });
+});
+
+test('concurrent same-path mutable writes serialize and reject the stale expected hash', async t => {
+  const delayedFs = Object.create(fs);
+  delayedFs.open = async (filePath, flags, ...rest) => {
+    if (String(filePath).includes('.pending-')) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    return fs.open(filePath, flags, ...rest);
+  };
+  const { mailbox } = await makeMailbox(t, { fsImpl: delayedFs });
+  await mailbox.ensureReady();
+  const relative = 'bridge/state/windows-app.json';
+  await mailbox.writeJson(relative, { revision: 1 });
+  const original = await mailbox.readJson(relative);
+
+  const outcomes = await Promise.allSettled([
+    mailbox.writeJson(relative, { revision: 2 }, original.sha, false),
+    mailbox.writeJson(relative, { revision: 3 }, original.sha, false)
+  ]);
+  const succeeded = outcomes.filter(item => item.status === 'fulfilled');
+  const failed = outcomes.filter(item => item.status === 'rejected');
+  assert.equal(succeeded.length, 1);
+  assert.equal(failed.length, 1);
+  assert.equal(failed[0].reason.code, 'MAILBOX_CONFLICT');
+  const final = await mailbox.readJson(relative);
+  assert.ok([2, 3].includes(final.value.revision));
+});
+
+test('immutable publication fails closed when the sync filesystem cannot atomically create a file', async t => {
+  const noHardLinks = Object.create(fs);
+  noHardLinks.link = async () => {
+    const error = new Error('hard links are not supported by this filesystem');
+    error.code = 'ENOTSUP';
+    throw error;
+  };
+  const { mailbox, runtime } = await makeMailbox(t, { fsImpl: noHardLinks });
+  await mailbox.ensureReady();
+  await assert.rejects(
+    mailbox.writeJson('bridge/requests/request-no-hard-links.json', { request_id: 'request-no-hard-links' }, null, true),
+    error => error && error.code === 'ONEDRIVE_ATOMIC_CREATE_UNSUPPORTED'
+  );
+  await assert.rejects(
+    fs.stat(path.join(runtime, 'bridge', 'requests', 'request-no-hard-links.json')),
+    error => error && error.code === 'ENOENT'
+  );
+});
