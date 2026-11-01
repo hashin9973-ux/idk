@@ -173,6 +173,7 @@ function isCorruptMailboxFile(error) {
 function createRepositoryBridge(deps) {
   const {
     githubAuth,
+    mailbox = null,
     getSettings,
     persistSettings,
     getWorkspaceRoot,
@@ -252,7 +253,17 @@ function createRepositoryBridge(deps) {
 
   function currentConfig() {
     const settings = getSettings() || {};
-    return validateConfig(settings.repositoryBridge || {});
+    const stored = settings.repositoryBridge && typeof settings.repositoryBridge === 'object'
+      ? settings.repositoryBridge : {};
+    if (mailbox) {
+      const value = Number(stored.retentionDays);
+      return {
+        oneDrivePath: mailbox.getState().runtimePath || '',
+        retentionDays: Number.isInteger(value) && value >= 1 && value <= 365 ? value : DEFAULT_MAILBOX_RETENTION_DAYS,
+        owner: '', repo: '', branch: 'onedrive', allowPublicMailbox: false
+      };
+    }
+    return validateConfig(stored);
   }
 
   function apiPath(relativePath) {
@@ -589,6 +600,14 @@ function createRepositoryBridge(deps) {
   }
 
   async function readRemoteFile(relativePath) {
+    if (mailbox) {
+      const remote = await mailbox.readJson(relativePath);
+      if (remote && relativePath.startsWith('bridge/requests/') &&
+          Number(remote.entry && remote.entry.size) > MAX_REQUEST_BYTES) {
+        throw new Error('Mailbox request JSON exceeds the 1 MiB request limit.');
+      }
+      return remote;
+    }
     const config = currentConfig();
     try {
       const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
@@ -608,19 +627,13 @@ function createRepositoryBridge(deps) {
   }
 
   async function listFolder(relativePath) {
+    if (mailbox) return mailbox.listFolder(relativePath);
     const config = currentConfig();
     const segments = String(relativePath || '').split('/');
     if (segments.length < 2 || segments[0] !== 'bridge' ||
         segments.some(segment => !SAFE_SEGMENT.test(segment) || segment === '.' || segment === '..')) {
       throw new Error('Unsafe mailbox folder path.');
     }
-
-    // A Contents listing of bridge itself is tiny and exposes each subfolder's
-    // tree SHA. Use it to reach the requested large folder directly in two API
-    // calls instead of walking root -> bridge -> target (three sequential calls).
-    // Never list bridge/requests, bridge/results, or bridge/artifacts through the
-    // Contents API: those directory responses can exceed its 1 MiB / 1000-entry
-    // limits as mailbox history grows.
     try {
       let bridgeEntries = null;
       try {
@@ -628,33 +641,17 @@ function createRepositoryBridge(deps) {
         if (Array.isArray(response && response.result)) bridgeEntries = response.result;
       } catch (error) {
         if (isNotFound(error)) return [];
-        // Fall back to bounded Git Trees traversal if the tiny Contents lookup
-        // is unavailable for a reason other than a missing mailbox root.
       }
-
       if (bridgeEntries && segments.length === 2) {
-        // The bridge-directory shortcut resolves only an immediate child. For
-        // nested request-scoped folders (such as artifacts/<request-id>), retain
-        // the full tree traversal so callers get the exact requested directory.
         const directory = bridgeEntries.find(item => item && item.type === 'dir' && item.name === segments[1]);
         if (!directory) return [];
         if (typeof directory.sha !== 'string' || !/^[a-f0-9]{40}$/i.test(directory.sha)) {
           throw new Error('GitHub returned an invalid tree SHA for mailbox directory ' + segments[1] + '.');
         }
         const tree = await readRemoteTree(directory.sha);
-        return tree.tree
-          .filter(item => item && item.type === 'blob' && typeof item.path === 'string')
-          .map(item => ({
-            name: item.path,
-            path: relativePath + '/' + item.path,
-            type: 'file',
-            sha: item.sha,
-            size: item.size
-          }));
+        return tree.tree.filter(item => item && item.type === 'blob' && typeof item.path === 'string')
+          .map(item => ({ name: item.path, path: relativePath + '/' + item.path, type: 'file', sha: item.sha, size: item.size }));
       }
-
-      // Fallback to the fully bounded traversal if the Contents endpoint returned
-      // an unexpected shape; this path remains correct without large directory responses.
       let tree = await readRemoteTree(config.branch);
       for (const segment of segments) {
         const directory = tree.tree.find(item => item && item.type === 'tree' && item.path === segment);
@@ -664,15 +661,8 @@ function createRepositoryBridge(deps) {
         }
         tree = await readRemoteTree(directory.sha);
       }
-      return tree.tree
-        .filter(item => item && item.type === 'blob' && typeof item.path === 'string')
-        .map(item => ({
-          name: item.path,
-          path: relativePath + '/' + item.path,
-          type: 'file',
-          sha: item.sha,
-          size: item.size
-        }));
+      return tree.tree.filter(item => item && item.type === 'blob' && typeof item.path === 'string')
+        .map(item => ({ name: item.path, path: relativePath + '/' + item.path, type: 'file', sha: item.sha, size: item.size }));
     } catch (error) {
       if (isNotFound(error)) return [];
       throw error;
@@ -680,6 +670,13 @@ function createRepositoryBridge(deps) {
   }
 
   async function writeRemoteJson(relativePath, value, existingSha = null, createOnly = false) {
+    if (mailbox) {
+      if (relativePath.startsWith('bridge/results/') &&
+          Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESULT_BYTES) {
+        throw new Error('Result exceeded the OneDrive mailbox inline JSON limit.');
+      }
+      return mailbox.writeJson(relativePath, value, existingSha, createOnly);
+    }
     const config = currentConfig();
     const body = {
       message: '[local bridge] ' + relativePath,
@@ -695,19 +692,10 @@ function createRepositoryBridge(deps) {
       return { ok: true, sha: response.result && response.result.content && response.result.content.sha };
     } catch (error) {
       if (createOnly && isConflict(error)) {
-        // GitHub can return HTTP 422 for causes other than an already-existing
-        // file. Treat it as a create-only conflict only if the exact target can
-        // be read back; otherwise surface the original write failure so result
-        // publication is retried/reported instead of marking a missing result
-        // as present in the in-memory result index.
         let existing;
-        try {
-          existing = await readRemoteFile(relativePath);
-        } catch (verifyError) {
-          throw new Error(
-            'Create-only write for ' + relativePath + ' returned a conflict, but the existing file could not be verified: ' +
-            cleanError(verifyError.message)
-          );
+        try { existing = await readRemoteFile(relativePath); }
+        catch (verifyError) {
+          throw new Error('Create-only write for ' + relativePath + ' returned a conflict, but the existing file could not be verified: ' + cleanError(verifyError.message));
         }
         if (existing) return { ok: false, conflict: true, sha: existing.sha };
       }
@@ -801,14 +789,14 @@ function createRepositoryBridge(deps) {
   }
 
   async function readRemoteContent(relativePath) {
+    if (mailbox) return mailbox.readContent(relativePath);
     const config = currentConfig();
     try {
       const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
       const entry = response && response.result;
       if (!entry || entry.type !== 'file') throw new Error('GitHub returned an unexpected artifact file format.');
       const content = entry.encoding === 'base64' && typeof entry.content === 'string'
-        ? Buffer.from(entry.content.replace(/\\s/g, ''), 'base64')
-        : null;
+        ? Buffer.from(entry.content.replace(/\s/g, ''), 'base64') : null;
       return { content, sha: entry.sha || null, entry };
     } catch (error) {
       if (isNotFound(error)) return null;
@@ -817,52 +805,37 @@ function createRepositoryBridge(deps) {
   }
 
   async function writeRemoteContent(relativePath, content, message) {
+    if (mailbox) {
+      const stored = await mailbox.writeContent(relativePath, content, { createOnly: true, allowUnchanged: true });
+      if (stored && stored.conflict) throw new Error('Artifact path already exists with different content: ' + relativePath);
+      return stored;
+    }
     const config = currentConfig();
     const bytes = Buffer.isBuffer(content) ? content : Buffer.from(String(content), 'utf8');
     const contentHash = createHash('sha256').update(bytes).digest('hex');
-    const gitBlobSha = createHash('sha1')
-      .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
-      .update(bytes)
-      .digest('hex');
+    const gitBlobSha = createHash('sha1').update('blob ' + bytes.length + String.fromCharCode(0), 'utf8').update(bytes).digest('hex');
     const maxAttempts = 4;
     let existing = await readRemoteContent(relativePath);
-
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (existing) {
-        const existingHash = existing.content
-          ? createHash('sha256').update(existing.content).digest('hex')
-          : null;
+        const existingHash = existing.content ? createHash('sha256').update(existing.content).digest('hex') : null;
         if (existingHash === contentHash || (!existing.content && existing.sha === gitBlobSha)) {
           return { ok: true, unchanged: true, sha: existing.sha, bytes: bytes.length, sha256: contentHash };
         }
         throw new Error('Artifact path already exists with different content: ' + relativePath);
       }
-
       try {
         const response = await api('PUT', apiPath(relativePath), {
           message: message || '[local bridge] publish artifact ' + path.posix.basename(relativePath),
-          content: bytes.toString('base64'),
-          branch: config.branch
+          content: bytes.toString('base64'), branch: config.branch
         });
-        return {
-          ok: true,
-          sha: response.result && response.result.content && response.result.content.sha || null,
-          bytes: bytes.length,
-          sha256: contentHash
-        };
+        return { ok: true, sha: response.result && response.result.content && response.result.content.sha || null, bytes: bytes.length, sha256: contentHash };
       } catch (error) {
-        // The target is immutable and request-scoped. A 409 can mean that an
-        // unrelated concurrent mailbox write advanced the branch head. Verify
-        // the exact target first; accept only the identical artifact, otherwise
-        // retry the create only while the target is still absent.
         let reread;
-        try {
-          reread = await readRemoteContent(relativePath);
-        } catch (verifyError) {
-          throw new Error(
-            'Artifact upload for ' + relativePath + ' failed and the target state could not be verified: ' +
-            cleanError(verifyError.message) + ' (original write error: ' + cleanError(error.message) + ')'
-          );
+        try { reread = await readRemoteContent(relativePath); }
+        catch (verifyError) {
+          throw new Error('Artifact upload for ' + relativePath + ' failed and the target state could not be verified: ' +
+            cleanError(verifyError.message) + ' (original write error: ' + cleanError(error.message) + ')');
         }
         if (reread) {
           const rereadHash = reread.content ? createHash('sha256').update(reread.content).digest('hex') : null;
@@ -876,7 +849,6 @@ function createRepositoryBridge(deps) {
         existing = null;
       }
     }
-
     throw new Error('Artifact upload exhausted branch-conflict retries: ' + relativePath);
   }
 
@@ -899,6 +871,16 @@ function createRepositoryBridge(deps) {
       throw new Error('Filesystem index exceeds the 4 MiB repository publishing limit.');
     }
     const relativePath = 'bridge/context/filesystem-index.md';
+    if (mailbox) {
+      const existing = await readRemoteContent('bridge/context/filesystem-index.md');
+      if (existing && existing.content && existing.content.equals(bytes)) {
+        return { ok: true, unchanged: true, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
+      }
+      const saved = await mailbox.writeContent('bridge/context/filesystem-index.md', bytes, {
+        createOnly: false, expectedSha: existing && existing.sha || null
+      });
+      return { ok: true, unchanged: false, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: saved.sha256 };
+    }
     const contentHash = createHash('sha256').update(bytes).digest('hex');
     const gitBlobSha = createHash('sha1')
       .update('blob ' + bytes.length + String.fromCharCode(0), 'utf8')
@@ -972,14 +954,18 @@ function createRepositoryBridge(deps) {
     };
     return {
       path: relativePath,
-      url: 'https://github.com/' + config.owner + '/' + config.repo + '/blob/' +
-        encodeURIComponent(config.branch) + '/' + relativePath.split('/').map(encodeURIComponent).join('/'),
+      ...(mailbox ? { onedrive_path: 'Bridge/runtime/' + relativePath } : {
+        url: 'https://github.com/' + config.owner + '/' + config.repo + '/blob/' +
+          encodeURIComponent(config.branch) + '/' + relativePath.split('/').map(encodeURIComponent).join('/'),
+        github_blob_sha: stored.sha,
+        repository_visibility: publicRepository === true ? 'public' : publicRepository === false ? 'private' : 'unknown'
+      }),
       media_type: mediaTypes[extension] || 'application/octet-stream',
       bytes: stored.bytes,
       sha256: stored.sha256,
-      github_blob_sha: stored.sha,
-      repository_visibility: publicRepository === true ? 'public' : publicRepository === false ? 'private' : 'unknown',
-      note: 'The full file is stored in the shared repository; ChatGPT should retrieve this path through its GitHub integration.'
+      note: mailbox
+        ? 'The full file is stored in OneDrive at Bridge/runtime/' + relativePath + '; retrieve it through the connected OneDrive folder.'
+        : 'The full file is stored in the shared repository; ChatGPT should retrieve this path through its GitHub integration.'
     };
   }
 
@@ -1241,6 +1227,16 @@ function createRepositoryBridge(deps) {
   }
 
   async function commitMailboxDeletions(files) {
+    if (mailbox) {
+      const unique = new Map();
+      for (const item of files || []) {
+        if (!item || !isSafeMailboxCleanupPath(item.path) || typeof item.sha !== 'string' || !item.sha) {
+          throw new Error('OneDrive mailbox cleanup encountered an unsafe path or missing content hash.');
+        }
+        unique.set(item.path, item.sha);
+      }
+      return mailbox.deleteFiles([...unique].map(([path, sha]) => ({ path, sha })));
+    }
     const unique = new Map();
     for (const item of files) {
       if (!item || !isSafeMailboxCleanupPath(item.path) || typeof item.sha !== 'string' || !item.sha) {
@@ -2635,7 +2631,7 @@ function createRepositoryBridge(deps) {
   }
 
   async function pollRecentRequestCommits() {
-    if (!running || knownResultFiles === null) return;
+    if (mailbox || !running || knownResultFiles === null) return;
     if (requestCommitProbeInFlight) return requestCommitProbePromise;
     requestCommitProbeInFlight = true;
     const startedAt = Date.now();
@@ -2730,7 +2726,7 @@ function createRepositoryBridge(deps) {
     }
   }
   function startRequestCommitProbe() {
-    if (!running) return;
+    if (mailbox || !running) return;
     if (requestCommitProbeTimer) clearInterval(requestCommitProbeTimer);
     void pollRecentRequestCommits();
     requestCommitProbeTimer = setInterval(() => {
@@ -2772,7 +2768,8 @@ function createRepositoryBridge(deps) {
           // awaiting the path-filtered commit cursor on every cycle. A slow
           // commit query previously blocked this timer and delayed the 1.5-second
           // recovery interval. Skip network I/O between tree scans.
-          const reconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS);
+          const configuredReconciliationInterval = Math.max(1, Number(requestReconciliationIntervalMs) || DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS);
+          const reconciliationInterval = mailbox ? Math.min(2000, configuredReconciliationInterval) : configuredReconciliationInterval;
           const reconciliationDue = Date.now() - lastRequestTreeReconcileAt >= reconciliationInterval;
           if (reconciliationDue) {
             const scanStartedAt = Date.now();
@@ -2849,7 +2846,7 @@ function createRepositoryBridge(deps) {
     const staleProbe = requestCommitProbeInFlight && Number.isFinite(requestCommitProbeStartedAt) &&
       now - requestCommitProbeStartedAt >= operationRecoveryWindowMs;
     const missingPollTimer = !timer;
-    const missingProbeTimer = !requestCommitProbeTimer;
+    const missingProbeTimer = !mailbox && !requestCommitProbeTimer;
 
     if (stalePoll) {
       // Detach the old promise. Its identity-checked finally block can no longer
@@ -2890,25 +2887,25 @@ function createRepositoryBridge(deps) {
   async function start() {
     if (running) return stateSnapshot();
     const config = currentConfig();
-    if (!config.owner || !config.repo) throw new Error('Configure a shared GitHub repository before starting the bridge.');
-    const auth = await githubAuth.getState();
-    if (!auth.authenticated) throw new Error('Sign in to GitHub in Accounts before starting the repository bridge.');
-    const metadata = await api('GET', '/repos/' + config.owner + '/' + config.repo);
-    publicRepository = metadata.result.private === false;
-    if (publicRepository && !config.allowPublicMailbox) {
-      throw new Error('The configured repository is public. Enable the explicit public-mailbox warning checkbox before allowing local results to be committed there.');
+    if (mailbox) {
+      await mailbox.ensureReady();
+      publicRepository = null;
+    } else {
+      if (!config.owner || !config.repo) throw new Error('Configure a shared GitHub repository before starting the bridge.');
+      const auth = await githubAuth.getState();
+      if (!auth.authenticated) throw new Error('Sign in to GitHub in Accounts before starting the repository bridge.');
+      const metadata = await api('GET', '/repos/' + config.owner + '/' + config.repo);
+      publicRepository = metadata.result.private === false;
+      if (publicRepository && !config.allowPublicMailbox) {
+        throw new Error('The configured repository is public. Enable the explicit public-mailbox warning checkbox before allowing local results to be committed there.');
+      }
     }
-    // Start mailbox polling without preflight scans or placeholder writes across
-    // every optional folder. The poll itself is the authoritative reachability test.
-    // Optional directories (including bridge/agents) are created automatically by
-    // GitHub when the first real record is written; they are not startup prerequisites.
     running = true;
     lastError = '';
     announce();
-    // The first poll publishes the initial heartbeat; avoid a duplicate GET+PUT.
     await pollOnce();
     void refreshAgentDirectory(true);
-    startRequestCommitProbe();
+    if (!mailbox) startRequestCommitProbe();
     scheduleNextPoll();
     return stateSnapshot();
   }
