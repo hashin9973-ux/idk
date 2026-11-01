@@ -39,10 +39,11 @@ function validateRelativePath(relativePath) {
   if (ROOT_MARKDOWN_FILES.has(relativePath)) return [relativePath];
   const parts = relativePath.split('/');
   const rootFolder = BRIDGE_DIRECTORIES.find(folder => parts[0] === folder);
-  if (!rootFolder || parts.length < 2 || parts.some(part =>
+  if (!rootFolder || parts.length < 1 || parts.some(part =>
     !part || part === '.' || part === '..' || !/^[A-Za-z0-9_. -]+$/.test(part))) {
     throw new Error('Mailbox paths must use one of the five allowed Bridge folders or four root Markdown files.');
   }
+  if (parts.length === 1) return parts;
   if (!AGENT_ID_PATTERN.test(parts[1])) throw new Error('Mailbox records must be partitioned by a valid agent ID.');
   if (parts.length > 3) throw new Error('Nested mailbox infrastructure paths are not permitted.');
   if (parts.length === 3 && !parts[2]) throw new Error('Mailbox file name is required.');
@@ -433,7 +434,7 @@ function createOneDriveMailbox({
     return {
       configured: Boolean(root),
       rootPath: root || '',
-      mailboxPath: root || '',
+      runtimePath: root || '',\n      mailboxPath: root || '',
       transport: 'onedrive-synced-folder',
       cloudPath: 'Bridge',
       status: root ? 'configured' : 'not_configured'
