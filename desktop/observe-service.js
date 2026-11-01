@@ -32,7 +32,6 @@ function safeText(value, limit = 500) {
 
 function createObserveService(deps = {}) {
   const {
-    githubAuth,
     mailbox = null,
     captureScreenshot,
     fingerprintScreenshot,
@@ -133,7 +132,7 @@ function createObserveService(deps = {}) {
     } finally {
       publishInFlight = false;
       if (enabled && !disposed && publicationRevision > publishedRevision) {
-        // Coalesce changes that arrived while the last GitHub update was in flight.
+        // Coalesce changes that arrived while the last OneDrive mailbox update was in flight.
         void publishLatestWhenDue();
       }
     }
