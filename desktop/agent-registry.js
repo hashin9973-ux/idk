@@ -48,32 +48,35 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   function timestamp() { return new Date(clock()).toISOString(); }
   function seatPath(agentId) {
     if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid Agent ID.');
-    return 'bridge/agents/' + agentId + '.json';
+    return 'local/agents/' + agentId + '.json';
   }
   function sessionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id. Call session_start to create a session.');
-    return 'bridge/sessions/' + sessionId + '.json';
+    return 'local/sessions/' + sessionId + '.json';
   }
   function revocationPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
-    return 'bridge/revoked-sessions/' + sessionId + '.json';
+    return 'local/revoked-sessions/' + sessionId + '.json';
   }
   function evictionPath(sessionId) {
     if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid session_id.');
-    return 'bridge/evicted-sessions/' + sessionId + '.json';
+    return 'local/evicted-sessions/' + sessionId + '.json';
   }
-  function inboxPath(sessionId) {
-    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
-    return 'bridge/agent-messages/' + sessionId;
+  function inboxPath(agentId) {
+    if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid recipient agent ID.');
+    return 'messages/' + agentId;
   }
-  function messagePath(sessionId, messageId) {
+  function messagePath(agentId, messageId) {
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
-    return inboxPath(sessionId) + '/' + messageId + '.json';
+    return inboxPath(agentId) + '/' + messageId + '.json';
   }
-  function messageReceiptPath(sessionId, messageId) {
-    if (typeof sessionId !== 'string' || !SESSION_ID_PATTERN.test(sessionId)) throw new Error('Invalid recipient session ID.');
+  function messageReceiptPath(agentId, messageId) {
+    if (typeof agentId !== 'string' || !AGENT_ID_PATTERN.test(agentId)) throw new Error('Invalid recipient agent ID.');
     if (!MESSAGE_ID_PATTERN.test(String(messageId || ''))) throw new Error('Invalid message_id.');
-    return 'bridge/agent-message-receipts/' + sessionId + '/' + messageId + '.json';
+    return inboxPath(agentId) + '/' + messageId + '.read.json';
+  }
+  function messageOwnerAgentId(record) {
+    return record && record.recipient_agent_id === 'user' ? record.sender_agent_id : record && record.recipient_agent_id;
   }
 
   async function withLock(key, operation) {
@@ -232,7 +235,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function listSeatIds() {
-    const entries = await listFolder('bridge/agents');
+    const entries = await listFolder('local/agents');
     return [...new Set(entries
       .filter(item => item && typeof item.name === 'string')
       .map(item => item.name.split('/').pop())
@@ -298,7 +301,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       throw new Error('The session registration cap must be a positive integer.');
     }
     const evictedSessions = [];
-    let names = [...new Set((await listFolder('bridge/sessions'))
+    let names = [...new Set((await listFolder('local/sessions'))
       .map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
 
@@ -438,7 +441,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
 
       if (names.length < maxSessions) break;
       if (rescan) {
-        names = [...new Set((await listFolder('bridge/sessions'))
+        names = [...new Set((await listFolder('local/sessions'))
           .map(item => String(item && (item.name || item.path) || '').split('/').pop())
           .filter(name => /^session-[a-f0-9]{32}[.]json$/.test(name)))];
         continue;
@@ -807,7 +810,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
       deletedRequests++;
     }
 
-    const sessionEntries = await listFolder('bridge/sessions');
+    const sessionEntries = await listFolder('local/sessions');
     const recipientSessions = [...new Set(sessionEntries.map(item => String(item && (item.name || item.path) || '').split('/').pop())
       .filter(name => /^session-[a-f0-9]{32}\.json$/.test(name)).map(name => name.slice(0, -5)))];
     if (!recipientSessions.includes(sessionId)) recipientSessions.push(sessionId);
@@ -1004,7 +1007,7 @@ function createAgentRegistry({ readRemoteFile, listFolder, writeRemoteJson, dele
   }
 
   async function writeMessage(recipientSessionId, record) {
-    const path = messagePath(recipientSessionId, record.message_id);
+    const path = messagePath(messageOwnerAgentId(record), record.message_id);
     const saved = await writeRemoteJson(path, record, null, true);
     if (!saved || !saved.ok) throw new Error('Message publication conflicted. Do not send a duplicate until the original message path has been checked.');
     return record;
