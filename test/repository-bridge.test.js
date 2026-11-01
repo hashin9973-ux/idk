@@ -34,6 +34,14 @@ async function waitFor(predicate, timeoutMs = 3000) {
   }
 }
 
+async function waitForAsync(predicate, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await predicate())) {
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for asynchronous mailbox work.');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
 const DEFAULT_TEST_SESSION_ID = 'session-' + 'c'.repeat(32);
 
 test('result sanitization redacts the active session workspace rather than only the global root', () => {
@@ -483,7 +491,7 @@ test('OneDrive local mailbox processes a request and writes claims, results and 
     const started = await bridge.start();
     assert.equal(started.transport, 'onedrive-synced-folder');
     assert.equal(started.running, true);
-    await waitFor(() => fs.access(path.join(runtime, 'bridge', 'results', requestId + '.json')).then(() => true).catch(() => false));
+    await waitForAsync(async () => Boolean(await mailbox.readJson('bridge/results/' + requestId + '.json')));
     const result = await mailbox.readJson('bridge/results/' + requestId + '.json');
     const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
     const state = await mailbox.readJson('bridge/state/windows-app.json');
