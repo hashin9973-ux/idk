@@ -132,36 +132,63 @@ async function readCompletion(response, onDelta) {
     const decoder = new TextDecoder();
     let buffer = '';
     let eventData = [];
+    let streamFinished = false;
+
     const dispatch = () => {
-      if (!eventData.length) return;
+      if (!eventData.length) return false;
       const raw = eventData.join('\n').trim();
       eventData = [];
-      if (!raw || raw === '[DONE]') return;
+      if (!raw) return false;
+      if (raw === '[DONE]') return true;
       let chunk;
       try { chunk = JSON.parse(raw); }
       catch { throw new Error('The API returned a malformed server-sent event.'); }
       consumeCompletionChunk(chunk, state, onDelta);
+      // Chat Completions emits finish_reason in the final choice chunk. Do not
+      // require the HTTP connection to close after the protocol is complete.
+      return Boolean(state.finishReason);
     };
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline;
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline).replace(/\r$/, '');
-        buffer = buffer.slice(newline + 1);
-        if (!line) { dispatch(); continue; }
-        if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart());
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline).replace(/\r$/, '');
+          buffer = buffer.slice(newline + 1);
+          if (!line) {
+            if (dispatch()) {
+              streamFinished = true;
+              break;
+            }
+            continue;
+          }
+          if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart());
+        }
+        if (streamFinished) break;
       }
+
+      if (!streamFinished) {
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+          const line = buffer.replace(/\r$/, '');
+          if (line.startsWith('data:')) {
+            eventData.push(line.slice(5).trimStart());
+          }
+        }
+        streamFinished = dispatch();
+      }
+    } finally {
+      if (streamFinished) {
+        try { await reader.cancel(); } catch {}
+      }
+      try { reader.releaseLock(); } catch {}
     }
-    buffer += decoder.decode();
-    if (buffer.trim()) {
-      const line = buffer.replace(/\r$/, '');
-      if (line.startsWith('data:')) eventData.push(line.slice(5).trimStart());
-    }
-    dispatch();
     return state;
   }
+
   const body = await response.json();
   consumeCompletionChunk(body, state, onDelta);
   if (!state.finishReason) {
@@ -170,7 +197,6 @@ async function readCompletion(response, onDelta) {
   }
   return state;
 }
-
 function trimHistory(messages) {
   if (!Array.isArray(messages) || messages.length <= MAX_STORED_MESSAGES) {
     return Array.isArray(messages) ? messages : [];
