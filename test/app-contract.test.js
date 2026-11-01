@@ -125,6 +125,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
 test('dashboard is a minimal OneDrive and worker status window', () => {
   const html = read('desktop', 'index.html');
   const renderer = read('desktop', 'renderer.js');
+  const dashboardRenderer = read('desktop', 'dashboard-renderer.js');
   const styles = read('desktop', 'styles.css');
   const main = read('desktop', 'main.js');
   for (const id of ['onedrive-row', 'onedrive-choose', 'onedrive-dot', 'onedrive-status', 'worker-dot', 'worker-status', 'workspace-row', 'workspace-dot', 'workspace-status', 'auto-accept-row', 'auto-accept-dot', 'auto-accept-status', 'observe-row', 'observe-dot', 'observe-status', 'observe-fps', 'vision-row', 'vision-dot', 'vision-status', 'vision-signin', 'vision-paste-url', 'vision-manual-panel', 'vision-endpoint-url', 'vision-endpoint-connect', 'vision-endpoint-cancel', 'vision-setup-check', 'vision-setup-detail', 'vision-mailbox-detail', 'vision-colab-detail', 'vision-model-detail', 'vision-message', 'open-dashboard', 'minimize', 'quit']) {
@@ -149,7 +150,7 @@ test('dashboard is a minimal OneDrive and worker status window', () => {
   assert.match(renderer, /Mailbox transport error:/);
   assert.match(renderer, /Recent tool\/result issue \(worker still reachable\):/);
   assert.match(renderer, /windowsBridge\.minimizeToTray/);
-  assert.match(renderer, /windowsBridge\.startGitHubLogin/);
+  assert.match(dashboardRenderer, /api\.startGitHubLogin/);
   assert.match(renderer, /windowsBridge\.setAutoAcceptAll/);
   assert.match(renderer, /windowsBridge\.selectWorkspace/);
   assert.match(renderer, /windowsBridge\.getVisionStatus/);
@@ -248,7 +249,7 @@ test('main process preserves optional GitHub login separately from OneDrive work
   assert.doesNotMatch(visionStatusHandler, /githubAuth\.getState|githubState\.authenticated/);
   assert.match(connectColabHandler, /return visionService\.connectColab/);
   assert.doesNotMatch(connectColabHandler, /githubAuth\.getState|visionService\.setupCheck|mailboxCheck/);
-  assert.match(main, /visionService\.setupCheck\(githubState\)/);
+  assert.match(main, /return visionService\.setupCheck\(\)/);
   assert.match(main, /vision_activated: false/);
   assert.match(main, /startGitHubCliLogin/);
   assert.match(main, /githubAuth\.importToken/);
@@ -347,7 +348,7 @@ test('desktop shell, tray, and IPC controls initialize before workspace services
   assert.match(main, /ipcRegistered = true/);
 });
 
-test('repository mailbox has explicit request, result, claim and heartbeat paths', () => {
+test('OneDrive mailbox has explicit request, result, claim and heartbeat paths', () => {
   const bridge = read('desktop', 'repository-bridge.js');
   assert.match(bridge, /chatgpt-local-repo-bridge\/v1/);
   assert.match(bridge, /chatgpt-local-repo-result\/v1/);
@@ -358,8 +359,9 @@ test('repository mailbox has explicit request, result, claim and heartbeat paths
   assert.match(bridge, /DEFAULT_INTERVAL_MS = 1000/);
   assert.match(bridge, /needs_manual_recovery/);
   assert.match(bridge, /publishState/);
-  assert.match(bridge, /allowPublicMailbox/);
-  assert.match(bridge, /public-mailbox warning checkbox/i);
+  assert.match(bridge, /onedrive-synced-folder/);
+  assert.match(bridge, /mailbox\.ensureReady\(\)/);
+  assert.match(bridge, /GitHub mailbox API access is disabled/);
   assert.match(bridge, /session_start/);
   assert.match(bridge, /agent_status/);
   assert.match(bridge, /send_agent_message/);
