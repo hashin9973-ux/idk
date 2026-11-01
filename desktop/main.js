@@ -1582,6 +1582,63 @@ function setAutoConnectionStatus(status, error = '') {
   if (repositoryBridge) broadcastBridgeState(repositoryBridge.getState());
 }
 
+async function attemptAutoConnect() {
+  if (!repositoryBridge || !oneDriveMailbox || autoConnectInFlight) return;
+  const initial = repositoryBridge.getState();
+  if (!initial.configured) {
+    setAutoConnectionStatus('setup', 'Select the local OneDrive-synced Bridge/runtime folder in the app settings.');
+    return;
+  }
+  if (initial.running) {
+    const recovery = typeof repositoryBridge.recoverStalledPolling === 'function'
+      ? repositoryBridge.recoverStalledPolling() : { recovered: false };
+    setAutoConnectionStatus(resolveMailboxWorkerStatus(initial), initial.lastPollError || initial.lastError || '');
+    if (!recovery.recovered) {
+      void repositoryBridge.pollOnce().catch(error => {
+        const message = String(error && error.message || error);
+        setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
+      });
+    }
+    return;
+  }
+
+  autoConnectInFlight = true;
+  try {
+    setAutoConnectionStatus('connecting', '');
+    const started = await repositoryBridge.start();
+    setAutoConnectionStatus(resolveMailboxWorkerStatus(started), started.lastPollError || started.lastError || '');
+    if (started.running && latestFilesystemIndexSnapshot) {
+      void repositoryBridge.publishFilesystemIndex(latestFilesystemIndexSnapshot).then(() => {
+        filesystemIndexSyncError = '';
+      }).catch(error => {
+        filesystemIndexSyncError = String(error && error.message || error).slice(0, 500);
+        console.warn('Could not publish filesystem index:', filesystemIndexSyncError);
+      });
+    }
+    broadcastOneDriveState(oneDriveMailbox.getState());
+  } catch (error) {
+    const message = String(error && error.message || error);
+    const stillRunning = Boolean(repositoryBridge && repositoryBridge.getState().running);
+    setAutoConnectionStatus(isNetworkError(message) ? (stillRunning ? 'reconnecting' : 'offline') : 'attention', message);
+  } finally {
+    autoConnectInFlight = false;
+  }
+}
+
+function retryConnectionNow() {
+  if (!repositoryBridge || !oneDriveMailbox) return { scheduled: false };
+  const state = repositoryBridge.getState();
+  if (state.running) {
+    void repositoryBridge.pollOnce().catch(error => {
+      const message = String(error && error.message || error);
+      setAutoConnectionStatus(isNetworkError(message) ? 'reconnecting' : 'attention', message);
+    });
+  } else {
+    void attemptAutoConnect();
+  }
+  return { scheduled: true };
+}
+
 function startAutoConnectLoop() {
   if (autoConnectTimer) clearInterval(autoConnectTimer);
   void attemptAutoConnect();
