@@ -47,7 +47,14 @@ async function readResponse(response) {
   if (Buffer.byteLength(text, 'utf8') > MAX_JSON_BYTES) {
     throw new GraphError('Microsoft Graph response exceeded the 8 MiB limit.', { status: response.status });
   }
-  if (!text) return {};
+  if (!text) {
+    if (!response.ok) throw new GraphError(response.statusText || 'Microsoft Graph request failed.', {
+      status: response.status,
+      requestId: response.headers && response.headers.get('request-id'),
+      retryAfterMs: retryDelay(response)
+    });
+    return {};
+  }
   let value;
   try { value = JSON.parse(text); } catch {
     throw new GraphError('Microsoft Graph returned invalid JSON.', { status: response.status });
