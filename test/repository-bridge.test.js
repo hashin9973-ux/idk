@@ -518,6 +518,13 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     assert.equal(result.status, 'completed');
     assert.ok(await mailbox.readJson('claims/' + agentId + '/' + requestId + '.json'));
     assert.equal(result.result.result.platform, 'win32');
+    const status = await mailbox.readContent('STATUS.md');
+    const statusText = status.content.toString('utf8');
+    assert.match(statusText, /^# Windows Bridge Status/m);
+    assert.match(statusText, /Agent inventory/);
+    assert.match(statusText, new RegExp(agentId));
+    assert.doesNotMatch(statusText, new RegExp(sessionId));
+    assert.match(statusText, /Registered tools/);
 
     const rootEntries = (await fs.readdir(runtime)).sort();
     const allowed = [...BRIDGE_DIRECTORIES, 'AGENT.md', 'TOOLS.md', 'STATUS.md'].sort();
