@@ -351,39 +351,35 @@ test('desktop shell, tray, and IPC controls initialize before workspace services
   assert.match(main, /ipcRegistered = true/);
 });
 
-test('OneDrive mailbox has explicit request, result, claim and heartbeat paths', () => {
+test('OneDrive mailbox uses flat agent-partitioned paths and four root Markdown files', () => {
   const bridge = read('desktop', 'repository-bridge.js');
-  assert.match(bridge, /chatgpt-local-repo-bridge\/v1/);
-  assert.match(bridge, /chatgpt-local-repo-result\/v1/);
-  assert.match(bridge, /bridge\/requests\//);
-  assert.match(bridge, /bridge\/results\//);
-  assert.match(bridge, /bridge\/claims\//);
-  assert.match(bridge, /bridge\/state\/windows-app\.json/);
+  const mailbox = read('desktop', 'onedrive-mailbox.js');
+  assert.match(bridge, /chatgpt-local-repo-bridge\\/v1/);
+  assert.match(bridge, /chatgpt-local-repo-result\\/v1/);
+  assert.match(bridge, /mailboxRequestPath = \\(agentId, requestId\\) => mailbox[\\s\\S]*?'request\\//);
+  assert.match(bridge, /mailboxClaimPath = requestId => mailbox[\\s\\S]*?'claims\\//);
+  assert.match(bridge, /mailboxResultPath = requestId => mailbox[\\s\\S]*?'result\\//);
+  assert.match(bridge, /requestMailboxAgents/);
+  assert.match(bridge, /local\\/sessions/);
+  assert.match(bridge, /upsertRemoteContent\\('AGENT\\.md'/);
+  assert.match(bridge, /upsertRemoteContent\\('TOOLS\\.md'/);
+  assert.match(bridge, /upsertRemoteContent\\('STATUS\\.md'/);
+  assert.match(bridge, /sandbox storage\\//);
   assert.match(bridge, /DEFAULT_INTERVAL_MS = 1000/);
   assert.match(bridge, /needs_manual_recovery/);
   assert.match(bridge, /publishState/);
   assert.match(bridge, /onedrive-synced-folder/);
-  assert.match(bridge, /mailbox\.ensureReady\(\)/);
+  assert.match(bridge, /mailbox\\.ensureReady\\(\\)/);
   assert.match(bridge, /GitHub mailbox API access is disabled/);
   assert.match(bridge, /session_start/);
   assert.match(bridge, /agent_status/);
   assert.match(bridge, /send_agent_message/);
-  assert.match(bridge, /read_agent_messages/);
-  assert.match(bridge, /reply_to_agent_message/);
-  assert.match(bridge, /SESSION_ID_REQUIRED/);
-  const agentRegistry = read('desktop', 'agent-registry.js');
-  assert.match(agentRegistry, /AGENT_RECORD_PROTOCOL/);
-  assert.match(agentRegistry, /AGENT_ACTIVITY_RECENCY_WINDOW_MS/);
-  assert.match(agentRegistry, /SESSION_RECORD_PROTOCOL/);
-  const toolBridge = read('desktop', 'tool-bridge.js');
-  assert.ok(toolBridge.includes("session_start: ['label', 'workspace_suggestion']"));
-  assert.ok(toolBridge.includes("agent_status: ['agent_id']"));
-  assert.ok(toolBridge.includes("send_agent_message: ['to_agent_id', 'to_session_id', 'subject', 'message']"));
-  assert.ok(toolBridge.includes("read_agent_messages: ['unread_only', 'limit']"));
-  assert.ok(toolBridge.includes("reply_to_agent_message: ['message_id', 'message']"));
-  assert.match(toolBridge, /catalog_version = 5/);
-  assert.match(toolBridge, /exec_command/);
+  assert.deepEqual(require('../desktop/onedrive-mailbox').BRIDGE_DIRECTORIES,
+    ['request', 'claims', 'result', 'messages', 'sandbox storage']);
+  assert.match(mailbox, /ROOT_MARKDOWN_FILES/);
+  assert.match(mailbox, /Nested mailbox infrastructure paths are not permitted/);
 });
+
 
 test('mailbox execution stays separate from ChatGPT messaging transport', () => {
   const bridge = read('desktop', 'tool-bridge.js');
