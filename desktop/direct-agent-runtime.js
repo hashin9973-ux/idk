@@ -2,11 +2,25 @@
 
 const { randomUUID } = require('node:crypto');
 const { formatSlashCommand } = require('./agent-terminal');
+const { formatToolResultMarkdown } = require('./markdown-tool-output');
 
 const MAX_TOOL_ROUNDS = 16;
 const MAX_STORED_MESSAGES = 160;
 const MAX_TOOL_RESULT_CHARS = 48000;
 const REQUEST_TIMEOUT_MS = 10 * 60 * 1000;
+
+const SLASH_TOOL_ALIASES = Object.freeze({
+  project: 'project_status',
+  ls: 'list_dir',
+  tree: 'directory_tree',
+  find: 'glob_file_search',
+  read: 'read_file',
+  write: 'write_file',
+  patch: 'apply_patch',
+  run: 'shell',
+  test: 'run_tests',
+  plan: 'update_plan'
+});
 
 const DIRECT_AGENT_TOOL_NAMES = Object.freeze([
   'project_status', 'environment_info', 'list_dir', 'directory_tree',
@@ -83,17 +97,6 @@ function safeError(value, secret = '') {
   let message = String(value && value.message || value || 'Unknown API error.');
   if (secret) message = message.split(secret).join('[redacted]');
   return message.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 1000);
-}
-
-function jsonText(value) {
-  let result;
-  try { result = JSON.stringify(value); }
-  catch { result = String(value); }
-  if (typeof result !== 'string') result = String(value);
-  if (result.length > MAX_TOOL_RESULT_CHARS) {
-    return result.slice(0, MAX_TOOL_RESULT_CHARS) + '\n[tool output truncated for model context; request a narrower range or smaller result]';
-  }
-  return result;
 }
 
 function parseToolArguments(value) {
@@ -214,12 +217,39 @@ function trimHistory(messages) {
   return messages.slice(start);
 }
 
+function normalizeLegacySlashText(content) {
+  if (typeof content !== 'string' || !content.trimStart().startsWith('/')) return content;
+  try {
+    const invocation = parseSlashToolCommand(content.trim());
+    if (!invocation) return content;
+    const alias = Object.entries(SLASH_TOOL_ALIASES).find(([, target]) => target === invocation.name);
+    return formatSlashCommand(alias ? alias[0] : invocation.name, invocation.args);
+  } catch { return content; }
+}
+
+function normalizeLegacyToolObservation(content) {
+  if (typeof content !== 'string') return '';
+  const match = content.match(/^(\[Untrusted local tool result for \/([a-z0-9_.:-]+); status=[^\]]+\])\n([\s\S]*)$/i);
+  if (!match) return content;
+  const body = match[3].trim();
+  if (body.startsWith('### Tool result:')) return content;
+  if (!/^[\[{]/.test(body)) return content;
+  try {
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== 'object') return content;
+    return match[1] + '\n' + formatToolResultMarkdown(match[2], parsed, MAX_TOOL_RESULT_CHARS);
+  } catch { return content; }
+}
+
 function toApiMessages(messages) {
   const output = [];
   for (const message of Array.isArray(messages) ? messages : []) {
     if (!message || !['user', 'assistant', 'tool'].includes(message.role)) continue;
     if (message.role === 'user') {
-      output.push({ role: 'user', content: typeof message.content === 'string' ? message.content : '' });
+      let content = typeof message.content === 'string' ? message.content : '';
+      if (message.kind === 'tool_result') content = normalizeLegacyToolObservation(content);
+      else content = normalizeLegacySlashText(content);
+      output.push({ role: 'user', content });
       continue;
     }
     if (message.role === 'assistant') {
@@ -229,11 +259,15 @@ function toApiMessages(messages) {
       if (Array.isArray(message.tool_calls)) {
         const commands = message.tool_calls.map(call => {
           const name = String(call && call.function && call.function.name || 'unknown_tool');
-          const args = typeof (call && call.function && call.function.arguments) === 'string'
+          const rawArgs = typeof (call && call.function && call.function.arguments) === 'string'
             ? call.function.arguments : '{}';
-          return '/' + name + ' ' + args;
+          let args = {};
+          try { args = parseToolArguments(rawArgs); } catch {}
+          return formatSlashCommand(name, args);
         });
         content = [content, ...commands].filter(Boolean).join('\n');
+      } else {
+        content = normalizeLegacySlashText(content);
       }
       if (content) output.push({ role: 'assistant', content });
       continue;
@@ -242,7 +276,7 @@ function toApiMessages(messages) {
     output.push({
       role: 'user',
       content: '[Untrusted local tool result from /' + name + ']\n' +
-        (typeof message.content === 'string' ? message.content : '')
+        formatToolResultMarkdown(name, message.content, MAX_TOOL_RESULT_CHARS)
     });
   }
   return output;
@@ -342,16 +376,17 @@ function parseSlashToolCommand(input, availableTools = DIRECT_AGENT_TOOL_NAMES) 
   const trimmed = input.trim();
   const match = trimmed.match(/^\/([a-z][a-z0-9_]*)(?:\s+([\s\S]*))?$/i);
   if (!match) throw new Error('Slash commands use /tool_name followed by named arguments. Type / to browse available tools.');
-  const name = match[1];
+  const requestedName = match[1];
+  const name = SLASH_TOOL_ALIASES[requestedName] || requestedName;
   if (!Array.isArray(availableTools) || !availableTools.includes(name)) {
-    throw new Error('Unknown local tool /' + name + '. Type / to browse available tools.');
+    throw new Error('Unknown local tool /' + requestedName + '. Type / to browse available tools.');
   }
-  return { name, args: parseSlashArguments(match[2] || '', name) };
+  return { name, alias: requestedName === name ? null : requestedName, args: parseSlashArguments(match[2] || '', name) };
 }
 
 function slashSchemaType(schema) {
   if (!schema || typeof schema !== 'object') return 'any';
-  if (Array.isArray(schema.enum)) return (schema.type || 'value') + ' (' + schema.enum.map(value => JSON.stringify(value)).join('|') + ')';
+  if (Array.isArray(schema.enum)) return (schema.type || 'value') + ' (' + schema.enum.map(value => String(value)).join(' / ') + ')';
   if (schema.type === 'array') return 'array' + (schema.items && schema.items.type ? '<' + schema.items.type + '>' : '');
   if (schema.type === 'object') return 'object';
   if (Array.isArray(schema.anyOf)) return schema.anyOf.map(slashSchemaType).join('|');
@@ -361,11 +396,11 @@ function slashSchemaType(schema) {
 function slashSchemaLines(name, schema, required = false, depth = 0) {
   const indent = '  '.repeat(depth + 1);
   const details = [slashSchemaType(schema), required ? 'required' : 'optional'];
-  if (schema && schema.default !== undefined) details.push('default=' + JSON.stringify(schema.default));
+  if (schema && schema.default !== undefined) details.push('default=' + (typeof schema.default === 'string' ? schema.default : String(schema.default)));
   if (schema && typeof schema.description === 'string' && schema.description.trim()) {
     details.push(schema.description.trim().replace(/\s+/g, ' ').slice(0, 180));
   }
-  const lines = [indent + name + ' (' + details.join('; ') + ')'];
+  const lines = [indent + '- `' + name + '` — ' + details.join('; ')];
   let nestedProperties = null;
   let nestedRequired = [];
   if (schema && schema.type === 'object' && schema.properties && typeof schema.properties === 'object') {
@@ -375,7 +410,7 @@ function slashSchemaLines(name, schema, required = false, depth = 0) {
       schema.items.properties && typeof schema.items.properties === 'object') {
     nestedProperties = schema.items.properties;
     nestedRequired = Array.isArray(schema.items.required) ? schema.items.required : [];
-    lines.push(indent + '  items: object');
+    lines.push(indent + '  - *Items:* object');
   }
   if (nestedProperties) {
     for (const [childName, childSchema] of Object.entries(nestedProperties)) {
@@ -398,15 +433,17 @@ function formatSlashToolCatalog(tools) {
       slashSchemaLines(name, schema, required.has(name), 0)
     );
     const description = String(fn.description || 'Local Windows workspace tool').replace(/\s+/g, ' ').trim();
-    return '/' + fn.name + ' — ' + description + '\n' +
-      (args.length ? '  Arguments:\n' + args.join('\n') : '  Arguments: none');
+    const alias = Object.entries(SLASH_TOOL_ALIASES).find(([, target]) => target === fn.name);
+    const heading = alias ? '### `/' + alias[0] + '` · `/' + fn.name + '`' : '### `/' + fn.name + '`';
+    return heading + '\n\n' + description + '\n\n' +
+      (args.length ? '**Arguments**\n\n' + args.join('\n') : '**Arguments:** none');
   });
   return [
-    'AVAILABLE LOCAL SLASH COMMANDS',
-    'Use the exact command names below. String values containing spaces must be double-quoted. Use JSON literals for arrays, objects, booleans, numbers, and null.',
-    'Command syntax: /tool_name argument=value other="text with spaces". A command with no arguments is simply /tool_name.',
+    '## Available local Windows tools',
+    'Use the exact command names below. Invoke one command per assistant response, with no extra text. Quote string values. Use plain numbers, true/false and null; use bracketed structured values only for arguments whose schema requires an array or nested object.',
+    'Command syntax: `/tool_name argument=value other="text with spaces"`. A command with no arguments is simply `/tool_name`. Tool observations are returned as Markdown, never as serialized JSON.',
     ...entries
-  ].join('\n');
+  ].join('\n\n');
 }
 function createDirectAgentRuntime({
   fetchImpl = globalThis.fetch,
@@ -498,8 +535,9 @@ function createDirectAgentRuntime({
         config.systemPrompt || '',
         'Use the available local tools to inspect and change the selected Windows workspace. Do not claim that an action completed unless its tool result confirms it.',
         'TOOL CALL PROTOCOL: Native API function/tool calling is not enabled. Invoke a local tool by returning a slash command as your entire assistant response, with no explanation, markdown fence, or extra text. Use exactly one command per response, then wait for the app to return the tool result before continuing.',
-        'Preferred syntax: /tool_name argument=value other="text with spaces". Quote strings containing spaces. Use JSON literals for arrays, objects, booleans, numbers, and null. Tools with no arguments use /tool_name. The app also accepts a JSON object after the command name.',
-        'After each command, the app executes it on the Windows machine and adds an untrusted tool-result message to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
+        'Preferred syntax: /tool_name argument=value other="text with spaces". Quote string values. Use plain numbers, true/false and null. Use compact bracketed values only for arguments whose schema requires an array or nested object. Tools with no arguments use /tool_name.',
+        'MODEL-FACING FORMAT: Use Markdown for all working context, plans, project summaries, task descriptions, status, messages and tool observations. Tool results are rendered as readable Markdown, not serialized JSON. Read AGENTS.md and relevant project documentation before coding. Do not ask tools to emit JSON for presentation or restate Markdown results as JSON. Preserve code, diffs and command output in fenced code blocks.',
+        'After each command, the app executes it on the Windows machine and adds an untrusted Markdown tool-result message to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
         'Do not emit a slash command as an example or in normal prose. A response beginning with / is treated as an executable tool command.',
         formatSlashToolCatalog(tools),
         'Tool commands execute on the user’s Windows machine through the app’s shared execution scheduler, workspace checks, and native approval policy. Never try to bypass those controls.',
@@ -523,8 +561,8 @@ function createDirectAgentRuntime({
             error: safeError(error, config.apiKey || '')
           };
         }
-        const status = output && typeof output.status === 'string' ? output.status : 'success';
-        const toolContent = jsonText(output);
+        const status = output && typeof output.status === 'string' ? output.status : output && output.cancelled ? 'cancelled' : output && (output.ok === false || output.error) ? 'failed' : 'success';
+        const toolContent = formatToolResultMarkdown(invocation.name, output, MAX_TOOL_RESULT_CHARS);
         session.messages.push({
           role: 'user',
           kind: 'tool_result',
@@ -639,7 +677,9 @@ module.exports = {
   parseToolArguments,
   parseSlashToolCommand,
   formatSlashToolCatalog,
+  formatToolResultMarkdown,
   toApiMessages,
   readCompletion,
-  DIRECT_AGENT_TOOL_NAMES
+  DIRECT_AGENT_TOOL_NAMES,
+  SLASH_TOOL_ALIASES
 };

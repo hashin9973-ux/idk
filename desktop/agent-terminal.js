@@ -5,7 +5,7 @@
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   if (root) root.AgentTerminal = api;
 })(typeof globalThis === 'object' ? globalThis : this, function createAgentTerminal() {
-  const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key)/i;
+  const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key|session[_-]?id)/i;
 
   function parseRecord(value) {
     if (value && typeof value === 'object' && !Array.isArray(value)) return value;
@@ -55,10 +55,14 @@
 
   function formatSlashCommand(tool, args) {
     const name = String(tool || 'unknown_tool').replace(/[^a-zA-Z0-9_.:-]/g, '_');
-    const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
-    const safe = redactValue(values);
-    const serialized = JSON.stringify(safe);
-    return '/' + name + (serialized && serialized !== '{}' ? ' ' + serialized : '');
+    const values = args && typeof args === 'object' && !Array.isArray(args) ? redactValue(args) : {};
+    const render = value => {
+      if (typeof value === 'string') return JSON.stringify(value);
+      if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value);
+      return JSON.stringify(value);
+    };
+    const argumentsText = Object.entries(values).map(([key, value]) => key + '=' + render(value)).join(' ');
+    return '/' + name + (argumentsText ? ' ' + argumentsText : '');
   }
 
   function formatRequestCommands(requestJson, fallbackTool) {

@@ -29,7 +29,7 @@ test('potential credentials are redacted from the display-only command', () => {
   const request = JSON.stringify({ tool: 'connect', args: { endpoint: 'https://example.invalid', api_key: 'never-display-this' } });
   const rendered = formatRequestCommands(request, 'connect');
   assert.match(rendered, /\[redacted\]/);
-  assert.doesNotMatch(rendered, /never-display-this/);
+  assert.doesNotMatch(rendered, /never-display-this|session-0123456789abcdef0123456789abcdef/);
 });
 
 test('result JSON is translated to ordinary output lines', () => {
@@ -49,9 +49,9 @@ test('nested sensitive values are redacted in the display-only command', () => {
 test('direct tool calls render in slash-command form with nested secrets redacted', () => {
   const rendered = require('../desktop/agent-terminal').formatSlashCommand('read_file', {
     path: 'src/main.js',
-    options: { api_key: 'never-display-this', include: ['a', 'b'] }
+    options: { api_key: 'never-display-this', session_id: 'session-0123456789abcdef0123456789abcdef', include: ['a', 'b'] }
   });
-  assert.equal(rendered, '/read_file {"path":"src/main.js","options":{"api_key":"[redacted]","include":["a","b"]}}');
+  assert.equal(rendered, '/read_file path="src/main.js" options={"api_key":"[redacted]","session_id":"[redacted]","include":["a","b"]}');
   assert.equal(require('../desktop/agent-terminal').formatSlashCommand('environment_info', {}), '/environment_info');
   assert.doesNotMatch(rendered, /never-display-this/);
 });

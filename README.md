@@ -4,6 +4,10 @@ A Windows desktop worker that lets your **existing ChatGPT conversation** inspec
 
 **The conversation stays human-facing. The only input placed into ChatGPT is what you type yourself.** The app never inserts environment dumps, command output, tool results, logs, or file contents into the ChatGPT composer or conversation. Regular local tools use the repository mailbox; optional vision screenshots and analysis travel directly between the app and Colab over a temporary authenticated HTTPS tunnel.
 
+## Local OpenAI-compatible and KoboldCpp agents
+
+The desktop app can host direct local/API-backed agent widgets using OpenAI-compatible Chat Completions endpoints or KoboldCpp. These agents use readable Markdown for tool catalogs and tool observations, with familiar slash commands such as `/project`, `/read`, `/tree`, `/run` and `/test`. Structured JSON remains only at the API and tool-argument boundaries that require it. See [Local model Markdown context](docs/LOCAL-MODEL-MARKDOWN-CONTEXT.md).
+
 ## Architecture
 
 ```text

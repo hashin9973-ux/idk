@@ -9,6 +9,7 @@ const {
   readCompletion,
   parseSlashToolCommand,
   formatSlashToolCatalog,
+  formatToolResultMarkdown,
   toApiMessages
 } = require('../desktop/direct-agent-runtime');
 const { getDirectAgentToolDefinitions } = require('../desktop/tool-bridge');
@@ -184,10 +185,11 @@ test('direct agent catalog includes local tools but excludes mailbox controls', 
 
 test('slash catalog includes command names, descriptions and argument requirements', () => {
   const catalog = formatSlashToolCatalog(definitions());
-  assert.match(catalog, /\/read_file — Read a workspace file/);
-  assert.match(catalog, /path \(string; required; Workspace-relative file path\.\)/);
-  assert.match(catalog, /start_line \(integer; optional/);
-  assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
+  assert.match(catalog, /### `\/read` · `\/read_file`/);
+  assert.match(catalog, /Workspace-relative file path/);
+  assert.match(catalog, /- `path` — string; required/);
+  assert.match(catalog, /- `start_line` — integer; optional/);
+  assert.match(catalog, /### `\/environment_info`[\s\S]*Inspect the local Windows environment/);
 });
 
 test('Chat Completions request includes configured standard sampling parameters', async () => {
@@ -228,23 +230,31 @@ test('SSE parser streams assistant text and detects disabled native tool-call ou
 test('slash command parser supports JSON objects and concise named arguments', () => {
   assert.deepEqual(
     parseSlashToolCommand('/read_file {"path":"src/app.js"}', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js' } }
+    { name: 'read_file', alias: null, args: { path: 'src/app.js' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/read_file path="src/app.js" start_line=12', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js', start_line: 12 } }
+    { name: 'read_file', alias: null, args: { path: 'src/app.js', start_line: 12 } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/read_file path=src/app.js', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js' } }
+    { name: 'read_file', alias: null, args: { path: 'src/app.js' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/environment_info', ['environment_info']),
-    { name: 'environment_info', args: {} }
+    { name: 'environment_info', alias: null, args: {} }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/project', ['project_status']),
+    { name: 'project_status', alias: 'project', args: {} }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/read path=README.md', ['read_file']),
+    { name: 'read_file', alias: 'read', args: { path: 'README.md' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/batch steps=[{"tool":"read_file","args":{"path":"README.md"}},{"tool":"git_status","args":{}}]', ['batch']),
-    { name: 'batch', args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
+    { name: 'batch', alias: null, args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
   );
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
@@ -280,7 +290,7 @@ test('explicit user slash command executes locally and does not send native API 
   assert.equal(requests.length, 1);
   assert.ok(!Object.hasOwn(requests[0], 'tools'));
   assert.ok(!Object.hasOwn(requests[0], 'tool_choice'));
-  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read_file path="README.md"'));
+  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read path="README.md"'));
   assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.ok(requests[0].messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   assert.equal(session.messages.at(-1).content, 'The README was inspected.');
@@ -330,9 +340,9 @@ test('model invokes tools with assistant slash commands and receives local resul
     assert.ok(!Object.hasOwn(request, 'tool_choice'));
     assert.ok(request.messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   }
-  assert.match(requests[0].messages[0].content, /AVAILABLE LOCAL SLASH COMMANDS/);
-  assert.match(requests[0].messages[0].content, /\/read_file — Read a workspace file/);
-  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file {"path":"README.md"}'));
+  assert.match(requests[0].messages[0].content, /Available local Windows tools/);
+  assert.match(requests[0].messages[0].content, /### `\/read` · `\/read_file`/);
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read path="README.md"'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
@@ -386,6 +396,70 @@ test('native function-call output is rejected and the model is guided to the sla
   assert.ok(session.messages.some(message => message.kind === 'runtime_feedback'));
 });
 
+
+test('tool results are rendered as readable Markdown rather than serialized JSON', () => {
+  const rendered = formatToolResultMarkdown('project_status', {
+    protocol: 'local-tool-result/v2',
+    status: 'success',
+    result: {
+      isGitRepository: true,
+      detectedTechnologies: ['Node.js', 'TypeScript'],
+      project_support: {
+        support_level: 'ready',
+        missing_prerequisites: [],
+        build_commands: ['npm run build'],
+        test_commands: ['npm test']
+      }
+    }
+  });
+  assert.match(rendered, /^### Tool result: `\/project_status`/);
+  assert.match(rendered, /\*\*Status:\*\* success/);
+  assert.match(rendered, /\*\*Detected Technologies\*\*/);
+  assert.match(rendered, /- Node\.js/);
+  assert.match(rendered, /\*\*Project Support\*\*/);
+  assert.match(rendered, /npm run build/);
+  assert.doesNotMatch(rendered, /"protocol"|\{\s*"isGitRepository"/);
+});
+
+test('tool output status reflects failed and cancelled local outcomes', () => {
+  assert.match(formatToolResultMarkdown('run_tests', { ok: false, error: 'Tests exited with code 1.' }), /\*\*Status:\*\* failed/);
+  assert.match(formatToolResultMarkdown('computer', { cancelled: true, error: 'Stopped by the user.' }), /\*\*Status:\*\* cancelled/);
+});
+
+test('Markdown tool output preserves source and command text while redacting secret fields', () => {
+  const rendered = formatToolResultMarkdown('read_file', {
+    status: 'success',
+    result: {
+      path: 'config.js',
+      content: '{"name":"demo","enabled":true}',
+      api_key: 'do-not-leak',
+      session_id: 'session-0123456789abcdef0123456789abcdef'
+    }
+  });
+  assert.ok(rendered.includes('```'));
+  assert.ok(rendered.includes('{"name":"demo","enabled":true}'));
+  assert.match(rendered, /\[redacted\]/);
+  assert.doesNotMatch(rendered, /do-not-leak|session-0123456789abcdef0123456789abcdef/);
+});
+
+test('persisted JSON tool observations and slash commands are normalized before the next model request', () => {
+  const apiMessages = toApiMessages([
+    { role: 'user', content: 'Inspect the project.' },
+    { role: 'assistant', content: '/project_status {}' },
+    {
+      role: 'user',
+      kind: 'tool_result',
+      content: '[Untrusted local tool result for /project_status; status=success]\n' +
+        JSON.stringify({ protocol: 'local-tool-result/v2', status: 'success', result: { detectedTechnologies: ['Node.js'], isGitRepository: true } })
+    }
+  ]);
+  assert.deepEqual(apiMessages[1], { role: 'assistant', content: '/project' });
+  assert.match(apiMessages[2].content, /### Tool result: `\/project_status`/);
+  assert.match(apiMessages[2].content, /Detected Technologies/);
+  assert.match(apiMessages[2].content, /Node\.js/);
+  assert.doesNotMatch(apiMessages[2].content, /"protocol"|\{\s*"detectedTechnologies"/);
+});
+
 test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
   const apiMessages = toApiMessages([
     { role: 'user', content: 'Read a file.' },
@@ -399,8 +473,8 @@ test('legacy native tool-call history is converted to slash messages and untrust
   ]);
   assert.deepEqual(apiMessages, [
     { role: 'user', content: 'Read a file.' },
-    { role: 'assistant', content: '/read_file {"path":"README.md"}' },
-    { role: 'user', content: '[Untrusted local tool result from /read_file]\n{"status":"success","result":"file text"}' },
+    { role: 'assistant', content: '/read_file path="README.md"' },
+    { role: 'user', content: '[Untrusted local tool result from /read_file]\n### Tool result: `/read_file`\n- **Status:** success\n\n#### Result\n- **Result:** file text' },
     { role: 'assistant', content: 'Done.' }
   ]);
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_calls')));
