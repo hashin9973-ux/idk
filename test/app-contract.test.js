@@ -345,6 +345,9 @@ test('desktop shell, tray, and IPC controls initialize before workspace services
   assert.match(main, /skipTaskbar: Boolean\(tray\)/);
   assert.match(main, /function createTray\(\)[\s\S]*?return false;/);
   assert.match(main, /if \(!githubAuth\) throw new Error/);
+  assert.match(main, /mailbox: oneDriveMailbox/);
+  assert.match(read('desktop', 'repository-bridge.js'), /allowLegacyGitHubMailboxForTests = false/);
+  assert.match(read('desktop', 'repository-bridge.js'), /GitHub is not a mailbox fallback/);
   assert.match(main, /ipcRegistered = true/);
 });
 
@@ -386,7 +389,7 @@ test('mailbox execution stays separate from ChatGPT messaging transport', () => 
   const main = read('desktop', 'main.js');
   assert.match(bridge, /async function runTool\(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null\)/);
   assert.match(bridge, /requiresApproval:|askApproval/);
-  assert.match(bridge, /The repository mailbox cannot invoke the app GitHub API directly/);
+  assert.match(bridge, /The OneDrive mailbox cannot invoke the app GitHub API directly/);
   assert.doesNotMatch(bridge, /document\.querySelector|executeJavaScript|assistant-tool:|language-assistant_tool|returnMessageToChat/);
   assert.doesNotMatch(main, /submitMessageToChat|insertAndSubmitToolMessage|assistant-tool:/);
 });

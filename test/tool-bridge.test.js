@@ -25,7 +25,7 @@ test('workspace artifact upload waits for local approval before reading and publ
         approvalCalls++;
         assert.match(options.title, /Approve local coding tool/);
         assert.match(options.detail, /artifact\.txt/);
-        assert.match(options.detail, /shared GitHub mailbox branch/);
+        assert.match(options.detail, /OneDrive mailbox/);
         return { response: 0 };
       }
     };

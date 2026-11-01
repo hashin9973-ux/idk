@@ -6,6 +6,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const { createOneDriveMailbox } = require('../desktop/onedrive-mailbox');
+const repositoryBridgeModule = require('../desktop/repository-bridge');
 const {
   PROTOCOL,
   RESULT_PROTOCOL,
@@ -13,9 +14,12 @@ const {
   DEFAULT_REQUEST_RECONCILIATION_INTERVAL_MS,
   validateConfig,
   validateRequest,
-  sanitizeForRepository,
-  createRepositoryBridge
-} = require('../desktop/repository-bridge');
+  sanitizeForRepository
+} = repositoryBridgeModule;
+const createRepositoryBridge = options => repositoryBridgeModule.createRepositoryBridge({
+  ...options,
+  allowLegacyGitHubMailboxForTests: true
+});
 const { getExecutionFootprint, executionFootprintsConflict } = require('../desktop/tool-bridge');
 
 function encode(value) {
@@ -315,6 +319,18 @@ test('config validation rejects invalid owner, repository and branch input', () 
   assert.throws(() => validateConfig({ owner: 'owner', repo: '..', branch: 'bridge-mailbox' }), /repository/i);
   assert.throws(() => validateConfig({ owner: 'owner', repo: 'repo', branch: 'feature/../main' }), /branch/i);
   assert.throws(() => validateConfig({ owner: 'owner', repo: 'repo', branch: '/main' }), /branch/i);
+});
+
+test('production bridge refuses to fall back to the GitHub mailbox', () => {
+  assert.throws(
+    () => repositoryBridgeModule.createRepositoryBridge({
+      getSettings: () => ({ repositoryBridge: {} }),
+      persistSettings: () => {},
+      getWorkspaceRoot: () => process.cwd(),
+      executeTool: async () => ({ ok: true })
+    }),
+    /OneDrive-synchronized Bridge\/runtime mailbox is required; GitHub is not a mailbox fallback/
+  );
 });
 
 test('request validation bootstraps sessions once and requires the session ID for every other tool', () => {
@@ -1849,7 +1865,7 @@ test('mailbox polling dispatches new requests while a background context refresh
         return { ok: true, result: { isGitRepository: false, detectedTechnologies: ['.NET'], topLevelEntries: [] } };
       }
       if (tool === 'get_capabilities') {
-        return { ok: true, result: { protocol: 'chatgpt-local-tools-v2', tools: [], tool_calling: { mode: 'repository-mailbox-batch', catalog_version: 1 } } };
+        return { ok: true, result: { protocol: 'chatgpt-local-tools-v2', tools: [], tool_calling: { mode: 'onedrive-mailbox-batch', catalog_version: 1 } } };
       }
       if (tool === 'discover_instructions') return { ok: true, result: { count: 0, instructions: [] } };
       if (tool === 'read_file') return { ok: false, error: 'package.json is not present' };
@@ -1947,7 +1963,7 @@ test('environment refresh publishes one compact agent entry and refreshes after 
         return { ok: true, result: {
           protocol: 'chatgpt-local-tools-v2',
           tools: [{ name: 'read_file', mode: 'read', description: 'Read UTF-8 text', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Workspace-relative path' } }, required: ['path'], additionalProperties: false } }],
-          tool_calling: { mode: 'repository-mailbox-batch', catalog_version: 1 }
+          tool_calling: { mode: 'onedrive-mailbox-batch', catalog_version: 1 }
         } };
       }
       if (tool === 'project_status') return { ok: true, result: { detectedTechnologies: ['Node.js'], topLevelEntries: ['package.json', 'src', '.git'], isGitRepository: true } };
@@ -1979,22 +1995,28 @@ test('environment refresh publishes one compact agent entry and refreshes after 
     assert.ok(index.agent_context.project_commands.suggested.some(item => item.command === 'npm test'));
     assert.equal(index.agent_context.tool_catalog.catalog_version, 1);
     assert.ok(index.agent_context.operating_rules.some(rule => /no request file exists.*do not attribute.*Windows worker/i.test(rule)));
-    assert.ok(index.agent_context.operating_rules.some(rule => /not native GitHub MCP function names/i.test(rule)));
+    assert.ok(index.agent_context.operating_rules.some(rule => /not native OneDrive integration tools/i.test(rule)));
+    assert.equal(index.agent_context.bridge_invocation.transport, 'onedrive-synced-folder');
+    assert.equal(index.agent_context.bridge_invocation.runtime_path, 'Bridge/runtime');
+    assert.equal(index.agent_context.bridge_invocation.mailbox_path, 'Bridge/runtime/bridge');
+    assert.equal(index.agent_context.bridge_invocation.publication_integration, 'connected OneDrive integration');
+    assert.equal('repository' in index.agent_context.bridge_invocation, false);
+    assert.equal('branch' in index.agent_context.bridge_invocation, false);
+    assert.doesNotMatch(JSON.stringify(index.agent_context), /GitHub MCP|GitHub mailbox|bridge-mailbox/i);
     assert.ok(index.agent_context.operating_rules.some(rule => /targeted read-only Windows discovery/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /measurable acceptance criteria and a short implementation plan/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /do not collapse a complex game.*one file/i.test(rule)));
     assert.ok(index.agent_context.operating_rules.some(rule => /run project-native checks and tests/i.test(rule)));
     const invocation = index.agent_context.bridge_invocation;
     assert.equal(invocation.protocol, PROTOCOL);
-    assert.equal(invocation.repository.split('/').length, 2);
-    assert.ok(invocation.repository.split('/').every(Boolean));
-    assert.equal(invocation.branch, 'bridge-mailbox');
     assert.equal(invocation.request_path_template, 'bridge/requests/<request_id>.json');
     assert.equal(invocation.result_path_template, 'bridge/results/<same-request-id>.json');
     assert.equal(invocation.request_example.protocol, PROTOCOL);
     assert.equal(invocation.request_example.tool, 'get_agent_context');
     assert.deepEqual(invocation.request_example.args, {});
-    assert.match(invocation.calling_contract, /publish requests through GitHub MCP and read the matching result/i);
+    assert.match(invocation.calling_contract, /connected OneDrive integration/i);
+    assert.match(invocation.calling_contract, /local OneDrive sync folder/i);
+    assert.match(invocation.calling_contract, /do not use GitHub for mailbox traffic/i);
     assert.equal(index.agent_context.tool_catalog.tools[0].parameters.properties.path.description, 'Workspace-relative path');
     assert.equal(JSON.stringify(index.agent_context).includes('do not publish this instruction body'), false);
     assert.equal(JSON.stringify(index.agent_context).includes('private-host'), false);
