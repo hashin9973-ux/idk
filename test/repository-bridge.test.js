@@ -46,7 +46,8 @@ test('result sanitization redacts the active session workspace rather than only 
 
 
 function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride = null,
-  falseConflictCreatePaths = [], transientCreateConflictPaths = [], unscopedRequestIds = [] } = {}) {
+  falseConflictCreatePaths = [], transientCreateConflictPaths = [], unscopedRequestIds = [],
+  contentsNotFoundPaths = [] } = {}) {
   const files = new Map();
   let nextSha = 1;
   const normalizedInitial = initial.map(([path, value]) => {
@@ -110,6 +111,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
   let requestTreeFailuresRemaining = 0;
   const falseConflictPaths = new Set(falseConflictCreatePaths);
   const transientCreateConflictTargets = new Set(transientCreateConflictPaths);
+  const contentsNotFoundTargets = new Set(contentsNotFoundPaths);
   let headCommitSha = 'f'.repeat(40);
   let gitObjectCounter = 1;
   const treePathsBySha = new Map();
@@ -179,7 +181,14 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
         const requestPaths = [...files.keys()]
           .filter(filePath => filePath.startsWith('bridge/requests/') && filePath.endsWith('.json'))
           .sort();
-        return { status: 200, result: { sha: path.slice(restCommitPrefix.length), files: requestPaths.map(filename => ({ filename, status: 'added' })) } };
+        return { status: 200, result: { sha: path.slice(restCommitPrefix.length), files: requestPaths.map(filename => ({ filename, status: 'added', sha: files.get(filename)?.sha || null })) } };
+      }
+      const blobPrefix = '/repos/test-owner/test-repo/git/blobs/';
+      if (method === 'GET' && path.startsWith(blobPrefix)) {
+        const blobSha = path.slice(blobPrefix.length);
+        const stored = [...files.values()].find(value => value && value.sha === blobSha);
+        if (!stored) throw new Error('Not Found (404)');
+        return { status: 200, result: { sha: blobSha, encoding: 'base64', content: stored.content } };
       }
       const treePrefix = '/repos/test-owner/test-repo/git/trees/';
       if (method === 'GET' && path.startsWith(treePrefix)) {
@@ -215,6 +224,7 @@ function fakeGitHub({ privateRepo = true, initial = [], requestCommitShaOverride
       if (!path.startsWith(contentsPrefix)) throw new Error('Unexpected API path: ' + path);
       const rel = path.slice(contentsPrefix.length);
       if (method === 'GET') {
+        if (contentsNotFoundTargets.has(rel)) throw new Error('Not Found (404): simulated stale Contents path');
         const exact = files.get(rel);
         if (exact) {
           return { status: 200, result: { ...exact } };
@@ -624,6 +634,69 @@ test('worker executes a request once, writes the actual result, claim and heartb
   }
 });
 
+
+test('worker reads a tree-discovered request by immutable Git blob SHA when Contents returns 404', async () => {
+  const request = {
+    protocol: PROTOCOL,
+    request_id: 'req-request-blob-fallback',
+    created_at: new Date().toISOString(),
+    tool: 'project_status',
+    args: {}
+  };
+  const requestPath = 'bridge/requests/' + request.request_id + '.json';
+  const fake = fakeGitHub({
+    initial: [[requestPath, request]],
+    contentsNotFoundPaths: [requestPath]
+  });
+  // GitHub tree entries expose the 40-character immutable blob SHA even when
+  // a branch-scoped Contents read is temporarily stale or reports 404.
+  const discoveredBlobSha = 'b'.repeat(40);
+  fake.files.get(requestPath).sha = discoveredBlobSha;
+  const fixture = settingsFixture();
+  let executions = 0;
+  const bridge = createRepositoryBridge({
+    githubAuth: fake.githubAuth,
+    ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    executeTool: async (tool, args, id) => {
+      executions++;
+      assert.equal(tool, 'project_status');
+      assert.deepEqual(args, {});
+      assert.equal(id, request.request_id);
+      return { ok: true, tool, call_id: id, result: { discovered: true } };
+    },
+    intervalMs: 5000
+  });
+
+  try {
+    await bridge.start();
+    await waitFor(() => fake.files.has('bridge/results/' + request.request_id + '.json'));
+    assert.equal(executions, 1, 'a request visible in the tree must not be silently dropped after a Contents 404');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/git/blobs/' + discoveredBlobSha
+    ), 'the worker should fetch the immutable blob identified by the request tree');
+    assert.ok(fake.calls.some(call =>
+      call.method === 'GET' &&
+      call.path === '/repos/test-owner/test-repo/contents/' + requestPath
+    ), false, 'the successful immutable blob path should not depend on the stale Contents endpoint');
+    const result = decode(fake.files.get('bridge/results/' + request.request_id + '.json'));
+    assert.equal(result.status, 'completed');
+    assert.equal(result.request_id, request.request_id);
+    const claim = decode(fake.files.get('bridge/claims/' + request.request_id + '.json'));
+    assert.equal(claim.status, 'completed');
+    const mailbox = bridge.getState().agentMailboxes.find(item => item.agent_id === 'agent-001');
+    assert.ok(mailbox, 'the request should be attributed to its session and appear in the agent widget');
+    const rendered = mailbox.requests.find(item => item.request_id === request.request_id);
+    assert.ok(rendered, 'the request should appear in the agent widget');
+    assert.equal(rendered.status, 'completed');
+    assert.ok(rendered.request_json.includes(request.request_id), 'the widget should contain the actual request JSON');
+    assert.ok(rendered.claim_json.includes(request.request_id), 'the widget should contain its matching claim');
+    assert.ok(rendered.result_json.includes(request.request_id), 'the widget should contain its matching result');
+  } finally {
+    await bridge.stop();
+  }
+});
 
 test('stale in-flight mailbox poll is detached and recovered without an old poll clearing the new one', async () => {
   const request = {
