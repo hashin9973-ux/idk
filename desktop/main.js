@@ -2447,8 +2447,8 @@ function registerIpc() {
       throw new Error('OneDrive mailbox settings are required.');
     }
     const oneDrivePath = String(input.oneDrivePath || '').trim();
-    if (oneDrivePath && !path.isAbsolute(oneDrivePath)) {
-      throw new Error('Select an absolute path to the OneDrive-synced Bridge folder.');
+    if (oneDrivePath && (!path.isAbsolute(oneDrivePath) || path.basename(oneDrivePath).toLowerCase() !== 'bridge')) {
+      throw new Error('Select the existing Bridge folder inside the local OneDrive sync root.');
     }
     const current = repositoryBridge ? repositoryBridge.getState() : {};
     if (Number(current.activeCount) > 0 || Number(current.pendingCount) > 0) {
@@ -3161,6 +3161,7 @@ if (!hasInstanceLock) {
           getSettings: () => settings,
           persistSettings,
           getWorkspaceRoot,
+          getWorkerVersion: () => app.getVersion(),
           executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal),
           cancelTool: (requestId, reason) => toolBridge.cancelTool(requestId, reason),
           onState: broadcastBridgeState,
