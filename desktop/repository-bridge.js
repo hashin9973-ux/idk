@@ -292,7 +292,7 @@ function createRepositoryBridge(deps = {}) {
     if (mailbox) {
       const value = Number(stored.retentionDays);
       return {
-        oneDrivePath: mailbox.getState().runtimePath || '',
+        oneDrivePath: mailbox.getState().mailboxPath || '',
         retentionDays: Number.isInteger(value) && value >= 1 && value <= 365 ? value : DEFAULT_MAILBOX_RETENTION_DAYS,
         owner: '', repo: '', branch: 'onedrive', allowPublicMailbox: false
       };
@@ -572,7 +572,8 @@ function createRepositoryBridge(deps = {}) {
       running,
       configured: mailbox ? mailboxState.configured === true : Boolean(config.owner && config.repo),
       transport: mailbox ? 'onedrive-synced-folder' : 'legacy-test-only',
-      oneDrivePath: mailbox ? String(mailboxState.runtimePath || '') : '',
+      mailboxPath: mailbox ? String(mailboxState.mailboxPath || '') : '',
+      oneDrivePath: mailbox ? String(mailboxState.mailboxPath || '') : '',
       owner: config.owner,
       repo: config.repo,
       branch: config.branch,
