@@ -53,12 +53,29 @@
   }
 
 
+  function formatSlashValue(value) {
+    if (value === null) return 'null';
+    if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+    if (typeof value === 'string') {
+      return /[\\s,;=\\[\\]"']/.test(value) ? JSON.stringify(value) : value;
+    }
+    if (Array.isArray(value)) return '[' + value.map(formatSlashValue).join(', ') + ']';
+    return JSON.stringify(value);
+  }
+
   function formatSlashCommand(tool, args) {
     const name = String(tool || 'unknown_tool').replace(/[^a-zA-Z0-9_.:-]/g, '_');
     const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
-    const safe = redactValue(values);
-    const serialized = JSON.stringify(safe);
-    return '/' + name + (serialized && serialized !== '{}' ? ' ' + serialized : '');
+    if (name === 'batch' && Array.isArray(values.steps)) {
+      const steps = values.steps.map(step => formatSlashCommand(step && step.tool, step && step.args)).map(command => command.replace(/^\\//, ''));
+      const options = Object.entries(values).filter(([key]) => key !== 'steps')
+        .map(([key, value]) => key + '=' + formatSlashValue(value));
+      return '/' + name + (steps.length ? ' steps=' + JSON.stringify(steps.join('; ')) : '') +
+        (options.length ? ' ' + options.join(' ') : '');
+    }
+    const argsText = Object.entries(values).filter(([key]) => !SECRET_KEY.test(key))
+      .map(([key, value]) => key + '=' + formatSlashValue(redactValue(value))).join(' ');
+    return '/' + name + (argsText ? ' ' + argsText : '');
   }
 
   function formatRequestCommands(requestJson, fallbackTool) {
