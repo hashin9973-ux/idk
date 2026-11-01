@@ -221,12 +221,37 @@ function trimHistory(messages) {
   return messages.slice(start);
 }
 
+function normalizeLegacySlashText(content) {
+  if (typeof content !== 'string' || !content.trimStart().startsWith('/')) return content;
+  try {
+    const invocation = parseSlashToolCommand(content.trim());
+    return invocation ? formatSlashCommand(invocation.name, invocation.args) : content;
+  } catch { return content; }
+}
+
+function normalizeLegacyToolObservation(content) {
+  if (typeof content !== 'string') return '';
+  const match = content.match(/^(\[Untrusted local tool result for \/([a-z0-9_.:-]+); status=[^\]]+\])\n([\s\S]*)$/i);
+  if (!match) return content;
+  const body = match[3].trim();
+  if (body.startsWith('### Tool result:')) return content;
+  if (!/^[\[{]/.test(body)) return content;
+  try {
+    const parsed = JSON.parse(body);
+    if (!parsed || typeof parsed !== 'object') return content;
+    return match[1] + '\n' + formatToolResultMarkdown(match[2], parsed, MAX_TOOL_RESULT_CHARS);
+  } catch { return content; }
+}
+
 function toApiMessages(messages) {
   const output = [];
   for (const message of Array.isArray(messages) ? messages : []) {
     if (!message || !['user', 'assistant', 'tool'].includes(message.role)) continue;
     if (message.role === 'user') {
-      output.push({ role: 'user', content: typeof message.content === 'string' ? message.content : '' });
+      let content = typeof message.content === 'string' ? message.content : '';
+      if (message.kind === 'tool_result') content = normalizeLegacyToolObservation(content);
+      else content = normalizeLegacySlashText(content);
+      output.push({ role: 'user', content });
       continue;
     }
     if (message.role === 'assistant') {
@@ -243,6 +268,8 @@ function toApiMessages(messages) {
           return formatSlashCommand(name, args);
         });
         content = [content, ...commands].filter(Boolean).join('\n');
+      } else {
+        content = normalizeLegacySlashText(content);
       }
       if (content) output.push({ role: 'assistant', content });
       continue;
