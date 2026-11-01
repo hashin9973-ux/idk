@@ -85,15 +85,57 @@ function safeError(value, secret = '') {
   return message.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, ' ').slice(0, 1000);
 }
 
-function jsonText(value) {
-  let result;
-  try { result = JSON.stringify(value); }
-  catch { result = String(value); }
-  if (typeof result !== 'string') result = String(value);
-  if (result.length > MAX_TOOL_RESULT_CHARS) {
-    return result.slice(0, MAX_TOOL_RESULT_CHARS) + '\n[tool output truncated for model context; request a narrower range or smaller result]';
+function markdownKey(value) {
+  return String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').replace(/\\s+/g, ' ').trim()
+    .replace(/\\b\\w/g, character => character.toUpperCase());
+}
+
+function markdownFence(value) {
+  const text = String(value);
+  const runs = text.match(/`{3,}/g) || [];
+  const fence = '`'.repeat(Math.max(3, ...runs.map(run => run.length + 1)));
+  return fence + '\\n' + text.replace(/\\r\\n/g, '\\n') + '\\n' + fence;
+}
+
+function formatMarkdownValue(value, depth = 0) {
+  const indent = '  '.repeat(depth);
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'string') {
+    if (!value.trim()) return '—';
+    if (value.includes('\\n') || value.length > 500 || /^\\s/.test(value)) return markdownFence(value);
+    return value;
   }
-  return result;
+  if (Array.isArray(value)) {
+    if (!value.length) return '—';
+    return value.map((item, index) => {
+      if (item && typeof item === 'object') {
+        const heading = item.name || item.title || item.path || item.id || ('Item ' + (index + 1));
+        const rest = Object.entries(item).filter(([key]) => !['name','title','path','id'].includes(key));
+        return indent + '- **' + String(heading).replace(/\\n/g, ' ') + '**' +
+          (rest.length ? '\\n' + rest.map(([key, nested]) => indent + '  - **' + markdownKey(key) + ':** ' + formatMarkdownValue(nested, depth + 2)).join('\\n') : '');
+      }
+      return indent + '- ' + formatMarkdownValue(item, depth + 1);
+    }).join('\\n');
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (!entries.length) return '—';
+    return entries.map(([key, nested]) => {
+      const rendered = formatMarkdownValue(nested, depth + 1);
+      const block = rendered.includes('\\n') || rendered.startsWith('```');
+      return indent + '- **' + markdownKey(key) + ':**' + (block ? '\\n' + rendered.split('\\n').map(line => indent + '  ' + line).join('\\n') : ' ' + rendered);
+    }).join('\\n');
+  }
+  return String(value);
+}
+
+function formatToolResultMarkdown(value) {
+  const rendered = formatMarkdownValue(value);
+  return rendered.length > MAX_TOOL_RESULT_CHARS
+    ? rendered.slice(0, MAX_TOOL_RESULT_CHARS) + '\\n\\n[Tool observation truncated. Request a narrower result or smaller page.]'
+    : rendered;
 }
 
 function parseToolArguments(value) {
@@ -249,90 +291,93 @@ function toApiMessages(messages) {
 }
 
 
+function parseSlashListItem(token) {
+  const value = String(token).trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1).replace(/\\\\(["'\\\\])/g, '$1');
+  }
+  if (/^(true|false)$/i.test(value)) return value.toLowerCase() === 'true';
+  if (/^-?\\d+(?:\\.\\d+)?$/.test(value)) return Number(value);
+  if (/^(null|none)$/i.test(value)) return null;
+  return value;
+}
+
 function parseSlashArgumentValue(raw, start) {
   const first = raw[start];
-  if (first === '"') {
+  if (first === '"' || first === "'") {
     let index = start + 1;
     let escaped = false;
     for (; index < raw.length; index++) {
       const char = raw[index];
-      if (escaped) { escaped = false; continue; }
-      if (char === '\\') { escaped = true; continue; }
-      if (char === '"') break;
+      if (escaped) escaped = false;
+      else if (char === '\\\\') escaped = true;
+      else if (char === first) break;
     }
-    if (index >= raw.length) throw new Error('A quoted slash-command value is missing its closing quote.');
-    const token = raw.slice(start, index + 1);
-    return { value: JSON.parse(token), next: index + 1 };
+    if (index >= raw.length) throw new Error('A quoted command value is missing its closing quote.');
+    return { value: parseSlashListItem(raw.slice(start, index + 1)), next: index + 1 };
   }
-  if (first === '{' || first === '[') {
-    const stack = [];
-    let inString = false;
-    let escaped = false;
-    let index = start;
+  if (first === '[') {
+    let index = start + 1, quote = '', escaped = false;
     for (; index < raw.length; index++) {
       const char = raw[index];
-      if (inString) {
+      if (quote) {
         if (escaped) escaped = false;
-        else if (char === '\\') escaped = true;
-        else if (char === '"') inString = false;
-        continue;
-      }
-      if (char === '"') { inString = true; continue; }
-      if (char === '{' || char === '[') stack.push(char);
-      else if (char === '}' || char === ']') {
-        const opening = stack.pop();
-        if ((char === '}' && opening !== '{') || (char === ']' && opening !== '[')) {
-          throw new Error('A slash-command JSON value has mismatched brackets.');
-        }
-        if (!stack.length) break;
-      }
+        else if (char === '\\\\') escaped = true;
+        else if (char === quote) quote = '';
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === ']') break;
     }
-    if (stack.length || index >= raw.length) throw new Error('A slash-command JSON value is incomplete.');
-    const token = raw.slice(start, index + 1);
-    return { value: JSON.parse(token), next: index + 1 };
+    if (index >= raw.length || quote) throw new Error('A list value is missing its closing bracket or quote.');
+    const body = raw.slice(start + 1, index);
+    const values = [];
+    let token = ''; quote = ''; escaped = false;
+    for (const char of body) {
+      if (quote) {
+        token += char;
+        if (escaped) escaped = false;
+        else if (char === '\\\\') escaped = true;
+        else if (char === quote) quote = '';
+      } else if (char === '"' || char === "'") { quote = char; token += char; }
+      else if (char === ',') { if (token.trim()) values.push(parseSlashListItem(token)); token = ''; }
+      else token += char;
+    }
+    if (token.trim()) values.push(parseSlashListItem(token));
+    return { value: values, next: index + 1 };
   }
   let index = start;
-  while (index < raw.length && !/\s/.test(raw[index])) index++;
-  if (index === start) throw new Error('Every slash-command argument needs a value after "=".');
-  const token = raw.slice(start, index);
-  let value;
-  try { value = JSON.parse(token); } catch { value = token; }
-  return { value, next: index };
+  while (index < raw.length && !/\\s/.test(raw[index])) index++;
+  if (index === start) throw new Error('Every command argument needs a value after "=".');
+  return { value: parseSlashListItem(raw.slice(start, index)), next: index };
 }
 
 function parseSlashArguments(raw, toolName) {
   const input = String(raw || '').trim();
   if (!input) return {};
   if (input.startsWith('{')) {
-    let parsed;
-    try { parsed = JSON.parse(input); }
-    catch { throw new Error('Arguments for /' + toolName + ' must be a JSON object or key=value pairs.'); }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error('Arguments for /' + toolName + ' must be an object.');
-    }
-    return parsed;
+    throw new Error('Use named arguments for /' + toolName + '; JSON argument objects are not part of the command format.');
   }
   const args = {};
   let index = 0;
   while (index < input.length) {
-    while (index < input.length && /\s/.test(input[index])) index++;
+    while (index < input.length && /\\s/.test(input[index])) index++;
     if (index >= input.length) break;
     const match = input.slice(index).match(/^([a-z][a-z0-9_]*)=/i);
     if (!match) throw new Error('Use named arguments for /' + toolName + ', for example: /' + toolName + ' path="src/app.js".');
     const key = match[1];
-    if (['__proto__', 'prototype', 'constructor'].includes(key)) {
-      throw new Error('Unsafe argument key "' + key + '" is not allowed in slash commands.');
-    }
-    if (Object.prototype.hasOwnProperty.call(args, key)) {
-      throw new Error('Argument "' + key + '" is repeated in /' + toolName + '.');
-    }
+    if (['__proto__', 'prototype', 'constructor'].includes(key)) throw new Error('Unsafe argument key is not allowed.');
+    if (Object.prototype.hasOwnProperty.call(args, key)) throw new Error('Argument "' + key + '" is repeated in /' + toolName + '.');
     index += match[0].length;
     const parsed = parseSlashArgumentValue(input, index);
-    args[key] = parsed.value;
+    if (key === 'steps' && typeof parsed.value === 'string') {
+      args[key] = parsed.value.split(';').map(part => part.trim()).filter(Boolean).map(part => {
+        const command = parseSlashToolCommand(part.startsWith('/') ? part : '/' + part,
+          DIRECT_AGENT_TOOL_NAMES.filter(name => name !== 'batch'));
+        if (!command) throw new Error('Each batch step must be a local tool command.');
+        return { tool: command.name, args: command.args };
+      });
+    } else args[key] = parsed.value;
     index = parsed.next;
-    if (index < input.length && !/\s/.test(input[index])) {
-      throw new Error('Separate /' + toolName + ' arguments with spaces.');
-    }
+    if (index < input.length && !/\\s/.test(input[index])) throw new Error('Separate command arguments with spaces.');
   }
   return args;
 }
@@ -498,8 +543,8 @@ function createDirectAgentRuntime({
         config.systemPrompt || '',
         'Use the available local tools to inspect and change the selected Windows workspace. Do not claim that an action completed unless its tool result confirms it.',
         'TOOL CALL PROTOCOL: Native API function/tool calling is not enabled. Invoke a local tool by returning a slash command as your entire assistant response, with no explanation, markdown fence, or extra text. Use exactly one command per response, then wait for the app to return the tool result before continuing.',
-        'Preferred syntax: /tool_name argument=value other="text with spaces". Quote strings containing spaces. Use JSON literals for arrays, objects, booleans, numbers, and null. Tools with no arguments use /tool_name. The app also accepts a JSON object after the command name.',
-        'After each command, the app executes it on the Windows machine and adds an untrusted tool-result message to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
+        'Preferred syntax: /tool_name argument=value other="text with spaces". Quote strings containing spaces. Use [one, two, three] for simple lists; use /batch steps="read_file path=README.md; git_status" for independent commands. Booleans are true/false and numbers are unquoted. Do not send JSON objects or JSON arrays.',
+        'After each command, the app executes it on the Windows machine and adds a readable Markdown tool observation to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
         'Do not emit a slash command as an example or in normal prose. A response beginning with / is treated as an executable tool command.',
         formatSlashToolCatalog(tools),
         'Tool commands execute on the user’s Windows machine through the app’s shared execution scheduler, workspace checks, and native approval policy. Never try to bypass those controls.',
@@ -524,7 +569,7 @@ function createDirectAgentRuntime({
           };
         }
         const status = output && typeof output.status === 'string' ? output.status : 'success';
-        const toolContent = jsonText(output);
+        const toolContent = formatToolResultMarkdown(output);
         session.messages.push({
           role: 'user',
           kind: 'tool_result',
@@ -639,6 +684,7 @@ module.exports = {
   parseToolArguments,
   parseSlashToolCommand,
   formatSlashToolCatalog,
+  formatToolResultMarkdown,
   toApiMessages,
   readCompletion,
   DIRECT_AGENT_TOOL_NAMES
