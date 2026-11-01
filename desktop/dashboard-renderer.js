@@ -664,9 +664,10 @@ function renderAgentMailboxes(rawAgents){
         const label=document.createElement('strong');label.className='agent-direct-message-label';
         const text=typeof message.content==='string'?message.content:'';
         const modelSlashCall=message.role==='assistant'&&text.trim().startsWith('/');
-        const toolResultMatch=message.role==='user'?text.match(/^\[Untrusted local tool result for \/([a-z0-9_]+); status=([a-z_]+)\]/i):null;
+        const toolResultMatch=['user','tool'].includes(message.role)?text.match(/^\[Untrusted local tool result for \/([a-z0-9_]+); status=([a-z_]+)\]/i):null;
         const slashError=message.role==='user'&&text.startsWith('[Slash-command error]');
-        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
+        const runtimeFeedback=message.kind==='runtime_feedback';
+        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):runtimeFeedback?'SYSTEM · TOOL PROTOCOL':toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
         item.append(label);
         if(modelSlashCall){const command=document.createElement('pre');command.className='agent-direct-tool-call';command.textContent=text.trim();item.append(command)}
         if(message.role==='assistant'&&Array.isArray(message.tool_calls)){
@@ -1064,6 +1065,7 @@ api.onDirectAgentEvent(event=>{
   if(event.type==='delta')directLiveText.set(id,(directLiveText.get(id)||'')+String(event.delta||''));
   else if(event.type==='tool_started')directLiveStatus.set(id,'TOOL · '+String(event.tool||'running'));
   else if(event.type==='tool_completed')directLiveStatus.set(id,'TOOL · '+String(event.tool||'completed')+' · '+String(event.status||''));
+  else if(event.type==='tool_protocol')directLiveStatus.set(id,'TOOL MODE · '+String(event.mode||'').toUpperCase()+' FALLBACK');
   else if(event.type==='status'){
     const status=String(event.status||'working').toLowerCase();
     const terminal=['idle','error','interrupted'].includes(status);

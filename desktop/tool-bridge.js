@@ -15,6 +15,9 @@ const TOOL_ARGUMENT_KEYS = Object.freeze({
   project_overview: [],
   project_impact: ['path', 'symbol'],
   game_project_intelligence: ['maxFiles'],
+  workspace: ['action','path','pattern','startLine','startCharacter','endLine','maxDepth','maxEntries','format','maxResults','query','include','regex','caseSensitive','content','patch','recursive','source','destination','paths'],
+  project: ['action','force','query','path','kind','maxResults','symbol','maxFiles'],
+  git: ['action','paths','staged','contextLines','maxCount','ref','name','message','remote','branch','timeoutMs','repository','path','operation','targetBranch','createBranch','submittedCommitSha','scopePaths','expectedChangedPaths'],
   task_project_init: ['name', 'description', 'project_id'], task_project_list: [], task_project_status: ['project_id'],
   task_create: ['project_id', 'title', 'objective', 'acceptance_criteria', 'scope_paths', 'scope_modules', 'dependencies', 'priority', 'module', 'task_type', 'dedupe_key'],
   task_list: ['project_id', 'status', 'assigned_to_me', 'limit', 'offset'], task_get: ['project_id', 'task_id'],
@@ -91,6 +94,9 @@ function projectIndexResource(workspaceRoot) {
 }
 
 function resourcePoolsForTool(tool, args = {}) {
+  const routed = resolveDirectAgentTool(tool, args);
+  tool = routed.tool;
+  args = routed.args;
   if (['read_file','file_info','upload_workspace_file','write_file','create_directory','delete_path','move_path','apply_patch','list_dir','directory_tree','glob_file_search','search'].includes(tool)) return ['filesystem','disk-io'];
   if (['project_index_status','project_index_refresh','project_search','project_overview','project_impact','game_project_intelligence','get_agent_context'].includes(tool)) return ['source-analysis','disk-io'];
   if (tool === 'run_tests') { const command=String(args.command||'').toLowerCase(); if(/buildcookrun|cook(?:content)?|unreal.*cook/.test(command))return ['cook','disk-io']; if(/unrealeditor|ue4editor|unity(?:\.exe)?|godot/.test(command))return ['editor','disk-io']; return ['compilation','disk-io']; }
@@ -111,6 +117,10 @@ function resourcePoolsForTool(tool, args = {}) {
 }
 
 function getExecutionFootprint(tool, args = {}, workspaceRoot = null) {
+  if (DIRECT_AGENT_ACTIONS[tool]) {
+    const routed = resolveDirectAgentTool(tool, args);
+    return getExecutionFootprint(routed.tool, routed.args, workspaceRoot);
+  }
   if (tool === 'batch') {
     const steps = Array.isArray(args.steps) ? args.steps : [];
     if (!steps.length) return { reads: [], writes: [], resources: [], resourceReads: [], resourceWrites: [], barrier: true };
@@ -229,6 +239,9 @@ function executionFootprintsConflict(left, right) {
 const TOOL_DESCRIPTIONS = Object.freeze({
   get_capabilities: 'List every callable local tool with exact arguments, constraints, permission mode, and result summary. This catalog is stable for the running app build.',
   get_agent_context: 'Return one compact snapshot of the selected Windows workspace, runtime, Git state, project commands, instruction-file locations, directory overview, and callable tool catalog. Full source and instruction contents stay on demand.',
+  workspace: 'Workspace operations: context, environment, list, tree, glob, read, info, search, instructions, init, write, patch, mkdir, move, or delete. Every path remains subject to selected-workspace and symlink checks; sensitive files and edits retain native approval rules.',
+  project: 'Project intelligence operations: status, index_status, index_refresh, search, overview, impact, or game. Uses local project metadata and does not bypass workspace protections.',
+  git: 'Git operations: status, diff, log, show, branches, changed, worktree, create_branch, switch_branch, commit, fetch, pull, push, or clone. Mutations retain native approval and repository safety checks.',
   project_index_status: 'Read the local persistent project-index status, including indexed files, symbols, dependencies, update state, truncation, and errors. Index metadata stays on Windows.',
   project_index_refresh: 'Reconcile the local project index with the workspace, reusing unchanged metadata. force=true rebuilds every indexed file.',
   project_search: 'Search the local project index by path, identifier, and declared symbol. Returns paths and symbol locations, not source contents. Uses lexical/symbol ranking, not embeddings.',
@@ -301,9 +314,11 @@ const REQUIRED_ARGUMENTS = Object.freeze({
   git_commit: ['message'], git_clone: ['repository', 'path'], shell: ['command'],
   upload_workspace_file: ['path'], batch: ['steps'],
   send_agent_message: ['message'], reply_to_agent_message: ['message_id', 'message'],
-  project_search: ['query'], computer: ['action'], tts: ['text'], git_worktree: ['operation']
+  project_search: ['query'], computer: ['action'], tts: ['text'], git_worktree: ['operation'],
+  workspace: ['action'], project: ['action'], git: ['action']
 });
 const BASE_FIELD_SCHEMAS = Object.freeze({
+  action: { type: 'string', description: 'Operation selected from the tool action list.' },
   path: { type: 'string', description: 'Path relative to the selected workspace or an absolute Windows path inside it. Paths outside the selected workspace and symlink escapes are rejected.' },
   project_id: { type: 'string', description: 'Shared project board ID returned by task_project_init.', pattern: '^project-[a-f0-9]{24}$' },
   task_id: { type: 'string', description: 'Durable task ID returned by task_create.', pattern: '^task-[0-9]{13}-[a-f0-9]{16}$' },
@@ -420,6 +435,17 @@ const BASE_FIELD_SCHEMAS = Object.freeze({
   steps: { type: 'array', description: 'Ordered local tool calls (up to 100). Each step needs a unique id, a tool name, and args. References may only point to completed earlier steps.', minItems: 1, maxItems: 100 },
 });
 const TOOL_PARAMETER_OVERRIDES = Object.freeze({
+  workspace: {
+    action: { type: 'string', enum: ['environment','list','tree','glob','read','info','search','instructions','init','write','patch','mkdir','move','delete'], description: 'Workspace operation to run.' },
+    paths: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+    include: { type: 'array', items: { type: 'string' }, maxItems: 100 }
+  },
+  project: {
+    action: { type: 'string', enum: ['status','index_status','index_refresh','search','overview','impact','game'], description: 'Project intelligence operation to run.' }
+  },
+  git: {
+    action: { type: 'string', enum: ['status','diff','log','show','branches','changed','worktree','create_branch','switch_branch','commit','fetch','pull','push','clone'], description: 'Git operation to run.' }
+  },
   session_start: {
     label: { type: 'string', description: 'Optional short label shown on the conversation’s agent widget.', maxLength: 64 },
     workspace_suggestion: { type: 'object', description: 'Optional grounded workspace directory suggestion. Include only a path supported by the conversation or discovered project context; the desktop validates it and asks the user before applying it to this session.', properties: {
@@ -656,17 +682,41 @@ function ttsOutputFailed(args = {}, output) {
   return output.status !== 'tts_completed' || output.played !== true || Boolean(output.playback_error);
 }
 
+const DIRECT_AGENT_ACTIONS = Object.freeze({
+  workspace: Object.freeze({
+    environment: 'environment_info', list: 'list_dir',
+    tree: 'directory_tree', glob: 'glob_file_search', read: 'read_file', info: 'file_info',
+    search: 'search', instructions: 'discover_instructions', init: 'init', write: 'write_file',
+    patch: 'apply_patch', mkdir: 'create_directory', move: 'move_path', delete: 'delete_path'
+  }),
+  project: Object.freeze({
+    status: 'project_status', index_status: 'project_index_status',
+    index_refresh: 'project_index_refresh', search: 'project_search',
+    overview: 'project_overview', impact: 'project_impact', game: 'game_project_intelligence'
+  }),
+  git: Object.freeze({
+    status: 'git_status', diff: 'git_diff', log: 'git_log', show: 'git_show',
+    branches: 'git_branches', changed: 'git_changed_files', worktree: 'git_worktree',
+    create_branch: 'git_create_branch', switch_branch: 'git_switch_branch',
+    commit: 'git_commit', fetch: 'git_fetch', pull: 'git_pull', push: 'git_push',
+    clone: 'git_clone'
+  })
+});
 const DIRECT_AGENT_TOOL_NAMES = Object.freeze([
-  'project_status', 'environment_info', 'list_dir', 'directory_tree',
-  'glob_file_search', 'read_file', 'file_info', 'search', 'git_status',
-  'git_diff', 'git_log', 'git_show', 'git_branches', 'git_changed_files',
-  'git_worktree', 'discover_instructions', 'init', 'write_file', 'apply_patch',
-  'create_directory', 'move_path', 'delete_path', 'git_create_branch',
-  'git_switch_branch', 'git_commit', 'git_fetch', 'git_pull', 'git_push',
-  'git_clone', 'project_index_status', 'project_index_refresh', 'project_search',
-  'project_overview', 'project_impact', 'game_project_intelligence',
-  'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch'
+  'workspace', 'project', 'git', 'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch'
 ]);
+
+function resolveDirectAgentTool(tool, inputArgs = {}) {
+  const actions = DIRECT_AGENT_ACTIONS[tool];
+  if (!actions) return { tool, args: inputArgs };
+  if (!inputArgs || typeof inputArgs !== 'object' || Array.isArray(inputArgs) || (Object.getPrototypeOf(inputArgs) !== Object.prototype && Object.getPrototypeOf(inputArgs) !== null)) throw new Error('Tool args must be a plain object.');
+  const action = inputArgs.action;
+  const routedTool = actions[action];
+  if (!routedTool) throw new Error('Unsupported ' + tool + ' action: ' + String(action || '(missing)') + '.');
+  const args = { ...inputArgs };
+  delete args.action;
+  return { tool: routedTool, args };
+}
 
 function getDirectAgentToolDefinitions() {
   return DIRECT_AGENT_TOOL_NAMES.map(name => {
@@ -724,6 +774,10 @@ function createToolBridge(deps) {
   }
 
   function validateArgs(tool, args) {
+    if (DIRECT_AGENT_ACTIONS[tool]) {
+      const routed = resolveDirectAgentTool(tool, args);
+      return validateArgs(routed.tool, routed.args);
+    }
     if (BLOCKED_TOOLS_FOR_MAILBOX.has(tool)) {
       throw new Error('The repository mailbox cannot invoke the app GitHub API directly.');
     }
@@ -758,6 +812,14 @@ function createToolBridge(deps) {
   }
 
   function validateBatchArgs(args) {
+    const sideEffectSignatures = new Set();
+    const stableValue = value => {
+      if (Array.isArray(value)) return '[' + value.map(stableValue).join(',') + ']';
+      if (value && typeof value === 'object') {
+        return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + stableValue(value[key])).join(',') + '}';
+      }
+      return JSON.stringify(value);
+    };
     if (!Array.isArray(args.steps) || args.steps.length < 1 || args.steps.length > MAX_BATCH_STEPS) {
       throw new Error('batch.steps must contain between 1 and ' + MAX_BATCH_STEPS + ' tool steps.');
     }
@@ -779,6 +841,16 @@ function createToolBridge(deps) {
       if (!isPlainObject(step.args)) throw new Error('batch step ' + step.id + ' args must be an object.');
       if (Object.hasOwn(step.args, 'approved')) throw new Error('batch steps cannot bypass local approval with an approved argument.');
       validateArgs(step.tool, step.args);
+      const footprint = batchFootprint({ tool: step.tool, args: step.args });
+      const hasSideEffect = footprint.barrier || footprint.writes.length > 0 || footprint.resourceWrites.length > 0;
+      if (hasSideEffect) {
+        const routed = resolveDirectAgentTool(step.tool, step.args);
+        const signature = routed.tool + ':' + stableValue(routed.args);
+        if (sideEffectSignatures.has(signature)) {
+          throw new Error('batch contains a repeated identical side-effecting step: ' + step.id + '. Remove the duplicate or make its arguments meaningfully different.');
+        }
+        sideEffectSignatures.add(signature);
+      }
       for (const referencedId of collectBatchRefIds(step.args)) {
         if (!ids.has(referencedId)) throw new Error('batch reference must point to an earlier step: ' + referencedId);
       }
@@ -807,18 +879,20 @@ function createToolBridge(deps) {
   }
 
   function batchFootprint(step, workspaceRoot = null) {
-    const args = step.args || {};
+    const routed = resolveDirectAgentTool(step.tool, step.args || {});
+    const stepTool = routed.tool;
+    const args = routed.args;
     const reads = [];
     const writes = [];
     const resourceReads = [];
     const resourceWrites = [];
-    const resourcePools = resourcePoolsForTool(step.tool, args);
+    const resourcePools = resourcePoolsForTool(stepTool, args);
     let barrier = false;
     const add = (set, value) => {
       const normalized = normalizeBatchPath(value);
       if (normalized) set.push(normalized);
     };
-    switch (step.tool) {
+    switch (stepTool) {
       case 'read_file':
       case 'file_info':
       case 'upload_workspace_file':
@@ -1450,6 +1524,11 @@ function createToolBridge(deps) {
   }
 
   async function runTool(tool, inputArgs, callId = null, sessionId = null, nested = false, executionSignal = null) {
+    if (DIRECT_AGENT_ACTIONS[tool]) {
+      const routed = resolveDirectAgentTool(tool, inputArgs || {});
+      tool = routed.tool;
+      inputArgs = routed.args;
+    }
     if (!nested) {
       const args = { ...(inputArgs || {}) };
       const id = callId || randomUUID();
@@ -1581,6 +1660,9 @@ function createToolBridge(deps) {
 module.exports = {
   createToolBridge,
   getDirectAgentToolDefinitions,
+  DIRECT_AGENT_TOOL_NAMES,
+  DIRECT_AGENT_ACTIONS,
+  resolveDirectAgentTool,
   TOOL_ARGUMENT_KEYS,
   getExecutionFootprint,
   resourcePoolsForTool,

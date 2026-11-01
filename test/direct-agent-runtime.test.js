@@ -40,29 +40,7 @@ function config() {
 }
 
 function definitions() {
-  return [{
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: 'Read a workspace file.',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'Workspace-relative file path.' },
-          start_line: { type: 'integer', description: 'Optional first line.' }
-        },
-        required: ['path'],
-        additionalProperties: false
-      }
-    }
-  }, {
-    type: 'function',
-    function: {
-      name: 'environment_info',
-      description: 'Inspect the local Windows environment.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false }
-    }
-  }];
+  return getDirectAgentToolDefinitions();
 }
 
 test('SSE completion returns on [DONE] even when the API keeps its HTTP stream open', async () => {
@@ -84,6 +62,7 @@ test('SSE completion returns on [DONE] even when the API keeps its HTTP stream o
     new Promise((_, reject) => setTimeout(() => reject(new Error('SSE parser waited for the HTTP connection to close.')), 250))
   ]);
   assert.equal(result.content, 'Hello!');
+  assert.deepEqual(result.toolCalls, []);
   assert.equal(cancelled, true);
 });
 
@@ -169,25 +148,29 @@ test('direct API configuration validates provider, endpoint and model', () => {
   }), /must not contain credentials/);
 });
 
-test('direct agent catalog includes local tools but excludes mailbox controls', () => {
+test('direct agent catalog is generated from registered capabilities and never exceeds 30 tools', () => {
   const tools = getDirectAgentToolDefinitions();
   const names = tools.map(item => item.function.name);
-  for (const name of ['read_file', 'write_file', 'apply_patch', 'shell', 'run_tests', 'computer', 'git_status', 'batch']) {
-    assert.ok(names.includes(name), 'missing local tool: ' + name);
+  assert.ok(tools.length <= 30, 'published catalog exceeds the hard 30-tool limit');
+  assert.equal(new Set(names).size, names.length, 'catalog contains duplicate tool names');
+  assert.deepEqual(names, ['workspace', 'project', 'git', 'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch']);
+  for (const name of ['workspace', 'project', 'git', 'shell', 'run_tests', 'computer', 'batch']) {
+    assert.ok(names.includes(name), 'missing grouped capability: ' + name);
   }
-  for (const name of ['session_start', 'agent_status', 'send_agent_message', 'upload_workspace_file', 'github_api']) {
-    assert.ok(!names.includes(name), 'mailbox tool leaked into direct API catalog: ' + name);
+  for (const name of ['session_start', 'agent_status', 'send_agent_message', 'upload_workspace_file', 'github_api', 'read_file', 'write_file', 'git_status']) {
+    assert.ok(!names.includes(name), 'individual/internal tool leaked into direct catalog: ' + name);
   }
   const batch = tools.find(item => item.function.name === 'batch');
-  assert.ok(!batch.function.parameters.properties.steps.items.properties.tool.enum.includes('batch'));
+  assert.deepEqual(batch.function.parameters.properties.steps.items.properties.tool.enum, names.filter(name => name !== 'batch'));
 });
 
-test('slash catalog includes command names, descriptions and argument requirements without JSON literals', () => {
+test('slash catalog documents only the grouped published tools and named arguments', () => {
   const catalog = formatSlashToolCatalog(definitions());
-  assert.match(catalog, /\/read_file — Read a workspace file/);
-  assert.match(catalog, /path \(string; required; Workspace-relative file path\.\)/);
-  assert.match(catalog, /start_line \(integer; optional/);
-  assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
+  assert.match(catalog, /\/workspace — Workspace operations/);
+  assert.match(catalog, /\/project — Project intelligence operations/);
+  assert.match(catalog, /\/git — Git operations/);
+  assert.match(catalog, /action \(string \(one of:/);
+  assert.doesNotMatch(catalog, /\/read_file —/);
   assert.doesNotMatch(catalog, /JSON literals/);
 });
 
@@ -213,36 +196,54 @@ test('Chat Completions request includes configured standard sampling parameters'
   assert.equal(requestBody.max_tokens, 1024);
 });
 
-test('SSE parser streams assistant text and detects disabled native tool-call output', async () => {
+test('SSE parser reconstructs streamed native tool names and arguments', async () => {
   const response = sseResponse([
     { choices: [{ index: 0, delta: { content: 'Checking ' } }] },
-    { choices: [{ index: 0, delta: { content: 'the workspace.', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] } }] },
-    { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+    { choices: [{ index: 0, delta: { content: 'the workspace.', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'work', arguments: '{"action":"read",' } }] } }] },
+    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { name: 'space', arguments: '"path":"README.md"}' } }] }, finish_reason: 'tool_calls' }] }
   ]);
   let streamed = '';
   const result = await readCompletion(response, delta => { streamed += delta; });
   assert.equal(result.content, 'Checking the workspace.');
   assert.equal(streamed, 'Checking the workspace.');
   assert.equal(result.nativeToolCalls, true);
+  assert.deepEqual(result.toolCalls, [{
+    index: 0, id: 'call_1', type: 'function',
+    function: { name: 'workspace', arguments: '{"action":"read","path":"README.md"}' }
+  }]);
+  assert.equal(result.finishReason, 'tool_calls');
 });
 
 test('slash command parser uses readable named arguments and list values, not JSON objects', () => {
   assert.throws(() => parseSlashToolCommand('/read_file {"path":"src/app.js"}', ['read_file']), /JSON argument objects/);
+  const available = definitions().map(item => item.function.name);
   assert.deepEqual(
-    parseSlashToolCommand('/read_file path="src/app.js" start_line=12', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js', start_line: 12 } }
+    parseSlashToolCommand('/read_file path="src/app.js" startLine=12', available),
+    { name: 'workspace', args: { path: 'src/app.js', startLine: 12, action: 'read' } }
   );
   assert.deepEqual(
-    parseSlashToolCommand('/read_file path=src/app.js', ['read_file']),
-    { name: 'read_file', args: { path: 'src/app.js' } }
+    parseSlashToolCommand('/workspace action=read path=src/app.js', available),
+    { name: 'workspace', args: { action: 'read', path: 'src/app.js' } }
   );
   assert.deepEqual(
-    parseSlashToolCommand('/environment_info', ['environment_info']),
-    { name: 'environment_info', args: {} }
+    parseSlashToolCommand('/environment_info', available),
+    { name: 'workspace', args: { action: 'environment' } }
   );
   assert.deepEqual(
-    parseSlashToolCommand('/project_search query="main entry" kind=symbol maxResults=8', ['project_search']),
-    { name: 'project_search', args: { query: 'main entry', kind: 'symbol', maxResults: 8 } }
+    parseSlashToolCommand('/project_search query="main entry" kind=symbol maxResults=8', available),
+    { name: 'project', args: { query: 'main entry', kind: 'symbol', maxResults: 8, action: 'search' } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/project action=index_status', available),
+    { name: 'project', args: { action: 'index_status' } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/run command="npm test"', available),
+    { name: 'shell', args: { command: 'npm test' } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/test command="npm test"', available),
+    { name: 'run_tests', args: { command: 'npm test' } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/update_plan items=[Inspect files, Implement fix, Run tests]', ['update_plan']),
@@ -250,21 +251,21 @@ test('slash command parser uses readable named arguments and list values, not JS
   );
   assert.deepEqual(
     parseSlashToolCommand('/batch steps="read_file path=README.md; git_status"', ['batch']),
-    { name: 'batch', args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
+    { name: 'batch', args: { steps: [{ tool: 'workspace', args: { path: 'README.md', action: 'read' } }, { tool: 'git', args: { action: 'status' } }] } }
   );
   assert.deepEqual(
     parseSlashToolCommand('/computer action=sequence steps="click x=400 y=300; type text=Hello; press key=ENTER"', ['computer']),
     { name: 'computer', args: { action: 'sequence', steps: [{ action: 'click', x: 400, y: 300 }, { action: 'type', text: 'Hello' }, { action: 'press', key: 'ENTER' }] } }
   );
   assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
-  assert.deepEqual(parseSlashToolCommand('/project', ['project_status']), { name: 'project_status', args: {} });
+  assert.deepEqual(parseSlashToolCommand('/project', available), { name: 'project', args: { action: 'status' } });
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
   assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['read_file']), /JSON argument objects/);
   assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', ['read_file']), /repeated/);
   assert.throws(() => parseSlashToolCommand('/read_file []', ['read_file']), /Use named arguments/);
 });
 
-test('explicit user slash command executes locally and does not send native API tool schemas', async () => {
+test('explicit user slash shortcut routes through grouped local capability and preserves the actual result', async () => {
   const session = { sessionId: 'session-abcdef0123456789abcdef0123456789', messages: [], status: 'idle', error: '' };
   const requests = [];
   const executed = [];
@@ -287,17 +288,18 @@ test('explicit user slash command executes locally and does not send native API 
   });
   const result = await runtime.sendMessage('direct-agent-002', '/read_file path="README.md"');
   assert.equal(result.completed, true);
-  assert.deepEqual(executed, [{ name: 'read_file', args: { path: 'README.md' } }]);
+  assert.deepEqual(executed, [{ name: 'workspace', args: { path: 'README.md', action: 'read' } }]);
   assert.equal(requests.length, 1);
-  assert.ok(!Object.hasOwn(requests[0], 'tools'));
-  assert.ok(!Object.hasOwn(requests[0], 'tool_choice'));
+  assert.ok(requests[0].tools.length <= 30);
+  assert.ok(requests[0].tools.some(tool => tool.function.name === 'workspace'));
+  assert.equal(requests[0].tool_choice, 'auto');
   assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read_file path="README.md"'));
   assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.ok(requests[0].messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   assert.equal(session.messages.at(-1).content, 'The README was inspected.');
 });
 
-test('model invokes tools with assistant slash commands and receives local results on the next turn', async () => {
+test('model slash fallback executes the grouped command and receives the real result before answering', async () => {
   const session = { sessionId: 'session-0123456789abcdef0123456789abcdef', messages: [], status: 'idle', error: '' };
   const requests = [];
   const executed = [];
@@ -332,26 +334,26 @@ test('model invokes tools with assistant slash commands and receives local resul
   const result = await runtime.sendMessage('direct-agent-001', 'Inspect the repository instructions.');
   assert.deepEqual(result, { accepted: true, completed: true });
   assert.equal(executed.length, 1);
-  assert.equal(executed[0].name, 'read_file');
-  assert.deepEqual(executed[0].args, { path: 'README.md' });
+  assert.equal(executed[0].name, 'workspace');
+  assert.deepEqual(executed[0].args, { path: 'README.md', action: 'read' });
   assert.equal(executed[0].sessionId, session.sessionId);
   assert.equal(requests.length, 2);
   for (const request of requests) {
-    assert.ok(!Object.hasOwn(request, 'tools'));
-    assert.ok(!Object.hasOwn(request, 'tool_choice'));
+    assert.ok(request.tools.length <= 30);
+    assert.equal(request.tool_choice, 'auto');
     assert.ok(request.messages.every(message => !Object.hasOwn(message, 'tool_calls')));
   }
   assert.match(requests[0].messages[0].content, /AVAILABLE LOCAL SLASH COMMANDS/);
-  assert.match(requests[0].messages[0].content, /\/read_file — Read a workspace file/);
-  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path=README.md'));
-  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
+  assert.match(requests[0].messages[0].content, /\/workspace — Workspace operations/);
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/workspace action=read path=README.md'));
+  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /workspace; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
   assert.ok(events.some(event => event.type === 'tool_started' && event.source === 'model-slash'));
   assert.ok(events.some(event => event.type === 'tool_completed' && event.source === 'model-slash'));
 });
 
-test('native function-call output is rejected and the model is guided to the slash protocol', async () => {
+test('native function calls are parsed, validated, executed and fed back for the next model turn', async () => {
   const session = { sessionId: 'session-fedcba9876543210fedcba9876543210', messages: [], status: 'idle', error: '' };
   const requests = [];
   const executed = [];
@@ -362,18 +364,12 @@ test('native function-call output is rejected and the model is guided to the sla
       callNumber++;
       if (callNumber === 1) {
         return sseResponse([
-          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'provider_call', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] } }] },
-          { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
-        ]);
-      }
-      if (callNumber === 2) {
-        return sseResponse([
-          { choices: [{ index: 0, delta: { content: '/environment_info' } }] },
-          { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'provider_call', type: 'function', function: { name: 'workspace', arguments: '{"action":"read",' } }] } }] },
+          { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '"path":"README.md"}' } }] }, finish_reason: 'tool_calls' }] }
         ]);
       }
       return sseResponse([
-        { choices: [{ index: 0, delta: { content: 'The environment was inspected.' } }] },
+        { choices: [{ index: 0, delta: { content: 'I inspected README.md and found the project guidance.' } }] },
         { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
       ]);
     },
@@ -383,18 +379,257 @@ test('native function-call output is rejected and the model is guided to the sla
     getToolDefinitions: async () => definitions(),
     executeTool: async (name, args) => {
       executed.push({ name, args });
-      return { status: 'success', result: { platform: 'Windows' } };
+      return { status: 'success', result: { content: 'actual README contents' } };
     }
   });
 
-  const result = await runtime.sendMessage('direct-agent-003', 'Inspect the environment.');
+  const result = await runtime.sendMessage('direct-agent-003', 'Inspect the repository instructions.');
   assert.deepEqual(result, { accepted: true, completed: true });
-  assert.deepEqual(executed, [{ name: 'environment_info', args: {} }]);
+  assert.deepEqual(executed, [{ name: 'workspace', args: { action: 'read', path: 'README.md' } }]);
+  assert.equal(requests.length, 2);
+  assert.ok(requests[0].tools.length <= 30);
+  assert.equal(requests[0].tool_choice, 'auto');
+  assert.ok(requests[1].tools.length <= 30);
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && Array.isArray(message.tool_calls)));
+  assert.ok(requests[1].messages.some(message => message.role === 'tool' && message.tool_call_id === 'provider_call' && message.content.includes('actual README contents')));
+  assert.equal(session.messages.filter(message => message.role === 'tool').length, 1);
+  assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
+});
+
+test('providers that reject native tools fall back to the slash-command protocol', async () => {
+  const session = { sessionId: 'session-aaaaaaaa11111111aaaaaaaa11111111', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  const executed = [];
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      callNumber++;
+      if (callNumber === 1) return new Response(JSON.stringify({ error: { message: 'This model does not support tools.' } }), {
+        status: 400, headers: { 'content-type': 'application/json' }
+      });
+      if (callNumber === 2) return sseResponse([
+        { choices: [{ index: 0, delta: { content: '/workspace action=read path=README.md' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I inspected README.md.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => ({ ...config(), provider: 'koboldcpp' }),
+    getSession: async () => session,
+    saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args) => {
+      executed.push({ name, args });
+      return { status: 'success', result: { content: 'actual file contents' } };
+    }
+  });
+  const result = await runtime.sendMessage('direct-agent-003', 'Read README.md.');
+  assert.equal(result.completed, true);
+  assert.deepEqual(executed, [{ name: 'workspace', args: { action: 'read', path: 'README.md' } }]);
   assert.equal(requests.length, 3);
-  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('Native API function calls are disabled')));
-  assert.ok(requests[2].messages.some(message => message.role === 'assistant' && message.content === '/environment_info'));
-  assert.ok(requests.every(request => !Object.hasOwn(request, 'tools') && !Object.hasOwn(request, 'tool_choice')));
-  assert.ok(session.messages.some(message => message.kind === 'runtime_feedback'));
+  assert.ok(requests[0].tools.length <= 30);
+  assert.ok(!Object.hasOwn(requests[1], 'tools'));
+  assert.ok(!Object.hasOwn(requests[2], 'tools'));
+  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('Native tool calling unavailable')));
+  assert.ok(requests[2].messages.some(message => message.role === 'assistant' && message.content === '/workspace action=read path=README.md'));
+  assert.equal(session.toolProtocol, 'slash');
+});
+
+test('models that explicitly report native tool limitations are switched to slash fallback', async () => {
+  const session = { sessionId: 'session-eeeeeeee55555555eeeeeeee55555555', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  const executed = [];
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      callNumber++;
+      if (callNumber === 1) return sseResponse([
+        { choices: [{ index: 0, delta: { content: "I cannot use the available tools with this model." } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+      if (callNumber === 2) return sseResponse([
+        { choices: [{ index: 0, delta: { content: '/workspace action=read path=README.md' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I read README.md.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => config(), getSession: async () => session, saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args) => {
+      executed.push({ name, args });
+      return { status: 'success', result: { content: 'verified README contents' } };
+    }
+  });
+  const result = await runtime.sendMessage('direct-agent-008', 'Read README.md.');
+  assert.equal(result.completed, true);
+  assert.deepEqual(executed, [{ name: 'workspace', args: { action: 'read', path: 'README.md' } }]);
+  assert.ok(!Object.hasOwn(requests[1], 'tools'));
+  assert.ok(requests[1].messages.some(message => message.content.includes('Native tool calling unavailable')));
+  assert.equal(session.toolProtocol, 'slash');
+});
+
+test('invalid native tool names, schemas and malformed arguments never execute', async () => {
+  const session = { sessionId: 'session-ffffffff66666666ffffffff66666666', messages: [], status: 'idle', error: '' };
+  const executed = [];
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async () => {
+      callNumber++;
+      if (callNumber === 1) return sseResponse([
+        { choices: [{ index: 0, delta: { tool_calls: [
+          { index: 0, id: 'invalid_action', type: 'function', function: { name: 'workspace', arguments: '{"action":"run_anything","command":"whoami"}' } },
+          { index: 1, id: 'invalid_json', type: 'function', function: { name: 'workspace', arguments: '{"action":"read",}' } },
+          { index: 2, id: 'unknown_tool', type: 'function', function: { name: 'powershell_unrestricted', arguments: '{"command":"whoami"}' } }
+        ] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+      ]);
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I cannot truthfully report any operation as completed.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => config(), getSession: async () => session, saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args) => { executed.push({ name, args }); return { status: 'success' }; }
+  });
+  const result = await runtime.sendMessage('direct-agent-009', 'Do an unsupported command.');
+  assert.equal(result.completed, true);
+  assert.equal(executed.length, 0);
+  assert.equal(session.messages.filter(message => message.role === 'tool').length, 3);
+  assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('must be one of:')));
+  assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('invalid JSON')));
+  assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('not registered')));
+});
+
+test('ordinary execution claims do not execute anything and trigger the explicit fallback', async () => {
+  const session = { sessionId: 'session-bbbbbbbb22222222bbbbbbbb22222222', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  const executed = [];
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      callNumber++;
+      if (callNumber === 1) return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I ran npm test and all tests passed.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+      if (callNumber === 2) return sseResponse([
+        { choices: [{ index: 0, delta: { content: '/test command="npm test"' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I tested the project.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => config(),
+    getSession: async () => session,
+    saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args) => {
+      executed.push({ name, args });
+      return { status: 'success', result: { exitCode: 0, stdout: 'Tests passed.' } };
+    }
+  });
+  const result = await runtime.sendMessage('direct-agent-005', 'Run the test suite.');
+  assert.equal(result.completed, true);
+  assert.deepEqual(executed, [{ name: 'run_tests', args: { command: 'npm test' } }]);
+  assert.equal(requests.length, 3);
+  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('Unverified execution claim')));
+  assert.ok(!Object.hasOwn(requests[1], 'tools'));
+  assert.equal(session.toolProtocol, 'slash');
+});
+
+test('multiple native calls execute in parallel and later rounds receive their results', async () => {
+  const session = { sessionId: 'session-dddddddd44444444dddddddd44444444', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  const executed = [];
+  let active = 0;
+  let maxActive = 0;
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      callNumber++;
+      if (callNumber === 1) return sseResponse([
+        { choices: [{ index: 0, delta: { tool_calls: [
+          { index: 0, id: 'read_1', type: 'function', function: { name: 'workspace', arguments: '{"action":"read","path":"README.md"}' } },
+          { index: 1, id: 'project_1', type: 'function', function: { name: 'project', arguments: '{"action":"overview"}' } }
+        ] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+      ]);
+      if (callNumber === 2) return sseResponse([
+        { choices: [{ index: 0, delta: { tool_calls: [
+          { index: 0, id: 'git_1', type: 'function', function: { name: 'git', arguments: '{"action":"status"}' } }
+        ] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+      ]);
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I inspected the workspace.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => config(),
+    getSession: async () => session,
+    saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      await new Promise(resolve => setTimeout(resolve, 15));
+      active--;
+      executed.push({ name, args });
+      return { status: 'success', result: { inspected: name } };
+    }
+  });
+  const result = await runtime.sendMessage('direct-agent-007', 'Inspect project files and Git status.');
+  assert.equal(result.completed, true);
+  assert.equal(executed.length, 3);
+  assert.ok(maxActive > 1, 'independent native calls in one round should execute concurrently');
+  assert.ok(requests[0].tools.length <= 30);
+  assert.ok(requests[1].messages.filter(message => message.role === 'tool').length >= 2);
+  assert.ok(requests[2].messages.some(message => message.role === 'tool' && message.tool_call_id === 'git_1'));
+  assert.equal(session.messages.filter(message => message.role === 'tool').length, 3);
+});
+
+test('repeated native side effects with identical arguments are blocked inside one turn', async () => {
+  const session = { sessionId: 'session-cccccccc33333333cccccccc33333333', messages: [], status: 'idle', error: '' };
+  const requests = [];
+  let executed = 0;
+  let callNumber = 0;
+  const runtime = createDirectAgentRuntime({
+    fetchImpl: async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      callNumber++;
+      if (callNumber === 1) return sseResponse([
+        { choices: [{ index: 0, delta: { tool_calls: [
+          { index: 0, id: 'write_1', type: 'function', function: { name: 'workspace', arguments: '{"action":"write","path":"same.txt","content":"hello"}' } },
+          { index: 1, id: 'write_2', type: 'function', function: { name: 'workspace', arguments: '{"action":"write","path":"same.txt","content":"hello"}' } }
+        ] } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
+      ]);
+      return sseResponse([
+        { choices: [{ index: 0, delta: { content: 'I wrote the file once.' } }] },
+        { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+      ]);
+    },
+    getConfig: async () => config(), getSession: async () => session, saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async () => { executed++; return { status: 'success', result: { path: 'same.txt' } }; }
+  });
+  const result = await runtime.sendMessage('direct-agent-006', 'Write a file once.');
+  assert.equal(result.completed, true);
+  assert.equal(executed, 1);
+  assert.equal(requests.length, 2);
+  assert.ok(session.messages.some(message => message.role === 'tool' && message.content.includes('Repeated identical side effect blocked')));
 });
 
 test('Markdown tool observations render project, arrays and command output as readable sections', () => {
@@ -425,4 +660,12 @@ test('legacy native tool-call history is converted to slash messages and untrust
   ]);
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_calls')));
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_call_id')));
+  const nativeMessages = toApiMessages([
+    { role: 'assistant', content: null, tool_calls: [{ id: 'native_1', type: 'function', function: { name: 'workspace', arguments: '{"action":"read","path":"README.md"}' } }] },
+    { role: 'tool', tool_call_id: 'native_1', name: 'workspace', content: 'actual result' }
+  ], { nativeToolCalling: true });
+  assert.deepEqual(nativeMessages, [
+    { role: 'assistant', content: null, tool_calls: [{ id: 'native_1', type: 'function', function: { name: 'workspace', arguments: '{"action":"read","path":"README.md"}' } }] },
+    { role: 'tool', tool_call_id: 'native_1', content: 'actual result' }
+  ]);
 });
