@@ -30,6 +30,14 @@ function safeText(value, limit = 500) {
   return String(value == null ? '' : value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(0, limit);
 }
 
+function redactScreenText(value, limit = 1200) {
+  return safeText(value, limit)
+    .replace(/\\bBearer\\s+[A-Za-z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/\\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\\b/g, '[REDACTED]')
+    .replace(/([?&](?:access_token|refresh_token|token|client_secret|password|api[_-]?key|secret|code)=)[^&\\s]+/gi, '$1[REDACTED]')
+    .replace(/:\\/\\/[^/\\s:@]+:[^/@\\s]+@/g, '://[REDACTED]@');
+}
+
 function createObserveService(deps = {}) {
   const {
     mailbox = null,
@@ -119,7 +127,7 @@ function createObserveService(deps = {}) {
   function screenSafeValue(value, key = '', depth = 0) {
     if (/(?:password|secret|token|authorization|credential|api[-_]?key|cookie)/i.test(key)) return '[REDACTED]';
     if (depth > 5) return '[MAX DEPTH]';
-    if (typeof value === 'string') return safeText(value, 1200);
+    if (typeof value === 'string') return redactScreenText(value, 1200);
     if (Array.isArray(value)) return value.slice(0, 100).map(item => screenSafeValue(item, '', depth + 1));
     if (!value || typeof value !== 'object') return value;
     const output = {};
