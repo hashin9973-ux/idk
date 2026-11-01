@@ -176,8 +176,7 @@ function createOneDriveMailbox({
         name: child.name,
         path: relativePath + '/' + child.name,
         type: childStat.isDirectory() ? 'dir' : childStat.isFile() ? 'file' : 'other',
-        size: childStat.isFile() ? childStat.size : 0,
-        ...(childStat.isFile() ? { sha: sha256(await fsImpl.readFile(childPath)) } : {})
+        size: childStat.isFile() ? childStat.size : 0
       });
     }
     return result.sort((a, b) => a.name.localeCompare(b.name));
