@@ -479,7 +479,7 @@ test('OneDrive local mailbox processes a request and writes claims, results and 
     tool: 'session_start',
     args: { label: 'OneDrive integration test' }
   };
-  await mailbox.writeJson('bridge/requests/' + requestId + '.json', request, null, true);
+  await mailbox.writeJson('request/agent-000/' + requestId + '.json', request, null, true);
 
   const fixture = { settings, getSettings: () => settings, persistSettings: () => {} };
   const githubCalls = [];
@@ -507,20 +507,21 @@ test('OneDrive local mailbox processes a request and writes claims, results and 
     const started = await bridge.start();
     assert.equal(started.transport, 'onedrive-synced-folder');
     assert.equal(started.running, true);
-    await waitForAsync(async () => Boolean(await mailbox.readJson('bridge/results/' + requestId + '.json')));
+    await waitForAsync(async () => Boolean(await mailbox.readJson('result/agent-000/' + requestId + '.json')));
     const result = await mailbox.readJson('bridge/results/' + requestId + '.json');
-    const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
-    const state = await mailbox.readJson('bridge/state/windows-app.json');
+    const claim = await mailbox.readJson('claims/agent-000/' + requestId + '.json');
+    const state = await mailbox.readContent('STATUS.md');
     assert.equal(result.value.status, 'completed');
     assert.equal(result.value.result.result.assignment_mode, 'automatic-confirmed');
     assert.ok(result.value.result.result.session_id);
     assert.equal(claim.value.status, 'completed');
-    assert.equal(state.value.protocol, 'chatgpt-local-repo-state/v1');
+    assert.match(state.content.toString('utf8'), /^# Windows Bridge Status/m);
     assert.equal(assignment.workspaceSuggestion, null);
     assert.deepEqual(githubCalls, [], 'OneDrive mailbox work must not call GitHub APIs');
     const sessionId = result.value.result.result.session_id;
-    assert.ok(await mailbox.readJson('bridge/sessions/' + sessionId + '.json'));
-    assert.ok(await mailbox.readJson('bridge/agents/agent-001.json'));
+    assert.ok(settings.agentRegistryRecords['local/sessions/' + sessionId + '.json']);
+    assert.ok(settings.agentRegistryRecords['local/agents/agent-001.json']);
+    assert.equal((await mailbox.listFolder('request')).some(item => item.name === 'agent-001'), false);
   } finally {
     await bridge.stop();
   }
