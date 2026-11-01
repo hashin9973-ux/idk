@@ -138,7 +138,7 @@ test('slash command parser supports JSON objects and concise named arguments', (
   assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
   assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['read_file']), /JSON object or key=value/);
   assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', ['read_file']), /repeated/);
-  assert.throws(() => parseSlashToolCommand('/read_file []', ['read_file']), /JSON object or key=value/);
+  assert.throws(() => parseSlashToolCommand('/read_file []', ['read_file']), /Use named arguments/);
 });
 
 test('explicit user slash command executes locally and does not send native API tool schemas', async () => {
