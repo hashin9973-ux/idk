@@ -47,13 +47,13 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(html.includes('agent-terminal.js'));
   assert.ok(main.includes('autoDismissMs: 6500'));
   assert.ok(renderer.includes('agent-delete-button'));
-  assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox)'));
+  assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox,runtimeSessionId)'));
   assert.ok(renderer.includes("cleanup.status!=='completed'"));
   assert.ok(bridge.includes("status: mailboxCleanup.status === 'completed' ? 'completed_with_preserved_records' : mailboxCleanup.status"));
   assert.ok(renderer.includes("button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke'"));
   assert.ok(html.includes('agent-delete-dialog'));
   assert.ok(html.includes('agent-delete-wipe-mailbox'));
-  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,card.dataset.sessionId||null)'));
+  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,card.dataset.workspaceSessionId||card.dataset.sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
   assert.ok(renderer.includes('Select an agent ID or choose'));
   assert.ok(renderer.includes('const newAgentId=\'agent-\'+String(highestAgentNumber+1).padStart(3,\'0\')'));
@@ -68,7 +68,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('workspace_profile'));
   assert.ok(renderer.includes('workspace_shared_with'));
   assert.ok(renderer.includes('unread_message_count_partial'));
-  assert.ok(renderer.includes('api.setAgentWorkspaceFromRecent(agent.agent_id,card.dataset.sessionId||null,root)'));
+  assert.ok(renderer.includes('api.setAgentWorkspaceFromRecent(agent.agent_id,card.dataset.workspaceSessionId||card.dataset.sessionId||null,root)'));
   assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults = defaults'));
   assert.ok(main.includes('settings.agentWorkspaces = sessionOverrides'));
@@ -87,6 +87,13 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(preload.includes('onAgentAssignmentRequested(callback)'));
   assert.ok(preload.includes('sendAgentMessage: (sessionId, message)'));
   assert.ok(preload.includes('readAgentReplies: (sessionId, messageIds)'));
+  assert.ok(main.includes("ipcMain.handle('app:direct-agent-send-message'"));
+  assert.ok(main.includes('safeStorage.encryptStringAsync'));
+  assert.ok(preload.includes('sendDirectAgentMessage: (agentId, message)'));
+  assert.ok(preload.includes('cancelDirectAgent: agentId'));
+  assert.ok(renderer.includes('showAgentCreateDialog'));
+  assert.ok(html.includes('agent-create-dialog'));
+  assert.ok(html.includes('agent-create-provider'));
   assert.ok(main.includes('function getWorkspaceRoot(sessionId = null)'));
   assert.ok(main.includes('settings.agentWorkspaces'));
   assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
@@ -117,7 +124,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal)'));
   assert.ok(main.includes("ipcMain.handle('app:agent-widget-delete'"));
   assert.ok(main.includes('settings.agentHiddenIds'));
-  assert.ok(preload.includes('deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false)'));
+  assert.ok(preload.includes('deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false, runtimeSessionId = null)'));
   assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));
   assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal)'));
 });
