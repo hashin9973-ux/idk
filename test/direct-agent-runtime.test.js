@@ -9,6 +9,7 @@ const {
   readCompletion,
   parseSlashToolCommand,
   formatSlashToolCatalog,
+  formatToolResultMarkdown,
   toApiMessages
 } = require('../desktop/direct-agent-runtime');
 const { getDirectAgentToolDefinitions } = require('../desktop/tool-bridge');
@@ -332,7 +333,7 @@ test('model invokes tools with assistant slash commands and receives local resul
   }
   assert.match(requests[0].messages[0].content, /AVAILABLE LOCAL SLASH COMMANDS/);
   assert.match(requests[0].messages[0].content, /\/read_file — Read a workspace file/);
-  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file {"path":"README.md"}'));
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path="README.md"'));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
   assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
   assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
@@ -386,6 +387,45 @@ test('native function-call output is rejected and the model is guided to the sla
   assert.ok(session.messages.some(message => message.kind === 'runtime_feedback'));
 });
 
+
+test('tool results are rendered as readable Markdown rather than serialized JSON', () => {
+  const rendered = formatToolResultMarkdown('project_status', {
+    protocol: 'local-tool-result/v2',
+    status: 'success',
+    result: {
+      isGitRepository: true,
+      detectedTechnologies: ['Node.js', 'TypeScript'],
+      project_support: {
+        support_level: 'ready',
+        missing_prerequisites: [],
+        build_commands: ['npm run build'],
+        test_commands: ['npm test']
+      }
+    }
+  });
+  assert.match(rendered, /^### Tool result: `\/project_status`/);
+  assert.match(rendered, /\*\*Status:\*\* success/);
+  assert.match(rendered, /\*\*Detected Technologies:\*\*/);
+  assert.match(rendered, /- Node\.js/);
+  assert.match(rendered, /\*\*Project Support:\*\*/);
+  assert.match(rendered, /npm run build/);
+  assert.doesNotMatch(rendered, /"protocol"|\{\s*"isGitRepository"/);
+});
+
+test('Markdown tool output preserves source and command text while redacting secret fields', () => {
+  const rendered = formatToolResultMarkdown('read_file', {
+    status: 'success',
+    result: {
+      path: 'config.js',
+      content: 'const answer = 42;\nconsole.log(answer);',
+      api_key: 'do-not-leak'
+    }
+  });
+  assert.match(rendered, /```[\s\S]*const answer = 42;[\s\S]*console\.log\(answer\);[\s\S]*```/);
+  assert.match(rendered, /\[redacted\]/);
+  assert.doesNotMatch(rendered, /do-not-leak/);
+});
+
 test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
   const apiMessages = toApiMessages([
     { role: 'user', content: 'Read a file.' },
@@ -399,8 +439,8 @@ test('legacy native tool-call history is converted to slash messages and untrust
   ]);
   assert.deepEqual(apiMessages, [
     { role: 'user', content: 'Read a file.' },
-    { role: 'assistant', content: '/read_file {"path":"README.md"}' },
-    { role: 'user', content: '[Untrusted local tool result from /read_file]\n{"status":"success","result":"file text"}' },
+    { role: 'assistant', content: '/read_file path="README.md"' },
+    { role: 'user', content: '[Untrusted local tool result from /read_file]\n### Tool result: `/read_file`\n- **Status:** success\n\n#### Result\n- **Result:** file text' },
     { role: 'assistant', content: 'Done.' }
   ]);
   assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_calls')));
