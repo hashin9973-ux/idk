@@ -389,7 +389,8 @@ function parseSlashToolCommand(input, availableTools = DIRECT_AGENT_TOOL_NAMES) 
   const trimmed = input.trim();
   const match = trimmed.match(/^\/([a-z][a-z0-9_]*)(?:\s+([\s\S]*))?$/i);
   if (!match) throw new Error('Slash commands use /tool_name followed by named arguments. Type / to browse available tools.');
-  const name = match[1];
+  const aliases = { project: 'project_status', status: 'project_status', ls: 'list_dir', tree: 'directory_tree', read: 'read_file', write: 'write_file', patch: 'apply_patch', run: 'shell', test: 'run_tests' };
+  const name = aliases[match[1]] || match[1];
   if (!Array.isArray(availableTools) || !availableTools.includes(name)) {
     throw new Error('Unknown local tool /' + name + '. Type / to browse available tools.');
   }
@@ -543,7 +544,7 @@ function createDirectAgentRuntime({
         'You are a local coding agent running inside the Windows desktop application.',
         'You are connected directly to the configured chat-completions API. Do not use a GitHub mailbox, bridge request files, or a separate chat interface.',
         config.systemPrompt || '',
-        'Use the available local tools to inspect and change the selected Windows workspace. Do not claim that an action completed unless its tool result confirms it.',
+        'Use the available local tools to inspect and change the selected Windows workspace. Start by discovering applicable AGENTS.md instructions and checking project status before implementation. Familiar aliases include /project, /status, /ls, /tree, /read, /write, /patch, /run and /test. Do not claim that an action completed unless its tool result confirms it.',
         'TOOL CALL PROTOCOL: Native API function/tool calling is not enabled. Invoke a local tool by returning a slash command as your entire assistant response, with no explanation, markdown fence, or extra text. Use exactly one command per response, then wait for the app to return the tool result before continuing.',
         'Preferred syntax: /tool_name argument=value other="text with spaces". Quote strings containing spaces. Use [one, two, three] for simple lists; use /batch steps="read_file path=README.md; git_status" for independent commands. Booleans are true/false and numbers are unquoted. Do not send JSON objects or JSON arrays.',
         'After each command, the app executes it on the Windows machine and adds a readable Markdown tool observation to the conversation. Read that result before deciding the next command. Use /batch for independent operations when its schema permits. Continue issuing commands until the task is complete, then answer normally.',
