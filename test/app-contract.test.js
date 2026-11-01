@@ -949,6 +949,16 @@ test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate'
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('does not assert a definitive license'));
 });
 
+test('direct agent creation exposes configurable prompt and sampling parameters',()=>{
+  const html=read('desktop','dashboard.html'),renderer=read('desktop','dashboard-renderer.js'),runtime=read('desktop','direct-agent-runtime.js');
+  assert.match(html,/id="agent-create-system-prompt"/);
+  for(const id of ['temperature','top-p','frequency-penalty','presence-penalty','max-tokens'])assert.match(html,new RegExp('agent-create-'+id));
+  assert.match(renderer,/payload\.systemPrompt=/);
+  assert.match(renderer,/payload\.topP=/);
+  assert.doesNotMatch(renderer,/body\.scrollTop\s*=\s*body\.scrollHeight/);
+  assert.match(runtime,/frequency_penalty: config\.frequencyPenalty/);
+});
+
 test('dashboard exposes agent widget addition, nickname and auto-dump controls',()=>{
   const fs=require('node:fs');const html=fs.readFileSync(require.resolve('../desktop/dashboard.html'),'utf8');const renderer=fs.readFileSync(require.resolve('../desktop/dashboard-renderer.js'),'utf8');const main=fs.readFileSync(require.resolve('../desktop/main.js'),'utf8');
   assert.match(html,/add-agent-widget/);assert.match(html,/widget-context-menu/);assert.match(renderer,/autoArrangeWidgets/);assert.match(renderer,/agent-dump-button/);assert.match(main,/app:agent-widget-settings/);assert.match(main,/app:agent-widget-add/);
