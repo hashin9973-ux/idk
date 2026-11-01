@@ -981,7 +981,18 @@ function createRepositoryBridge(deps = {}) {
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
     lastStatePublishAt = now;
     try {
-      await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
+      if (mailbox) {
+        if (mailbox) await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
+      else if (allowLegacyGitHubMailboxForTests === true) {
+        const legacyPath = 'bridge/state/windows-app.json';
+        const previous = await readRemoteFile(legacyPath);
+        await writeRemoteJson(legacyPath, { protocol: 'chatgpt-local-repo-state/v1', ...snapshot }, previous && previous.sha, false);
+      }
+      } else if (allowLegacyGitHubMailboxForTests === true) {
+        const legacyPath = 'bridge/state/windows-app.json';
+        const previous = await readRemoteFile(legacyPath);
+        await writeRemoteJson(legacyPath, { protocol: 'chatgpt-local-repo-state/v1', ...snapshot }, previous && previous.sha, false);
+      }
     } catch (error) {
       if (lastStatePublishAt === now) lastStatePublishAt = 0;
       lastError = 'Could not publish STATUS.md: ' + cleanError(error.message);
@@ -1116,8 +1127,15 @@ function createRepositoryBridge(deps = {}) {
       lines: snapshot.content.split(/\\r?\\n/).length,
       sha256: createHash('sha256').update(bytes).digest('hex')
     };
-    await publishState(true);
-    return { ok: true, path: 'STATUS.md', bytes: bytes.length, sha256: latestFilesystemIndexSnapshot.sha256, published_as_status_summary: true };
+    if (!mailbox && allowLegacyGitHubMailboxForTests === true) {
+      const legacyPath = 'bridge/context/filesystem-index.md';
+      const existing = await readRemoteContent(legacyPath);
+      await writeRemoteContent(legacyPath, bytes, existing && existing.sha);
+    } else {
+      await publishState(true);
+    }
+    return { ok: true, path: mailbox ? 'STATUS.md' : 'bridge/context/filesystem-index.md', bytes: bytes.length,
+      sha256: latestFilesystemIndexSnapshot.sha256, published_as_status_summary: Boolean(mailbox) };
   }
 
   async function publishWorkspaceFile(requestId, file) {
