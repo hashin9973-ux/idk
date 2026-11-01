@@ -984,14 +984,26 @@ function renderDirectLive(agentId){
   label.textContent=status||'AGENT · WORKING';content.textContent=text;
   body.scrollTop=body.scrollHeight;
 }
+function setDirectWidgetBusy(agentId,busy){
+  const card=agentWidgets.get(agentId);if(!card)return;
+  card.dataset.directBusy=busy?'true':'false';
+  const input=card.querySelector('.agent-message-composer input');if(input)input.disabled=busy;
+  const stop=card.querySelector('.agent-direct-stop');if(stop)stop.hidden=!busy;
+}
 api.onDirectAgentEvent(event=>{
   const id=event.agentId;if(typeof id!=='string')return;
   if(event.type==='delta')directLiveText.set(id,(directLiveText.get(id)||'')+String(event.delta||''));
   else if(event.type==='tool_started')directLiveStatus.set(id,'TOOL · '+String(event.tool||'running'));
   else if(event.type==='tool_completed')directLiveStatus.set(id,'TOOL · '+String(event.tool||'completed')+' · '+String(event.status||''));
-  else if(event.type==='status'){const status=String(event.status||'working').toLowerCase();if(['idle','error','interrupted'].includes(status)){directLiveStatus.delete(id);void refresh()}else directLiveStatus.set(id,status.toUpperCase())}
-  else if(event.type==='completed'){directLiveText.delete(id);directLiveStatus.delete(id);void refresh()}
-  else if(event.type==='error'){directLiveText.delete(id);directLiveStatus.set(id,'API ERROR');note('Direct agent '+id+': '+String(event.error||'request failed'),'error');void refresh()}
+  else if(event.type==='status'){
+    const status=String(event.status||'working').toLowerCase();
+    const terminal=['idle','error','interrupted'].includes(status);
+    setDirectWidgetBusy(id,!terminal);
+    if(terminal){directLiveText.delete(id);directLiveStatus.delete(id);void refresh()}
+    else directLiveStatus.set(id,status.toUpperCase());
+  }
+  else if(event.type==='completed'){setDirectWidgetBusy(id,false);directLiveText.delete(id);directLiveStatus.delete(id);void refresh()}
+  else if(event.type==='error'){setDirectWidgetBusy(id,false);directLiveText.delete(id);directLiveStatus.set(id,'API ERROR');note('Direct agent '+id+': '+String(event.error||'request failed'),'error');void refresh()}
   renderDirectLive(id);
 });
 

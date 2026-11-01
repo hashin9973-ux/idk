@@ -89,6 +89,12 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(preload.includes('readAgentReplies: (sessionId, messageIds)'));
   assert.ok(main.includes("ipcMain.handle('app:direct-agent-send-message'"));
   assert.ok(main.includes('safeStorage.encryptStringAsync'));
+  assert.ok(main.includes('decrypted.result'));
+  assert.ok(main.includes('decrypted.shouldReEncrypt === true'));
+  assert.ok(main.includes('const DIRECT_AGENT_ID_PATTERN = /^direct-agent-[0-9]{3,}$/;'));
+  assert.ok(main.includes("agentId = 'direct-agent-'"));
+  assert.ok(renderer.includes("const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^(?:agent|direct-agent)-[0-9]{3,}$/.test(agent.agent_id))"));
+  assert.ok(renderer.includes('function setDirectWidgetBusy(agentId,busy)'));
   assert.ok(preload.includes('sendDirectAgentMessage: (agentId, message)'));
   assert.ok(preload.includes('cancelDirectAgent: agentId'));
   assert.ok(renderer.includes('showAgentCreateDialog'));
