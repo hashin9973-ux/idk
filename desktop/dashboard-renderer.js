@@ -10,7 +10,15 @@ async function loadDirectAgentToolCatalog(){
   if(directAgentToolCatalog.length)return directAgentToolCatalog;
   if(!directAgentToolCatalogPromise){
     directAgentToolCatalogPromise=api.getDirectAgentTools().then(items=>{
-      directAgentToolCatalog=Array.isArray(items)?items.filter(item=>item&&item.type==='function'&&item.function&&typeof item.function.name==='string'): [];
+      const tools=Array.isArray(items)?items.filter(item=>item&&item.type==='function'&&item.function&&typeof item.function.name==='string'): [];
+      const byName=new Map(tools.map(item=>[item.function.name,item]));
+      const aliases={project:'project_status',ls:'list_dir',tree:'directory_tree',find:'glob_file_search',read:'read_file',write:'write_file',patch:'apply_patch',run:'shell',test:'run_tests',plan:'update_plan'};
+      const shortcuts=Object.entries(aliases).flatMap(([alias,target])=>{
+        const source=byName.get(target);
+        if(!source)return [];
+        return [{type:'function',function:{...source.function,name:alias,description:'Shortcut for /'+target+'. '+String(source.function.description||'')}}];
+      });
+      directAgentToolCatalog=[...tools,...shortcuts];
       return directAgentToolCatalog;
     }).catch(error=>{directAgentToolCatalogPromise=null;throw error});
   }
