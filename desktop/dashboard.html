@@ -28,6 +28,51 @@
 </div><p id="dashboard-message" class="inline-message" role="status" aria-live="polite"></p></section>
 <div id="agent-widget-host" class="agent-widget-host" aria-label="Independent agent terminals"></div>
 <div id="widget-context-menu" class="widget-context-menu" hidden><button type="button" data-widget-action="arrange">Auto arrange widgets</button><button type="button" data-widget-action="add-agent">Add agent widget</button></div>
+<dialog id="agent-create-dialog" class="agent-autodump-dialog agent-create-dialog">
+<form method="dialog">
+  <h3>Add agent widget</h3>
+  <label>Connection type
+    <select id="agent-create-provider">
+      <option value="bridge">ChatGPT / Windows Bridge mailbox</option>
+      <option value="openai-compatible">OpenAI-compatible API</option>
+      <option value="koboldcpp">KoboldCpp API</option>
+    </select>
+  </label>
+  <div id="agent-create-direct-fields" hidden>
+    <p class="agent-create-note">Direct mode sends chat straight to this API. It does not use the GitHub bridge mailbox. Local tools still execute through this app and retain its workspace and Windows approval controls.</p>
+    <label>API base URL
+      <input id="agent-create-endpoint" type="url" maxlength="2048" autocomplete="url" placeholder="https://api.openai.com/v1">
+    </label>
+    <label>Model ID
+      <input id="agent-create-model" type="text" maxlength="256" autocomplete="off" placeholder="Model name served by this endpoint">
+    </label>
+    <label>API key / password (optional)
+      <input id="agent-create-api-key" type="password" maxlength="4096" autocomplete="new-password" placeholder="Leave empty for unauthenticated local APIs">
+    </label>
+    <label>System prompt / custom instructions (optional)
+      <textarea id="agent-create-system-prompt" rows="5" maxlength="12000" placeholder="Set this agent's behavior, role, priorities, and response style"></textarea>
+    </label>
+    <fieldset class="agent-sampling-settings">
+      <legend>Sampling</legend>
+      <div class="agent-sampling-grid">
+        <label>Temperature <input id="agent-create-temperature" type="number" min="0" max="2" step="0.05" value="0.2"></label>
+        <label>Top-p <input id="agent-create-top-p" type="number" min="0" max="1" step="0.05" value="1"></label>
+        <label>Frequency penalty <input id="agent-create-frequency-penalty" type="number" min="-2" max="2" step="0.1" value="0"></label>
+        <label>Presence penalty <input id="agent-create-presence-penalty" type="number" min="-2" max="2" step="0.1" value="0"></label>
+        <label>Max response tokens <input id="agent-create-max-tokens" type="number" min="256" max="32768" step="256" value="8192"></label>
+      </div>
+      <p class="agent-create-note">Standard Chat Completions sampling parameters. An endpoint may ignore or reject parameters it does not support.</p>
+    </fieldset>
+    <p class="agent-create-note">The key is encrypted with Windows-backed secure storage and is never shared by cloud sync. Direct agents use slash-command tool calls; native API function calling is not sent.</p>
+  </div>
+  <p id="agent-create-error" class="agent-delete-error" role="alert"></p>
+  <div class="agent-autodump-actions">
+    <button id="agent-create-cancel" type="button">Cancel</button>
+    <button id="agent-create-confirm" type="button">Add agent</button>
+  </div>
+</form>
+</dialog>
+
 <dialog id="agent-autodump-dialog" class="agent-autodump-dialog"><form method="dialog"><h3 id="agent-autodump-title">Automatic history cleanup</h3><label>Keep most recent requests<input id="agent-autodump-count" type="number" min="0" max="500" step="1" value="0"></label><label>Dump requests older than (minutes)<input id="agent-autodump-age" type="number" min="0" max="10080" step="1" value="0"></label><label>Excluded tool names (comma-separated)<textarea id="agent-autodump-exclusions" rows="3" placeholder="e.g. tts, computer"></textarea></label><p>0 disables a threshold. Excluded tools are never hidden. This only cleans this widget’s displayed history; mailbox records are retained.</p><div class="agent-autodump-actions"><button id="agent-autodump-cancel" type="button">Cancel</button><button id="agent-autodump-save" type="button">Save</button></div></form></dialog>
 <dialog id="agent-delete-dialog" class="agent-autodump-dialog agent-delete-dialog"><form method="dialog"><h3>Delete agent widget</h3><p>This revokes the selected ChatGPT session and removes its dashboard widget. The reusable agent ID will remain available for a future conversation.</p><dl><dt>Agent ID</dt><dd id="agent-delete-agent-id"></dd><dt>Session ID</dt><dd id="agent-delete-session-id"></dd></dl><label class="agent-delete-wipe"><input id="agent-delete-wipe-mailbox" type="checkbox"> Wipe this agent's mailbox</label><p class="agent-delete-warning">Mailbox wiping deletes only records explicitly attributable to this session. Shared, incomplete, and active records are preserved.</p><p id="agent-delete-error" class="agent-delete-error" role="alert"></p><div class="agent-autodump-actions"><button id="agent-delete-cancel" type="button">Cancel</button><button id="agent-delete-confirm" type="button" class="agent-delete-confirm">Delete and revoke</button></div></form></dialog>
 <div id="agent-assignment-overlay" class="agent-assignment-overlay" hidden>

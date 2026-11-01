@@ -52,6 +52,15 @@
     return '$ ' + name + (argsText ? ' ' + argsText : '');
   }
 
+
+  function formatSlashCommand(tool, args) {
+    const name = String(tool || 'unknown_tool').replace(/[^a-zA-Z0-9_.:-]/g, '_');
+    const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+    const safe = redactValue(values);
+    const serialized = JSON.stringify(safe);
+    return '/' + name + (serialized && serialized !== '{}' ? ' ' + serialized : '');
+  }
+
   function formatRequestCommands(requestJson, fallbackTool) {
     const envelope = parseRecord(requestJson);
     if (!envelope) return formatSingle(fallbackTool, {});
@@ -87,5 +96,5 @@
     return lines.join('\n');
   }
 
-  return { parseRecord, formatRequestCommands, formatResultOutput };
+  return { parseRecord, formatRequestCommands, formatSlashCommand, formatResultOutput };
 });

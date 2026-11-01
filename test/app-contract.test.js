@@ -35,7 +35,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('agent-workspace-button'));
   assert.ok(!renderer.includes('agent-message-button'));
   assert.ok(renderer.includes("const composer=document.createElement('form')"));
-  assert.ok(renderer.includes('composer.append(input)'));
+  assert.ok(renderer.includes('composer.append(input,stopButton)'));
   assert.ok(renderer.includes('if(messageInput)'));
   assert.ok(renderer.includes("event.key==='Enter'"));
   assert.ok(renderer.includes('terminal.formatRequestCommands'));
@@ -47,13 +47,13 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(html.includes('agent-terminal.js'));
   assert.ok(main.includes('autoDismissMs: 6500'));
   assert.ok(renderer.includes('agent-delete-button'));
-  assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox)'));
+  assert.ok(renderer.includes('api.deleteAgentWidget(agentId,sessionId,wipeMailbox,runtimeSessionId)'));
   assert.ok(renderer.includes("cleanup.status!=='completed'"));
   assert.ok(bridge.includes("status: mailboxCleanup.status === 'completed' ? 'completed_with_preserved_records' : mailboxCleanup.status"));
   assert.ok(renderer.includes("button.textContent=pendingAgentDelete?'Retry mailbox wipe':'Delete and revoke'"));
   assert.ok(html.includes('agent-delete-dialog'));
   assert.ok(html.includes('agent-delete-wipe-mailbox'));
-  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,card.dataset.sessionId||null)'));
+  assert.ok(renderer.includes('api.selectAgentWorkspace(agent.agent_id,card.dataset.workspaceSessionId||card.dataset.sessionId||null)'));
   assert.ok(renderer.includes('api.onAgentAssignmentRequested(showAgentAssignment)'));
   assert.ok(renderer.includes('Select an agent ID or choose'));
   assert.ok(renderer.includes('const newAgentId=\'agent-\'+String(highestAgentNumber+1).padStart(3,\'0\')'));
@@ -68,7 +68,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('workspace_profile'));
   assert.ok(renderer.includes('workspace_shared_with'));
   assert.ok(renderer.includes('unread_message_count_partial'));
-  assert.ok(renderer.includes('api.setAgentWorkspaceFromRecent(agent.agent_id,card.dataset.sessionId||null,root)'));
+  assert.ok(renderer.includes('api.setAgentWorkspaceFromRecent(agent.agent_id,card.dataset.workspaceSessionId||card.dataset.sessionId||null,root)'));
   assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults = defaults'));
   assert.ok(main.includes('settings.agentWorkspaces = sessionOverrides'));
@@ -87,6 +87,25 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(preload.includes('onAgentAssignmentRequested(callback)'));
   assert.ok(preload.includes('sendAgentMessage: (sessionId, message)'));
   assert.ok(preload.includes('readAgentReplies: (sessionId, messageIds)'));
+  assert.ok(main.includes("ipcMain.handle('app:direct-agent-send-message'"));
+  assert.ok(main.includes('safeStorage.encryptStringAsync'));
+  assert.ok(main.includes('decrypted.result'));
+  assert.ok(main.includes('decrypted.shouldReEncrypt === true'));
+  assert.ok(main.includes('const DIRECT_AGENT_ID_PATTERN = /^direct-agent-[0-9]{3,}$/;'));
+  assert.ok(main.includes("agentId = 'direct-agent-'"));
+  assert.ok(renderer.includes("const agents=all.filter(agent=>agent&&typeof agent.agent_id==='string'&&/^(?:agent|direct-agent)-[0-9]{3,}$/.test(agent.agent_id))"));
+  assert.ok(renderer.includes('function setDirectWidgetBusy(agentId,busy)'));
+  assert.ok(preload.includes('sendDirectAgentMessage: (agentId, message)'));
+  assert.ok(preload.includes('cancelDirectAgent: agentId'));
+  assert.ok(main.includes("ipcMain.handle('app:direct-agent-tools'"));
+  assert.ok(preload.includes('getDirectAgentTools: () => ipcRenderer.invoke(\'app:direct-agent-tools\')'));
+  assert.ok(renderer.includes('function updateSlashMenu()'));
+  assert.ok(renderer.includes('message.split(/\\s/,1)[0]'));
+  assert.ok(renderer.includes('terminal.formatSlashCommand(call.function&&call.function.name,args)'));
+  assert.ok(styles.includes('.agent-slash-menu{position:absolute'));
+  assert.ok(renderer.includes('showAgentCreateDialog'));
+  assert.ok(html.includes('agent-create-dialog'));
+  assert.ok(html.includes('agent-create-provider'));
   assert.ok(main.includes('function getWorkspaceRoot(sessionId = null)'));
   assert.ok(main.includes('settings.agentWorkspaces'));
   assert.ok(main.includes('function selectAgentWorkspace(agentId, sessionId = null)'));
@@ -99,7 +118,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('onSessionAssigned: persistAssignedSessionWorkspace'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults'));
   assert.ok(main.includes('resolveAgentSessionWorkspaceRoot('));
-  assert.ok(main.includes('const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :'));
+  assert.ok(main.includes('const root = hasSessionOverride ? getWorkspaceRoot(workspaceSessionId) :'));
   assert.ok(main.includes('hasSessionOverride ? \'session\' : (hasSeatDefault ? \'agent-default\' : \'global-default\')'));
   assert.ok(renderer.includes('workspaceButton.disabled=false'));
   assert.ok(main.includes('app:agent-select-workspace'));
@@ -117,7 +136,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('executeTool: (tool, args, requestId, sessionId, signal) => toolBridge.runTool(tool, args, requestId, sessionId, false, signal)'));
   assert.ok(main.includes("ipcMain.handle('app:agent-widget-delete'"));
   assert.ok(main.includes('settings.agentHiddenIds'));
-  assert.ok(preload.includes('deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false)'));
+  assert.ok(preload.includes('deleteAgentWidget: (agentId, sessionId = null, wipeMailbox = false, runtimeSessionId = null)'));
   assert.ok(toolBridge.includes('getWorkspaceRoot(sessionId)'));
   assert.ok(toolBridge.includes('runTool(step.tool, resolvedArgs, childId, sessionId, false, parentSignal)'));
 });
@@ -930,6 +949,16 @@ test('local Piper uses LibriTTS High and a configurable CPU/RAM permission gate'
   assert.ok(read('THIRD_PARTY_NOTICES.md').includes('does not assert a definitive license'));
 });
 
+test('direct agent creation exposes configurable prompt and sampling parameters',()=>{
+  const html=read('desktop','dashboard.html'),renderer=read('desktop','dashboard-renderer.js'),runtime=read('desktop','direct-agent-runtime.js');
+  assert.match(html,/id="agent-create-system-prompt"/);
+  for(const id of ['temperature','top-p','frequency-penalty','presence-penalty','max-tokens'])assert.match(html,new RegExp('agent-create-'+id));
+  assert.match(renderer,/payload\.systemPrompt=/);
+  assert.match(renderer,/payload\.topP=/);
+  assert.doesNotMatch(renderer,/body\.scrollTop\s*=\s*body\.scrollHeight/);
+  assert.match(runtime,/frequency_penalty: config\.frequencyPenalty/);
+});
+
 test('dashboard exposes agent widget addition, nickname and auto-dump controls',()=>{
   const fs=require('node:fs');const html=fs.readFileSync(require.resolve('../desktop/dashboard.html'),'utf8');const renderer=fs.readFileSync(require.resolve('../desktop/dashboard-renderer.js'),'utf8');const main=fs.readFileSync(require.resolve('../desktop/main.js'),'utf8');
   assert.match(html,/add-agent-widget/);assert.match(html,/widget-context-menu/);assert.match(renderer,/autoArrangeWidgets/);assert.match(renderer,/agent-dump-button/);assert.match(main,/app:agent-widget-settings/);assert.match(main,/app:agent-widget-add/);
@@ -1026,7 +1055,7 @@ test('agent widget render, composer, workspace and context actions survive statu
   const styles = read('desktop', 'dashboard.css');
   assert.match(renderer, /requiredWidgetParts/);
   assert.match(renderer, /if\(messageInput\)\{/);
-  assert.match(renderer, /composer\.append\(input\)/);
+  assert.match(renderer, /composer\.append\(input(?:,stopButton)?\)/);
   assert.match(renderer, /api\.sendAgentMessage\(sessionId,message\)/);
   assert.match(renderer, /input\.addEventListener\('keydown'/);
   assert.match(renderer, /agent-pause-button/);

@@ -26,7 +26,8 @@ const {
 const { resolveWorkspaceRoot, resolveAgentSessionWorkspaceRoot, resolveSessionWorkspaceRoot, isFilesystemRoot, ensureWorkspaceDirectory } = require('./workspace-path');
 const localTools = require('./tool-runner');
 const { createGitHubAuth } = require('./github-auth');
-const { createToolBridge } = require('./tool-bridge');
+const { createToolBridge, getDirectAgentToolDefinitions } = require('./tool-bridge');
+const { createDirectAgentRuntime, normalizeDirectAgentConfig } = require('./direct-agent-runtime');
 const { createRepositoryBridge } = require('./repository-bridge');
 const { createVisionService, MAX_SCREENSHOT_BYTES, COLAB_NOTEBOOK_URL, parseTunnelEndpoint, normalizeSpeechText, splitSpeechIntoChunks } = require('./colab-direct-service');
 const { createLocalPiperTts, normalizeLocalTtsSettings } = require('./local-tts');
@@ -115,6 +116,14 @@ const DEFAULT_REPOSITORY_BRIDGE = Object.freeze({
 });
 const DASHBOARD_THEME_IDS = Object.freeze(['midnight', 'light', 'ocean', 'forest', 'sunset', 'rose', 'high-contrast', 'aurora', 'cyberpunk', 'dracula', 'nord', 'solarized-light', 'terminal', 'lavender', 'graphite']);
 
+const MAILBOX_AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
+const DIRECT_AGENT_ID_PATTERN = /^direct-agent-[0-9]{3,}$/;
+const AGENT_WIDGET_ID_PATTERN = /^(?:agent|direct-agent)-[0-9]{3,}$/;
+function agentWidgetNumber(value) {
+  const match = String(value || '').match(/([0-9]+)$/);
+  return match ? Number(match[1]) : 0;
+}
+
 let mainWindow = null;
 let dashboardWindow = null;
 let tray = null;
@@ -145,6 +154,7 @@ let autoConnectionError = '';
 let settings = {};
 let githubAuth = null;
 let toolBridge = null;
+let directAgentRuntime = null;
 let visionService = null;
 let localTtsService = null;
 let colabHandoffServer = null;
@@ -462,7 +472,7 @@ function selectWorkspace() {
 }
 
 function rememberAgentWorkspace(agentId, workspaceRoot) {
-  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+  if (typeof agentId !== 'string' || !AGENT_WIDGET_ID_PATTERN.test(agentId) ||
       typeof workspaceRoot !== 'string' || !workspaceRoot.trim() || workspaceRoot.length > 2048) return [];
   try {
     const resolved = path.resolve(workspaceRoot);
@@ -501,7 +511,7 @@ function queueWorkspaceInsight(workspaceRoot) {
 }
 
 async function applyRecentAgentWorkspace(agentId, sessionId, workspaceRoot) {
-  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId) ||
+  if (typeof agentId !== 'string' || !AGENT_WIDGET_ID_PATTERN.test(agentId) ||
       typeof workspaceRoot !== 'string' || !workspaceRoot.trim() || workspaceRoot.length > 2048) {
     throw new Error('A valid agent and recent workspace are required.');
   }
@@ -551,7 +561,7 @@ async function applyRecentAgentWorkspace(agentId, sessionId, workspaceRoot) {
 }
 
 async function selectAgentWorkspace(agentId, sessionId = null) {
-  if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
+  if (typeof agentId !== 'string' || !AGENT_WIDGET_ID_PATTERN.test(agentId)) {
     throw new Error('A valid agent ID is required to configure its workspace.');
   }
   if (sessionId !== null && (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
@@ -1354,6 +1364,85 @@ function encodeVisionJpeg(input) {
     ' (' + smallest.bytes.length + ' bytes). The image was not downscaled; use a larger supported transfer budget or a smaller display resolution.');
 }
 
+
+async function encryptDirectAgentApiKey(value) {
+  if (!value) return '';
+  if (!safeStorage || typeof safeStorage.isAsyncEncryptionAvailable !== 'function' ||
+      typeof safeStorage.encryptStringAsync !== 'function' ||
+      !(await safeStorage.isAsyncEncryptionAvailable())) {
+    throw new Error('OS-backed secure storage is unavailable. The API key was not saved.');
+  }
+  const encrypted = await safeStorage.encryptStringAsync(value);
+  return Buffer.from(encrypted).toString('base64');
+}
+
+async function decryptDirectAgentApiKey(agentId, value) {
+  if (typeof value !== 'string' || !value) return '';
+  if (!safeStorage || typeof safeStorage.isAsyncEncryptionAvailable !== 'function' ||
+      typeof safeStorage.decryptStringAsync !== 'function' ||
+      typeof safeStorage.encryptStringAsync !== 'function' ||
+      !(await safeStorage.isAsyncEncryptionAvailable())) {
+    throw new Error('OS-backed secure storage is temporarily unavailable; the API key cannot be read.');
+  }
+  const decrypted = await safeStorage.decryptStringAsync(Buffer.from(value, 'base64'));
+  if (!decrypted || typeof decrypted.result !== 'string') {
+    throw new Error('OS-backed secure storage returned an invalid decrypted value.');
+  }
+  if (decrypted.shouldReEncrypt === true) {
+    const rotated = await safeStorage.encryptStringAsync(decrypted.result);
+    const latest = directAgentConfigRecords()[agentId];
+    if (latest && latest.apiKeyEncrypted === value) {
+      settings.directAgentConfigs = {
+        ...directAgentConfigRecords(),
+        [agentId]: { ...latest, apiKeyEncrypted: Buffer.from(rotated).toString('base64') }
+      };
+      persistSettings();
+    }
+  }
+  return decrypted.result;
+}
+
+function directAgentConfigRecords() {
+  return settings.directAgentConfigs && typeof settings.directAgentConfigs === 'object' &&
+    !Array.isArray(settings.directAgentConfigs) ? settings.directAgentConfigs : {};
+}
+
+function directAgentSessionRecords() {
+  return settings.directAgentSessions && typeof settings.directAgentSessions === 'object' &&
+    !Array.isArray(settings.directAgentSessions) ? settings.directAgentSessions : {};
+}
+
+function saveDirectAgentSession(agentId, session) {
+  if (!DIRECT_AGENT_ID_PATTERN.test(String(agentId || '')) ||
+      !session || typeof session.sessionId !== 'string' ||
+      !/^session-[a-f0-9]{32}$/.test(session.sessionId) || !Array.isArray(session.messages)) {
+    throw new Error('The direct-agent session record is invalid.');
+  }
+  const existing = getDirectAgentSession(agentId);
+  if (!directAgentConfigRecords()[agentId] || !existing || existing.sessionId !== session.sessionId) {
+    throw new Error('The direct-agent session was removed or replaced.');
+  }
+  const records = { ...directAgentSessionRecords(), [agentId]: session };
+  settings.directAgentSessions = records;
+  persistSettings();
+}
+
+function getDirectAgentSession(agentId) {
+  const session = directAgentSessionRecords()[agentId];
+  if (!session || typeof session.sessionId !== 'string' ||
+      !/^session-[a-f0-9]{32}$/.test(session.sessionId) || !Array.isArray(session.messages)) return null;
+  return session;
+}
+
+async function getDirectAgentRuntimeConfig(agentId) {
+  const record = directAgentConfigRecords()[agentId];
+  if (!record || !['openai-compatible', 'koboldcpp'].includes(record.provider)) {
+    throw new Error('No direct API connection is configured for this agent.');
+  }
+  const apiKey = await decryptDirectAgentApiKey(agentId, record.apiKeyEncrypted);
+  return normalizeDirectAgentConfig({ ...record, apiKey });
+}
+
 function resolveWorkerStatus(state) {
   const current = state || (repositoryBridge ? repositoryBridge.getState() : {});
   return resolveMailboxWorkerStatus(current, autoConnectionStatus);
@@ -1376,6 +1465,32 @@ function enrichedBridgeState(state) {
     settings.agentKnownIds = knownList;
     persistSettings();
   }
+  const directConfigs = directAgentConfigRecords();
+  const directSessions = directAgentSessionRecords();
+  for (const [agentId, config] of Object.entries(directConfigs)) {
+    if (!DIRECT_AGENT_ID_PATTERN.test(agentId) || !config || !['openai-compatible', 'koboldcpp'].includes(config.provider)) continue;
+    const session = directSessions[agentId];
+    if (!session || typeof session.sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(session.sessionId)) continue;
+    const running = Boolean(directAgentRuntime && directAgentRuntime.isRunning(agentId));
+    byId.set(agentId, {
+      agent_id: agentId,
+      label: agentId,
+      connection_mode: 'direct',
+      provider: config.provider,
+      model: String(config.model || ''),
+      endpoint: String(config.endpoint || ''),
+      runtime_session_id: session.sessionId,
+      direct_messages: Array.isArray(session.messages) ? session.messages.slice(-160) : [],
+      direct_status: running ? 'running' : (session.status === 'running' ? 'interrupted' : (session.status || 'idle')),
+      direct_error: String(session.status === 'running' && !running ? (session.error || 'The application closed before the previous run finished.') : (session.error || '')),
+      status: running ? 'active' : 'inactive',
+      busy: running,
+      active_count: running ? 1 : 0,
+      queued_count: 0,
+      request_count: Array.isArray(session.messages) ? session.messages.length : 0,
+      requests: []
+    });
+  }
   for (const agentId of knownList) {
     if (/^agent-[0-9]{3,}$/.test(agentId) && !byId.has(agentId)) {
       byId.set(agentId, { agent_id: agentId, label: agentId, status: 'inactive', busy: false, session_id: null,
@@ -1389,9 +1504,9 @@ function enrichedBridgeState(state) {
   const nicknames = settings.agentNicknames && typeof settings.agentNicknames === 'object' ? settings.agentNicknames : {};
   const autoDump = settings.agentAutoDump && typeof settings.agentAutoDump === 'object' ? settings.agentAutoDump : {};
   const hiddenIds = new Set(Array.isArray(settings.agentHiddenIds)
-    ? settings.agentHiddenIds.filter(id => typeof id === 'string' && /^agent-[0-9]{3,}$/.test(id)) : []);
+    ? settings.agentHiddenIds.filter(id => typeof id === 'string' && AGENT_WIDGET_ID_PATTERN.test(id)) : []);
   for (const agent of byId.values()) if (agent && agent.session_id) hiddenIds.delete(agent.agent_id);
-  const normalizedHiddenIds = [...hiddenIds].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+  const normalizedHiddenIds = [...hiddenIds].sort((a, b) => agentWidgetNumber(a) - agentWidgetNumber(b));
   if (JSON.stringify(settings.agentHiddenIds || []) !== JSON.stringify(normalizedHiddenIds)) {
     settings.agentHiddenIds = normalizedHiddenIds;
     persistSettings();
@@ -1399,20 +1514,21 @@ function enrichedBridgeState(state) {
   let agentMailboxes = [...byId.values()].filter(agent => !hiddenIds.has(agent.agent_id)).map(agent => {
     const sessionId = typeof agent.session_id === 'string' && /^session-[a-f0-9]{32}$/.test(agent.session_id)
       ? agent.session_id : null;
-    const hasSessionOverride = Boolean(sessionId && typeof sessionOverrides[sessionId] === 'string');
+    const workspaceSessionId = sessionId || (agent.connection_mode === 'direct' && typeof agent.runtime_session_id === 'string' ? agent.runtime_session_id : null);
+    const hasSessionOverride = Boolean(workspaceSessionId && typeof sessionOverrides[workspaceSessionId] === 'string');
     const hasSeatDefault = typeof defaults[agent.agent_id] === 'string' && Boolean(defaults[agent.agent_id].trim());
     try {
-      const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :
+      const root = hasSessionOverride ? getWorkspaceRoot(workspaceSessionId) :
         hasSeatDefault ? resolveWorkspaceRoot(defaults[agent.agent_id], getWorkspaceRoot()) : getWorkspaceRoot();
       return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
         auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
-        workspace_root: root, workspace_custom: hasSessionOverride || hasSeatDefault,
+        workspace_root: root, workspace_session_id: workspaceSessionId, workspace_custom: hasSessionOverride || hasSeatDefault,
         recent_workspace_roots: Array.isArray(recentWorkspaceDefaults[agent.agent_id]) ? recentWorkspaceDefaults[agent.agent_id].filter(value => typeof value === 'string').slice(0, 5) : [],
         workspace_scope: hasSessionOverride ? 'session' : (hasSeatDefault ? 'agent-default' : 'global-default') };
     } catch (error) {
       return { ...agent, nickname: typeof nicknames[agent.agent_id] === 'string' ? nicknames[agent.agent_id] : '',
         auto_dump: autoDump[agent.agent_id] && typeof autoDump[agent.agent_id] === 'object' ? autoDump[agent.agent_id] : {},
-        workspace_root: '', workspace_custom: hasSessionOverride || hasSeatDefault,
+        workspace_root: '', workspace_session_id: workspaceSessionId, workspace_custom: hasSessionOverride || hasSeatDefault,
         recent_workspace_roots: Array.isArray(recentWorkspaceDefaults[agent.agent_id]) ? recentWorkspaceDefaults[agent.agent_id].filter(value => typeof value === 'string').slice(0, 5) : [],
         workspace_error: String(error && error.message || error).slice(0, 300) };
     }
@@ -1420,7 +1536,7 @@ function enrichedBridgeState(state) {
   for (const agent of agentMailboxes) if (agent.workspace_root) queueWorkspaceInsight(agent.workspace_root);
   const activeByWorkspace = new Map();
   for (const agent of agentMailboxes) {
-    if (!agent.session_id || (agent.status !== 'active' && agent.busy !== true) || !agent.workspace_root) continue;
+    if (!(agent.session_id || agent.runtime_session_id) || (agent.status !== 'active' && agent.busy !== true) || !agent.workspace_root) continue;
     const key = path.resolve(agent.workspace_root).toLowerCase();
     if (!activeByWorkspace.has(key)) activeByWorkspace.set(key, []);
     activeByWorkspace.get(key).push(agent.agent_id);
@@ -1767,7 +1883,7 @@ function normalizeDashboardState(input) {
   const widgetSource = source.widgets && typeof source.widgets === 'object' && !Array.isArray(source.widgets) ? source.widgets : {};
   const widgets = {};
   const widgetIds = ['queues', 'controls', ...Object.keys(widgetSource)
-    .filter(id => /^agent-[0-9]{3,}$/.test(id)).sort((a, b) => Number(a.slice(6)) - Number(b.slice(6))).slice(0, 200)];
+    .filter(id => AGENT_WIDGET_ID_PATTERN.test(id)).sort((a, b) => agentWidgetNumber(a) - agentWidgetNumber(b)).slice(0, 200)];
   for (const id of [...new Set(widgetIds)]) {
     const widget = widgetSource[id];
     if (!widget || typeof widget !== 'object' || Array.isArray(widget)) continue;
@@ -2451,25 +2567,65 @@ function registerIpc() {
     if (!projectIntelligence) throw new Error('Project intelligence is not initialized.');
     return projectIntelligence.refresh(getWorkspaceRoot(), { force: true });
   });
-  ipcMain.handle('app:agent-widget-add', event => {
+  ipcMain.handle('app:agent-widget-add', async (event, payload = {}) => {
     assertLocalUi(event, 'dashboard.html');
-    const known = new Set(Array.isArray(settings.agentKnownIds) ? settings.agentKnownIds : []);
-    const liveState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
-    for (const agent of Array.isArray(liveState.agentMailboxes) ? liveState.agentMailboxes : []) if (agent && /^agent-[0-9]{3,}$/.test(agent.agent_id)) known.add(agent.agent_id);
-    for (const id of Object.keys(settings.agentWorkspaceDefaults || {})) if (/^agent-[0-9]{3,}$/.test(id)) known.add(id);
-    const next = [...known].reduce((n, id) => Math.max(n, Number(String(id).slice(6)) || 0), 0) + 1;
-    const agentId = 'agent-' + String(next).padStart(3, '0');
-    known.add(agentId);
-    settings.agentKnownIds = [...known].sort((a, b) => Number(a.slice(6)) - Number(b.slice(6)));
+    const provider = String(payload && payload.provider || 'bridge').trim().toLowerCase();
+    let agentId;
+    if (provider === 'bridge') {
+      const known = new Set(Array.isArray(settings.agentKnownIds) ? settings.agentKnownIds.filter(id => MAILBOX_AGENT_ID_PATTERN.test(id)) : []);
+      const liveState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
+      for (const agent of Array.isArray(liveState.agentMailboxes) ? liveState.agentMailboxes : []) {
+        if (agent && MAILBOX_AGENT_ID_PATTERN.test(agent.agent_id)) known.add(agent.agent_id);
+      }
+      for (const id of Object.keys(settings.agentWorkspaceDefaults || {})) {
+        if (MAILBOX_AGENT_ID_PATTERN.test(id)) known.add(id);
+      }
+      const next = [...known].reduce((n, id) => Math.max(n, agentWidgetNumber(id)), 0) + 1;
+      agentId = 'agent-' + String(next).padStart(3, '0');
+      known.add(agentId);
+      settings.agentKnownIds = [...known].sort((a, b) => agentWidgetNumber(a) - agentWidgetNumber(b));
+    } else {
+      const config = normalizeDirectAgentConfig(payload);
+      const knownDirect = new Set([
+        ...(Array.isArray(settings.directAgentKnownIds) ? settings.directAgentKnownIds.filter(id => DIRECT_AGENT_ID_PATTERN.test(id)) : []),
+        ...Object.keys(directAgentConfigRecords()).filter(id => DIRECT_AGENT_ID_PATTERN.test(id))
+      ]);
+      const next = [...knownDirect].reduce((n, id) => Math.max(n, agentWidgetNumber(id)), 0) + 1;
+      agentId = 'direct-agent-' + String(next).padStart(3, '0');
+      knownDirect.add(agentId);
+      settings.directAgentKnownIds = [...knownDirect].sort((a, b) => agentWidgetNumber(a) - agentWidgetNumber(b));
+      const apiKeyEncrypted = await encryptDirectAgentApiKey(config.apiKey);
+      const sessionId = 'session-' + crypto.randomBytes(16).toString('hex');
+      settings.directAgentConfigs = {
+        ...directAgentConfigRecords(),
+        [agentId]: {
+          provider: config.provider, endpoint: config.endpoint, model: config.model,
+          systemPrompt: config.systemPrompt, temperature: config.temperature,
+          topP: config.topP, frequencyPenalty: config.frequencyPenalty,
+          presencePenalty: config.presencePenalty, maxTokens: config.maxTokens, apiKeyEncrypted
+        }
+      };
+      settings.directAgentSessions = {
+        ...directAgentSessionRecords(),
+        [agentId]: {
+          sessionId, messages: [], status: 'idle', error: '',
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+        }
+      };
+    }
+    const hidden = new Set(Array.isArray(settings.agentHiddenIds) ? settings.agentHiddenIds.filter(id => AGENT_WIDGET_ID_PATTERN.test(id)) : []);
+    hidden.delete(agentId);
+    settings.agentHiddenIds = [...hidden];
     persistSettings(); publishSharedState();
-    return { agentId };
+    return { agentId, connectionMode: provider === 'bridge' ? 'bridge' : 'direct' };
   });
   ipcMain.handle('app:agent-widget-delete', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
     const agentId = payload && payload.agentId;
     const sessionId = payload && payload.sessionId;
-    if (typeof agentId !== 'string' || !/^agent-[0-9]{3,}$/.test(agentId)) {
-      throw new Error('A valid agent ID is required to delete this widget.');
+    const runtimeSessionId = payload && payload.runtimeSessionId;
+    if (typeof agentId !== 'string' || !AGENT_WIDGET_ID_PATTERN.test(agentId)) {
+      throw new Error('A valid agent widget ID is required to delete this widget.');
     }
     if (sessionId !== null && sessionId !== undefined &&
         (typeof sessionId !== 'string' || !/^session-[a-f0-9]{32}$/.test(sessionId))) {
@@ -2481,6 +2637,32 @@ function registerIpc() {
     if (payload && payload.wipeMailbox === true && !sessionId) {
       throw new Error('Mailbox wiping requires a conversation session. This widget has no current session.');
     }
+    const directConfig = directAgentConfigRecords()[agentId];
+    if (DIRECT_AGENT_ID_PATTERN.test(agentId) && !directConfig) {
+      throw new Error('The selected direct API agent no longer exists. Refresh the dashboard before deleting it.');
+    }
+    if (directConfig) {
+      const directSession = getDirectAgentSession(agentId);
+      if (sessionId) throw new Error('A direct API widget has no GitHub mailbox session to revoke.');
+      if (!directSession || runtimeSessionId !== directSession.sessionId) {
+        throw new Error('The direct-agent session changed. Refresh the dashboard before deleting it.');
+      }
+      if (directAgentRuntime) directAgentRuntime.cancel(agentId);
+      const configs = { ...directAgentConfigRecords() }; delete configs[agentId];
+      const sessions = { ...directAgentSessionRecords() }; delete sessions[agentId];
+      settings.directAgentConfigs = configs;
+      settings.directAgentSessions = sessions;
+      const overrides = settings.agentWorkspaces && typeof settings.agentWorkspaces === 'object' &&
+        !Array.isArray(settings.agentWorkspaces) ? { ...settings.agentWorkspaces } : {};
+      delete overrides[directSession.sessionId];
+      settings.agentWorkspaces = overrides;
+      const hidden = new Set(Array.isArray(settings.agentHiddenIds) ? settings.agentHiddenIds : []);
+      hidden.add(agentId); settings.agentHiddenIds = [...hidden];
+      persistSettings();
+      broadcastBridgeState(repositoryBridge ? repositoryBridge.getState() : {});
+      return { revoked: true, direct: true, agent_id: agentId, session_id: directSession.sessionId };
+    }
+
     if (!repositoryBridge || typeof repositoryBridge.revokeAgentSession !== 'function') {
       throw new Error('The repository worker is unavailable; no widget was deleted.');
     }
@@ -2565,7 +2747,7 @@ function registerIpc() {
   });
   ipcMain.handle('app:agent-widget-settings', (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
-    if (!payload || typeof payload !== 'object' || !/^agent-[0-9]{3,}$/.test(String(payload.agentId || ''))) {
+    if (!payload || typeof payload !== 'object' || !AGENT_WIDGET_ID_PATTERN.test(String(payload.agentId || ''))) {
       throw new Error('A valid agent ID is required.');
     }
     const agentId = payload.agentId;
@@ -2658,6 +2840,30 @@ function registerIpc() {
       autoAssign: payload.autoAssign, agent_id: agentId, workspace_root: sessionWorkspace, message
     });
     return { accepted: true, cancelled: false };
+  });
+  ipcMain.handle('app:direct-agent-tools', event => {
+    assertLocalUi(event, 'dashboard.html');
+    return getDirectAgentToolDefinitions();
+  });
+  ipcMain.handle('app:direct-agent-send-message', async (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    const message = payload && payload.message;
+    if (typeof agentId !== 'string' || !DIRECT_AGENT_ID_PATTERN.test(agentId)) throw new Error('A valid direct-agent ID is required.');
+    if (!directAgentConfigRecords()[agentId] || !getDirectAgentSession(agentId)) throw new Error('The direct API agent is not configured.');
+    if (!directAgentRuntime) throw new Error('The direct-agent runtime is unavailable in this app build.');
+    if (directAgentRuntime.isRunning(agentId)) throw new Error('This agent is already working.');
+    void directAgentRuntime.sendMessage(agentId, message).catch(error => {
+      dashboardSend('app:direct-agent-event', { agentId, type: 'error', status: 'error', error: String(error && error.message || error).slice(0, 1000) });
+    });
+    return { accepted: true };
+  });
+  ipcMain.handle('app:direct-agent-cancel', (event, payload) => {
+    assertLocalUi(event, 'dashboard.html');
+    const agentId = payload && payload.agentId;
+    if (typeof agentId !== 'string' || !DIRECT_AGENT_ID_PATTERN.test(agentId)) throw new Error('A valid direct-agent ID is required.');
+    if (!directAgentConfigRecords()[agentId]) throw new Error('The direct API agent is not configured.');
+    return directAgentRuntime ? directAgentRuntime.cancel(agentId) : { cancelled: false };
   });
   ipcMain.handle('app:agent-send-message', async (event, payload) => {
     assertLocalUi(event, 'dashboard.html');
@@ -3109,7 +3315,7 @@ if (!hasInstanceLock) {
           getAgentLabelForSession: sessionId => {
             const rawState = repositoryBridge && typeof repositoryBridge.getState === 'function' ? repositoryBridge.getState() : {};
             const state = enrichedBridgeState(rawState);
-            const agent = Array.isArray(state.agentMailboxes) ? state.agentMailboxes.find(item => item && item.session_id === sessionId) : null;
+            const agent = Array.isArray(state.agentMailboxes) ? state.agentMailboxes.find(item => item && (item.session_id === sessionId || item.runtime_session_id === sessionId)) : null;
             if (!agent) return null;
             const nickname = typeof agent.nickname === 'string' ? agent.nickname.trim() : '';
             return { agentId: agent.agent_id, agentLabel: nickname ? nickname + ' · ' + agent.agent_id : agent.agent_id };
@@ -3117,6 +3323,23 @@ if (!hasInstanceLock) {
           onTtsRequest: showSpeechCaption,
           onTtsResult: finishSpeechCaption,
           visionService
+        });
+
+        directAgentRuntime = createDirectAgentRuntime({
+          getConfig: getDirectAgentRuntimeConfig,
+          getSession: getDirectAgentSession,
+          saveSession: saveDirectAgentSession,
+          getToolDefinitions: () => getDirectAgentToolDefinitions(),
+          executeTool: (tool, args, callId, sessionId, signal) => {
+            if (!toolBridge) throw new Error('The local tool bridge is unavailable.');
+            return toolBridge.runTool(tool, args, callId, sessionId, false, signal);
+          },
+          onEvent: event => {
+            dashboardSend('app:direct-agent-event', event);
+            if (['session', 'status', 'completed', 'error'].includes(event.type)) {
+              broadcastBridgeState(repositoryBridge ? repositoryBridge.getState() : {});
+            }
+          }
         });
 
         repositoryBridge = createRepositoryBridge({
@@ -3198,6 +3421,7 @@ app.on('before-quit', event => {
   autoConnectTimer = null;
   globalShortcut.unregisterAll();
   if (pendingGitHubCliLogin && pendingGitHubCliLogin.child) pendingGitHubCliLogin.child.kill();
+  if (directAgentRuntime && typeof directAgentRuntime.stop === 'function') directAgentRuntime.stop();
   if (repositoryBridge && !finishingQuit) {
     event.preventDefault();
     finishingQuit = true;
