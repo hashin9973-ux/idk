@@ -2228,31 +2228,30 @@ test('a conflicting immutable result is not mistaken for successful publication 
   await mailbox.writeJson('bridge/requests/' + requestId + '.json', request, null, true);
 
   let conflictWritten = false;
+  const resultPath = 'bridge/results/' + requestId + '.json';
+  const writeJson = mailbox.writeJson.bind(mailbox);
+  mailbox.writeJson = async (relativePath, value, expectedSha, createOnly) => {
+    if (!conflictWritten && relativePath === resultPath && createOnly === true) {
+      // Insert the exact worker-generated result with one additional literal JSON
+      // key before the worker's create-only publication reaches the adapter.
+      const conflictingResult = JSON.parse(JSON.stringify(value));
+      Object.defineProperty(conflictingResult, '__proto__', {
+        value: { unexpected: true }, enumerable: true, configurable: true, writable: true
+      });
+      const inserted = await writeJson(relativePath, conflictingResult, expectedSha, true);
+      assert.equal(inserted.ok, true, 'the conflicting result should be the first immutable file at this path');
+      conflictWritten = true;
+    }
+    return writeJson(relativePath, value, expectedSha, createOnly);
+  };
   const bridge = createRepositoryBridge({
     mailbox,
     ...{ settings, getSettings: () => settings, persistSettings: () => {} },
     getWorkspaceRoot: () => process.cwd(),
-    requestSessionAssignment: async () => {
-      return { autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' };
-    },
+    requestSessionAssignment: async () => ({
+      autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: ''
+    }),
     onSessionAssigned: async () => {},
-    onState: state => {
-      if (conflictWritten || !Array.isArray(state.agentMailboxes)) return;
-      const row = state.agentMailboxes.flatMap(agent => Array.isArray(agent.requests) ? agent.requests : [])
-        .find(item => item && item.request_id === requestId && item.status === 'publishing' &&
-          typeof item.result_json === 'string');
-      if (!row) return;
-      const conflictingResult = JSON.parse(row.result_json);
-      Object.defineProperty(conflictingResult, '__proto__', {
-        value: { unexpected: true }, enumerable: true, configurable: true, writable: true
-      });
-      require('node:fs').writeFileSync(
-        path.join(runtime, 'bridge', 'results', requestId + '.json'),
-        JSON.stringify(conflictingResult),
-        'utf8'
-      );
-      conflictWritten = true;
-    },
     executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
     intervalMs: 5000
   });
