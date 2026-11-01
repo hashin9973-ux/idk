@@ -192,6 +192,7 @@ function createRepositoryBridge(deps = {}) {
     getSettings,
     persistSettings,
     getWorkspaceRoot,
+    getWorkerVersion = () => 'unknown',
     executeTool,
     cancelTool = () => false,
     onState = () => {},
@@ -266,6 +267,8 @@ function createRepositoryBridge(deps = {}) {
   let lastPollDurationMs = null;
   let lastContextRefreshAt = 0;
   let lastContextWorkspace = '';
+  let latestFilesystemIndexSnapshot = null;
+  let latestToolCatalog = null;
   let contextRefreshInFlight = false;
   let mailboxCleanupInFlight = false;
   let lastMailboxCleanupAt = 0;
@@ -868,10 +871,63 @@ function createRepositoryBridge(deps = {}) {
     return cleanup;
   }
 
+  async function renderStatusMarkdown(snapshot) {
+    let inventory = { agents: [], count: 0 };
+    try { inventory = await agentRegistry.statuses(); }
+    catch (error) { inventory = { agents: [], count: 0, error: cleanError(error.message) }; }
+    const agents = (inventory.agents || []).map(agent => ({
+      id: agent.agent_id,
+      status: agent.status || 'unknown',
+      busy: agent.busy === true,
+      session: agent.paused ? 'paused' : agent.session_status === 'disconnected' ? 'disconnected' :
+        agent.session_status === 'revoked' ? 'revoked' : agent.session_id ? 'assigned' : 'unassigned',
+      last_activity: agent.last_activity_at || 'unknown',
+      active_requests: (agent.active_request_ids || []).length,
+      unread_messages: Number(agent.unread_message_count) || 0
+    }));
+    const tools = latestToolCatalog && Array.isArray(latestToolCatalog.tools)
+      ? latestToolCatalog.tools.map(tool => tool.name).filter(Boolean) : [];
+    const workspace = String(getWorkspaceRoot ? getWorkspaceRoot() : '');
+    const workspaceMode = (getSettings() || {}).workspaceMode || 'selected workspace';
+    const lines = [
+      '# Windows Bridge Status',
+      '',
+      '- Updated: ' + snapshot.updated_at,
+      '- Worker: ' + (snapshot.status === 'stopped' ? 'stopped' : 'online'),
+      '- Worker ID: ' + workerId,
+      '- Version: ' + String(getWorkerVersion() || 'unknown'),
+      '- Heartbeat: ' + (snapshot.updated_at || 'unknown'),
+      '- Health: ' + (snapshot.last_error ? 'attention' : 'healthy'),
+      '- Workspace: ' + (workspace || 'not selected'),
+      '- Workspace mode: ' + workspaceMode,
+      '- Transport: OneDrive-synchronized local folder',
+      '- Active requests: ' + snapshot.active_count,
+      '- Pending requests: ' + snapshot.pending_count,
+      '- Last poll: ' + (snapshot.last_poll_at || 'not yet polled'),
+      '- Last error: ' + (snapshot.last_error || 'none'),
+      '- Tool catalog: ' + tools.length + ' registered tools',
+      '',
+      '## Agent inventory',
+      '',
+      '| Agent | Status | Session | Busy | Active requests | Unread messages | Last activity |',
+      '|---|---|---|---:|---:|---:|---|'
+    ];
+    for (const agent of agents) lines.push('| ' + agent.id + ' | ' + agent.status + ' | ' + agent.session + ' | ' +
+      (agent.busy ? 'yes' : 'no') + ' | ' + agent.active_requests + ' | ' + agent.unread_messages + ' | ' + agent.last_activity + ' |');
+    if (!agents.length) lines.push('| none | inactive | unassigned | no | 0 | 0 | unknown |');
+    lines.push('', '## Registered tools', '', tools.length ? tools.map(name => '- ' + name).join('\n') : '- Tool catalog has not been published yet.',
+      '', '## Execution queue', '', '- Active request IDs: ' + (snapshot.active_request_ids.length ? snapshot.active_request_ids.join(', ') : 'none'),
+      '- Pending count: ' + snapshot.pending_count,
+      '- Polling: ' + (snapshot.request_polling.poll_in_flight ? 'in progress' : 'idle'),
+      '- Last poll duration: ' + (snapshot.request_polling.last_poll_duration_ms ?? 'unknown') + ' ms',
+      '', '## Observe', '', '- Observe context: see SCREEN.md',
+      '- Filesystem index: available through local workspace tools; not published as a separate mailbox file.', '');
+    return lines.join('\n');
+  }
+
   async function publishState(force = false) {
     const now = Date.now();
     const snapshot = {
-      protocol: 'chatgpt-local-repo-state/v1',
       worker_id: workerId,
       updated_at: new Date(now).toISOString(),
       status: running ? (activeRequestIds.size ? 'processing' : 'idle') : 'stopped',
@@ -891,19 +947,10 @@ function createRepositoryBridge(deps = {}) {
         stalled_operation_recovery_ms: operationRecoveryWindowMs,
         poll_in_flight: pollInFlight,
         poll_started_at: pollStartedAt ? new Date(pollStartedAt).toISOString() : null,
-        poll_timer_active: Boolean(timer),
-        request_commit_probe_interval_ms: mailbox ? null : FAST_REQUEST_COMMIT_POLL_INTERVAL_MS,
-        request_commit_probe_in_flight: mailbox ? false : requestCommitProbeInFlight,
-        request_commit_probe_started_at: !mailbox && requestCommitProbeStartedAt ? new Date(requestCommitProbeStartedAt).toISOString() : null,
-        request_commit_probe_timer_active: !mailbox && Boolean(requestCommitProbeTimer),
-        last_request_commit_probe_at: lastRequestCommitProbeAt,
-        last_request_commit_probe_duration_ms: lastRequestCommitProbeDurationMs,
-        last_request_commit_probe_error: lastRequestCommitProbeError
+        poll_timer_active: Boolean(timer)
       },
       last_error: lastError || null,
       workspace_selected: Boolean(getWorkspaceRoot && getWorkspaceRoot()),
-      context_path: 'AGENT.md',
-      artifact_root: 'sandbox storage/<agent-id>/',
       mailbox_cleanup: {
         retention_days: currentConfig().retentionDays,
         interval_ms: cleanupIntervalMs,
@@ -914,15 +961,12 @@ function createRepositoryBridge(deps = {}) {
       }
     };
     if (!force && now - lastStatePublishAt < 60 * 1000) return;
-    // Reserve the refresh window before network I/O so overlapping polls don't
-    // queue duplicate state writes. Result dispatch must not wait for this heartbeat.
     lastStatePublishAt = now;
     try {
-      const file = await readRemoteContent('STATUS.md');
-      await upsertRemoteContent('STATUS.md', renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
+      await upsertRemoteContent('STATUS.md', await renderStatusMarkdown(snapshot), '[local bridge] refresh live status');
     } catch (error) {
       if (lastStatePublishAt === now) lastStatePublishAt = 0;
-      lastError = 'Could not publish shared state: ' + cleanError(error.message);
+      lastError = 'Could not publish STATUS.md: ' + cleanError(error.message);
       announce();
     }
   }
