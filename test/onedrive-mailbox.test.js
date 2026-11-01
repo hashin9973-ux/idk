@@ -40,12 +40,16 @@ test('initialization uses Bridge as the mailbox root and creates only the five p
 test('mailbox paths allow only root Markdown files and agent-partitioned records', () => {
   assert.deepEqual(validateRelativePath('AGENT.md'), ['AGENT.md']);
   assert.deepEqual(validateRelativePath('request/agent-001/req-1.json'), ['request', 'agent-001', 'req-1.json']);
+  assert.deepEqual(validateRelativePath('messages/agent-001/msg-1730450000000-0123456789abcdef0123456789abcdef.json'),
+    ['messages', 'agent-001', 'msg-1730450000000-0123456789abcdef0123456789abcdef.json']);
+  assert.deepEqual(validateRelativePath('messages/agent-001/msg-1730450000000-0123456789abcdef0123456789abcdef.read.json'),
+    ['messages', 'agent-001', 'msg-1730450000000-0123456789abcdef0123456789abcdef.read.json']);
   assert.deepEqual(validateRelativePath('sandbox storage/agent-001/output.txt'), ['sandbox storage', 'agent-001', 'output.txt']);
   for (const value of [
     '', '../outside', 'request/../outside', 'request\\agent-001\\req.json',
     '/request/agent-001/req.json', 'bridge/request/agent-001/req.json',
     'runtime/request/agent-001/req.json', 'request/requests/req.json',
-    'request/agent-001/nested/req.json', 'context/agent-001/x.json'
+    'request/agent-001/nested/req.json', 'request/agent-001/req.txt', 'messages/agent-001/anything.json', 'context/agent-001/x.json'
   ]) assert.throws(() => validateRelativePath(value));
 });
 
