@@ -67,18 +67,17 @@ test('mailbox initialization never creates a missing Bridge root', async t => {
   await assert.rejects(fs.stat(bridgeRoot), { code: 'ENOENT' });
 });
 
-test('saved legacy Bridge/runtime setting resolves to the existing Bridge root without recreating runtime', async t => {
+test('saved Bridge/runtime setting is rejected rather than normalized to the mailbox root', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'onedrive-mailbox-legacy-setting-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
   await fs.mkdir(bridgeRoot, { recursive: true });
   const settings = { repositoryBridge: { oneDrivePath: path.join(bridgeRoot, 'runtime') } };
   const mailbox = createOneDriveMailbox({ getSettings: () => settings });
-  const state = await mailbox.ensureReady();
-  assert.equal(state.mailboxPath, bridgeRoot);
-  assert.equal(await fs.stat(bridgeRoot).then(stat => stat.isDirectory()), true);
-  await assert.rejects(fs.stat(path.join(bridgeRoot, 'runtime')), { code: 'ENOENT' });
-  assert.deepEqual((await fs.readdir(bridgeRoot)).sort(), [...BRIDGE_DIRECTORIES].sort());
+  assert.equal(mailbox.getState().configured, false);
+  assert.equal(mailbox.getState().status, 'not_configured');
+  await assert.rejects(mailbox.ensureReady(), /not configured/);
+  assert.deepEqual(await fs.readdir(bridgeRoot), [], 'invalid saved paths must not initialize or mutate mailbox contents');
 });
 
 test('OneDrive sync root detection finds the local OneDrive root for Bridge resolution', async t => {

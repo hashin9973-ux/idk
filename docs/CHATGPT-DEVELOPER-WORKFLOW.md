@@ -19,6 +19,10 @@ If the current conversation has no successful session_start result, create one i
 
 Ordinary requests go to request/<agent-id>/<request-id>.json and carry the exact returned session_id. Matching claims and results live in claims/<agent-id>/ and result/<agent-id>/. Requests, claims and results remain JSON; the four root Markdown files are guides and live context, not a Markdown task protocol.
 
+## Slash-style shortcuts
+
+Use familiar slash-style aliases in the ChatGPT conversation: /help reads AGENT.md and TOOLS.md; /status reads STATUS.md; /tools reads TOOLS.md; /screen reads SCREEN.md; /agents calls agent_status; /messages calls read_agent_messages; /workspace calls get_agent_context; /plan calls update_plan; /tasks <project-id> calls task_project_status and task_list; /inspect <path> calls read_file; and /test <command> calls run_tests. These are conversational aliases resolved by ChatGPT, not new Windows tools, a slash-command parser, or extra mailbox files. The complete live tool names and argument schemas remain in TOOLS.md.
+
 ## Coding loop
 
 1. Read STATUS.md and SCREEN.md; inspect workspace and project instructions.

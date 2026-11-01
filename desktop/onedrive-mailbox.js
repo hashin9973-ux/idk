@@ -79,7 +79,7 @@ function createOneDriveMailbox({
     if (selected) {
       if (!path.isAbsolute(selected)) return '';
       const resolved = path.resolve(selected);
-      if (path.basename(resolved).toLowerCase() === 'bridge' && path.basename(resolved) === 'Bridge') return resolved;
+      if (path.basename(resolved).toLowerCase() === 'bridge') return resolved;
       return '';
     }
     const detectedRoot = detectOneDriveSyncRoot(env, fsSync);

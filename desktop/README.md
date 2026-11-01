@@ -33,6 +33,10 @@ The selected workspace controls path-based file tools. The app rejects path trav
 
 Native approval is authoritative. Auto-accept everything is off by default and applies only after explicit user enablement. OneDrive requests cannot grant approval or override local policy. Do not weaken argument validation, workspace restrictions, path checks, secret protections, process timeouts or cancellation handling.
 
+## Slash-style shortcuts
+
+ChatGPT can use familiar aliases such as /help, /status, /tools, /screen, /agents, /messages, /workspace, /plan, /tasks <project-id>, /inspect <path> and /test <command>. AGENT.md maps these to the existing mailbox files and registered Windows tools. They are ChatGPT-facing shorthand only; the app does not add a second command parser or runtime.
+
 ## Coding tools and multi-agent work
 
 TOOLS.md is generated from the live worker registration. It is the authoritative tool catalog and includes exact names, descriptions, argument schemas, required fields, permission modes and result contracts. Support any language whose toolchain is actually installed on Windows; do not assume a compiler, SDK or version.

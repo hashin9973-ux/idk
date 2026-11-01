@@ -27,6 +27,10 @@ test('tool guide contains the exact live schemas, descriptions, permissions and 
   assert.match(markdown, /installed on the Windows machine/);
   assert.match(markdown, /Agent collaboration/);
   assert.match(markdown, /Desktop, vision and audio/);
+  assert.match(markdown, /Slash-style shortcuts/);
+  assert.ok(markdown.includes('| /status | Read STATUS.md. |'));
+  assert.ok(markdown.includes('| /agents | Invoke agent_status. |'));
+  assert.match(markdown, /not additional registered tools or a separate command protocol/);
   assert.match(markdown, /Batch and reference contract/);
   assert.match(markdown, /Up to 100 operations/);
   assert.doesNotMatch(markdown, /capabilities\.json|undefined/);

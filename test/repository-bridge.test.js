@@ -497,8 +497,15 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
   });
   try {
     await bridge.start();
-    await waitForAsync(async () => (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json'))?.value?.status === 'completed');
+    await waitForAsync(async () => {
+      const current = await mailbox.readJson('result/agent-000/' + bootstrapId + '.json');
+      return Boolean(current && ['completed', 'failed', 'rejected', 'cancelled', 'partial'].includes(current.value.status));
+    }, 5000);
     const bootstrapResult = (await mailbox.readJson('result/agent-000/' + bootstrapId + '.json')).value;
+    assert.equal(bootstrapResult.status, 'completed',
+      'bootstrap should complete locally; worker state: ' + JSON.stringify(bridge.getState()) +
+      '; session registry keys: ' + JSON.stringify(Object.keys(settings.agentRegistryRecords || {})) +
+      '; result: ' + JSON.stringify(bootstrapResult));
     const sessionId = bootstrapResult.result.result.session_id;
     const agentId = bootstrapResult.result.result.agent_id;
     assert.match(sessionId, /^session-[a-f0-9]{32}$/);
@@ -519,6 +526,39 @@ test('OneDrive mailbox bootstraps app-local sessions and routes ordinary request
     assert.equal(result.status, 'completed');
     assert.ok(await mailbox.readJson('claims/' + agentId + '/' + requestId + '.json'));
     assert.equal(result.result.result.platform, 'win32');
+    const projectRequestId = 'req-onedrive-task-project';
+    await mailbox.writeJson('request/' + agentId + '/' + projectRequestId + '.json', {
+      protocol: PROTOCOL, request_id: projectRequestId, created_at: new Date().toISOString(),
+      session_id: sessionId, tool: 'task_project_init', args: { name: 'OneDrive app-local coordination' }
+    }, null, true);
+    await bridge.pollOnce();
+    await waitForAsync(async () => {
+      const value = await mailbox.readJson('result/' + agentId + '/' + projectRequestId + '.json');
+      return Boolean(value && ['completed', 'failed', 'rejected'].includes(value.value.status));
+    });
+    const projectResult = (await mailbox.readJson('result/' + agentId + '/' + projectRequestId + '.json')).value;
+    assert.equal(projectResult.status, 'completed', JSON.stringify(projectResult));
+    const projectId = projectResult.result.result.project_id;
+    assert.ok(settings.agentRegistryRecords['local/projects/' + projectId + '.json']);
+
+    const taskRequestId = 'req-onedrive-task-create';
+    await mailbox.writeJson('request/' + agentId + '/' + taskRequestId + '.json', {
+      protocol: PROTOCOL, request_id: taskRequestId, created_at: new Date().toISOString(),
+      session_id: sessionId, tool: 'task_create', args: {
+        project_id: projectId, title: 'Verify local persistence', objective: 'Create a task in the Windows app registry',
+        acceptance_criteria: ['Task is stored in app settings'], scope_paths: ['src/bridge']
+      }
+    }, null, true);
+    await bridge.pollOnce();
+    await waitForAsync(async () => {
+      const value = await mailbox.readJson('result/' + agentId + '/' + taskRequestId + '.json');
+      return Boolean(value && ['completed', 'failed', 'rejected'].includes(value.value.status));
+    });
+    const taskResult = (await mailbox.readJson('result/' + agentId + '/' + taskRequestId + '.json')).value;
+    assert.equal(taskResult.status, 'completed', JSON.stringify(taskResult));
+    const taskId = taskResult.result.result.task_id;
+    assert.ok(settings.agentRegistryRecords['local/tasks/' + taskId + '.json']);
+    assert.equal((await fs.readdir(runtime)).some(name => ['tasks', 'projects', 'sessions', 'agents'].includes(name)), false);
     const status = await mailbox.readContent('STATUS.md');
     const statusText = status.content.toString('utf8');
     assert.match(statusText, /^# Windows Bridge Status/m);
@@ -2174,8 +2214,9 @@ test('optional mailbox wipe drains a revoked in-flight worker before deleting it
 test('a conflicting immutable result is not mistaken for successful publication on OneDrive', async t => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-result-conflict-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
-  const runtime = path.join(temp, 'OneDrive', 'Bridge', 'runtime');
-  const settings = { repositoryBridge: { oneDrivePath: runtime, retentionDays: 30 } };
+  const bridgeRoot = path.join(temp, 'OneDrive', 'Bridge');
+  await fs.mkdir(bridgeRoot, { recursive: true });
+  const settings = { repositoryBridge: { oneDrivePath: bridgeRoot, retentionDays: 30 } };
   const mailbox = createOneDriveMailbox({ getSettings: () => settings });
   await mailbox.ensureReady();
 
@@ -2187,10 +2228,10 @@ test('a conflicting immutable result is not mistaken for successful publication 
     tool: 'session_start',
     args: { label: 'Result conflict test' }
   };
-  await mailbox.writeJson('bridge/requests/' + requestId + '.json', request, null, true);
+  await mailbox.writeJson('request/agent-000/' + requestId + '.json', request, null, true);
 
   let conflictWritten = false;
-  const resultPath = 'bridge/results/' + requestId + '.json';
+  const resultPath = 'result/agent-000/' + requestId + '.json';
   const writeJson = mailbox.writeJson.bind(mailbox);
   mailbox.writeJson = async (relativePath, value, expectedSha, createOnly) => {
     if (!conflictWritten && relativePath === resultPath && createOnly === true) {
@@ -2222,12 +2263,12 @@ test('a conflicting immutable result is not mistaken for successful publication 
     const started = await bridge.start();
     assert.equal(started.transport, 'onedrive-synced-folder');
     await waitForAsync(async () => {
-      const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
+      const claim = await mailbox.readJson('claims/agent-000/' + requestId + '.json');
       return conflictWritten && Boolean(claim && claim.value.status === 'completed') &&
         bridge.getState().lastError.includes('contents do not match');
     });
     const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
-    const storedResult = await mailbox.readJson('bridge/results/' + requestId + '.json');
+    const storedResult = await mailbox.readJson('result/agent-000/' + requestId + '.json');
     assert.equal(claim.value.result.status, 'completed', 'the claim retains the worker-generated result for recovery');
     assert.ok(Number.isInteger(claim.value.result.timing_ms.mailbox_operations_before_result_publish));
     assert.ok(claim.value.result.timing_ms.mailbox_operations_before_result_publish > 0);
