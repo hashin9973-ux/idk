@@ -49,7 +49,7 @@ test('mailbox paths allow only root Markdown files and agent-partitioned records
   ]) assert.throws(() => validateRelativePath(value));
 });
 
-test('OneDrive sync root autodetection points directly to Bridge', async t => {
+test('OneDrive sync root detection finds the local OneDrive root for Bridge resolution', async t => {
   const { temp } = await makeMailbox(t);
   const consumer = path.join(temp, 'OneDriveConsumer');
   await fs.mkdir(path.join(consumer, 'Bridge'), { recursive: true });
@@ -59,7 +59,7 @@ test('OneDrive sync root autodetection points directly to Bridge', async t => {
 test('create-only agent requests are immutable and partitioned by agent', async t => {
   const { mailbox } = await makeMailbox(t);
   await mailbox.ensureReady();
-  const request = { protocol: 'chatgpt-local-repo-bridge/v1', request_id: 'req-1', agent_id: 'agent-001', tool: 'environment_info', args: {} };
+  const request = { protocol: 'chatgpt-local-repo-bridge/v1', request_id: 'req-1', tool: 'environment_info', args: {} };
   const first = await mailbox.writeJson('request/agent-001/req-1.json', request, null, true);
   assert.equal(first.ok, true);
   assert.match(first.sha, /^[a-f0-9]{64}$/);
@@ -78,7 +78,8 @@ test('claims and results use the same request ID inside the owning agent folder'
   await mailbox.writeJson('result/agent-007/r-123.json', { request_id: 'r-123', agent_id: 'agent-007', status: 'completed' }, null, true);
   assert.equal((await mailbox.readJson('claims/agent-007/r-123.json')).value.request_id, 'r-123');
   assert.equal((await mailbox.readJson('result/agent-007/r-123.json')).value.request_id, 'r-123');
-  await assert.rejects(mailbox.writeJson('result/agent-008/r-123.json', { request_id: 'r-123' }, null, true), /partitioned/);
+  await mailbox.writeJson('result/agent-008/r-123.json', { request_id: 'r-123', status: 'completed' }, null, true);
+  assert.equal((await mailbox.readJson('result/agent-008/r-123.json')).value.request_id, 'r-123');
 });
 
 test('Markdown control files can be published at the mailbox root', async t => {
