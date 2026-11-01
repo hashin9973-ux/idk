@@ -210,7 +210,6 @@ function scaleWavVolume(audio, requestedVolume = 100) {
 
 function createVisionService(deps) {
   const {
-    githubAuth,
     mailbox = null,
     getSettings,
     getWorkspaceRoot,
