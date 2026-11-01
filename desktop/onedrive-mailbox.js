@@ -435,11 +435,16 @@ function createOneDriveMailbox({
     for (const relative of BRIDGE_DIRECTORIES) {
       await ensureDirectory(path.join(root, relative));
     }
-    const probe = path.join(root, 'request', '.windows-bridge-write-check-' + crypto.randomUUID());
-    const handle = await fsImpl.open(probe, 'wx');
-    try { await handle.writeFile('ok'); await handle.sync(); }
-    finally { await handle.close(); }
-    await fsImpl.unlink(probe);
+    const probe = path.join(root, 'request', '.windows-bridge-write-check-' + crypto.randomUUID() + '.json');
+    let handle = null;
+    try {
+      handle = await fsImpl.open(probe, 'wx');
+      await handle.writeFile('ok');
+      await handle.sync();
+    } finally {
+      if (handle) await handle.close().catch(() => {});
+      await fsImpl.unlink(probe).catch(() => {});
+    }
     return getState();
   }
 
