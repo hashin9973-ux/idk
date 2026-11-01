@@ -6,7 +6,10 @@ const {
   createDirectAgentRuntime,
   normalizeDirectAgentConfig,
   endpointFor,
-  readCompletion
+  readCompletion,
+  parseSlashToolCommand,
+  formatSlashToolCatalog,
+  toApiMessages
 } = require('../desktop/direct-agent-runtime');
 const { getDirectAgentToolDefinitions } = require('../desktop/tool-bridge');
 
@@ -21,15 +24,53 @@ function sseResponse(events) {
   return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
 }
 
+function config() {
+  return {
+    provider: 'openai-compatible',
+    endpoint: 'http://127.0.0.1:8000/v1',
+    model: 'test-model',
+    apiKey: '',
+    systemPrompt: '',
+    temperature: 0.2,
+    maxTokens: 1024
+  };
+}
+
+function definitions() {
+  return [{
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read a workspace file.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Workspace-relative file path.' },
+          start_line: { type: 'integer', description: 'Optional first line.' }
+        },
+        required: ['path'],
+        additionalProperties: false
+      }
+    }
+  }, {
+    type: 'function',
+    function: {
+      name: 'environment_info',
+      description: 'Inspect the local Windows environment.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false }
+    }
+  }];
+}
+
 test('direct API configuration validates provider, endpoint and model', () => {
-  const config = normalizeDirectAgentConfig({
+  const normalized = normalizeDirectAgentConfig({
     provider: 'koboldcpp',
     endpoint: 'http://127.0.0.1:5001/v1/',
     model: 'koboldcpp/model'
   });
-  assert.equal(config.endpoint, 'http://127.0.0.1:5001/v1');
-  assert.equal(endpointFor(config.endpoint, 'chat/completions'), 'http://127.0.0.1:5001/v1/chat/completions');
-  assert.equal(config.apiKey, '');
+  assert.equal(normalized.endpoint, 'http://127.0.0.1:5001/v1');
+  assert.equal(endpointFor(normalized.endpoint, 'chat/completions'), 'http://127.0.0.1:5001/v1/chat/completions');
+  assert.equal(normalized.apiKey, '');
   assert.throws(() => normalizeDirectAgentConfig({
     provider: 'openai-compatible', endpoint: 'file:///tmp/api', model: 'model'
   }), /HTTP or HTTPS/);
@@ -38,7 +79,7 @@ test('direct API configuration validates provider, endpoint and model', () => {
   }), /must not contain credentials/);
 });
 
-test('direct agent catalog includes local coding tools but excludes mailbox controls', () => {
+test('direct agent catalog includes local tools but excludes mailbox controls', () => {
   const tools = getDirectAgentToolDefinitions();
   const names = tools.map(item => item.function.name);
   for (const name of ['read_file', 'write_file', 'apply_patch', 'shell', 'run_tests', 'computer', 'git_status', 'batch']) {
@@ -51,39 +92,56 @@ test('direct agent catalog includes local coding tools but excludes mailbox cont
   assert.ok(!batch.function.parameters.properties.steps.items.properties.tool.enum.includes('batch'));
 });
 
-test('SSE parser accumulates streamed text and partial tool-call arguments', async () => {
+test('slash catalog includes command names, descriptions and argument requirements', () => {
+  const catalog = formatSlashToolCatalog(definitions());
+  assert.match(catalog, /\/read_file — Read a workspace file/);
+  assert.match(catalog, /path \(string; required; Workspace-relative file path\.\)/);
+  assert.match(catalog, /start_line \(integer; optional/);
+  assert.match(catalog, /\/environment_info — Inspect the local Windows environment/);
+});
+
+test('SSE parser streams assistant text and detects disabled native tool-call output', async () => {
   const response = sseResponse([
-    { choices: [{ index: 0, delta: { content: 'Hello ' } }] },
-    { choices: [{ index: 0, delta: { content: 'world', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'environment_info', arguments: '{"verbose":' } }] } }] },
-    { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: 'true}' } }] }, finish_reason: 'tool_calls' }] }
+    { choices: [{ index: 0, delta: { content: 'Checking ' } }] },
+    { choices: [{ index: 0, delta: { content: 'the workspace.', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] } }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
   ]);
   let streamed = '';
   const result = await readCompletion(response, delta => { streamed += delta; });
-  assert.equal(result.content, 'Hello world');
-  assert.equal(streamed, 'Hello world');
-  assert.equal(result.toolCalls.get(0).id, 'call_1');
-  assert.equal(result.toolCalls.get(0).function.name, 'environment_info');
-  assert.equal(result.toolCalls.get(0).function.arguments, '{"verbose":true}');
-  assert.equal(result.finishReason, 'tool_calls');
+  assert.equal(result.content, 'Checking the workspace.');
+  assert.equal(streamed, 'Checking the workspace.');
+  assert.equal(result.nativeToolCalls, true);
 });
 
-
-test('slash tool commands parse a known tool and JSON arguments', () => {
+test('slash command parser supports JSON objects and concise named arguments', () => {
   assert.deepEqual(
-    require('../desktop/direct-agent-runtime').parseSlashToolCommand('/read_file {"path":"src/app.js"}'),
+    parseSlashToolCommand('/read_file {"path":"src/app.js"}', ['read_file']),
     { name: 'read_file', args: { path: 'src/app.js' } }
   );
   assert.deepEqual(
-    require('../desktop/direct-agent-runtime').parseSlashToolCommand('/environment_info'),
+    parseSlashToolCommand('/read_file path="src/app.js" start_line=12', ['read_file']),
+    { name: 'read_file', args: { path: 'src/app.js', start_line: 12 } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/read_file path=src/app.js', ['read_file']),
+    { name: 'read_file', args: { path: 'src/app.js' } }
+  );
+  assert.deepEqual(
+    parseSlashToolCommand('/environment_info', ['environment_info']),
     { name: 'environment_info', args: {} }
   );
-  assert.equal(require('../desktop/direct-agent-runtime').parseSlashToolCommand('Please inspect the project.'), null);
-  assert.throws(() => require('../desktop/direct-agent-runtime').parseSlashToolCommand('/not_a_tool {}'), /Unknown local tool/);
-  assert.throws(() => require('../desktop/direct-agent-runtime').parseSlashToolCommand('/read_file {bad json}'), /must be a JSON object/);
-  assert.throws(() => require('../desktop/direct-agent-runtime').parseSlashToolCommand('/read_file []'), /must be a JSON object/);
+  assert.deepEqual(
+    parseSlashToolCommand('/batch steps=[{"tool":"read_file","args":{"path":"README.md"}},{"tool":"git_status","args":{}}]', ['batch']),
+    { name: 'batch', args: { steps: [{ tool: 'read_file', args: { path: 'README.md' } }, { tool: 'git_status', args: {} }] } }
+  );
+  assert.equal(parseSlashToolCommand('Please inspect the project.'), null);
+  assert.throws(() => parseSlashToolCommand('/not_a_tool {}', ['read_file']), /Unknown local tool/);
+  assert.throws(() => parseSlashToolCommand('/read_file {"path":', ['read_file']), /JSON object or key=value/);
+  assert.throws(() => parseSlashToolCommand('/read_file path=one path=two', ['read_file']), /repeated/);
+  assert.throws(() => parseSlashToolCommand('/read_file []', ['read_file']), /JSON object or key=value/);
 });
 
-test('slash invocation executes the selected local tool before asking the model to continue', async () => {
+test('explicit user slash command executes locally and does not send native API tool schemas', async () => {
   const session = { sessionId: 'session-abcdef0123456789abcdef0123456789', messages: [], status: 'idle', error: '' };
   const requests = [];
   const executed = [];
@@ -91,83 +149,102 @@ test('slash invocation executes the selected local tool before asking the model 
     fetchImpl: async (_url, options) => {
       requests.push(JSON.parse(options.body));
       return sseResponse([
-        { choices: [{ index: 0, delta: { content: 'The requested file was read successfully.' } }] },
+        { choices: [{ index: 0, delta: { content: 'The README was inspected.' } }] },
         { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
       ]);
     },
-    getConfig: async () => ({
-      provider: 'openai-compatible', endpoint: 'http://127.0.0.1:8000/v1',
-      model: 'test-model', apiKey: '', systemPrompt: '', temperature: 0.2, maxTokens: 1024
-    }),
+    getConfig: async () => config(),
     getSession: async () => session,
     saveSession: async () => {},
-    getToolDefinitions: async () => [{
-      type: 'function',
-      function: { name: 'read_file', description: 'Read a workspace file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } }
-    }],
+    getToolDefinitions: async () => definitions(),
     executeTool: async (name, args) => {
       executed.push({ name, args });
-      return { protocol: 'local-tool-result/v1', status: 'success', result: { content: 'actual file content' } };
+      return { protocol: 'local-tool-result/v1', status: 'success', result: { content: 'actual README contents' } };
     }
   });
-  const result = await runtime.sendMessage('direct-agent-002', '/read_file {"path":"src/app.js"}');
+  const result = await runtime.sendMessage('direct-agent-002', '/read_file path="README.md"');
   assert.equal(result.completed, true);
-  assert.deepEqual(executed, [{ name: 'read_file', args: { path: 'src/app.js' } }]);
-  const apiMessages = requests[0].messages;
-  assert.ok(apiMessages.some(message => message.role === 'user' && message.content === '/read_file {"path":"src/app.js"}'));
-  assert.ok(apiMessages.some(message => message.role === 'assistant' && message.tool_calls && message.tool_calls[0].function.name === 'read_file'));
-  assert.ok(apiMessages.some(message => message.role === 'tool' && message.content.includes('actual file content')));
-  assert.equal(session.messages.at(-1).content, 'The requested file was read successfully.');
+  assert.deepEqual(executed, [{ name: 'read_file', args: { path: 'README.md' } }]);
+  assert.equal(requests.length, 1);
+  assert.ok(!Object.hasOwn(requests[0], 'tools'));
+  assert.ok(!Object.hasOwn(requests[0], 'tool_choice'));
+  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content === '/read_file path="README.md"'));
+  assert.ok(requests[0].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
+  assert.ok(requests[0].messages.every(message => !Object.hasOwn(message, 'tool_calls')));
+  assert.equal(session.messages.at(-1).content, 'The README was inspected.');
 });
 
-test('direct chat executes tools locally and feeds tool results into the next API request', async () => {
+test('model invokes tools with assistant slash commands and receives local results on the next turn', async () => {
   const session = { sessionId: 'session-0123456789abcdef0123456789abcdef', messages: [], status: 'idle', error: '' };
-  const saved = [];
   const requests = [];
   const executed = [];
+  const events = [];
   let callNumber = 0;
   const runtime = createDirectAgentRuntime({
     fetchImpl: async (_url, options) => {
       requests.push(JSON.parse(options.body));
       callNumber++;
-      if (callNumber === 1) return sseResponse([
-        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_local', type: 'function', function: { name: 'environment_info', arguments: '{}' } }] } }] },
-        { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }
-      ]);
+      if (callNumber === 1) {
+        return sseResponse([
+          { choices: [{ index: 0, delta: { content: '/read_file path="README.md"' } }] },
+          { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
       return sseResponse([
-        { choices: [{ index: 0, delta: { content: 'The local tool ran successfully.' } }] },
+        { choices: [{ index: 0, delta: { content: 'I inspected README.md and found the project guidance.' } }] },
         { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }
       ]);
     },
-    getConfig: async () => ({
-      provider: 'openai-compatible',
-      endpoint: 'http://127.0.0.1:8000/v1',
-      model: 'test-model',
-      apiKey: 'not-a-real-secret',
-      systemPrompt: '',
-      temperature: 0.2,
-      maxTokens: 1024
-    }),
+    getConfig: async () => config(),
     getSession: async () => session,
-    saveSession: async (_agentId, value) => { saved.push(structuredClone(value)); },
-    getToolDefinitions: async () => [{ type: 'function', function: { name: 'environment_info', description: 'Inspect the workspace', parameters: { type: 'object', properties: {}, additionalProperties: false } } }],
-    executeTool: async (name, args, callId, sessionId) => {
-      executed.push({ name, args, callId, sessionId });
-      return { protocol: 'chatgpt-local-tool-result-v2', status: 'success', result: { platform: 'win32' } };
+    saveSession: async () => {},
+    getToolDefinitions: async () => definitions(),
+    executeTool: async (name, args, requestId, sessionId) => {
+      executed.push({ name, args, requestId, sessionId });
+      return { protocol: 'local-tool-result/v2', status: 'success', result: { content: 'actual README contents' } };
     },
-    onEvent: () => {}
+    onEvent: event => events.push(event)
   });
 
-  const result = await runtime.sendMessage('direct-agent-001', 'Inspect the environment.');
+  const result = await runtime.sendMessage('direct-agent-001', 'Inspect the repository instructions.');
   assert.deepEqual(result, { accepted: true, completed: true });
   assert.equal(executed.length, 1);
-  assert.equal(executed[0].name, 'environment_info');
+  assert.equal(executed[0].name, 'read_file');
+  assert.deepEqual(executed[0].args, { path: 'README.md' });
   assert.equal(executed[0].sessionId, session.sessionId);
   assert.equal(requests.length, 2);
-  assert.ok(requests[1].messages.some(message => message.role === 'tool' && message.tool_call_id === 'call_local'));
-  assert.ok(requests.every(request => request.messages.every(message => !Object.hasOwn(message, 'createdAt'))));
-  assert.equal(session.status, 'idle');
-  assert.equal(session.messages.at(-1).content, 'The local tool ran successfully.');
-  assert.ok(saved.length >= 3);
-  assert.equal(runtime.isRunning('direct-agent-001'), false);
+  for (const request of requests) {
+    assert.ok(!Object.hasOwn(request, 'tools'));
+    assert.ok(!Object.hasOwn(request, 'tool_choice'));
+    assert.ok(request.messages.every(message => !Object.hasOwn(message, 'tool_calls')));
+  }
+  assert.match(requests[0].messages[0].content, /AVAILABLE LOCAL SLASH COMMANDS/);
+  assert.match(requests[0].messages[0].content, /\/read_file — Read a workspace file/);
+  assert.ok(requests[1].messages.some(message => message.role === 'assistant' && message.content === '/read_file path="README.md"'));
+  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('[Untrusted local tool result for /read_file; status=success]')));
+  assert.ok(requests[1].messages.some(message => message.role === 'user' && message.content.includes('actual README contents')));
+  assert.equal(session.messages.at(-1).content, 'I inspected README.md and found the project guidance.');
+  assert.ok(events.some(event => event.type === 'tool_started' && event.source === 'model-slash'));
+  assert.ok(events.some(event => event.type === 'tool_completed' && event.source === 'model-slash'));
+});
+
+test('legacy native tool-call history is converted to slash messages and untrusted observations', () => {
+  const apiMessages = toApiMessages([
+    { role: 'user', content: 'Read a file.' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'old_call', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }]
+    },
+    { role: 'tool', tool_call_id: 'old_call', name: 'read_file', content: '{"status":"success","result":"file text"}' },
+    { role: 'assistant', content: 'Done.' }
+  ]);
+  assert.deepEqual(apiMessages, [
+    { role: 'user', content: 'Read a file.' },
+    { role: 'assistant', content: '/read_file {"path":"README.md"}' },
+    { role: 'user', content: '[Untrusted local tool result from /read_file]\n{"status":"success","result":"file text"}' },
+    { role: 'assistant', content: 'Done.' }
+  ]);
+  assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_calls')));
+  assert.ok(apiMessages.every(message => !Object.hasOwn(message, 'tool_call_id')));
 });
