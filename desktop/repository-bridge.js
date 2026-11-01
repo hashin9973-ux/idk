@@ -745,9 +745,99 @@ function createRepositoryBridge(deps = {}) {
     }
   }
 
+  // Agent/session ownership is authoritative in this Windows app's existing
+  // persistent settings store. These logical local/* records never enter OneDrive.
+  const LOCAL_REGISTRY_PREFIX = 'local/';
+  function localRegistryRecords() {
+    const settings = getSettings() || {};
+    if (!settings.agentRegistryRecords || typeof settings.agentRegistryRecords !== 'object' ||
+        Array.isArray(settings.agentRegistryRecords)) settings.agentRegistryRecords = {};
+    return settings.agentRegistryRecords;
+  }
+  function localRecordSha(value) {
+    return createHash('sha256').update(JSON.stringify(value, null, 2) + '\\n', 'utf8').digest('hex');
+  }
+  function localRegistryPath(value) {
+    if (typeof value !== 'string' || !/^local\\/(?:agents|sessions|revoked-sessions|evicted-sessions)\\/[A-Za-z0-9_.-]+\\.json$/.test(value)) {
+      throw new Error('Invalid app-local agent registry key.');
+    }
+    return value;
+  }
+  async function readLocalRegistryFile(relativePath) {
+    const key = localRegistryPath(relativePath);
+    const records = localRegistryRecords();
+    if (!Object.prototype.hasOwnProperty.call(records, key)) return null;
+    const value = records[key];
+    return { value, sha: localRecordSha(value), entry: { type: 'file', sha: localRecordSha(value) } };
+  }
+  async function listLocalRegistryFolder(relativePath) {
+    if (!/^local\\/(?:agents|sessions|revoked-sessions|evicted-sessions)$/.test(String(relativePath || ''))) {
+      throw new Error('Invalid app-local agent registry folder.');
+    }
+    const prefix = relativePath + '/';
+    return Object.keys(localRegistryRecords()).filter(key => key.startsWith(prefix))
+      .map(key => ({ name: key.slice(prefix.length), path: key, type: 'file', sha: localRecordSha(localRegistryRecords()[key]) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async function writeLocalRegistryJson(relativePath, value, expectedSha = null, createOnly = false) {
+    const key = localRegistryPath(relativePath);
+    const records = localRegistryRecords();
+    const exists = Object.prototype.hasOwnProperty.call(records, key);
+    const currentSha = exists ? localRecordSha(records[key]) : null;
+    if (exists && createOnly) return { ok: false, conflict: true, sha: currentSha };
+    if (exists && (!expectedSha || expectedSha !== currentSha)) {
+      const error = new Error('App-local agent registry record changed concurrently.');
+      error.code = 'MAILBOX_CONFLICT';
+      throw error;
+    }
+    if (!exists && expectedSha) {
+      const error = new Error('App-local agent registry record disappeared before update.');
+      error.code = 'MAILBOX_CONFLICT';
+      throw error;
+    }
+    records[key] = value;
+    if (typeof persistSettings === 'function' && persistSettings() === false) {
+      delete records[key];
+      throw new Error('Could not persist the app-local agent registry.');
+    }
+    return { ok: true, sha: localRecordSha(value) };
+  }
+  async function deleteLocalRegistryFiles(files) {
+    const records = localRegistryRecords();
+    const entries = (Array.isArray(files) ? files : []).map(item => ({
+      path: localRegistryPath(item && item.path), sha: item && item.sha
+    }));
+    for (const item of entries) {
+      if (!Object.prototype.hasOwnProperty.call(records, item.path) || localRecordSha(records[item.path]) !== item.sha) {
+        const error = new Error('App-local agent registry changed during deletion; no records were removed.');
+        error.code = 'MAILBOX_CONFLICT';
+        throw error;
+      }
+    }
+    const removed = entries.map(item => [item.path, records[item.path]]);
+    for (const item of entries) delete records[item.path];
+    if (typeof persistSettings === 'function' && persistSettings() === false) {
+      for (const [key, value] of removed) records[key] = value;
+      throw new Error('Could not persist app-local agent registry deletion.');
+    }
+    return { deleted: entries.length };
+  }
+  const registryReadFile = relativePath => relativePath.startsWith(LOCAL_REGISTRY_PREFIX)
+    ? readLocalRegistryFile(relativePath) : readRemoteFile(relativePath);
+  const registryListFolder = relativePath => relativePath.startsWith(LOCAL_REGISTRY_PREFIX)
+    ? listLocalRegistryFolder(relativePath) : listFolder(relativePath);
+  const registryWriteJson = (relativePath, value, sha, createOnly) => relativePath.startsWith(LOCAL_REGISTRY_PREFIX)
+    ? writeLocalRegistryJson(relativePath, value, sha, createOnly) : writeRemoteJson(relativePath, value, sha, createOnly);
+  const registryDeleteFiles = async files => {
+    const local = (files || []).filter(item => item && String(item.path || '').startsWith(LOCAL_REGISTRY_PREFIX));
+    const remote = (files || []).filter(item => !item || !String(item.path || '').startsWith(LOCAL_REGISTRY_PREFIX));
+    const localResult = local.length ? await deleteLocalRegistryFiles(local) : { deleted: 0 };
+    const remoteResult = remote.length ? await commitMailboxDeletions(remote) : { deleted: 0 };
+    return { deleted: localResult.deleted + Number(remoteResult.deleted || 0) };
+  };
   const agentRegistry = createAgentRegistry({
-    readRemoteFile, listFolder, writeRemoteJson,
-    deleteRemoteFiles: files => commitMailboxDeletions(files), isConflict, maxSessions: 10000
+    readRemoteFile: registryReadFile, listFolder: registryListFolder, writeRemoteJson: registryWriteJson,
+    deleteRemoteFiles: files => registryDeleteFiles(files), isConflict, maxSessions: 10000
   });
   const taskOrchestrator = createTaskOrchestrator({ readRemoteFile, listFolder, writeRemoteJson });
 
