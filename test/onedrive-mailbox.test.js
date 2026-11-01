@@ -221,3 +221,36 @@ test('immutable publication fails closed when the sync filesystem cannot atomica
     error => error && error.code === 'ENOENT'
   );
 });
+
+test('access-denied mailbox reads fail immediately instead of being retried as sync races', async t => {
+  let sleepCalls = 0;
+  let deniedReads = 0;
+  const deniedFs = Object.create(fs);
+  deniedFs.open = async (filePath, flags, ...rest) => {
+    const name = path.basename(String(filePath));
+    if (flags === 'r' && name.startsWith('denied-')) {
+      deniedReads++;
+      const error = new Error('Access denied by filesystem permissions.');
+      error.code = name.includes('eacces') ? 'EACCES' : 'EPERM';
+      throw error;
+    }
+    return fs.open(filePath, flags, ...rest);
+  };
+  const { mailbox, runtime } = await makeMailbox(t, {
+    fsImpl: deniedFs,
+    sleep: async () => { sleepCalls++; }
+  });
+  await mailbox.ensureReady();
+
+  for (const code of ['eacces', 'eperm']) {
+    const relative = 'bridge/requests/denied-' + code + '.json';
+    await fs.writeFile(path.join(runtime, ...relative.split('/')), '{"request_id":"permission-test"}\\n', 'utf8');
+    await assert.rejects(
+      mailbox.readJson(relative),
+      error => error && error.code === code.toUpperCase()
+    );
+  }
+
+  assert.equal(deniedReads, 2, 'each permission failure should be attempted exactly once');
+  assert.equal(sleepCalls, 0, 'permission failures must not enter the sync retry delay');
+});

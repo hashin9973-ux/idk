@@ -14,7 +14,7 @@ const BRIDGE_DIRECTORIES = Object.freeze([
 const MAX_MAILBOX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SYNC_READ_ATTEMPTS = 5;
 const TRANSIENT_SYNC_READ_CODES = new Set([
-  'EACCES', 'EBUSY', 'EAGAIN', 'EIO', 'ENODATA', 'ENOENT', 'EPERM', 'ESTALE'
+  'EBUSY', 'EAGAIN', 'EIO', 'ENODATA', 'ENOENT', 'ESTALE'
 ]);
 const SAFE_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 

@@ -2259,6 +2259,9 @@ test('a conflicting immutable result is not mistaken for successful publication 
     const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
     const storedResult = await mailbox.readJson('bridge/results/' + requestId + '.json');
     assert.equal(claim.value.result.status, 'completed', 'the claim retains the worker-generated result for recovery');
+    assert.ok(Number.isInteger(claim.value.result.timing_ms.mailbox_operations_before_result_publish));
+    assert.ok(claim.value.result.timing_ms.mailbox_operations_before_result_publish > 0);
+    assert.ok(Number.isInteger(claim.value.result.timing_ms.mailbox_operation_ms_before_result_publish));
     assert.equal(storedResult.value.status, 'failed', 'the worker must not overwrite an existing immutable result');
     assert.match(bridge.getState().lastError, /contents do not match/i);
   } finally {

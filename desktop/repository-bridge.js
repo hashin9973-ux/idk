@@ -50,7 +50,9 @@ function isPlainObject(value) {
 function canonicalJsonValue(value) {
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
   if (!isPlainObject(value)) return value;
-  const ordered = {};
+  // Null-prototype objects preserve JSON keys such as "__proto__" as data
+  // rather than invoking Object.prototype's legacy setter during comparison.
+  const ordered = Object.create(null);
   for (const key of Object.keys(value).sort()) ordered[key] = canonicalJsonValue(value[key]);
   return ordered;
 }
@@ -625,9 +627,22 @@ function createRepositoryBridge(deps = {}) {
     }
   }
 
+
+  async function trackMailboxOperation(operation) {
+    const telemetry = requestTelemetry.getStore() || null;
+    if (!telemetry) return operation();
+    const startedAt = Date.now();
+    try {
+      return await operation();
+    } finally {
+      telemetry.mailboxOperations++;
+      telemetry.mailboxOperationMs += Math.max(0, Date.now() - startedAt);
+    }
+  }
+
   async function readRemoteFile(relativePath) {
     if (mailbox) {
-      const remote = await mailbox.readJson(relativePath);
+      const remote = await trackMailboxOperation(() => mailbox.readJson(relativePath));
       if (remote && relativePath.startsWith('bridge/requests/') &&
           Number(remote.entry && remote.entry.size) > MAX_REQUEST_BYTES) {
         throw new Error('Mailbox request JSON exceeds the 1 MiB request limit.');
@@ -653,7 +668,7 @@ function createRepositoryBridge(deps = {}) {
   }
 
   async function listFolder(relativePath) {
-    if (mailbox) return mailbox.listFolder(relativePath);
+    if (mailbox) return trackMailboxOperation(() => mailbox.listFolder(relativePath));
     const config = currentConfig();
     const segments = String(relativePath || '').split('/');
     if (segments.length < 2 || segments[0] !== 'bridge' ||
@@ -701,7 +716,7 @@ function createRepositoryBridge(deps = {}) {
           Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_RESULT_BYTES) {
         throw new Error('Result exceeded the OneDrive mailbox inline JSON limit.');
       }
-      return mailbox.writeJson(relativePath, value, existingSha, createOnly);
+      return trackMailboxOperation(() => mailbox.writeJson(relativePath, value, existingSha, createOnly));
     }
     const config = currentConfig();
     const body = {
@@ -815,7 +830,7 @@ function createRepositoryBridge(deps = {}) {
   }
 
   async function readRemoteContent(relativePath) {
-    if (mailbox) return mailbox.readContent(relativePath);
+    if (mailbox) return trackMailboxOperation(() => mailbox.readContent(relativePath));
     const config = currentConfig();
     try {
       const response = await api('GET', apiPath(relativePath), null, { ref: config.branch });
@@ -832,7 +847,7 @@ function createRepositoryBridge(deps = {}) {
 
   async function writeRemoteContent(relativePath, content, message) {
     if (mailbox) {
-      const stored = await mailbox.writeContent(relativePath, content, { createOnly: true, allowUnchanged: true });
+      const stored = await trackMailboxOperation(() => mailbox.writeContent(relativePath, content, { createOnly: true, allowUnchanged: true }));
       if (stored && stored.conflict) throw new Error('Artifact path already exists with different content: ' + relativePath);
       return stored;
     }
@@ -902,9 +917,9 @@ function createRepositoryBridge(deps = {}) {
       if (existing && existing.content && existing.content.equals(bytes)) {
         return { ok: true, unchanged: true, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') };
       }
-      const saved = await mailbox.writeContent('bridge/context/filesystem-index.md', bytes, {
+      const saved = await trackMailboxOperation(() => mailbox.writeContent('bridge/context/filesystem-index.md', bytes, {
         createOnly: false, expectedSha: existing && existing.sha || null
-      });
+      }));
       return { ok: true, unchanged: false, path: 'bridge/context/filesystem-index.md', bytes: bytes.length, sha256: saved.sha256 };
     }
     const contentHash = createHash('sha256').update(bytes).digest('hex');
@@ -1261,7 +1276,7 @@ function createRepositoryBridge(deps = {}) {
         }
         unique.set(item.path, item.sha);
       }
-      return mailbox.deleteFiles([...unique].map(([path, sha]) => ({ path, sha })));
+      return trackMailboxOperation(() => mailbox.deleteFiles([...unique].map(([path, sha]) => ({ path, sha }))));
     }
     const unique = new Map();
     for (const item of files) {
@@ -2004,7 +2019,7 @@ function createRepositoryBridge(deps = {}) {
   }
 
   async function processRequest(filename, signal = null) {
-    const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0 };
+    const telemetry = { startedAt: Date.now(), githubApiCalls: 0, githubApiMs: 0, mailboxOperations: 0, mailboxOperationMs: 0 };
     return requestTelemetry.run(telemetry, () => processRequestInner(filename, telemetry, signal));
   }
 
@@ -2344,7 +2359,9 @@ function createRepositoryBridge(deps = {}) {
         result_preparation: Math.max(0, Date.now() - toolFinishedAt),
         worker_before_result_publish: Math.max(0, Date.now() - workerStartedAt),
         bridge_api_calls_before_result_publish: telemetry.githubApiCalls,
-        bridge_api_ms_before_result_publish: telemetry.githubApiMs
+        bridge_api_ms_before_result_publish: telemetry.githubApiMs,
+        mailbox_operations_before_result_publish: telemetry.mailboxOperations,
+        mailbox_operation_ms_before_result_publish: telemetry.mailboxOperationMs
       },
       result: safeReport,
       artifacts: artifactManifest,
