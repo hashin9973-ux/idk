@@ -839,7 +839,7 @@ function createRepositoryBridge(deps = {}) {
     return { deleted: entries.length };
   }
   function legacyRegistryPath(relativePath) {
-    const match = String(relativePath || '').match(/^local\\/(agents|sessions|revoked-sessions|evicted-sessions)\\/(.+)$/);
+    const match = String(relativePath || '').match(/^local\/(agents|sessions|revoked-sessions|evicted-sessions)\/(.+)$/);
     if (!match) throw new Error('Invalid legacy test registry path.');
     return 'bridge/' + match[1] + '/' + match[2];
   }
