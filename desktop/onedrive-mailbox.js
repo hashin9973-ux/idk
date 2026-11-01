@@ -5,12 +5,9 @@ const fsSync = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const BRIDGE_DIRECTORIES = Object.freeze([
-  'requests', 'claims', 'results', 'agents', 'sessions', 'evicted-sessions',
-  'revoked-sessions', 'agent-messages', 'agent-message-receipts', 'artifacts',
-  'context', 'state', 'projects', 'tasks', 'vision', 'vision/requests',
-  'vision/results', 'vision/claims', 'vision/reports'
-]);
+const BRIDGE_DIRECTORIES = Object.freeze(['request', 'claims', 'result', 'messages', 'sandbox storage']);
+const ROOT_MARKDOWN_FILES = new Set(['AGENT.md', 'TOOLS.md', 'STATUS.md', 'SCREEN.md']);
+const AGENT_ID_PATTERN = /^agent-[0-9]{3,}$/;
 const MAX_MAILBOX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SYNC_READ_ATTEMPTS = 5;
 const TRANSIENT_SYNC_READ_CODES = new Set([
@@ -36,14 +33,19 @@ function detectOneDriveSyncRoot(env = process.env, fsImpl = fsSync) {
 
 function validateRelativePath(relativePath) {
   if (typeof relativePath !== 'string' || !relativePath || relativePath.startsWith('/') ||
-      relativePath.includes('\\') || relativePath.split('/').some(part =>
-        !part || part === '.' || part === '..' || !SAFE_SEGMENT.test(part))) {
+      relativePath.includes('\\\\')) {
     throw new Error('Unsafe OneDrive mailbox path.');
   }
+  if (ROOT_MARKDOWN_FILES.has(relativePath)) return [relativePath];
   const parts = relativePath.split('/');
-  if (parts[0] !== 'bridge' || parts.length < 2) {
-    throw new Error('Mailbox paths must be below bridge/.');
+  const rootFolder = BRIDGE_DIRECTORIES.find(folder => parts[0] === folder);
+  if (!rootFolder || parts.length < 2 || parts.some(part =>
+    !part || part === '.' || part === '..' || !/^[A-Za-z0-9_. -]+$/.test(part))) {
+    throw new Error('Mailbox paths must use one of the five allowed Bridge folders or four root Markdown files.');
   }
+  if (!AGENT_ID_PATTERN.test(parts[1])) throw new Error('Mailbox records must be partitioned by a valid agent ID.');
+  if (parts.length > 3) throw new Error('Nested mailbox infrastructure paths are not permitted.');
+  if (parts.length === 3 && !parts[2]) throw new Error('Mailbox file name is required.');
   return parts;
 }
 
@@ -64,13 +66,11 @@ function createOneDriveMailbox({
     if (selected) {
       if (!path.isAbsolute(selected)) return '';
       const resolved = path.resolve(selected);
-      const parts = resolved.split(path.sep).filter(Boolean);
-      if (parts.length < 2 || parts[parts.length - 1].toLowerCase() !== 'runtime' ||
-          parts[parts.length - 2].toLowerCase() !== 'bridge') return '';
+      if (path.basename(resolved).toLowerCase() !== 'bridge') return '';
       return resolved;
     }
     const detectedRoot = detectOneDriveSyncRoot(env, fsSync);
-    return detectedRoot ? path.join(detectedRoot, 'Bridge', 'runtime') : '';
+    return detectedRoot ? path.join(detectedRoot, 'Bridge') : '';
   }
 
   // Serialize same-path operations inside this app process. The SHA check is a
@@ -159,9 +159,11 @@ function createOneDriveMailbox({
     if (!ready) throw new Error('Could not create OneDrive mailbox directory: ' + target);
   }
 
-  async function ensureParent(target) {
-    const parent = path.dirname(target);
-    await ensureDirectory(parent);
+  async function ensureParent(target, relativePath) {
+    const parts = validateRelativePath(relativePath);
+    if (ROOT_MARKDOWN_FILES.has(relativePath)) return;
+    await ensureDirectory(path.join(configuredPath(), parts[0]));
+    await ensureDirectory(path.join(configuredPath(), parts[0], parts[1]));
   }
 
   async function readBytes(relativePath) {
@@ -266,7 +268,7 @@ function createOneDriveMailbox({
     const contentSha = sha256(bytes);
 
     return withPathLock(target, async () => {
-      await ensureParent(target);
+      await ensureParent(target, relativePath);
       const existing = await readBytes(relativePath);
       if (existing) {
         if (allowUnchanged && existing.sha === contentSha) {
@@ -370,9 +372,7 @@ function createOneDriveMailbox({
         throw new Error('OneDrive cleanup requires a safe path and expected content hash for each file.');
       }
       const parts = validateRelativePath(item.path);
-      if (!['sessions', 'requests', 'results', 'claims', 'artifacts', 'agent-messages', 'agent-message-receipts', 'agents', 'evicted-sessions', 'revoked-sessions'].includes(parts[1])) {
-        throw new Error('OneDrive cleanup refused a protected mailbox path: ' + item.path);
-      }
+      if (!['request', 'claims', 'result', 'messages', 'sandbox storage'].includes(parts[0])) {\n        throw new Error('OneDrive cleanup refused a protected mailbox path: ' + item.path);\n      }
       unique.set(item.path, item.sha);
     }
     const entries = [...unique].map(([relativePath, expectedSha]) => ({
@@ -411,16 +411,16 @@ function createOneDriveMailbox({
 
   async function ensureReady() {
     const root = configuredPath();
-    if (!root) throw new Error('OneDrive is not configured. Select the local OneDrive-synced Bridge/runtime folder.');
+    if (!root) throw new Error('OneDrive is not configured. Select the local OneDrive-synced Bridge folder.');
     if (!path.isAbsolute(root)) throw new Error('The OneDrive mailbox folder must be an absolute local path.');
-    await ensureDirectory(root);
-    await ensureDirectory(path.join(root, 'sandbox'));
-    const bridgeRoot = path.join(root, 'bridge');
-    await ensureDirectory(bridgeRoot);
-    for (const relative of BRIDGE_DIRECTORIES) {
-      await ensureDirectory(path.join(bridgeRoot, ...relative.split('/')));
+    const rootStat = await lstatOptional(root);
+    if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw new Error('The selected Bridge folder must already exist as a real local OneDrive-synchronized directory.');
     }
-    const probe = path.join(root, 'bridge', 'state', '.windows-bridge-write-check-' + crypto.randomUUID());
+    for (const relative of BRIDGE_DIRECTORIES) {
+      await ensureDirectory(path.join(root, relative));
+    }
+    const probe = path.join(root, 'request', '.windows-bridge-write-check-' + crypto.randomUUID());
     const handle = await fsImpl.open(probe, 'wx');
     try { await handle.writeFile('ok'); await handle.sync(); }
     finally { await handle.close(); }
