@@ -3,6 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const { createOneDriveMailbox } = require('../desktop/onedrive-mailbox');
 const {
   PROTOCOL,
   RESULT_PROTOCOL,
@@ -434,6 +437,69 @@ test('concurrent session bootstrap allocates distinct conversation IDs and reusa
     ], 'auto-assignment leaves workspace resolution to the selected agent seat default');
     assert.equal(localExecutions, 0, 'mailbox session management never enters the workspace tool runner');
   } finally { await bridge.stop(); }
+});
+
+test('OneDrive local mailbox processes a request and writes claims, results and session state without GitHub', async t => {
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'repository-bridge-onedrive-'));
+  t.after(() => fs.rm(temp, { recursive: true, force: true }));
+  const runtime = path.join(temp, 'OneDrive', 'Bridge', 'runtime');
+  const settings = { repositoryBridge: { oneDrivePath: runtime, retentionDays: 30 } };
+  const mailbox = createOneDriveMailbox({ getSettings: () => settings });
+  await mailbox.ensureReady();
+
+  const requestId = 'req-onedrive-local-transport';
+  const request = {
+    protocol: PROTOCOL,
+    request_id: requestId,
+    created_at: new Date().toISOString(),
+    tool: 'session_start',
+    args: { label: 'OneDrive integration test' }
+  };
+  await mailbox.writeJson('bridge/requests/' + requestId + '.json', request, null, true);
+
+  const fixture = { settings, getSettings: () => settings, persistSettings: () => {} };
+  const githubCalls = [];
+  let assignment = null;
+  const bridge = createRepositoryBridge({
+    mailbox,
+    githubAuth: {
+      requestApi: async input => {
+        githubCalls.push(input);
+        throw new Error('GitHub mailbox must never be invoked by OneDrive transport.');
+      }
+    },
+    ...fixture,
+    getWorkspaceRoot: () => process.cwd(),
+    requestSessionAssignment: async options => {
+      assignment = options;
+      return { autoAssign: true, agent_id: null, workspace_root: process.cwd(), message: '' };
+    },
+    onSessionAssigned: async () => {},
+    executeTool: async () => { throw new Error('session_start must not execute a workspace tool'); },
+    intervalMs: 5000
+  });
+
+  try {
+    const started = await bridge.start();
+    assert.equal(started.transport, 'onedrive-synced-folder');
+    assert.equal(started.running, true);
+    await waitFor(() => fs.access(path.join(runtime, 'bridge', 'results', requestId + '.json')).then(() => true).catch(() => false));
+    const result = await mailbox.readJson('bridge/results/' + requestId + '.json');
+    const claim = await mailbox.readJson('bridge/claims/' + requestId + '.json');
+    const state = await mailbox.readJson('bridge/state/windows-app.json');
+    assert.equal(result.value.status, 'completed');
+    assert.equal(result.value.result.result.assignment_mode, 'automatic-confirmed');
+    assert.ok(result.value.result.result.session_id);
+    assert.equal(claim.value.status, 'completed');
+    assert.equal(state.value.protocol, 'chatgpt-local-repo-state/v1');
+    assert.equal(assignment.workspaceSuggestion, undefined);
+    assert.deepEqual(githubCalls, [], 'OneDrive mailbox work must not call GitHub APIs');
+    const sessionId = result.value.result.result.session_id;
+    assert.ok(await mailbox.readJson('bridge/sessions/' + sessionId + '.json'));
+    assert.ok(await mailbox.readJson('bridge/agents/agent-001.json'));
+  } finally {
+    await bridge.stop();
+  }
 });
 
 test('session_start forwards a grounded workspace suggestion and honors an explicit automatic-assignment workspace', async () => {
