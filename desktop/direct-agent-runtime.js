@@ -1,6 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const { formatSlashCommand } = require('./agent-terminal');
 
 const MAX_TOOL_ROUNDS = 16;
 const MAX_STORED_MESSAGES = 160;
@@ -446,7 +447,7 @@ function createDirectAgentRuntime({
 
       async function executeSlashInvocation(invocation, commandText, source) {
         if (source === 'model') {
-          session.messages.push({ role: 'assistant', content: commandText, createdAt: new Date(clock()).toISOString() });
+          session.messages.push({ role: 'assistant', content: formatSlashCommand(invocation.name, invocation.args), createdAt: new Date(clock()).toISOString() });
           await save(agentId, session, { status: 'running' });
         }
         const requestId = randomUUID();
