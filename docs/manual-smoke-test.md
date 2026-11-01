@@ -2,30 +2,30 @@
 
 Use this checklist after downloading the Windows installer from the latest successful [working-branch CI build](https://github.com/hashin9973-ux/idk/actions/workflows/validate.yml). The Actions run's **Artifacts** section contains the `Windows-Repository-Bridge-...` ZIP; extract it to get the installer.
 
-This is a manual test because GitHub Actions cannot prove the app can connect to the user's actual Windows machine or that the ChatGPT GitHub integration can read the same mailbox.
+This is a manual test because GitHub Actions cannot prove the app can access the user's actual OneDrive sync folder or that the connected ChatGPT OneDrive integration can exchange files with the same Windows worker.
 
 ## Before starting
 
-- Use a **private** copy of `hashin9973-ux/qdqwg` and the dedicated `bridge-mailbox` branch.
+- Use the connected OneDrive account with `Bridge/runtime/bridge/` and `Bridge/runtime/sandbox/`. Keep `Bridge/raw/` untouched. Ensure `Bridge/runtime` is synchronized and available offline on this Windows device.
 - Ensure the configured workspace contains only harmless test files. On first launch this is `Documents/ChatGPTWorkspace`; an existing `workspaceRoot` setting is preserved. Use a disposable project folder for the first run. Test whole-drive selection separately and verify that it shows an explicit warning and indexes only the drive root.
-- No custom GitHub OAuth App or client ID should be needed. If GitHub is not connected, click the **GitHub not connected** status row; the bundled GitHub CLI opens the official device-authorization page in your default browser. Complete the device flow.
+- No app-side Microsoft Graph app registration or mailbox login should be needed. The app uses the local OneDrive sync client. If the local folder is not detected, click **Choose folder** and select the local `Bridge/runtime` folder.
 - Keep secrets, tokens, credentials, private keys, and confidential source material out of the workspace files you intend to upload.
 
-## 1. Start and verify environment publication
+## 1. Start and verify OneDrive mailbox setup
 
-1. Launch the Windows Repository Bridge and wait for the full dashboard to appear. Confirm there is no separate compact overlay window.
-2. If needed, click **GitHub not connected** and complete the official GitHub CLI device flow in your browser. Do not register a separate OAuth App or enter a client ID.
-3. Verify **Worker online** appears after authorization and internet connectivity are available; no Start Worker action should be required. If offline, verify the app continues retrying and updates status after connectivity returns.
-4. In GitHub, open `bridge/context/latest.json` on the `bridge-mailbox` branch.
+1. Launch Windows Bridge and wait for the full dashboard to appear. Confirm there is no separate compact overlay window.
+2. If needed, click **Choose folder** and select the locally synchronized `Bridge/runtime` folder. Confirm the app accepts the folder and reports the OneDrive mailbox ready.
+3. Verify **Worker online** appears after the OneDrive mailbox is configured; no Start Worker action should be required. Pause OneDrive sync temporarily and confirm the app reports delivery/reconnect state without crashing. Resume sync and verify it recovers.
+4. In the connected OneDrive integration, open `Bridge/runtime/bridge/context/latest.json`.
 5. Confirm the index points to the environment, project, capabilities, directory tree, and instruction inventory snapshots.
 6. Inspect the snapshots. Confirm instruction contents are not included in the initial inventory and obvious local user/home/temp paths are redacted.
 7. Minimize or close the dashboard to the tray. Verify its window disappears, the tray icon remains, and the worker keeps polling. Reopen it from the tray and verify the last selected tab and widget layout return. Confirm an embedded page can reload after the dashboard was unloaded.
 
-Expected outcome: the worker reports running, the mailbox has a heartbeat, and the context index and snapshot files are committed to the private branch.
+Expected outcome: the worker reports running, the mailbox has a fresh heartbeat, and context/index files appear in OneDrive after local sync. No GitHub sign-in or mailbox repository is required.
 
-## 2. Test a read-only request through the existing ChatGPT conversation
+## 2. Test a read-only request through the existing ChatGPT conversation and OneDrive
 
-In the same ChatGPT conversation that has access to the GitHub integration, create a new file on `bridge-mailbox` at `bridge/requests/req-smoke-project-status-001.json`. If you have run this test before, replace the example ID with a fresh unique ID in both the filename and `request_id`:
+In the same ChatGPT conversation, use the connected OneDrive integration to create a new file at `Bridge/runtime/bridge/requests/req-smoke-project-status-001.json`. If you have run this test before, replace the example ID with a fresh unique ID in both the filename and `request_id`:
 
 ```json
 {
@@ -39,12 +39,12 @@ In the same ChatGPT conversation that has access to the GitHub integration, crea
 
 Use a fresh request ID each time; never edit an existing request to retry it.
 
-1. Wait briefly for the worker to discover the request (the configured poll interval in the current build is approximately 2 seconds; GitHub transport can add extra delay).
-2. Read `bridge/results/req-smoke-project-status-001.json` through the GitHub integration.
+1. Wait for OneDrive to synchronize the request to Windows and for the worker to discover it (local polling is approximately 2 seconds; cloud sync can add extra delay).
+2. Read `Bridge/runtime/bridge/results/req-smoke-project-status-001.json` through the OneDrive integration.
 3. Verify the result references the same request ID and reports `completed`.
 4. Check that the result corresponds to the selected disposable workspace.
 
-Expected outcome: the request is executed locally and its result is returned as a repository file. No local output is injected into the ChatGPT composer or conversation.
+Expected outcome: the request is executed locally and its result is synchronized back to OneDrive. This verifies both cloud-to-Windows and Windows-to-cloud directions. No local output is injected into the ChatGPT composer or conversation.
 
 ## 3. Test refresh and large-output retrieval
 
@@ -66,7 +66,7 @@ Use only harmless disposable files.
 4. When the native Windows approval dialog appears, choose **Cancel**. Read the result and verify it is marked `cancelled`; confirm the file was not created.
 5. Submit an `upload_workspace_file` request for a harmless test file, for example `tool: "upload_workspace_file"` with `args: {"path":"harmless.txt","artifactName":"uploaded-harmless.txt"}`.
 6. Verify the native approval dialog appears before the file is read/uploaded. Approve once.
-7. Read the result. Verify `bridge/artifacts/<request_id>/<filename>`, byte size, SHA-256, and GitHub URL are present. Retrieve the artifact and compare bytes.
+7. Read the result. Verify `Bridge/runtime/bridge/artifacts/<request_id>/<filename>`, byte size, and SHA-256 are present. Retrieve the artifact through OneDrive and compare bytes.
 
 Expected outcome: ordinary path-checked file operations are confined to the selected workspace; a declined shell command remains unexecuted; file upload still requires explicit approval.
 
@@ -87,15 +87,15 @@ Expected outcome: ordinary path-checked file operations are confined to the sele
 
 ## Acceptance criteria
 
-- [ ] The app connects to the private repo and dedicated branch.
-- [ ] Environment index and all named snapshots are published.
-- [ ] A read-only request produces a result file for the same ID.
+- [ ] The app detects or accepts the local OneDrive `Bridge/runtime` folder and keeps the mailbox synchronized.
+- [ ] Environment index and all named snapshots are synchronized to OneDrive.
+- [ ] A OneDrive-created read-only request produces a Windows claim and matching result file for the same ID; the result synchronizes back to OneDrive.
 - [ ] Context refresh updates the snapshot index.
 - [ ] Oversized routine tool output is clearly bounded/marked `partial` when shortened; explicitly uploaded files remain retrievable with size/hash metadata.
 - [ ] Workspace file edits run automatically without escaping the selected folder.
 - [ ] A declined shell command remains unexecuted and returns `cancelled`.
-- [ ] File upload requires a local approval and returns the exact bytes.
-- [ ] Worker auto-starts and retries when internet/GitHub is unavailable.
+- [ ] File upload requires a local approval and returns exact bytes through OneDrive.
+- [ ] Worker auto-starts with OneDrive configured and recovers when OneDrive sync pauses and resumes.
 - [ ] The full dashboard is the only main window; no compact overlay is launched.
 - [ ] Minimizing/closing to tray saves the current tab/widget layout, unloads the dashboard and embedded browser views, and leaves the worker alive.
 - [ ] Reopening restores the dashboard layout and browser-tab references.
@@ -109,7 +109,7 @@ Automated tests and a successful installer build are necessary but not substitut
 
 ## Optional computer screenshot smoke test
 
-1. With GitHub connected, call the `computer` tool with `{"action":"status"}` to check whether Colab is connected and whether the model is ready.
+1. With OneDrive mailbox configured, call the `computer` tool with `{"action":"status"}` to check whether Colab is connected and whether the model is ready.
 2. Call `computer` with `{"action":"connect"}` to open the notebook if necessary. Connect a Colab runtime and run **Start the direct Colab vision server**. The notebook displays and tries to copy the random public endpoint automatically; the Windows app watches for the changed clipboard URL and connects directly. If browser clipboard write is blocked, click **Copy endpoint for Windows Bridge** in the notebook output. No app-link handoff, Local Network Access, GitHub token or Colab Secret is required.
 3. Once Colab is connected, call `computer` with `{"action":"enable"}` and wait until it reports `model_loaded: true`. Enabling may download several gigabytes of model files and compile llama.cpp.
 4. Call `computer` with `{"action":"screenshot","source":"desktop","waitMs":0}`. If it returns a pending state, call `computer` with `{"action":"wait","request_id":"<returned computer-... ID>"}` and verify the request ID and screenshot SHA-256 match.
@@ -118,4 +118,4 @@ Automated tests and a successful installer build are necessary but not substitut
 
 These manual checks require a real Google account and a permitted Colab runtime/GPU. Automated tests use a fake transport and do not prove live Colab operation.
 
-Screenshot bytes are sent directly to the authenticated temporary Colab HTTPS endpoint, not committed as a separate screenshot artifact. The resulting report is returned through the normal GitHub mailbox and may still disclose visible screen content.
+Screenshot bytes are sent directly to the authenticated temporary Colab HTTPS endpoint, not committed as a separate screenshot artifact. The resulting report is returned through the normal OneDrive mailbox and may still disclose visible screen content.
