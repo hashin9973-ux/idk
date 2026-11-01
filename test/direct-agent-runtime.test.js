@@ -62,6 +62,48 @@ function definitions() {
   }];
 }
 
+test('SSE completion returns on [DONE] even when the API keeps its HTTP stream open', async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(
+        'data: {"choices":[{"index":0,"delta":{"content":"Hello!"}}]}\n\n' +
+        'data: [DONE]\n\n'
+      ));
+      // Deliberately leave the stream open to reproduce a proxy that holds the
+      // response connection after sending the protocol terminator.
+    },
+    cancel() { cancelled = true; }
+  });
+  const response = new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  const result = await Promise.race([
+    readCompletion(response),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('SSE parser waited for the HTTP connection to close.')), 250))
+  ]);
+  assert.equal(result.content, 'Hello!');
+  assert.equal(cancelled, true);
+});
+
+test('SSE completion returns on finish_reason without waiting for [DONE] or connection close', async () => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(
+        'data: {"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n'
+      ));
+    },
+    cancel() { cancelled = true; }
+  });
+  const response = new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+  const result = await Promise.race([
+    readCompletion(response),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('SSE parser waited after finish_reason.')), 250))
+  ]);
+  assert.equal(result.content, 'Hi');
+  assert.equal(result.finishReason, 'stop');
+  assert.equal(cancelled, true);
+});
+
 test('direct API configuration validates provider, endpoint and model', () => {
   const normalized = normalizeDirectAgentConfig({
     provider: 'koboldcpp',
