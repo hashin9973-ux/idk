@@ -112,7 +112,7 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(main.includes('onSessionAssigned: persistAssignedSessionWorkspace'));
   assert.ok(main.includes('settings.agentWorkspaceDefaults'));
   assert.ok(main.includes('resolveAgentSessionWorkspaceRoot('));
-  assert.ok(main.includes('const root = hasSessionOverride ? getWorkspaceRoot(sessionId) :'));
+  assert.ok(main.includes('const root = hasSessionOverride ? getWorkspaceRoot(workspaceSessionId) :'));
   assert.ok(main.includes('hasSessionOverride ? \'session\' : (hasSeatDefault ? \'agent-default\' : \'global-default\')'));
   assert.ok(renderer.includes('workspaceButton.disabled=false'));
   assert.ok(main.includes('app:agent-select-workspace'));
