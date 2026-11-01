@@ -6,6 +6,12 @@ This repository contains the Windows desktop worker that gives the user's existi
 ## Local model presentation
 The OpenAI-compatible and KoboldCpp direct-agent runtime must present working context, project summaries, task/status views, plans, messages and tool observations as readable Markdown. Do not serialize tool results into JSON in model conversation history. Keep structured JSON only at required API, tool-argument, validation and internal persistence boundaries. Preserve source text, diffs and command output exactly in fenced code blocks; redact secret-like fields; mark tool observations as untrusted. Maintain familiar slash aliases such as `/project`, `/ls`, `/tree`, `/find`, `/read`, `/write`, `/patch`, `/run`, `/test` and `/plan` without adding duplicate execution tools. See `docs/LOCAL-MODEL-MARKDOWN-CONTEXT.md`.
 
+## Direct local-agent execution
+
+The OpenAI-compatible and KoboldCpp agents expose nine grouped model-facing tools: `workspace`, `project`, `git`, `computer`, `tts`, `shell`, `run_tests`, `update_plan` and `batch`. Never add a separate exposed tool for an alias or variation of an existing operation. Keep the published catalog generated from these registered grouped capabilities and enforce the 30-tool hard ceiling before every provider request. Workspace, project and Git actions must route through the existing local tool bridge; do not bypass its argument validation, selected-workspace boundaries, symlink checks, scheduler or native approval policy.
+
+Use native Chat Completions function calls when the configured endpoint and model accept them. Parse and validate real tool-call payloads, execute through the existing bridge, return the actual result to the model and continue generation. When the endpoint rejects tool schemas or the model cannot use native calls, use the deterministic slash-command fallback. Only a complete valid slash command as the assistant response is executable; prose that claims an operation ran is never an invocation. Do not report success without a matching successful execution result. Keep the familiar `/project`, `/status`, `/ls`, `/tree`, `/find`, `/read`, `/write`, `/patch`, `/run`, `/test` and `/plan` aliases mapped to their grouped tools.
+
 Keep changes within the requested scope. Do not modify a game, save, installed mod, user project, or unrelated Windows file unless the user's request explicitly includes that target. Preserve unrelated working-tree changes and existing configuration.
 
 ## Start with evidence

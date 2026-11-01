@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const localTools = require('../desktop/tool-runner');
-const { createToolBridge } = require('../desktop/tool-bridge');
+const { createToolBridge, getDirectAgentToolDefinitions, DIRECT_AGENT_ACTIONS, resolveDirectAgentTool } = require('../desktop/tool-bridge');
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'repository-tool-bridge-'));
@@ -572,7 +572,11 @@ test('agent context packs Windows environment, project commands, instruction met
     assert.equal(result.result.project_commands.name, 'context-fixture');
     assert.equal(result.result.project_commands.scripts.test, 'node --test');
     assert.ok(result.result.project_support && Array.isArray(result.result.project_support.projects));
-    assert.ok(result.result.project_support.suggestedCommands.some(item => item.command === 'npm test'));
+    const npmToolchain = result.result.project_support.toolchains.find(item => item.name === 'npm');
+    const npmTestSuggestion = result.result.project_support.suggestedCommands.find(item => item.command === 'npm test');
+    assert.equal(Boolean(npmTestSuggestion), npmToolchain?.usable === true,
+      'only advertise npm test when the local npm executable has a verified version');
+    assert.ok(result.result.project_support.suggestedCommands.every(item => item.available === true && item.executed === false));
     assert.equal(Object.hasOwn(result.result.project, 'project_support'), false, 'the full project profile is included only once in agent context');
     assert.ok(Array.isArray(result.result.directory_overview.paths));
     assert.equal(result.result.directory_overview.format, 'paths');
@@ -770,6 +774,87 @@ test('tts reports playback failure distinctly from successful WAV synthesis', as
     assert.match(result.error, /audio device is unavailable/i);
     assert.equal(result.result.status, 'tts_completed', 'WAV synthesis succeeded despite local playback failure');
     assert.equal(result.result.played, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('direct-agent grouped capabilities stay below 30 and route to existing workspace operations', async () => {
+  const root = fixture();
+  try {
+    const definitions = getDirectAgentToolDefinitions();
+    const names = definitions.map(item => item.function.name);
+    assert.ok(names.length <= 30);
+    assert.deepEqual(names, ['workspace', 'project', 'git', 'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch']);
+    const routedCapabilities = [
+      ...Object.values(DIRECT_AGENT_ACTIONS).flatMap(actions => Object.values(actions)),
+      'computer', 'tts', 'shell', 'run_tests', 'update_plan', 'batch'
+    ].sort();
+    assert.deepEqual(routedCapabilities, [
+      'project_status','environment_info','list_dir','directory_tree','glob_file_search','read_file','file_info','search',
+      'git_status','git_diff','git_log','git_show','git_branches','git_changed_files','git_worktree','discover_instructions',
+      'init','write_file','apply_patch','create_directory','move_path','delete_path','git_create_branch','git_switch_branch',
+      'git_commit','git_fetch','git_pull','git_push','git_clone','project_index_status','project_index_refresh','project_search',
+      'project_overview','project_impact','game_project_intelligence','computer','tts','shell','run_tests','update_plan','batch'
+    ].sort(), 'every previously exposed direct-agent capability remains routed');
+    assert.deepEqual(resolveDirectAgentTool('workspace', { action: 'read', path: 'artifact.txt', startLine: 1 }), {
+      tool: 'read_file', args: { path: 'artifact.txt', startLine: 1 }
+    });
+    assert.deepEqual(resolveDirectAgentTool('project', { action: 'search', query: 'main' }), {
+      tool: 'project_search', args: { query: 'main' }
+    });
+    assert.deepEqual(resolveDirectAgentTool('git', { action: 'status' }), {
+      tool: 'git_status', args: {}
+    });
+    assert.deepEqual(resolveDirectAgentTool('workspace', { action: 'glob', path: 'src', pattern: '**/*.js' }), {
+      tool: 'glob_file_search', args: { path: 'src', pattern: '**/*.js' }
+    });
+    assert.throws(() => resolveDirectAgentTool('workspace', { action: 'execute_anything', command: 'whoami' }), /Unsupported workspace action/);
+    assert.throws(() => resolveDirectAgentTool('workspace', { action: 'read' }), /requires: path/);
+    assert.throws(() => resolveDirectAgentTool('project', { action: 'impact' }), /requires path or symbol/);
+
+    const bridge = createToolBridge({
+      dialog: { showMessageBox: async () => { throw new Error('ordinary workspace file operations must not prompt'); } },
+      getMainWindow: () => null,
+      getWorkspaceRoot: () => root,
+      localTools,
+      githubAuth: {}
+    });
+    const written = await bridge.runTool('workspace', {
+      action: 'write', path: 'grouped-output.txt', content: 'written through the grouped tool'
+    }, 'req-grouped-write');
+    assert.equal(written.status, 'success');
+    assert.equal(fs.readFileSync(path.join(root, 'grouped-output.txt'), 'utf8'), 'written through the grouped tool');
+
+    const read = await bridge.runTool('workspace', {
+      action: 'read', path: 'grouped-output.txt'
+    }, 'req-grouped-read');
+    assert.equal(read.status, 'success');
+    assert.match(read.result.content, /written through the grouped tool/);
+
+    const batch = await bridge.runTool('batch', { steps: [
+      { id: 'write', tool: 'workspace', args: { action: 'write', path: 'batch-output.txt', content: 'batch routed through grouped workspace tool' } },
+      { id: 'write-two', tool: 'workspace', args: { action: 'write', path: 'batch-output-two.txt', content: 'second grouped batch write' } }
+    ], maxConcurrency: 2 }, 'req-grouped-batch');
+    assert.equal(batch.status, 'success');
+    assert.equal(batch.result.requested_steps, 2);
+    assert.equal(fs.readFileSync(path.join(root, 'batch-output.txt'), 'utf8'), 'batch routed through grouped workspace tool');
+    assert.equal(fs.readFileSync(path.join(root, 'batch-output-two.txt'), 'utf8'), 'second grouped batch write');
+
+    const duplicateBatch = await bridge.runTool('batch', { steps: [
+      { id: 'duplicate-one', tool: 'workspace', args: { action: 'write', path: 'duplicate.txt', content: 'same side effect' } },
+      { id: 'duplicate-two', tool: 'workspace', args: { action: 'write', path: 'duplicate.txt', content: 'same side effect' } }
+    ] }, 'req-grouped-duplicate-batch');
+    assert.equal(duplicateBatch.status, 'failed');
+    assert.match(duplicateBatch.error, /repeated identical side-effecting step/);
+    assert.equal(fs.existsSync(path.join(root, 'duplicate.txt')), false);
+
+    const escaped = await bridge.runTool('workspace', {
+      action: 'write', path: '../outside-grouped.txt', content: 'must not escape'
+    }, 'req-grouped-escape');
+    assert.equal(escaped.status, 'failed');
+    assert.equal(fs.existsSync(path.join(path.dirname(root), 'outside-grouped.txt')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

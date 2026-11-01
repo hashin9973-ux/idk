@@ -102,6 +102,11 @@ test('agent dashboard supports a scrollable multi-seat canvas and per-session co
   assert.ok(renderer.includes('function updateSlashMenu()'));
   assert.ok(renderer.includes('message.split(/\\s/,1)[0]'));
   assert.ok(renderer.includes('terminal.formatSlashCommand(call.function&&call.function.name,args)'));
+  assert.ok(renderer.includes("const nativeToolCall=message.role==='assistant'&&Array.isArray(message.tool_calls)&&message.tool_calls.length>0"));
+  assert.ok(renderer.includes('TOOL CALL · NATIVE ('));
+  assert.ok(renderer.includes("['user','tool'].includes(message.role)"));
+  assert.ok(renderer.includes('SYSTEM · TOOL PROTOCOL'));
+  assert.ok(renderer.includes('TOOL MODE · '));
   assert.ok(styles.includes('.agent-slash-menu{position:absolute'));
   assert.ok(renderer.includes('showAgentCreateDialog'));
   assert.ok(html.includes('agent-create-dialog'));

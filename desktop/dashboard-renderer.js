@@ -10,15 +10,7 @@ async function loadDirectAgentToolCatalog(){
   if(directAgentToolCatalog.length)return directAgentToolCatalog;
   if(!directAgentToolCatalogPromise){
     directAgentToolCatalogPromise=api.getDirectAgentTools().then(items=>{
-      const tools=Array.isArray(items)?items.filter(item=>item&&item.type==='function'&&item.function&&typeof item.function.name==='string'): [];
-      const byName=new Map(tools.map(item=>[item.function.name,item]));
-      const aliases={project:'project_status',ls:'list_dir',tree:'directory_tree',find:'glob_file_search',read:'read_file',write:'write_file',patch:'apply_patch',run:'shell',test:'run_tests',plan:'update_plan'};
-      const shortcuts=Object.entries(aliases).flatMap(([alias,target])=>{
-        const source=byName.get(target);
-        if(!source)return [];
-        return [{type:'function',function:{...source.function,name:alias,description:'Shortcut for /'+target+'. '+String(source.function.description||'')}}];
-      });
-      directAgentToolCatalog=[...tools,...shortcuts];
+      directAgentToolCatalog=Array.isArray(items)?items.filter(item=>item&&item.type==='function'&&item.function&&typeof item.function.name==='string'): [];
       return directAgentToolCatalog;
     }).catch(error=>{directAgentToolCatalogPromise=null;throw error});
   }
@@ -672,9 +664,11 @@ function renderAgentMailboxes(rawAgents){
         const label=document.createElement('strong');label.className='agent-direct-message-label';
         const text=typeof message.content==='string'?message.content:'';
         const modelSlashCall=message.role==='assistant'&&text.trim().startsWith('/');
-        const toolResultMatch=message.role==='user'?text.match(/^\[Untrusted local tool result for \/([a-z0-9_]+); status=([a-z_]+)\]/i):null;
+        const nativeToolCall=message.role==='assistant'&&Array.isArray(message.tool_calls)&&message.tool_calls.length>0;
+        const toolResultMatch=['user','tool'].includes(message.role)?text.match(/^\[Untrusted local tool result for \/([a-z0-9_]+); status=([a-z_]+)\]/i):null;
         const slashError=message.role==='user'&&text.startsWith('[Slash-command error]');
-        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
+        const runtimeFeedback=message.kind==='runtime_feedback';
+        label.textContent=modelSlashCall?'TOOL CALL · '+String(text.trim().match(/^\/([a-z0-9_]+)/i)?.[1]||'command'):nativeToolCall?'TOOL CALL · NATIVE ('+message.tool_calls.length+')':runtimeFeedback?'SYSTEM · TOOL PROTOCOL':toolResultMatch?'TOOL · '+toolResultMatch[1]+' · '+toolResultMatch[2]:slashError?'TOOL ERROR':message.role==='user'?'YOU':message.role==='tool'?'TOOL · '+String(message.name||'call'):'AGENT';
         item.append(label);
         if(modelSlashCall){const command=document.createElement('pre');command.className='agent-direct-tool-call';command.textContent=text.trim();item.append(command)}
         if(message.role==='assistant'&&Array.isArray(message.tool_calls)){
@@ -1072,6 +1066,7 @@ api.onDirectAgentEvent(event=>{
   if(event.type==='delta')directLiveText.set(id,(directLiveText.get(id)||'')+String(event.delta||''));
   else if(event.type==='tool_started')directLiveStatus.set(id,'TOOL · '+String(event.tool||'running'));
   else if(event.type==='tool_completed')directLiveStatus.set(id,'TOOL · '+String(event.tool||'completed')+' · '+String(event.status||''));
+  else if(event.type==='tool_protocol')directLiveStatus.set(id,'TOOL MODE · '+String(event.mode||'').toUpperCase()+' FALLBACK');
   else if(event.type==='status'){
     const status=String(event.status||'working').toLowerCase();
     const terminal=['idle','error','interrupted'].includes(status);

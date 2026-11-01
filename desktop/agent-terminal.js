@@ -5,7 +5,7 @@
   if (typeof module === 'object' && module && module.exports) module.exports = api;
   if (root) root.AgentTerminal = api;
 })(typeof globalThis === 'object' ? globalThis : this, function createAgentTerminal() {
-  const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key|session[_-]?id)/i;
+  const SECRET_KEY = /(?:token|secret|password|authorization|api[_-]?key|private[_-]?key|session[_-]?id|credential)/i;
 
   function parseRecord(value) {
     if (value && typeof value === 'object' && !Array.isArray(value)) return value;
@@ -31,13 +31,22 @@
     return Object.fromEntries(Object.entries(value).map(([key, nested]) => [key, SECRET_KEY.test(key) ? '[redacted]' : redactValue(nested)]));
   }
 
+  function formatPlainValue(value) {
+    if (value === null) return 'null';
+    if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+    if (typeof value === 'string') return quote(value);
+    if (Array.isArray(value)) return '[' + value.map(formatPlainValue).join(', ') + ']';
+    if (value && typeof value === 'object') {
+      return '[' + Object.entries(value).map(([name, nested]) => name + '=' + formatPlainValue(nested)).join('; ') + ']';
+    }
+    return String(value);
+  }
+
   function safeArgument(key, value) {
     if (SECRET_KEY.test(key)) return '--' + flagName(key) + ' [redacted]';
     if (typeof value === 'boolean') return value ? '--' + flagName(key) : '--no-' + flagName(key);
     if (value === null) return '--' + flagName(key) + ' null';
-    const safe = redactValue(value);
-    const rendered = typeof safe === 'string' ? safe : JSON.stringify(safe);
-    return '--' + flagName(key) + ' ' + quote(rendered);
+    return '--' + flagName(key) + ' ' + formatPlainValue(redactValue(value));
   }
 
   function formatSingle(tool, args) {
@@ -53,16 +62,34 @@
   }
 
 
+  function formatSlashValue(value) {
+    if (value === null) return 'null';
+    if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+    if (typeof value === 'string') {
+      return /[\s,;=\[\]"']/.test(value) ? JSON.stringify(value) : value;
+    }
+    if (Array.isArray(value)) return '[' + value.map(formatSlashValue).join(', ') + ']';
+    return '[structured value]';
+  }
+
   function formatSlashCommand(tool, args) {
     const name = String(tool || 'unknown_tool').replace(/[^a-zA-Z0-9_.:-]/g, '_');
-    const values = args && typeof args === 'object' && !Array.isArray(args) ? redactValue(args) : {};
-    const render = value => {
-      if (typeof value === 'string') return JSON.stringify(value);
-      if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value);
-      return JSON.stringify(value);
-    };
-    const argumentsText = Object.entries(values).map(([key, value]) => key + '=' + render(value)).join(' ');
-    return '/' + name + (argumentsText ? ' ' + argumentsText : '');
+    const values = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+    if ((name === 'batch' || name === 'computer') && Array.isArray(values.steps)) {
+      const steps = values.steps.map(step => {
+        if (name === 'batch') return formatSlashCommand(step && step.tool, step && step.args).replace(/^\//, '');
+        const action = String(step && step.action || 'unknown');
+        const args = Object.fromEntries(Object.entries(step || {}).filter(([key]) => key !== 'action'));
+        return formatSlashCommand(action, args).replace(/^\//, '');
+      });
+      const options = Object.entries(values).filter(([key]) => key !== 'steps')
+        .map(([key, value]) => key + '=' + formatSlashValue(value));
+      return '/' + name + (options.length ? ' ' + options.join(' ') : '') +
+        (steps.length ? (options.length ? ' ' : ' ') + 'steps=' + JSON.stringify(steps.join('; ')) : '');
+    }
+    const argsText = Object.entries(values).filter(([key]) => !SECRET_KEY.test(key))
+      .map(([key, value]) => key + '=' + formatSlashValue(redactValue(value))).join(' ');
+    return '/' + name + (argsText ? ' ' + argsText : '');
   }
 
   function formatRequestCommands(requestJson, fallbackTool) {

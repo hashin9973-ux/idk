@@ -8,7 +8,7 @@ test('tool-call JSON is rendered as shell-style command lines without JSON filen
   const request = JSON.stringify({ protocol: 'chatgpt-local-repo-bridge/v1', request_id: 'request-1',
     tool: 'read_file', args: { path: 'src/main.cpp', startLine: 10, includeImages: false } });
   assert.equal(formatRequestCommands(request, 'unknown'),
-    "$ read_file --path 'src/main.cpp' --start-line '10' --no-include-images");
+    "$ read_file --path 'src/main.cpp' --start-line 10 --no-include-images");
 });
 
 test('shell commands retain their ordinary command-line form', () => {
@@ -26,10 +26,23 @@ test('batch requests render each step as a separate terminal command', () => {
 });
 
 test('potential credentials are redacted from the display-only command', () => {
-  const request = JSON.stringify({ tool: 'connect', args: { endpoint: 'https://example.invalid', api_key: 'never-display-this' } });
+  const request = JSON.stringify({ tool: 'connect', args: {
+    endpoint: 'https://example.invalid',
+    api_key: 'never-display-this',
+    session_id: 'session-abcdef0123456789abcdef0123456789'
+  } });
   const rendered = formatRequestCommands(request, 'connect');
   assert.match(rendered, /\[redacted\]/);
-  assert.doesNotMatch(rendered, /never-display-this|session-0123456789abcdef0123456789abcdef/);
+  assert.doesNotMatch(rendered, /never-display-this/);
+  assert.doesNotMatch(rendered, /session-abcdef0123456789abcdef0123456789/);
+});
+
+test('terminal argument display renders lists and nested objects without JSON', () => {
+  const request = JSON.stringify({ tool: 'project_search', args: { query: 'main entry', paths: ['src', 'test'], filters: { kind: 'symbol', maxResults: 5 } } });
+  const rendered = formatRequestCommands(request, 'unknown');
+  assert.match(rendered, /--paths \[.*src.*test.*\]/);
+  assert.match(rendered, /--filters \[kind='symbol'; maxResults=5\]/);
+  assert.doesNotMatch(rendered, /"paths":/);
 });
 
 test('result JSON is translated to ordinary output lines', () => {
@@ -51,7 +64,9 @@ test('direct tool calls render in slash-command form with nested secrets redacte
     path: 'src/main.js',
     options: { api_key: 'never-display-this', session_id: 'session-0123456789abcdef0123456789abcdef', include: ['a', 'b'] }
   });
-  assert.equal(rendered, '/read_file path="src/main.js" options={"api_key":"[redacted]","session_id":"[redacted]","include":["a","b"]}');
+  assert.equal(rendered, '/read_file path=src/main.js options=[structured value]');
   assert.equal(require('../desktop/agent-terminal').formatSlashCommand('environment_info', {}), '/environment_info');
   assert.doesNotMatch(rendered, /never-display-this/);
+  assert.doesNotMatch(rendered, /session-0123456789abcdef0123456789abcdef/);
 });
+
