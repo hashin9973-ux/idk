@@ -1320,7 +1320,9 @@ function createRepositoryBridge(deps = {}) {
       const partNumber = index + 1;
       const suffix = chunks.length > 1 ? '-part-' + String(partNumber).padStart(3, '0') : '';
       const fileName = prefix + suffix + '.' + extension;
-      const relativePath = 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-' + fileName;
+      const relativePath = mailbox
+        ? 'sandbox storage/' + (requestMailboxAgents.get(requestId) || requestAgents.get(requestId) || BOOTSTRAP_AGENT_ID) + '/' + requestId + '-' + fileName
+        : 'bridge/artifacts/' + requestId + '/' + fileName;
       const saved = await writeRemoteContent(relativePath, chunks[index], '[local bridge] publish complete tool output artifact');
       const ref = {
         kind: options.kind || 'tool_output_part',
@@ -2168,7 +2170,7 @@ function createRepositoryBridge(deps = {}) {
       });
       if (request.tool !== 'session_start') {
         const identity = await agentRegistry.authenticate(request);
-        if (identity.agent_id !== mailboxAgentId) throw new Error('REQUEST_AGENT_MISMATCH: The request folder does not match the app-owned session assignment.');
+        if (mailbox && identity.agent_id !== mailboxAgentId) throw new Error('REQUEST_AGENT_MISMATCH: The request folder does not match the app-owned session assignment.');
         Object.assign(request, identity);
         requestAgents.set(requestId, request.agent_id);
         requestSessions.set(requestId, request.session_id);
@@ -2384,7 +2386,7 @@ function createRepositoryBridge(deps = {}) {
     }
     const safeReport = await externalizeLargeText(requestId, reportForInline, artifactManifest, artifactErrors);
     const uploadedArtifact = safeReport && safeReport.result && typeof safeReport.result.path === 'string' &&
-      safeReport.result.path.startsWith('sandbox storage/') ? safeReport.result : null;
+      (safeReport.result.path.startsWith('sandbox storage/') || (!mailbox && allowLegacyGitHubMailboxForTests === true && safeReport.result.path.startsWith('bridge/artifacts/'))) ? safeReport.result : null;
     const serializedSafeReport = JSON.stringify(safeReport);
     const outputWasShortened = serializedSafeReport.includes('[OUTPUT EXTERNALIZED:') ||
       serializedSafeReport.includes('[OUTPUT ARTIFACT ERROR:') ||
