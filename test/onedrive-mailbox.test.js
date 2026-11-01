@@ -164,7 +164,7 @@ test('partial JSON caused by synchronization is retried and accepted after the f
     sleep: async () => {
       if (!repaired) {
         repaired = true;
-        await fs.writeFile(target, '{"protocol":"complete","revision":2}\\n', 'utf8');
+        await fs.writeFile(target, '{"protocol":"complete","revision":2}\n', 'utf8');
       }
     }
   });
