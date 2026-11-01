@@ -443,36 +443,22 @@ test('Observe retains full-resolution pixels locally and publishes matching pass
   assert.ok(matching.controls.length <= 800);
   assert.equal(matching.vision.interaction_guidance.coordinate_frame_id, matching.frame_id);
   assert.equal(JSON.stringify(published).includes(rawBytes.toString('utf8')), false,
-    'raw screenshot bytes must stay local rather than being published to the GitHub mailbox');
+    'raw screenshot bytes must stay local rather than being published to the OneDrive mailbox');
   assert.equal(service.status().passive_vision_status, 'ready');
   await service.setEnabled(false);
   assert.equal(service.getLatestFrame(), null);
   await service.dispose();
 });
 
-test('Observe reads the existing blob SHA after an app restart before updating its live context file', async () => {
-  let liveSha = 'a'.repeat(40);
-  let revision = 98;
+test('Observe resolves the current OneDrive file hash after an app restart before updating live context', async () => {
   const reads = [];
   const writes = [];
-  const githubAuth = {
-    requestApi: async input => {
-      assert.equal(input.path, '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json');
-      if (input.method === 'GET') {
-        assert.deepEqual(input.query, { ref: 'bridge-mailbox' });
-        reads.push(input);
-        return { status: 200, result: { sha: liveSha } };
-      }
-      assert.equal(input.method, 'PUT');
-      assert.equal(input.body.sha, liveSha, 'every update must carry the current Git blob SHA');
-      writes.push(input.body.sha);
-      const nextSha = String.fromCharCode(revision++).repeat(40);
-      liveSha = nextSha;
-      return { status: 200, result: { content: { sha: nextSha } } };
-    }
-  };
+  const mailbox = createTestMailbox({
+    initialValue: { protocol: OBSERVE_PROTOCOL, enabled: false, frame_count: 0, frames: [] },
+    reads, writes
+  });
   const createService = () => createObserveService({
-    githubAuth,
+    mailbox,
     captureScreenshot: async () => ({
       bytes: Buffer.from('test-screen'), width: 100, height: 100,
       screen_width: 100, screen_height: 100, captured_at: Date.now()
@@ -487,39 +473,20 @@ test('Observe reads the existing blob SHA after an app restart before updating i
   const secondAppSession = createService();
   await secondAppSession.setEnabled(true);
 
-  assert.equal(reads.length, 2, 'each new service session must resolve the existing file SHA once');
-  assert.deepEqual(writes.slice(0, 3), ['a'.repeat(40), 'b'.repeat(40), 'c'.repeat(40)]);
+  assert.equal(reads.length, 2, 'each new service session must resolve the existing OneDrive content hash once');
+  assert.deepEqual(writes.slice(0, 3), ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)]);
   await secondAppSession.dispose();
 });
 
 
 test('startup cleanup clears a stale live Observe document without enabling sampling', async () => {
-  let payload = {
+  const payload = {
     protocol: OBSERVE_PROTOCOL, enabled: true, sample_fps: 4,
     frame_count: 1, frames: [{ sequence: 1, active_window: { title: 'Old window' } }]
   };
-  let currentSha = 'a'.repeat(40);
   const writes = [];
-  const githubAuth = {
-    requestApi: async input => {
-      assert.equal(input.path, '/repos/hashin9973-ux/qdqwg/contents/bridge/vision/observe.json');
-      if (input.method === 'GET') {
-        assert.deepEqual(input.query, { ref: 'bridge-mailbox' });
-        return { status: 200, result: {
-          sha: currentSha,
-          content: Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')
-        } };
-      }
-      assert.equal(input.method, 'PUT');
-      assert.equal(input.body.sha, currentSha);
-      const next = JSON.parse(Buffer.from(input.body.content, 'base64').toString('utf8'));
-      writes.push(next);
-      payload = next;
-      currentSha = String.fromCharCode(currentSha.charCodeAt(0) + 1).repeat(40);
-      return { status: 200, result: { content: { sha: currentSha } } };
-    }
-  };
-  const service = createObserveService({ githubAuth });
+  const mailbox = createTestMailbox({ initialValue: payload, onWrite: value => writes.push(value) });
+  const service = createObserveService({ mailbox });
   const state = await service.clearStaleContext();
   assert.equal(state.enabled, false);
   assert.equal(state.fps, 2);
