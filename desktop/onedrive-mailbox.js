@@ -33,7 +33,7 @@ function detectOneDriveSyncRoot(env = process.env, fsImpl = fsSync) {
 
 function validateRelativePath(relativePath) {
   if (typeof relativePath !== 'string' || !relativePath || relativePath.startsWith('/') ||
-      relativePath.includes('\\\\')) {
+      relativePath.includes('\\')) {
     throw new Error('Unsafe OneDrive mailbox path.');
   }
   if (ROOT_MARKDOWN_FILES.has(relativePath)) return [relativePath];
