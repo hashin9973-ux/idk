@@ -643,7 +643,6 @@ function renderAgentMailboxes(rawAgents){
     const previousSessionId=card.dataset.sessionId||'';
     const currentSessionId=String(agent.session_id||'');
     const sessionChanged=Boolean(previousSessionId&&previousSessionId!==currentSessionId);
-    const scrollTop=sessionChanged?0:body.scrollTop;
     if(sessionChanged){
       card.dataset.pendingMessageIds='[]';
       const messageThread=card.querySelector('.agent-message-thread');
@@ -681,7 +680,6 @@ function renderAgentMailboxes(rawAgents){
       if(directBusy||liveText||liveStatus){const live=document.createElement('article');live.className='agent-direct-message agent-direct-live';const label=document.createElement('strong');label.className='agent-direct-message-label';label.textContent=liveStatus||'AGENT · WORKING';live.append(label);if(liveText){const content=document.createElement('div');content.className='agent-direct-message-content';content.textContent=liveText;live.append(content)}body.append(live)}
       if(agent.direct_error&&['error','interrupted'].includes(agent.direct_status)){const error=document.createElement('div');error.className='agent-console-empty agent-direct-error';error.textContent='API error: '+agent.direct_error;body.append(error)}
       if(!messages.length&&!directBusy){const empty=document.createElement('div');empty.className='agent-console-empty';empty.textContent='Direct API agent ready · '+String(agent.provider||'')+' · '+String(agent.model||'');body.append(empty)}
-      body.scrollTop=body.scrollHeight;
       return;
     }
     if(sessionChanged){
@@ -718,7 +716,6 @@ function renderAgentMailboxes(rawAgents){
         row.append(command,output);body.append(row);
       }
     }
-    body.scrollTop=scrollTop;
   });
   updateAgentCanvasHeight();
 }
@@ -1055,7 +1052,6 @@ function renderDirectLive(agentId){
   if(!live){live=document.createElement('article');live.className='agent-direct-message agent-direct-live';const label=document.createElement('strong');label.className='agent-direct-message-label';const content=document.createElement('div');content.className='agent-direct-message-content';live.append(label,content);body.append(live)}
   const label=live.querySelector('.agent-direct-message-label'),content=live.querySelector('.agent-direct-message-content');
   label.textContent=status||'AGENT · WORKING';content.textContent=text;
-  body.scrollTop=body.scrollHeight;
 }
 function setDirectWidgetBusy(agentId,busy){
   const card=agentWidgets.get(agentId);if(!card)return;
@@ -1089,6 +1085,11 @@ function showAgentCreateDialog(){
   const model=$('agent-create-model');
   $('agent-create-api-key').value='';
   $('agent-create-system-prompt').value='';
+  $('agent-create-temperature').value='0.2';
+  $('agent-create-top-p').value='1';
+  $('agent-create-frequency-penalty').value='0';
+  $('agent-create-presence-penalty').value='0';
+  $('agent-create-max-tokens').value='8192';
   provider.value='bridge';
   endpoint.value='';
   model.value='';
@@ -1120,6 +1121,11 @@ $('agent-create-confirm').addEventListener('click',async()=>{
     payload.model=$('agent-create-model').value.trim();
     payload.apiKey=$('agent-create-api-key').value;
     payload.systemPrompt=$('agent-create-system-prompt').value;
+    payload.temperature=Number($('agent-create-temperature').value);
+    payload.topP=Number($('agent-create-top-p').value);
+    payload.frequencyPenalty=Number($('agent-create-frequency-penalty').value);
+    payload.presencePenalty=Number($('agent-create-presence-penalty').value);
+    payload.maxTokens=Number($('agent-create-max-tokens').value);
   }
   button.disabled=true;button.textContent='Adding…';
   try{
@@ -1136,20 +1142,34 @@ mainPage.addEventListener('contextmenu',event=>{event.preventDefault();contextMe
 document.addEventListener('pointerdown',event=>{if(!contextMenu.hidden&&!contextMenu.contains(event.target))contextMenu.hidden=true});
 contextMenu.addEventListener('click',event=>{const action=event.target.closest('[data-widget-action]')?.dataset.widgetAction;contextMenu.hidden=true;if(action==='arrange')autoArrangeWidgets();if(action==='add-agent')showAgentCreateDialog()});
 function autoArrangeWidgets(){
-  const width=mainPage.clientWidth||window.innerWidth||1200,gap=16,margin=24,leftWidth=Math.min(360,Math.max(270,Math.round(width*.28)));
-  const cardWidth=Math.min(360,Math.max(200,width-leftWidth-margin*2-gap)),cardHeight=320;
-  Object.assign(queue.style,{left:margin+'px',top:'28px',width:leftWidth+'px'});widgetMoved.queues=true;
-  const queueBottom=queue.offsetTop+queue.offsetHeight;
-  Object.assign(controls.style,{left:margin+'px',top:(queueBottom+gap)+'px',width:leftWidth+'px'});widgetMoved.controls=true;
-  const hasRightColumn=width>=leftWidth+cardWidth+margin*2+gap;
-  const startX=hasRightColumn?margin+leftWidth+gap:margin;
-  let x=startX,y=hasRightColumn?24:controls.offsetTop+controls.offsetHeight+gap,col=0;const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
-  for(const [id,el] of [...agentWidgets.entries()].sort((a,b)=>Number(a[0].match(/([0-9]+)$/)?.[1]||0)-Number(b[0].match(/([0-9]+)$/)?.[1]||0))){
+  const width=Math.max(320,mainPage.clientWidth||window.innerWidth||1200);
+  const gap=16,margin=24,cardHeight=320;
+  const leftWidth=Math.min(360,Math.max(240,Math.floor((width-margin*2)*0.3)));
+  Object.assign(queue.style,{left:margin+'px',top:'28px',width:leftWidth+'px'});
+  widgetMoved.queues=true;
+  const controlsTop=28+queue.offsetHeight+gap;
+  Object.assign(controls.style,{left:margin+'px',top:controlsTop+'px',width:leftWidth+'px'});
+  widgetMoved.controls=true;
+  const rightStart=margin+leftWidth+gap;
+  const rightAvailable=width-rightStart-margin;
+  const canUseRightColumn=rightAvailable>=200;
+  const cardWidth=canUseRightColumn?Math.min(360,rightAvailable):Math.max(200,width-margin*2);
+  const startX=canUseRightColumn?rightStart:margin;
+  const startY=canUseRightColumn?24:controlsTop+controls.offsetHeight+gap;
+  const columns=Math.max(1,Math.floor((width-startX-margin+gap)/(cardWidth+gap)));
+  const ordered=[...agentWidgets.entries()].sort((a,b)=>
+    Number(a[0].match(/([0-9]+)$/)?.[1]||0)-Number(b[0].match(/([0-9]+)$/)?.[1]||0)
+  );
+  ordered.forEach(([id,el],index)=>{
+    const column=index%columns,row=Math.floor(index/columns);
+    const x=startX+column*(cardWidth+gap),y=startY+row*(cardHeight+gap);
     Object.assign(el.style,{left:x+'px',top:y+'px',width:cardWidth+'px',height:cardHeight+'px'});
-    savedWidgetLayout[id]={x,y,width:cardWidth,height:cardHeight};widgetMoved[id]=true;
-    if(++col>=columns){col=0;x=startX;y+=cardHeight+gap}else{x+=cardWidth+gap}
-  }
-  updateAgentCanvasHeight();scheduleSaveDashboardState();note('Widgets arranged into a compact grid.','success');
+    savedWidgetLayout[id]={x,y,width:cardWidth,height:cardHeight};
+    widgetMoved[id]=true;
+  });
+  updateAgentCanvasHeight();
+  scheduleSaveDashboardState();
+  note('Widgets arranged into a compact grid.','success');
 }
 let autoDumpEditingAgent='';
 $('agent-delete-cancel').addEventListener('click',()=>{
